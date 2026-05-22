@@ -1,0 +1,401 @@
+:root {
+  color: #152421;
+  background: #f5f7f5;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  border: 0;
+  cursor: pointer;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  padding: 24px;
+  border-right: 1px solid #dbe5df;
+  background: #ffffff;
+}
+
+.brand-mark {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-mark strong {
+  display: block;
+  font-size: 19px;
+}
+
+.brand-mark span,
+.quota-panel p,
+.section-heading span,
+.paste-card span,
+.plan-card span {
+  color: #66756f;
+  font-size: 13px;
+}
+
+.brand-icon,
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 8px;
+  color: #ffffff;
+  background: #0f766e;
+}
+
+.nav-list {
+  display: grid;
+  gap: 6px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: #31433d;
+  text-decoration: none;
+}
+
+.nav-item.active,
+.nav-item:hover {
+  background: #e8f3ef;
+  color: #0f766e;
+}
+
+.quota-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: auto;
+  padding-top: 20px;
+  border-top: 1px solid #e3ebe7;
+}
+
+.quota-panel strong {
+  display: block;
+}
+
+.eyebrow {
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.quota-bar {
+  overflow: hidden;
+  height: 8px;
+  border-radius: 999px;
+  background: #e3ebe7;
+}
+
+.quota-bar span {
+  display: block;
+  width: 28%;
+  height: 100%;
+  background: #0f766e;
+}
+
+.workspace {
+  min-width: 0;
+  padding: 24px;
+}
+
+.topbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 22px;
+}
+
+.search-box {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  height: 44px;
+  padding: 0 14px;
+  border: 1px solid #d4ded9;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.search-box input,
+.title-input,
+.composer textarea,
+.composer-controls input,
+.composer-controls select {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  color: #152421;
+  background: transparent;
+  outline: 0;
+}
+
+.composer {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 24px;
+  padding: 22px;
+  border: 1px solid #d7e2dc;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.composer-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: clamp(32px, 5vw, 56px);
+  line-height: 1;
+}
+
+.privacy-badge,
+.share-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: #0f766e;
+  background: #e8f3ef;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.title-input {
+  height: 42px;
+  border-bottom: 1px solid #dce6e1;
+  font-weight: 700;
+}
+
+.composer textarea {
+  min-height: 130px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.composer-controls {
+  display: grid;
+  grid-template-columns: 160px minmax(140px, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.composer-controls label,
+.composer-controls input,
+.composer-controls button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid #d4ded9;
+  border-radius: 8px;
+  background: #f9fbfa;
+}
+
+.composer-controls button {
+  justify-content: center;
+  color: #ffffff;
+  background: #0f766e;
+  border-color: #0f766e;
+  font-weight: 700;
+}
+
+.drop-zone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 74px;
+  border: 1px dashed #aebfb7;
+  border-radius: 8px;
+  color: #4b625a;
+  background: #f9fbfa;
+}
+
+.content-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 24px;
+}
+
+.section-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.paste-list,
+.plan-list {
+  min-width: 0;
+}
+
+.paste-card,
+.plan-card {
+  position: relative;
+  display: grid;
+  gap: 12px;
+  margin-bottom: 10px;
+  padding: 16px;
+  border: 1px solid #dbe5df;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.paste-card {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.paste-card p {
+  margin: 6px 0 8px;
+  color: #40564f;
+  line-height: 1.45;
+}
+
+.icon-button.small {
+  width: 36px;
+  height: 36px;
+}
+
+.share-chip {
+  position: absolute;
+  right: 16px;
+  bottom: 14px;
+}
+
+.plan-card strong {
+  display: block;
+  font-size: 18px;
+}
+
+.plan-card dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.plan-card div {
+  min-width: 0;
+}
+
+.plan-card dt {
+  color: #66756f;
+  font-size: 12px;
+}
+
+.plan-card dd {
+  margin: 2px 0 0;
+  font-weight: 700;
+}
+
+@media (max-width: 980px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    position: static;
+    border-right: 0;
+    border-bottom: 1px solid #dbe5df;
+  }
+
+  .nav-list {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .nav-item {
+    justify-content: center;
+  }
+
+  .quota-panel {
+    margin-top: 0;
+  }
+
+  .content-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 680px) {
+  .workspace,
+  .sidebar {
+    padding: 16px;
+  }
+
+  .nav-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .composer-heading,
+  .topbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .composer-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .paste-card {
+    grid-template-columns: 1fr;
+  }
+
+  .share-chip {
+    position: static;
+    width: max-content;
+  }
+}
+

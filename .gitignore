@@ -1,0 +1,23 @@
+.DS_Store
+
+# Local env and secrets
+.env
+.env.*
+!.env.example
+
+# Go
+/bin/
+/dist/
+/tmp/
+/.cache/
+coverage.out
+
+# Frontend
+node_modules/
+web/node_modules/
+web/dist/
+web/.vite/
+web/tsconfig.tsbuildinfo
+
+# Docker/local data
+.data/
