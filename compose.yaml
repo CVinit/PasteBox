@@ -8,7 +8,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - pastebox-postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U pastebox -d pastebox"]
       interval: 10s
@@ -16,11 +16,11 @@ services:
       retries: 5
 
   redis:
-    image: redis:8-alpine
+    image: redis:7-alpine
     ports:
       - "6379:6379"
     volumes:
-      - redis-data:/data
+      - pastebox-redis:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -37,7 +37,7 @@ services:
       - "9000:9000"
       - "9001:9001"
     volumes:
-      - minio-data:/data
+      - pastebox-minio:/data
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 10s
@@ -49,17 +49,16 @@ services:
     ports:
       - "3310:3310"
     volumes:
-      - clamav-data:/var/lib/clamav
+      - pastebox-clamav:/var/lib/clamav
 
   mailpit:
-    image: axllent/mailpit:v1.23
+    image: axllent/mailpit:v1.27
     ports:
       - "1025:1025"
       - "8025:8025"
 
 volumes:
-  postgres-data:
-  redis-data:
-  minio-data:
-  clamav-data:
-
+  pastebox-postgres:
+  pastebox-redis:
+  pastebox-minio:
+  pastebox-clamav:

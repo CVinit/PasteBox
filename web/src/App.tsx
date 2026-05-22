@@ -1,262 +1,2125 @@
-import { useEffect, useMemo, useState } from 'react';
 import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
+import {
+  Archive,
+  ClipboardCopy,
   Clock3,
-  Copy,
+  CreditCard,
+  Download,
   FileUp,
-  FolderClock,
-  Image,
+  Filter,
+  KeyRound,
   Link2,
   LockKeyhole,
+  LogOut,
+  MailCheck,
+  Pin,
+  RotateCcw,
   Search,
+  Send,
   ShieldCheck,
   Sparkles,
+  Star,
+  TimerReset,
+  Trash2,
   UploadCloud,
-} from 'lucide-react';
+  UserRound,
+} from "lucide-react";
 
-import { fetchPlanCatalog, type Plan, type PlanCatalog } from './api';
-import './styles.css';
+import {
+  attachmentDownloadPath,
+  client,
+  formatBytes,
+  formatDuration,
+  sharedAttachmentDownloadPath,
+  type AdminAttachment,
+  type AdminQueues,
+  type AdminShare,
+  type ApiError,
+  type AuditLog,
+  type Order,
+  type Paste,
+  type PlanCatalog,
+  type Price,
+  type Quota,
+  type Report,
+  type Share,
+  type User,
+  type WebhookEvent,
+} from "./api";
+import "./styles.css";
 
-type PasteDraft = {
+type View = "inbox" | "shared" | "billing" | "settings" | "admin";
+
+type Draft = {
   title: string;
-  body: string;
-  expiresIn: string;
+  text: string;
   tags: string;
+  expiresInSeconds: number;
+  pinned: boolean;
+  favorite: boolean;
 };
 
-const initialDraft: PasteDraft = {
-  title: '',
-  body: '',
-  expiresIn: '24h',
-  tags: '',
+type ShareDraft = {
+  password: string;
+  loginRequired: boolean;
+  maxVisits: number;
+  maxDownloads: number;
+  expiresInSeconds: number;
 };
 
-const samplePastes = [
-  {
-    title: 'Release checklist',
-    summary: 'Verify webhook idempotency, quota guards, cleanup retry queues, and audit logs.',
-    meta: 'Text · 2 tags · expires in 18h',
-    shared: false,
+type AdminData = {
+  users: User[];
+  pastes: Paste[];
+  attachments: AdminAttachment[];
+  shares: AdminShare[];
+  orders: Order[];
+  queues: AdminQueues | null;
+  webhookEvents: WebhookEvent[];
+};
+
+type Locale = "en" | "zh";
+
+const defaultDraft: Draft = {
+  title: "",
+  text: "",
+  tags: "",
+  expiresInSeconds: 24 * 60 * 60,
+  pinned: false,
+  favorite: false,
+};
+
+const defaultShareDraft: ShareDraft = {
+  password: "",
+  loginRequired: false,
+  maxVisits: 5,
+  maxDownloads: 5,
+  expiresInSeconds: 24 * 60 * 60,
+};
+
+const emptyAdminData: AdminData = {
+  users: [],
+  pastes: [],
+  attachments: [],
+  shares: [],
+  orders: [],
+  queues: null,
+  webhookEvents: [],
+};
+
+const shareTokenFromPath =
+  typeof window !== "undefined" && window.location.pathname.startsWith("/s/")
+    ? decodeURIComponent(window.location.pathname.slice(3))
+    : "";
+
+const browserLocale: Locale =
+  typeof navigator !== "undefined" &&
+  navigator.language.toLowerCase().startsWith("zh")
+    ? "zh"
+    : "en";
+
+const copy: Record<Locale, Record<string, string>> = {
+  en: {
+    privateCloudClipboard: "Private cloud clipboard",
+    sharedPaste: "Shared paste",
+    email: "Email",
+    password: "Password",
+    displayName: "Display name",
+    login: "Login",
+    register: "Register",
+    google: "Google",
+    googleSubject: "google subject",
+    verificationToken: "verification token",
+    verify: "Verify",
+    magicLink: "Magic link",
+    devToken: "dev token",
+    useToken: "Use token",
+    reset: "Reset",
+    resetToken: "reset token",
+    updatePassword: "Update password",
+    inbox: "Inbox",
+    shares: "Shares",
+    billing: "Billing",
+    settings: "Settings",
+    admin: "Admin",
+    currentPlan: "Current plan",
+    pastes: "pastes",
+    logout: "Logout",
+    logoutAll: "Logout all",
+    search: "Search",
+    all: "All",
+    text: "Text",
+    images: "Images",
+    files: "Files",
+    expiring: "Expiring",
+    shared: "Shared",
+    favorites: "Favorites",
+    emailVerificationRequired: "Email verification required",
+    send: "Send",
+    newPrivatePaste: "New private paste",
+    private: "Private",
+    title: "Title",
+    tags: "tags",
+    create: "Create",
+    upload: "Upload",
+    recentPastes: "Recent pastes",
+    active: "active",
+    edit: "Edit",
+    noPasteSelected: "No paste selected",
+    save: "Save",
+    share: "Share",
+    createShare: "Create",
+    open: "Open",
+    report: "Report",
+    revoke: "Revoke",
+    loginRequired: "login required",
+    anonymous: "anonymous",
+    expires: "expires",
+    stripeUsdtStubs: "Stripe and USDT order stubs",
+    storage: "Storage",
+    file: "File",
+    retention: "Retention",
+    traffic: "Traffic",
+    webhook: "Webhook",
+    accountActive: "Account active",
+    deletionScheduled: "Deletion scheduled",
+    saveProfile: "Save profile",
+    export: "Export",
+    deleteRequest: "Delete request",
+    cancelDelete: "Cancel delete",
+    deleteNow: "Delete now",
+    reportTarget: "report target",
+    reportReason: "report reason",
+    auditQueuesCleanup: "Audit, queues, cleanup",
+    runCleanup: "Run cleanup",
+    users: "Users",
+    attachments: "Attachments",
+    orders: "Orders",
+    paid: "Paid",
+    queues: "Queues",
+    scanFailures: "Scan failures",
+    deleteFailures: "Delete failures",
+    resolve: "Resolve",
+    dismiss: "Dismiss",
+    webhooks: "Webhooks",
+    replay: "Replay",
+    copy: "Copy",
+    accountReady: "Account ready",
+    signedIn: "Signed in",
+    signedInWithGoogle: "Signed in with Google",
+    verificationIssued: "Verification issued",
+    emailVerified: "Email verified",
+    magicLinkIssued: "Magic link issued",
+    signedInMagic: "Signed in with magic link",
+    signedOut: "Signed out",
+    allSessionsSignedOut: "All sessions signed out",
+    passwordResetIssued: "Password reset issued",
+    passwordUpdated: "Password updated",
+    reportSubmitted: "Report submitted",
+    pasteCreated: "Paste created",
+    attachmentUploaded: "Attachment uploaded",
+    shareLinkCreated: "Share link created",
+    shareOpened: "Share opened",
+    pasteUpdated: "Paste updated",
+    pinUpdated: "Pin updated",
+    favoriteUpdated: "Favorite updated",
+    expirationExtended: "Expiration extended",
+    orderCreated: "Order created",
+    exportGenerated: "Export generated",
+    deletionCanceled: "Deletion canceled",
+    accountDeleted: "Account deleted",
+    profileUpdated: "Profile updated",
+    cleanupCompleted: "Cleanup completed",
+    scanRetried: "Scan retried",
+    attachmentFrozen: "Attachment frozen",
+    attachmentReleased: "Attachment released",
+    shareRevoked: "Share revoked",
+    orderMarkedPaid: "Order marked paid",
+    webhookProcessed: "Webhook processed",
+    webhookReplayed: "Webhook replayed",
+    reportUpdated: "Report updated",
   },
-  {
-    title: 'Design references',
-    summary: '4 images and one ZIP ready for a private review link.',
-    meta: 'Files · scan clean · expires in 3d',
-    shared: true,
+  zh: {
+    privateCloudClipboard: "私有云剪切板",
+    sharedPaste: "分享内容",
+    email: "邮箱",
+    password: "密码",
+    displayName: "显示名",
+    login: "登录",
+    register: "注册",
+    google: "Google",
+    googleSubject: "Google subject",
+    verificationToken: "邮箱验证码",
+    verify: "验证",
+    magicLink: "魔法链接",
+    devToken: "开发令牌",
+    useToken: "使用令牌",
+    reset: "重置",
+    resetToken: "重置令牌",
+    updatePassword: "更新密码",
+    inbox: "收件箱",
+    shares: "分享",
+    billing: "会员",
+    settings: "设置",
+    admin: "后台",
+    currentPlan: "当前套餐",
+    pastes: "条 paste",
+    logout: "退出",
+    logoutAll: "退出全部",
+    search: "搜索",
+    all: "全部",
+    text: "文本",
+    images: "图片",
+    files: "文件",
+    expiring: "即将过期",
+    shared: "已分享",
+    favorites: "收藏",
+    emailVerificationRequired: "需要邮箱验证",
+    send: "发送",
+    newPrivatePaste: "新建私有 paste",
+    private: "私有",
+    title: "标题",
+    tags: "标签",
+    create: "创建",
+    upload: "上传",
+    recentPastes: "最近 paste",
+    active: "有效",
+    edit: "编辑",
+    noPasteSelected: "未选择 paste",
+    save: "保存",
+    share: "分享",
+    createShare: "创建",
+    open: "打开",
+    report: "举报",
+    revoke: "撤销",
+    loginRequired: "需要登录",
+    anonymous: "匿名访问",
+    expires: "过期",
+    stripeUsdtStubs: "Stripe 和 USDT 订单桩",
+    storage: "存储",
+    file: "文件",
+    retention: "有效期",
+    traffic: "流量",
+    webhook: "Webhook",
+    accountActive: "账号正常",
+    deletionScheduled: "已计划删除",
+    saveProfile: "保存资料",
+    export: "导出",
+    deleteRequest: "申请删除",
+    cancelDelete: "取消删除",
+    deleteNow: "立即删除",
+    reportTarget: "举报目标",
+    reportReason: "举报原因",
+    auditQueuesCleanup: "审计、队列、清理",
+    runCleanup: "运行清理",
+    users: "用户",
+    attachments: "附件",
+    orders: "订单",
+    paid: "标记支付",
+    queues: "队列",
+    scanFailures: "扫描失败",
+    deleteFailures: "删除失败",
+    resolve: "处理",
+    dismiss: "驳回",
+    webhooks: "Webhook",
+    replay: "重放",
+    copy: "复制",
+    accountReady: "账号已创建",
+    signedIn: "已登录",
+    signedInWithGoogle: "已通过 Google 登录",
+    verificationIssued: "验证令牌已发送",
+    emailVerified: "邮箱已验证",
+    magicLinkIssued: "魔法链接已签发",
+    signedInMagic: "已通过魔法链接登录",
+    signedOut: "已退出",
+    allSessionsSignedOut: "所有会话已退出",
+    passwordResetIssued: "密码重置已签发",
+    passwordUpdated: "密码已更新",
+    reportSubmitted: "举报已提交",
+    pasteCreated: "Paste 已创建",
+    attachmentUploaded: "附件已上传",
+    shareLinkCreated: "分享链接已创建",
+    shareOpened: "分享已打开",
+    pasteUpdated: "Paste 已更新",
+    pinUpdated: "置顶已更新",
+    favoriteUpdated: "收藏已更新",
+    expirationExtended: "有效期已延长",
+    orderCreated: "订单已创建",
+    exportGenerated: "导出已生成",
+    deletionCanceled: "删除已取消",
+    accountDeleted: "账号已删除",
+    profileUpdated: "资料已更新",
+    cleanupCompleted: "清理完成",
+    scanRetried: "扫描已重试",
+    attachmentFrozen: "附件已冻结",
+    attachmentReleased: "附件已解冻",
+    shareRevoked: "分享已撤销",
+    orderMarkedPaid: "订单已标记支付",
+    webhookProcessed: "Webhook 已处理",
+    webhookReplayed: "Webhook 已重放",
+    reportUpdated: "举报已更新",
   },
-  {
-    title: 'Migration notes',
-    summary: 'PostgreSQL tables for pastes, attachments, shares, quotas, billing, and audit logs.',
-    meta: 'Text · pinned · expires in 12d',
-    shared: false,
-  },
-];
+};
+
+function localeFor(language?: string): Locale {
+  return language?.toLowerCase().startsWith("zh") ? "zh" : "en";
+}
+
+function copyFor(language?: string) {
+  const locale = localeFor(language);
+  return (key: string) => copy[locale][key] ?? copy.en[key] ?? key;
+}
 
 function App() {
-  const [draft, setDraft] = useState<PasteDraft>(initialDraft);
+  const [user, setUser] = useState<User | null>(null);
   const [catalog, setCatalog] = useState<PlanCatalog | null>(null);
+  const [quota, setQuota] = useState<Quota | null>(null);
+  const [pastes, setPastes] = useState<Paste[]>([]);
+  const [shares, setShares] = useState<Share[]>([]);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [adminStats, setAdminStats] = useState<Record<string, unknown> | null>(
+    null,
+  );
+  const [adminData, setAdminData] = useState<AdminData>(emptyAdminData);
+  const [view, setView] = useState<View>("inbox");
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [draft, setDraft] = useState<Draft>(defaultDraft);
+  const [selectedPasteId, setSelectedPasteId] = useState<string>("");
+  const [editDraft, setEditDraft] = useState({
+    id: "",
+    title: "",
+    text: "",
+    tags: "",
+  });
+  const [shareDraft, setShareDraft] = useState<ShareDraft>(defaultShareDraft);
+  const [shareToken, setShareToken] = useState("");
+  const [publicShareToken, setPublicShareToken] = useState(shareTokenFromPath);
+  const [publicSharePassword, setPublicSharePassword] = useState("");
+  const [shareAccess, setShareAccess] = useState<{
+    paste: Paste;
+    share: Share;
+  } | null>(null);
+  const [verificationToken, setVerificationToken] = useState("");
+  const [googleSubject, setGoogleSubject] = useState("google-demo-subject");
+  const [reportDraft, setReportDraft] = useState({
+    target: "",
+    reason: "",
+  });
+  const [auth, setAuth] = useState({
+    email: "demo@pastebox.test",
+    password: "password123",
+    displayName: "Demo User",
+  });
+  const [magicToken, setMagicToken] = useState("");
+  const [resetToken, setResetToken] = useState("");
+  const [profileDraft, setProfileDraft] = useState({
+    displayName: "",
+    language: "en",
+  });
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const t = useMemo(
+    () => copyFor(user?.language ?? browserLocale),
+    [user?.language],
+  );
 
-  useEffect(() => {
-    void fetchPlanCatalog().then(setCatalog);
+  const activePlan = useMemo(() => {
+    const planId = user?.planId ?? "free";
+    return (
+      quota?.plan ??
+      catalog?.plans.find((plan) => plan.id === planId) ??
+      catalog?.plans[0]
+    );
+  }, [catalog, quota, user]);
+
+  const selectedPaste = useMemo(
+    () => pastes.find((paste) => paste.id === selectedPasteId) ?? pastes[0],
+    [pastes, selectedPasteId],
+  );
+
+  const pricesByPlan = useMemo(() => {
+    const grouped = new Map<string, Price[]>();
+    for (const price of catalog?.prices ?? []) {
+      const current = grouped.get(price.planId) ?? [];
+      current.push(price);
+      grouped.set(price.planId, current);
+    }
+    return grouped;
+  }, [catalog]);
+
+  const loadCore = useCallback(async () => {
+    const [planCatalog, meResult] = await Promise.allSettled([
+      client.plans(),
+      client.me(),
+    ]);
+    if (planCatalog.status === "fulfilled") {
+      setCatalog(planCatalog.value);
+    }
+    if (meResult.status === "fulfilled") {
+      setUser(meResult.value);
+      setProfileDraft({
+        displayName: meResult.value.displayName,
+        language: meResult.value.language || "en",
+      });
+      await refreshAuthed();
+    }
   }, []);
 
-  const activePlan = useMemo(() => catalog?.plans.find((plan) => plan.id === 'free'), [catalog]);
+  const refreshAuthed = useCallback(async () => {
+    const [quotaResult, pasteResult, shareResult, orderResult] =
+      await Promise.allSettled([
+        client.quota(),
+        client.pastes(searchParams(query, filter)),
+        client.shares(),
+        client.orders(),
+      ]);
+    if (quotaResult.status === "fulfilled") setQuota(quotaResult.value);
+    if (pasteResult.status === "fulfilled") {
+      setPastes(pasteResult.value.pastes);
+      if (!selectedPasteId && pasteResult.value.pastes[0]) {
+        setSelectedPasteId(pasteResult.value.pastes[0].id);
+      }
+    }
+    if (shareResult.status === "fulfilled") setShares(shareResult.value.shares);
+    if (orderResult.status === "fulfilled") setOrders(orderResult.value.orders);
+  }, [filter, query, selectedPasteId]);
+
+  const refreshAdmin = useCallback(async () => {
+    if (user?.role !== "admin") return;
+    const [
+      stats,
+      users,
+      pastesResult,
+      attachments,
+      sharesResult,
+      ordersResult,
+      queues,
+      webhooks,
+      logs,
+    ] = await Promise.allSettled([
+      client.adminDashboard(),
+      client.adminUsers(),
+      client.adminPastes(),
+      client.adminAttachments(""),
+      client.adminShares(),
+      client.adminOrders(),
+      client.adminQueues(),
+      client.adminWebhookEvents(),
+      client.adminAuditLogs(),
+    ]);
+    if (stats.status === "fulfilled") setAdminStats(stats.value);
+    setAdminData({
+      users: users.status === "fulfilled" ? users.value.users : [],
+      pastes:
+        pastesResult.status === "fulfilled" ? pastesResult.value.pastes : [],
+      attachments:
+        attachments.status === "fulfilled" ? attachments.value.attachments : [],
+      shares:
+        sharesResult.status === "fulfilled" ? sharesResult.value.shares : [],
+      orders:
+        ordersResult.status === "fulfilled" ? ordersResult.value.orders : [],
+      queues: queues.status === "fulfilled" ? queues.value : null,
+      webhookEvents:
+        webhooks.status === "fulfilled" ? webhooks.value.webhookEvents : [],
+    });
+    if (logs.status === "fulfilled") setAuditLogs(logs.value.auditLogs);
+  }, [user?.role]);
+
+  useEffect(() => {
+    void loadCore();
+  }, [loadCore]);
+
+  useEffect(() => {
+    if (user) void refreshAuthed();
+  }, [filter, query]);
+
+  useEffect(() => {
+    if (!selectedPaste) {
+      setEditDraft({ id: "", title: "", text: "", tags: "" });
+      return;
+    }
+    setEditDraft({
+      id: selectedPaste.id,
+      title: selectedPaste.title,
+      text: selectedPaste.text,
+      tags: selectedPaste.tags.join(", "),
+    });
+  }, [selectedPaste?.id]);
+
+  async function run<T>(
+    action: () => Promise<T>,
+    success: string,
+  ): Promise<T | null> {
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await action();
+      setMessage(success);
+      return result;
+    } catch (error) {
+      const apiError = error as ApiError;
+      setMessage(apiError.message || "Request failed");
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function register() {
+    const result = await run(() => client.register(auth), "Account ready");
+    if (result) {
+      setUser(result.user);
+      setVerificationToken(result.devEmailVerificationToken ?? "");
+      setProfileDraft({
+        displayName: result.user.displayName,
+        language: result.user.language || "en",
+      });
+      await refreshAuthed();
+    }
+  }
+
+  async function login() {
+    const result = await run(
+      () => client.login({ email: auth.email, password: auth.password }),
+      "Signed in",
+    );
+    if (result) {
+      setUser(result.user);
+      setVerificationToken("");
+      setProfileDraft({
+        displayName: result.user.displayName,
+        language: result.user.language || "en",
+      });
+      await refreshAuthed();
+    }
+  }
+
+  async function googleOAuth() {
+    const result = await run(
+      () =>
+        client.googleOAuth({
+          email: auth.email,
+          displayName: auth.displayName,
+          googleSubject,
+        }),
+      "Signed in with Google",
+    );
+    if (result) {
+      setUser(result.user);
+      setVerificationToken("");
+      setProfileDraft({
+        displayName: result.user.displayName,
+        language: result.user.language || "en",
+      });
+      await refreshAuthed();
+    }
+  }
+
+  async function startVerification() {
+    const result = await run(
+      () => client.startEmailVerification(),
+      "Verification issued",
+    );
+    if (result?.devToken) setVerificationToken(result.devToken);
+  }
+
+  async function finishVerification() {
+    const updated = await run(
+      () => client.finishEmailVerification(verificationToken),
+      "Email verified",
+    );
+    if (updated) {
+      setUser(updated);
+      setVerificationToken("");
+      await refreshAuthed();
+    }
+  }
+
+  async function startMagic() {
+    const result = await run(
+      () => client.startMagic(auth.email),
+      "Magic link issued",
+    );
+    if (result) setMagicToken(result.devToken);
+  }
+
+  async function finishMagic() {
+    const result = await run(
+      () => client.finishMagic(magicToken),
+      "Signed in with magic link",
+    );
+    if (result) {
+      setUser(result.user);
+      setVerificationToken("");
+      setProfileDraft({
+        displayName: result.user.displayName,
+        language: result.user.language || "en",
+      });
+      await refreshAuthed();
+    }
+  }
+
+  async function logout() {
+    await run(() => client.logout(), "Signed out");
+    setUser(null);
+    setPastes([]);
+    setShares([]);
+    setQuota(null);
+  }
+
+  async function logoutAll() {
+    await run(() => client.logoutAll(), "All sessions signed out");
+    setUser(null);
+    setPastes([]);
+    setShares([]);
+    setQuota(null);
+  }
+
+  async function passwordReset() {
+    const result = await run(
+      () => client.passwordReset(auth.email),
+      "Password reset issued",
+    );
+    if (result) setResetToken(result.devToken);
+  }
+
+  async function finishPasswordReset() {
+    const result = await run(
+      () => client.finishPasswordReset(resetToken, auth.password),
+      "Password updated",
+    );
+    if (result) setResetToken("");
+  }
+
+  async function submitReport(target = reportDraft.target) {
+    const report = await run(
+      () => client.report({ target, reason: reportDraft.reason || "abuse" }),
+      "Report submitted",
+    );
+    if (report) {
+      setReportDraft({ target: "", reason: "" });
+      await refreshAdmin();
+    }
+  }
+
+  async function createPaste() {
+    const paste = await run(
+      () =>
+        client.createPaste({
+          title: draft.title,
+          text: draft.text,
+          tags: draft.tags
+            .split(",")
+            .map((tag) => tag.trim())
+            .filter(Boolean),
+          pinned: draft.pinned,
+          favorite: draft.favorite,
+          expiresInSeconds: draft.expiresInSeconds,
+        }),
+      "Paste created",
+    );
+    if (paste) {
+      setDraft(defaultDraft);
+      setSelectedPasteId(paste.id);
+      await refreshAuthed();
+    }
+  }
+
+  async function uploadFile(file: File) {
+    if (!selectedPaste) return;
+    const uploaded = await run(
+      () => client.uploadAttachment(selectedPaste.id, file),
+      "Attachment uploaded",
+    );
+    if (uploaded) await refreshAuthed();
+  }
+
+  async function createShare() {
+    if (!selectedPaste) return;
+    const share = await run(
+      () =>
+        client.createShare(selectedPaste.id, {
+          password: shareDraft.password,
+          loginRequired: shareDraft.loginRequired,
+          maxVisits: shareDraft.maxVisits,
+          maxDownloads: shareDraft.maxDownloads,
+          expiresInSeconds: shareDraft.expiresInSeconds,
+        }),
+      "Share link created",
+    );
+    if (share) {
+      setShareToken(share.token);
+      await refreshAuthed();
+    }
+  }
+
+  async function openShare(token = shareToken) {
+    const result = await run(
+      () => client.accessShare(token, shareDraft.password),
+      "Share opened",
+    );
+    if (result) setShareAccess(result);
+  }
+
+  async function openPublicShare() {
+    const result = await run(
+      () => client.accessShare(publicShareToken, publicSharePassword),
+      "Share opened",
+    );
+    if (result) setShareAccess(result);
+  }
+
+  async function saveSelectedPaste() {
+    if (!selectedPaste || editDraft.id !== selectedPaste.id) return;
+    const updated = await run(
+      () =>
+        client.updatePaste(selectedPaste.id, {
+          title: editDraft.title,
+          text: editDraft.text,
+          tags: editDraft.tags
+            .split(",")
+            .map((tag) => tag.trim())
+            .filter(Boolean),
+        }),
+      "Paste updated",
+    );
+    if (updated) {
+      setPastes((items) =>
+        items.map((item) => (item.id === updated.id ? updated : item)),
+      );
+      await refreshAuthed();
+    }
+  }
+
+  async function updatePasteFlag(paste: Paste, field: "pinned" | "favorite") {
+    const updated = await run(
+      () => client.updatePaste(paste.id, { [field]: !paste[field] }),
+      field === "pinned" ? "Pin updated" : "Favorite updated",
+    );
+    if (updated) {
+      setPastes((items) =>
+        items.map((item) => (item.id === updated.id ? updated : item)),
+      );
+      await refreshAuthed();
+    }
+  }
+
+  async function extendPaste(paste: Paste, expiresInSeconds: number) {
+    const updated = await run(
+      () => client.extendPaste(paste.id, expiresInSeconds),
+      "Expiration extended",
+    );
+    if (updated) {
+      setPastes((items) =>
+        items.map((item) => (item.id === updated.id ? updated : item)),
+      );
+      await refreshAuthed();
+    }
+  }
+
+  async function makeOrder(planId: string, period: string, provider: string) {
+    const order = await run(
+      () => client.createOrder({ provider, planId, period }),
+      "Order created",
+    );
+    if (order) await refreshAuthed();
+  }
+
+  async function exportData() {
+    const payload = await run(() => client.exportMe(), "Export generated");
+    if (payload) {
+      const url = URL.createObjectURL(
+        new Blob([JSON.stringify(payload, null, 2)], {
+          type: "application/json",
+        }),
+      );
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "pastebox-export.json";
+      link.click();
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  async function requestDelete() {
+    const updated = await run(
+      () => client.requestDelete(),
+      "Deletion scheduled",
+    );
+    if (updated) setUser(updated);
+  }
+
+  async function cancelDelete() {
+    const updated = await run(() => client.cancelDelete(), "Deletion canceled");
+    if (updated) setUser(updated);
+  }
+
+  async function executeDelete() {
+    const result = await run(() => client.executeDelete(), "Account deleted");
+    if (result) {
+      setUser(null);
+      setPastes([]);
+      setShares([]);
+      setQuota(null);
+    }
+  }
+
+  async function updateProfile() {
+    const updated = await run(
+      () => client.updateMe(profileDraft),
+      "Profile updated",
+    );
+    if (updated) setUser(updated);
+  }
+
+  async function runCleanup() {
+    await run(() => client.runCleanup(), "Cleanup completed");
+    await refreshAuthed();
+    await refreshAdmin();
+  }
+
+  async function adminRetryScan(attachmentId: string) {
+    await run(() => client.adminRetryScan(attachmentId), "Scan retried");
+    await refreshAdmin();
+  }
+
+  async function adminFreezeAttachment(attachmentId: string, frozen: boolean) {
+    await run(
+      () => client.adminFreezeAttachment(attachmentId, frozen),
+      frozen ? "Attachment frozen" : "Attachment released",
+    );
+    await refreshAdmin();
+  }
+
+  async function adminRevokeShare(shareId: string) {
+    await run(() => client.adminRevokeShare(shareId), "Share revoked");
+    await refreshAdmin();
+    await refreshAuthed();
+  }
+
+  async function adminMarkOrderPaid(orderId: string) {
+    await run(
+      () => client.adminMarkOrderPaid(orderId, `manual-${Date.now()}`),
+      "Order marked paid",
+    );
+    await refreshAdmin();
+  }
+
+  async function adminProcessWebhook(order: Order) {
+    await run(
+      () =>
+        client.processBillingWebhook(order.provider, {
+          eventType:
+            order.provider === "epusdt"
+              ? "epusdt.payment.succeeded"
+              : "checkout.session.completed",
+          orderId: order.id,
+          txId: `webhook-${Date.now()}`,
+          idempotencyKey: `dev-webhook-${order.id}-${Date.now()}`,
+        }),
+      "Webhook processed",
+    );
+    await refreshAuthed();
+    await refreshAdmin();
+  }
+
+  async function adminReplayWebhook(eventId: string) {
+    await run(
+      () => client.adminReplayWebhookEvent(eventId),
+      "Webhook replayed",
+    );
+    await refreshAdmin();
+  }
+
+  async function adminResolveReport(
+    report: Report,
+    status: "resolved" | "dismissed",
+  ) {
+    await run(
+      () => client.adminResolveReport(report.id, status),
+      "Report updated",
+    );
+    await refreshAdmin();
+  }
+
+  if (!user && publicShareToken) {
+    return (
+      <PublicShareScreen
+        token={publicShareToken}
+        password={publicSharePassword}
+        access={shareAccess}
+        message={message}
+        busy={busy}
+        onToken={setPublicShareToken}
+        onPassword={setPublicSharePassword}
+        onOpen={() => void openPublicShare()}
+      />
+    );
+  }
+
+  if (!user) {
+    return (
+      <main className="auth-screen">
+        <section className="auth-panel">
+          <div className="brand-mark">
+            <div className="brand-icon">
+              <ClipboardCopy size={22} aria-hidden="true" />
+            </div>
+            <div>
+              <strong>PasteBox</strong>
+              <span>Private cloud clipboard</span>
+            </div>
+          </div>
+          <div className="auth-grid">
+            <label>
+              Email
+              <input
+                value={auth.email}
+                onChange={(event) =>
+                  setAuth({ ...auth, email: event.target.value })
+                }
+              />
+            </label>
+            <label>
+              Password
+              <input
+                value={auth.password}
+                type="password"
+                onChange={(event) =>
+                  setAuth({ ...auth, password: event.target.value })
+                }
+              />
+            </label>
+            <label>
+              Display name
+              <input
+                value={auth.displayName}
+                onChange={(event) =>
+                  setAuth({ ...auth, displayName: event.target.value })
+                }
+              />
+            </label>
+            <div className="button-row">
+              <button type="button" onClick={login} disabled={busy}>
+                <KeyRound size={16} aria-hidden="true" />
+                Login
+              </button>
+              <button type="button" onClick={register} disabled={busy}>
+                <Sparkles size={16} aria-hidden="true" />
+                Register
+              </button>
+              <button type="button" onClick={googleOAuth} disabled={busy}>
+                <ShieldCheck size={16} aria-hidden="true" />
+                Google
+              </button>
+            </div>
+            <div className="magic-row">
+              <input
+                value={googleSubject}
+                onChange={(event) => setGoogleSubject(event.target.value)}
+                placeholder="google subject"
+              />
+            </div>
+            <div className="magic-row">
+              <input
+                value={verificationToken}
+                onChange={(event) => setVerificationToken(event.target.value)}
+                placeholder="verification token"
+              />
+              <button
+                type="button"
+                onClick={finishVerification}
+                disabled={busy || !verificationToken}
+              >
+                <MailCheck size={16} aria-hidden="true" />
+                Verify
+              </button>
+            </div>
+            <div className="magic-row">
+              <button type="button" onClick={startMagic} disabled={busy}>
+                Magic link
+              </button>
+              <input
+                value={magicToken}
+                onChange={(event) => setMagicToken(event.target.value)}
+                placeholder="dev token"
+              />
+              <button
+                type="button"
+                onClick={finishMagic}
+                disabled={busy || !magicToken}
+              >
+                Use token
+              </button>
+            </div>
+            <div className="magic-row">
+              <button type="button" onClick={passwordReset} disabled={busy}>
+                Reset
+              </button>
+              <input
+                value={resetToken}
+                onChange={(event) => setResetToken(event.target.value)}
+                placeholder="reset token"
+              />
+              <button
+                type="button"
+                onClick={finishPasswordReset}
+                disabled={busy || !resetToken}
+              >
+                Update password
+              </button>
+            </div>
+          </div>
+          {message ? <p className="status-line">{message}</p> : null}
+        </section>
+      </main>
+    );
+  }
 
   return (
     <main className="app-shell">
       <aside className="sidebar" aria-label="PasteBox navigation">
-        <div className="brand-mark" aria-label="PasteBox">
+        <div className="brand-mark">
           <div className="brand-icon">
-            <Copy size={22} aria-hidden="true" />
+            <ClipboardCopy size={22} aria-hidden="true" />
           </div>
           <div>
             <strong>PasteBox</strong>
-            <span>Private cloud clipboard</span>
+            <span>{user.email}</span>
           </div>
         </div>
 
         <nav className="nav-list">
-          <a className="nav-item active" href="#inbox">
-            <FolderClock size={18} aria-hidden="true" />
+          <button
+            className={navClass(view, "inbox")}
+            type="button"
+            onClick={() => setView("inbox")}
+          >
+            <Archive size={18} aria-hidden="true" />
             Inbox
-          </a>
-          <a className="nav-item" href="#shared">
+          </button>
+          <button
+            className={navClass(view, "shared")}
+            type="button"
+            onClick={() => setView("shared")}
+          >
             <Link2 size={18} aria-hidden="true" />
-            Shared
-          </a>
-          <a className="nav-item" href="#files">
-            <FileUp size={18} aria-hidden="true" />
-            Files
-          </a>
-          <a className="nav-item" href="#security">
-            <ShieldCheck size={18} aria-hidden="true" />
-            Security
-          </a>
+            Shares
+          </button>
+          <button
+            className={navClass(view, "billing")}
+            type="button"
+            onClick={() => setView("billing")}
+          >
+            <CreditCard size={18} aria-hidden="true" />
+            Billing
+          </button>
+          <button
+            className={navClass(view, "settings")}
+            type="button"
+            onClick={() => setView("settings")}
+          >
+            <UserRound size={18} aria-hidden="true" />
+            Settings
+          </button>
+          {user.role === "admin" ? (
+            <button
+              className={navClass(view, "admin")}
+              type="button"
+              onClick={() => {
+                setView("admin");
+                void refreshAdmin();
+              }}
+            >
+              <ShieldCheck size={18} aria-hidden="true" />
+              Admin
+            </button>
+          ) : null}
         </nav>
 
         <section className="quota-panel" aria-label="Current quota">
           <div>
             <span className="eyebrow">Current plan</span>
-            <strong>{activePlan?.name ?? 'Free'}</strong>
+            <strong>{activePlan?.name ?? user.planId}</strong>
           </div>
           <div className="quota-bar">
-            <span />
+            <span
+              style={{
+                width: `${quota && activePlan ? Math.min(100, (quota.activeStorageBytes / activePlan.activeStorageBytes) * 100) : 0}%`,
+              }}
+            />
           </div>
           <p>
-            {formatBytes(activePlan?.activeStorageBytes ?? 500 * 1024 * 1024)} active storage ·{' '}
-            {activePlan?.activePasteLimit ?? 20} active pastes
+            {formatBytes(quota?.activeStorageBytes ?? 0)} /{" "}
+            {formatBytes(activePlan?.activeStorageBytes ?? 0)} ·{" "}
+            {quota?.activePasteCount ?? 0}/{activePlan?.activePasteLimit ?? 0}{" "}
+            pastes
           </p>
         </section>
+
+        <button className="ghost-button" type="button" onClick={logout}>
+          <LogOut size={16} aria-hidden="true" />
+          Logout
+        </button>
+        <button className="ghost-button" type="button" onClick={logoutAll}>
+          <LogOut size={16} aria-hidden="true" />
+          Logout all
+        </button>
       </aside>
 
       <section className="workspace">
         <header className="topbar">
           <label className="search-box">
             <Search size={18} aria-hidden="true" />
-            <input type="search" placeholder="Search private pastes, filenames, and tags" />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              type="search"
+              placeholder="Search"
+            />
           </label>
-          <button className="icon-button" type="button" aria-label="Upload files" title="Upload files">
-            <UploadCloud size={19} aria-hidden="true" />
-          </button>
+          <label className="select-box">
+            <Filter size={18} aria-hidden="true" />
+            <select
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+            >
+              <option value="all">All</option>
+              <option value="text">Text</option>
+              <option value="image">Images</option>
+              <option value="file">Files</option>
+              <option value="expiring">Expiring</option>
+              <option value="shared">Shared</option>
+              <option value="favorite">Favorites</option>
+            </select>
+          </label>
+          {message ? <span className="status-pill">{message}</span> : null}
         </header>
 
-        <section className="composer" aria-labelledby="new-paste-title">
-          <div className="composer-heading">
+        {!user.emailVerified ? (
+          <section className="verify-banner">
             <div>
-              <span className="eyebrow">New private paste</span>
-              <h1 id="new-paste-title">PasteBox</h1>
+              <strong>Email verification required</strong>
+              <span>{user.email}</span>
             </div>
-            <div className="privacy-badge">
-              <LockKeyhole size={16} aria-hidden="true" />
-              Private by default
-            </div>
-          </div>
-
-          <input
-            className="title-input"
-            value={draft.title}
-            onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
-            placeholder="Optional title"
-          />
-          <textarea
-            value={draft.body}
-            onChange={(event) => setDraft((current) => ({ ...current, body: event.target.value }))}
-            placeholder="Paste text here, or press Ctrl/Cmd+V to add text, images, and files."
-          />
-
-          <div className="composer-controls">
-            <label>
-              <Clock3 size={16} aria-hidden="true" />
-              <select
-                value={draft.expiresIn}
-                onChange={(event) => setDraft((current) => ({ ...current, expiresIn: event.target.value }))}
-              >
-                <option value="24h">24 hours</option>
-                <option value="7d">7 days</option>
-                <option value="30d">30 days</option>
-              </select>
-            </label>
             <input
-              value={draft.tags}
-              onChange={(event) => setDraft((current) => ({ ...current, tags: event.target.value }))}
-              placeholder="tags, comma separated"
+              value={verificationToken}
+              onChange={(event) => setVerificationToken(event.target.value)}
+              placeholder="verification token"
             />
-            <button type="button">
-              <Sparkles size={16} aria-hidden="true" />
-              Create paste
+            <button type="button" onClick={startVerification} disabled={busy}>
+              <Send size={16} aria-hidden="true" />
+              Send
             </button>
-          </div>
+            <button
+              type="button"
+              onClick={finishVerification}
+              disabled={busy || !verificationToken}
+            >
+              <MailCheck size={16} aria-hidden="true" />
+              Verify
+            </button>
+          </section>
+        ) : null}
 
-          <div className="drop-zone">
-            <Image size={20} aria-hidden="true" />
-            Drop images or files here
-          </div>
-        </section>
-
-        <section className="content-grid">
-          <div className="paste-list" id="inbox">
-            <div className="section-heading">
-              <h2>Recent pastes</h2>
-              <span>Newest first</span>
-            </div>
-            {samplePastes.map((paste) => (
-              <article className="paste-card" key={paste.title}>
+        {view === "inbox" ? (
+          <>
+            <section className="composer" aria-labelledby="new-paste-title">
+              <div className="composer-heading">
                 <div>
-                  <h3>{paste.title}</h3>
-                  <p>{paste.summary}</p>
-                  <span>{paste.meta}</span>
+                  <span className="eyebrow">New private paste</span>
+                  <h1 id="new-paste-title">PasteBox</h1>
                 </div>
-                <button className="icon-button small" type="button" aria-label={`Copy ${paste.title}`}>
-                  <Copy size={17} aria-hidden="true" />
+                <div className="privacy-badge">
+                  <LockKeyhole size={16} aria-hidden="true" />
+                  Private
+                </div>
+              </div>
+              <input
+                className="title-input"
+                value={draft.title}
+                onChange={(event) =>
+                  setDraft({ ...draft, title: event.target.value })
+                }
+                placeholder="Title"
+              />
+              <textarea
+                value={draft.text}
+                onChange={(event) =>
+                  setDraft({ ...draft, text: event.target.value })
+                }
+                onPaste={(event) => {
+                  const file = event.clipboardData.files.item(0);
+                  if (file) void uploadFile(file);
+                }}
+                placeholder="Text"
+              />
+              <div className="composer-controls">
+                <label>
+                  <Clock3 size={16} aria-hidden="true" />
+                  <select
+                    value={draft.expiresInSeconds}
+                    onChange={(event) =>
+                      setDraft({
+                        ...draft,
+                        expiresInSeconds: Number(event.target.value),
+                      })
+                    }
+                  >
+                    <option value={24 * 60 * 60}>24 hours</option>
+                    <option value={7 * 24 * 60 * 60}>7 days</option>
+                    <option value={30 * 24 * 60 * 60}>30 days</option>
+                    <option value={180 * 24 * 60 * 60}>180 days</option>
+                  </select>
+                </label>
+                <input
+                  value={draft.tags}
+                  onChange={(event) =>
+                    setDraft({ ...draft, tags: event.target.value })
+                  }
+                  placeholder="tags"
+                />
+                <button type="button" onClick={createPaste} disabled={busy}>
+                  <Sparkles size={16} aria-hidden="true" />
+                  Create
                 </button>
-                {paste.shared ? <span className="share-chip">Shared</span> : null}
+              </div>
+              <label
+                className="drop-zone"
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const file = event.dataTransfer.files.item(0);
+                  if (file) void uploadFile(file);
+                }}
+              >
+                <UploadCloud size={20} aria-hidden="true" />
+                <input
+                  type="file"
+                  onChange={(event) =>
+                    event.target.files?.[0] &&
+                    void uploadFile(event.target.files[0])
+                  }
+                />
+                Upload
+              </label>
+            </section>
+
+            <section className="content-grid">
+              <PasteList
+                pastes={pastes}
+                selectedId={selectedPaste?.id ?? ""}
+                onSelect={setSelectedPasteId}
+                onCopy={(text) => void navigator.clipboard?.writeText(text)}
+                onDelete={async (id) => {
+                  await run(() => client.deletePaste(id), "Paste deleted");
+                  await refreshAuthed();
+                }}
+                onExtend={(paste, seconds) => void extendPaste(paste, seconds)}
+                onToggleFlag={(paste, field) =>
+                  void updatePasteFlag(paste, field)
+                }
+              />
+              <aside className="side-panel">
+                <PasteEditor
+                  paste={selectedPaste}
+                  draft={editDraft}
+                  onDraft={setEditDraft}
+                  onSave={saveSelectedPaste}
+                />
+                <ShareBox
+                  paste={selectedPaste}
+                  draft={shareDraft}
+                  token={shareToken}
+                  onDraft={setShareDraft}
+                  onCreate={createShare}
+                  onOpen={() => void openShare()}
+                  access={shareAccess}
+                  sharePassword={shareDraft.password}
+                />
+              </aside>
+            </section>
+          </>
+        ) : null}
+
+        {view === "shared" ? (
+          <Panel title="Shares" meta={`${shares.length} links`}>
+            {shares.map((share) => (
+              <article className="list-card" key={share.id}>
+                <div>
+                  <strong>{share.url}</strong>
+                  <span>
+                    {share.visitCount}/{share.maxVisits || "∞"} visits ·{" "}
+                    {share.downloadCount}/{share.maxDownloads || "∞"} downloads
+                  </span>
+                  <span>
+                    {share.loginRequired ? "login required" : "anonymous"} ·
+                    expires {new Date(share.expiresAt).toLocaleString()}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void run(
+                      () => client.revokeShare(share.id),
+                      "Share revoked",
+                    ).then(refreshAuthed);
+                  }}
+                  disabled={Boolean(share.revokedAt)}
+                >
+                  Revoke
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReportDraft({
+                      target: `share:${share.id}`,
+                      reason: reportDraft.reason,
+                    });
+                    void submitReport(`share:${share.id}`);
+                  }}
+                >
+                  Report
+                </button>
               </article>
             ))}
-          </div>
+          </Panel>
+        ) : null}
 
-          <aside className="plan-list" aria-label="Plan limits">
-            <div className="section-heading">
-              <h2>Plan limits</h2>
-              <span>UTC daily windows</span>
+        {view === "billing" ? (
+          <Panel title="Billing" meta="Stripe and USDT order stubs">
+            <div className="plan-grid">
+              {(catalog?.plans ?? []).map((plan) => (
+                <article className="plan-card" key={plan.id}>
+                  <strong>{plan.name}</strong>
+                  <span>
+                    {plan.activePasteLimit.toLocaleString()} active pastes
+                  </span>
+                  <dl>
+                    <div>
+                      <dt>Storage</dt>
+                      <dd>{formatBytes(plan.activeStorageBytes)}</dd>
+                    </div>
+                    <div>
+                      <dt>File</dt>
+                      <dd>{formatBytes(plan.singleFileBytes)}</dd>
+                    </div>
+                    <div>
+                      <dt>Retention</dt>
+                      <dd>{formatDuration(plan.maxRetentionSeconds)}</dd>
+                    </div>
+                    <div>
+                      <dt>Traffic</dt>
+                      <dd>{formatBytes(plan.dailyShareDownloadBytes)}</dd>
+                    </div>
+                  </dl>
+                  <div className="price-list">
+                    {(pricesByPlan.get(plan.id) ?? []).map((price) => (
+                      <button
+                        type="button"
+                        key={price.id}
+                        onClick={() =>
+                          void makeOrder(
+                            plan.id,
+                            price.period,
+                            price.stripeEnabled ? "stripe" : "epusdt",
+                          )
+                        }
+                      >
+                        {price.period} · {(price.amountCents / 100).toFixed(2)}{" "}
+                        {price.currency}
+                      </button>
+                    ))}
+                  </div>
+                </article>
+              ))}
             </div>
-            {(catalog?.plans ?? []).map((plan) => (
-              <PlanCard plan={plan} key={plan.id} />
+            {orders.map((order) => (
+              <article className="list-card" key={order.id}>
+                <strong>
+                  {order.planId} · {order.status}
+                </strong>
+                <span>
+                  {order.provider} · {(order.amountCents / 100).toFixed(2)}{" "}
+                  {order.currency}
+                </span>
+                {user.role === "admin" ? (
+                  <button
+                    type="button"
+                    onClick={() => void adminProcessWebhook(order)}
+                    disabled={order.status === "paid"}
+                  >
+                    Webhook
+                  </button>
+                ) : null}
+              </article>
             ))}
-          </aside>
-        </section>
+          </Panel>
+        ) : null}
+
+        {view === "settings" ? (
+          <Panel
+            title="Settings"
+            meta={
+              user.deleteScheduledAt ? "Deletion scheduled" : "Account active"
+            }
+          >
+            <div className="form-grid">
+              <input
+                value={profileDraft.displayName}
+                onChange={(event) =>
+                  setProfileDraft({
+                    ...profileDraft,
+                    displayName: event.target.value,
+                  })
+                }
+                placeholder="Display name"
+              />
+              <select
+                value={profileDraft.language}
+                onChange={(event) =>
+                  setProfileDraft({
+                    ...profileDraft,
+                    language: event.target.value,
+                  })
+                }
+              >
+                <option value="en">English</option>
+                <option value="zh">中文</option>
+              </select>
+              <button type="button" onClick={updateProfile}>
+                Save profile
+              </button>
+            </div>
+            <div className="button-row">
+              <button type="button" onClick={exportData}>
+                <Download size={16} aria-hidden="true" />
+                Export
+              </button>
+              <button type="button" onClick={requestDelete}>
+                <Trash2 size={16} aria-hidden="true" />
+                Delete request
+              </button>
+              <button
+                type="button"
+                onClick={cancelDelete}
+                disabled={!user.deleteScheduledAt}
+              >
+                Cancel delete
+              </button>
+              <button
+                type="button"
+                onClick={executeDelete}
+                disabled={!user.deleteScheduledAt}
+              >
+                Delete now
+              </button>
+            </div>
+            <div className="form-grid">
+              <input
+                value={reportDraft.target}
+                onChange={(event) =>
+                  setReportDraft({
+                    ...reportDraft,
+                    target: event.target.value,
+                  })
+                }
+                placeholder="report target"
+              />
+              <input
+                value={reportDraft.reason}
+                onChange={(event) =>
+                  setReportDraft({
+                    ...reportDraft,
+                    reason: event.target.value,
+                  })
+                }
+                placeholder="report reason"
+              />
+              <button
+                type="button"
+                onClick={() => void submitReport()}
+                disabled={!reportDraft.target}
+              >
+                <Send size={16} aria-hidden="true" />
+                Report
+              </button>
+            </div>
+          </Panel>
+        ) : null}
+
+        {view === "admin" ? (
+          <Panel title="Admin" meta="Audit, queues, cleanup">
+            <div className="metric-grid">
+              {Object.entries(adminStats ?? {}).map(([key, value]) => (
+                <div className="metric" key={key}>
+                  <span>{key}</span>
+                  <strong>{String(value)}</strong>
+                </div>
+              ))}
+            </div>
+            <button type="button" onClick={runCleanup}>
+              Run cleanup
+            </button>
+            <div className="admin-grid">
+              <section>
+                <h3>Users</h3>
+                {adminData.users.slice(0, 5).map((item) => (
+                  <article className="list-card" key={item.id}>
+                    <strong>{item.email}</strong>
+                    <span>
+                      {item.planId} · {item.frozen ? "frozen" : "active"}
+                    </span>
+                  </article>
+                ))}
+              </section>
+              <section>
+                <h3>Attachments</h3>
+                {adminData.attachments.slice(0, 5).map((attachment) => (
+                  <article className="list-card" key={attachment.id}>
+                    <div>
+                      <strong>{attachment.fileName}</strong>
+                      <span>
+                        {attachment.scanStatus} · {attachment.status} ·{" "}
+                        {attachment.sha256.slice(0, 12)}
+                      </span>
+                    </div>
+                    <div className="button-row compact">
+                      <button
+                        type="button"
+                        onClick={() => void adminRetryScan(attachment.id)}
+                      >
+                        Retry
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void adminFreezeAttachment(
+                            attachment.id,
+                            attachment.status !== "frozen",
+                          )
+                        }
+                      >
+                        {attachment.status === "frozen" ? "Release" : "Freeze"}
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </section>
+              <section>
+                <h3>Shares</h3>
+                {adminData.shares.slice(0, 5).map((share) => (
+                  <article className="list-card" key={share.id}>
+                    <div>
+                      <strong>{share.id}</strong>
+                      <span>
+                        {share.visitCount} visits · {share.downloadCount}{" "}
+                        downloads
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void adminRevokeShare(share.id)}
+                      disabled={Boolean(share.revokedAt)}
+                    >
+                      Revoke
+                    </button>
+                  </article>
+                ))}
+              </section>
+              <section>
+                <h3>Orders</h3>
+                {adminData.orders.slice(0, 5).map((order) => (
+                  <article className="list-card" key={order.id}>
+                    <div>
+                      <strong>
+                        {order.planId} · {order.status}
+                      </strong>
+                      <span>
+                        {order.provider} ·{" "}
+                        {(order.amountCents / 100).toFixed(2)} {order.currency}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void adminMarkOrderPaid(order.id)}
+                      disabled={order.status === "paid"}
+                    >
+                      Paid
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void adminProcessWebhook(order)}
+                      disabled={order.status === "paid"}
+                    >
+                      Webhook
+                    </button>
+                  </article>
+                ))}
+              </section>
+              <section>
+                <h3>Queues</h3>
+                <article className="list-card">
+                  <strong>Scan failures</strong>
+                  <span>{adminData.queues?.scanFailures.length ?? 0}</span>
+                </article>
+                <article className="list-card">
+                  <strong>Delete failures</strong>
+                  <span>{adminData.queues?.cleanupFailures.length ?? 0}</span>
+                </article>
+                {(adminData.queues?.reports ?? []).slice(0, 5).map((report) => (
+                  <article className="list-card" key={report.id}>
+                    <div>
+                      <strong>{report.target}</strong>
+                      <span>
+                        {report.status} · {report.reason}
+                      </span>
+                    </div>
+                    <div className="button-row compact">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void adminResolveReport(report, "resolved")
+                        }
+                        disabled={report.status === "resolved"}
+                      >
+                        Resolve
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void adminResolveReport(report, "dismissed")
+                        }
+                        disabled={report.status === "dismissed"}
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </section>
+              <section>
+                <h3>Webhooks</h3>
+                {adminData.webhookEvents.slice(0, 5).map((event) => (
+                  <article className="list-card" key={event.id}>
+                    <div>
+                      <strong>{event.eventType}</strong>
+                      <span>
+                        {event.provider} · {event.targetId}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void adminReplayWebhook(event.id)}
+                    >
+                      <RotateCcw size={16} aria-hidden="true" />
+                      Replay
+                    </button>
+                  </article>
+                ))}
+              </section>
+            </div>
+            {auditLogs.slice(0, 8).map((log) => (
+              <article className="list-card" key={log.id}>
+                <strong>{log.action}</strong>
+                <span>
+                  {log.target} · {new Date(log.createdAt).toLocaleString()}
+                </span>
+              </article>
+            ))}
+          </Panel>
+        ) : null}
       </section>
     </main>
   );
 }
 
-function PlanCard({ plan }: { plan: Plan }) {
+function PasteList({
+  pastes,
+  selectedId,
+  onSelect,
+  onCopy,
+  onDelete,
+  onExtend,
+  onToggleFlag,
+}: {
+  pastes: Paste[];
+  selectedId: string;
+  onSelect: (id: string) => void;
+  onCopy: (text: string) => void;
+  onDelete: (id: string) => void;
+  onExtend: (paste: Paste, expiresInSeconds: number) => void;
+  onToggleFlag: (paste: Paste, field: "pinned" | "favorite") => void;
+}) {
   return (
-    <article className="plan-card">
-      <div>
-        <strong>{plan.name}</strong>
-        <span>{plan.activePasteLimit.toLocaleString()} active pastes</span>
+    <section className="paste-list">
+      <div className="section-heading">
+        <h2>Recent pastes</h2>
+        <span>{pastes.length} active</span>
       </div>
-      <dl>
-        <div>
-          <dt>Storage</dt>
-          <dd>{formatBytes(plan.activeStorageBytes)}</dd>
-        </div>
-        <div>
-          <dt>Text</dt>
-          <dd>{formatBytes(plan.singleTextBytes)}</dd>
-        </div>
-        <div>
-          <dt>File</dt>
-          <dd>{formatBytes(plan.singleFileBytes)}</dd>
-        </div>
-        <div>
-          <dt>Retention</dt>
-          <dd>{formatDuration(plan.maxRetentionSeconds)}</dd>
-        </div>
-      </dl>
-    </article>
+      {pastes.map((paste) => (
+        <article
+          className={`paste-card ${selectedId === paste.id ? "selected" : ""}`}
+          key={paste.id}
+        >
+          <button
+            className="paste-main"
+            type="button"
+            onClick={() => onSelect(paste.id)}
+          >
+            <h3>{paste.title || "Untitled paste"}</h3>
+            <p>
+              {paste.textPreview || `${paste.attachments.length} attachments`}
+            </p>
+            <span>
+              {formatBytes(paste.sizeBytes)} ·{" "}
+              {formatDuration(paste.secondsToLive)} · {paste.scanStatus}
+            </span>
+          </button>
+          <div className="card-actions">
+            <button
+              className={`icon-button small ${paste.pinned ? "active" : ""}`}
+              type="button"
+              onClick={() => onToggleFlag(paste, "pinned")}
+              aria-label={paste.pinned ? "Unpin paste" : "Pin paste"}
+            >
+              <Pin size={17} aria-hidden="true" />
+            </button>
+            <button
+              className={`icon-button small ${paste.favorite ? "active" : ""}`}
+              type="button"
+              onClick={() => onToggleFlag(paste, "favorite")}
+              aria-label={paste.favorite ? "Remove favorite" : "Favorite paste"}
+            >
+              <Star size={17} aria-hidden="true" />
+            </button>
+            <button
+              className="icon-button small"
+              type="button"
+              onClick={() => onCopy(paste.text)}
+              aria-label="Copy text"
+            >
+              <ClipboardCopy size={17} aria-hidden="true" />
+            </button>
+            <button
+              className="icon-button small"
+              type="button"
+              onClick={() => onExtend(paste, 7 * 24 * 60 * 60)}
+              aria-label="Extend paste"
+            >
+              <TimerReset size={17} aria-hidden="true" />
+            </button>
+            <button
+              className="icon-button small danger"
+              type="button"
+              onClick={() => onDelete(paste.id)}
+              aria-label="Delete paste"
+            >
+              <Trash2 size={17} aria-hidden="true" />
+            </button>
+          </div>
+          {paste.shareCount ? <span className="share-chip">Shared</span> : null}
+          {paste.attachments.map((attachment) => (
+            <a
+              className="attachment-link"
+              href={attachmentDownloadPath(attachment.id)}
+              key={attachment.id}
+            >
+              <FileUp size={14} aria-hidden="true" />
+              {attachment.fileName}
+            </a>
+          ))}
+        </article>
+      ))}
+    </section>
   );
 }
 
-function formatBytes(bytes: number): string {
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let value = bytes;
-  let unitIndex = 0;
-
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex += 1;
-  }
-
-  return `${Number.isInteger(value) ? value : value.toFixed(1)} ${units[unitIndex]}`;
+function PublicShareScreen({
+  token,
+  password,
+  access,
+  message,
+  busy,
+  onToken,
+  onPassword,
+  onOpen,
+}: {
+  token: string;
+  password: string;
+  access: { paste: Paste; share: Share } | null;
+  message: string;
+  busy: boolean;
+  onToken: (value: string) => void;
+  onPassword: (value: string) => void;
+  onOpen: () => void;
+}) {
+  return (
+    <main className="auth-screen public-share-screen">
+      <section className="auth-panel">
+        <div className="brand-mark">
+          <div className="brand-icon">
+            <Link2 size={22} aria-hidden="true" />
+          </div>
+          <div>
+            <strong>PasteBox</strong>
+            <span>Shared paste</span>
+          </div>
+        </div>
+        <div className="magic-row">
+          <input
+            value={token}
+            onChange={(event) => onToken(event.target.value)}
+            placeholder="share token"
+          />
+          <input
+            value={password}
+            onChange={(event) => onPassword(event.target.value)}
+            placeholder="password"
+            type="password"
+          />
+          <button type="button" onClick={onOpen} disabled={busy || !token}>
+            Open
+          </button>
+        </div>
+        {access ? (
+          <section className="shared-document">
+            <div className="section-heading">
+              <div>
+                <h1>{access.paste.title || "Shared paste"}</h1>
+                <span>
+                  {access.share.visitCount}/{access.share.maxVisits || "∞"}{" "}
+                  visits · {formatDuration(access.paste.secondsToLive)}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  void navigator.clipboard?.writeText(access.paste.text)
+                }
+                disabled={!access.paste.text}
+              >
+                <ClipboardCopy size={16} aria-hidden="true" />
+                Copy
+              </button>
+            </div>
+            {access.paste.text ? <pre>{access.paste.text}</pre> : null}
+            <div className="share-preview">
+              {access.paste.attachments.map((attachment) => (
+                <a
+                  className="attachment-link"
+                  href={sharedAttachmentDownloadPath(
+                    access.share.token,
+                    attachment.id,
+                    password,
+                  )}
+                  key={attachment.id}
+                >
+                  <Download size={14} aria-hidden="true" />
+                  {attachment.fileName}
+                </a>
+              ))}
+            </div>
+          </section>
+        ) : null}
+        {message ? <p className="status-line">{message}</p> : null}
+      </section>
+    </main>
+  );
 }
 
-function formatDuration(seconds: number): string {
-  const days = seconds / 86400;
-  if (days >= 1) {
-    return `${days.toLocaleString()}d`;
-  }
-  return `${Math.round(seconds / 3600)}h`;
+function PasteEditor({
+  paste,
+  draft,
+  onDraft,
+  onSave,
+}: {
+  paste?: Paste;
+  draft: { id: string; title: string; text: string; tags: string };
+  onDraft: (value: { id: string; title: string; text: string; tags: string }) => void;
+  onSave: () => void;
+}) {
+  return (
+    <Panel title="Edit" meta={paste ? paste.title || paste.id : "No paste selected"}>
+      <div className="form-grid single">
+        <input
+          value={draft.title}
+          onChange={(event) => onDraft({ ...draft, title: event.target.value })}
+          placeholder="title"
+          disabled={!paste}
+        />
+        <textarea
+          value={draft.text}
+          onChange={(event) => onDraft({ ...draft, text: event.target.value })}
+          placeholder="text"
+          disabled={!paste}
+        />
+        <input
+          value={draft.tags}
+          onChange={(event) => onDraft({ ...draft, tags: event.target.value })}
+          placeholder="tags"
+          disabled={!paste}
+        />
+      </div>
+      <button type="button" onClick={onSave} disabled={!paste}>
+        Save
+      </button>
+    </Panel>
+  );
+}
+
+function ShareBox({
+  paste,
+  draft,
+  token,
+  access,
+  onDraft,
+  onCreate,
+  onOpen,
+  sharePassword,
+}: {
+  paste?: Paste;
+  draft: ShareDraft;
+  token: string;
+  access: { paste: Paste; share: Share } | null;
+  onDraft: (value: ShareDraft) => void;
+  onCreate: () => void;
+  onOpen: () => void;
+  sharePassword: string;
+}) {
+  return (
+    <Panel
+      title="Share"
+      meta={paste ? paste.title || paste.id : "No paste selected"}
+    >
+      <div className="form-grid single">
+        <input
+          value={draft.password}
+          onChange={(event) =>
+            onDraft({ ...draft, password: event.target.value })
+          }
+          placeholder="password"
+        />
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={draft.loginRequired}
+            onChange={(event) =>
+              onDraft({ ...draft, loginRequired: event.target.checked })
+            }
+          />
+          Login required
+        </label>
+        <input
+          value={draft.maxVisits}
+          min={0}
+          type="number"
+          onChange={(event) =>
+            onDraft({ ...draft, maxVisits: Number(event.target.value) })
+          }
+          placeholder="max visits"
+        />
+        <input
+          value={draft.maxDownloads}
+          min={0}
+          type="number"
+          onChange={(event) =>
+            onDraft({ ...draft, maxDownloads: Number(event.target.value) })
+          }
+          placeholder="max downloads"
+        />
+        <select
+          value={draft.expiresInSeconds}
+          onChange={(event) =>
+            onDraft({ ...draft, expiresInSeconds: Number(event.target.value) })
+          }
+        >
+          <option value={24 * 60 * 60}>24 hours</option>
+          <option value={7 * 24 * 60 * 60}>7 days</option>
+          <option value={30 * 24 * 60 * 60}>30 days</option>
+        </select>
+      </div>
+      <div className="button-row">
+        <button type="button" onClick={onCreate} disabled={!paste}>
+          <Link2 size={16} aria-hidden="true" />
+          Create
+        </button>
+        <button type="button" onClick={onOpen} disabled={!token}>
+          Open
+        </button>
+      </div>
+      {token ? <code>{token}</code> : null}
+      {access ? (
+        <div className="share-preview">
+          <article className="list-card">
+            <div>
+              <strong>{access.paste.title || "Shared paste"}</strong>
+              <span>
+                {access.share.visitCount} visits · {access.share.downloadCount}{" "}
+                downloads
+              </span>
+              <span>
+                {access.paste.textPreview ||
+                  `${access.paste.attachments.length} attachments`}
+              </span>
+            </div>
+          </article>
+          {access.paste.attachments.map((attachment) => (
+            <a
+              className="attachment-link"
+              href={sharedAttachmentDownloadPath(
+                access.share.token,
+                attachment.id,
+                sharePassword,
+              )}
+              key={attachment.id}
+            >
+              <Download size={14} aria-hidden="true" />
+              {attachment.fileName}
+            </a>
+          ))}
+        </div>
+      ) : null}
+    </Panel>
+  );
+}
+
+function Panel({
+  title,
+  meta,
+  children,
+}: {
+  title: string;
+  meta: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="panel">
+      <div className="section-heading">
+        <h2>{title}</h2>
+        <span>{meta}</span>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function navClass(current: View, view: View): string {
+  return current === view ? "nav-item active" : "nav-item";
+}
+
+function searchParams(query: string, filter: string): URLSearchParams {
+  const params = new URLSearchParams();
+  if (query) params.set("query", query);
+  if (filter) params.set("filter", filter);
+  return params;
 }
 
 export default App;
-

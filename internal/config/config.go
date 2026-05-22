@@ -21,6 +21,9 @@ type Config struct {
 	MailerProvider string
 	StripeEnabled  bool
 	EpusdtEnabled  bool
+
+	BootstrapAdminEmail    string
+	BootstrapAdminPassword string
 }
 
 type S3Config struct {
@@ -53,6 +56,9 @@ func FromEnv() Config {
 		MailerProvider: envString("PASTEBOX_MAILER_PROVIDER", "log"),
 		StripeEnabled:  envBool("PASTEBOX_STRIPE_ENABLED", false),
 		EpusdtEnabled:  envBool("PASTEBOX_EPUSDT_ENABLED", false),
+
+		BootstrapAdminEmail:    envString("PASTEBOX_BOOTSTRAP_ADMIN_EMAIL", ""),
+		BootstrapAdminPassword: envString("PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD", ""),
 	}
 }
 

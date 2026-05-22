@@ -2,7 +2,13 @@
   color: #152421;
   background: #f5f7f5;
   font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }
@@ -158,8 +164,16 @@ button {
 .search-box input,
 .title-input,
 .composer textarea,
+.panel textarea,
 .composer-controls input,
-.composer-controls select {
+.composer-controls select,
+.select-box select,
+.form-grid input,
+.form-grid select,
+.magic-row input,
+.auth-grid input,
+.panel input,
+.panel select {
   width: 100%;
   min-width: 0;
   border: 0;
@@ -176,6 +190,109 @@ button {
   border: 1px solid #d7e2dc;
   border-radius: 8px;
   background: #ffffff;
+}
+
+.auth-screen {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.auth-panel {
+  display: grid;
+  gap: 24px;
+  width: min(720px, 100%);
+  padding: 24px;
+  border: 1px solid #d7e2dc;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.auth-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.auth-grid label,
+.magic-row,
+.select-box,
+.form-grid input,
+.form-grid select,
+.panel input,
+.panel select {
+  display: flex;
+  align-items: center;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid #d4ded9;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.auth-grid label {
+  display: grid;
+  gap: 4px;
+  height: auto;
+  padding: 8px 12px;
+  color: #66756f;
+  font-size: 12px;
+}
+
+.magic-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.magic-row input:first-child:last-child {
+  grid-column: 1 / -1;
+}
+
+.verify-banner {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 2fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 22px;
+  padding: 14px;
+  border: 1px solid #f4d06f;
+  border-radius: 8px;
+  background: #fff9e8;
+}
+
+.verify-banner div {
+  display: grid;
+  gap: 2px;
+}
+
+.verify-banner span {
+  color: #756126;
+  font-size: 13px;
+}
+
+.verify-banner input {
+  min-width: 0;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid #e3cf8f;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.verify-banner button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: #ffffff;
+  background: #0f766e;
+  font-weight: 700;
 }
 
 .composer-heading {
@@ -263,10 +380,155 @@ h1 {
   background: #f9fbfa;
 }
 
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.button-row.compact {
+  justify-content: flex-end;
+}
+
+.button-row button,
+.ghost-button,
+.panel button,
+.price-list button,
+.magic-row button,
+.auth-grid button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: #ffffff;
+  background: #0f766e;
+  font-weight: 700;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.ghost-button {
+  color: #31433d;
+  background: #e8f3ef;
+}
+
+.status-line,
+.status-pill {
+  color: #44534f;
+  font-size: 13px;
+}
+
+.status-pill {
+  max-width: 360px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff7df;
+  color: #6d4f00;
+}
+
 .content-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 360px;
   gap: 24px;
+}
+
+.panel {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 24px;
+}
+
+.side-panel {
+  min-width: 0;
+}
+
+.list-card {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  margin-bottom: 10px;
+  padding: 14px;
+  border: 1px solid #dbe5df;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.list-card > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.list-card strong,
+.list-card span,
+.paste-card p,
+.attachment-link,
+code {
+  overflow-wrap: anywhere;
+}
+
+.metric-grid,
+.admin-grid,
+.plan-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.metric {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  border: 1px solid #dbe5df;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.metric span,
+.list-card span {
+  color: #66756f;
+  font-size: 13px;
+}
+
+.admin-grid section {
+  min-width: 0;
+}
+
+.admin-grid h3 {
+  margin: 0 0 10px;
+  font-size: 16px;
+}
+
+.form-grid,
+.price-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.form-grid.single {
+  grid-template-columns: 1fr;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  color: #31433d;
+}
+
+.check-row input {
+  width: auto;
 }
 
 .section-heading {
@@ -302,6 +564,74 @@ h1 {
   margin: 6px 0 8px;
   color: #40564f;
   line-height: 1.45;
+}
+
+.paste-main {
+  min-width: 0;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+}
+
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.danger {
+  background: #b42318;
+}
+
+.icon-button.active {
+  color: #152421;
+  background: #f6d365;
+}
+
+.attachment-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #0f5f59;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.share-preview {
+  display: grid;
+  gap: 10px;
+}
+
+.shared-document {
+  display: grid;
+  gap: 16px;
+}
+
+.shared-document h1 {
+  font-size: 28px;
+  line-height: 1.1;
+}
+
+.shared-document pre,
+.panel textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 140px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #d4ded9;
+  border-radius: 8px;
+  color: #152421;
+  background: #f9fbfa;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.public-share-screen .auth-panel {
+  width: min(860px, 100%);
 }
 
 .icon-button.small {
@@ -389,6 +719,12 @@ h1 {
     grid-template-columns: 1fr;
   }
 
+  .auth-grid,
+  .magic-row,
+  .verify-banner {
+    grid-template-columns: 1fr;
+  }
+
   .paste-card {
     grid-template-columns: 1fr;
   }
@@ -398,4 +734,3 @@ h1 {
     width: max-content;
   }
 }
-

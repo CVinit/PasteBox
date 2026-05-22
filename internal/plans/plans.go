@@ -1,7 +1,8 @@
 package plans
 
 type Catalog struct {
-	Plans []Plan `json:"plans"`
+	Plans  []Plan  `json:"plans"`
+	Prices []Price `json:"prices"`
 }
 
 type Plan struct {
@@ -16,6 +17,16 @@ type Plan struct {
 	MaxRetentionSeconds      int64  `json:"maxRetentionSeconds"`
 	DailyUploadBytes         int64  `json:"dailyUploadBytes"`
 	DailyShareDownloadBytes  int64  `json:"dailyShareDownloadBytes"`
+}
+
+type Price struct {
+	ID              string `json:"id"`
+	PlanID          string `json:"planId"`
+	Period          string `json:"period"`
+	AmountCents     int64  `json:"amountCents"`
+	Currency        string `json:"currency"`
+	Visible         bool   `json:"visible"`
+	PurchaseEnabled bool   `json:"purchaseEnabled"`
 }
 
 const (
@@ -68,5 +79,29 @@ func DefaultCatalog() Catalog {
 				DailyShareDownloadBytes:  1 * tib,
 			},
 		},
+		Prices: []Price{
+			{ID: "price_plus_monthly", PlanID: "plus", Period: "monthly", AmountCents: 900, Currency: "USD", Visible: true, PurchaseEnabled: true},
+			{ID: "price_plus_yearly", PlanID: "plus", Period: "yearly", AmountCents: 9000, Currency: "USD", Visible: true, PurchaseEnabled: true},
+			{ID: "price_pro_monthly", PlanID: "pro", Period: "monthly", AmountCents: 2900, Currency: "USD", Visible: true, PurchaseEnabled: true},
+			{ID: "price_pro_yearly", PlanID: "pro", Period: "yearly", AmountCents: 29000, Currency: "USD", Visible: true, PurchaseEnabled: true},
+		},
 	}
+}
+
+func Find(catalog Catalog, id string) (Plan, bool) {
+	for _, plan := range catalog.Plans {
+		if plan.ID == id {
+			return plan, true
+		}
+	}
+	return Plan{}, false
+}
+
+func FindPrice(catalog Catalog, planID string, period string) (Price, bool) {
+	for _, price := range catalog.Prices {
+		if price.PlanID == planID && price.Period == period && price.Visible && price.PurchaseEnabled {
+			return price, true
+		}
+	}
+	return Price{}, false
 }
