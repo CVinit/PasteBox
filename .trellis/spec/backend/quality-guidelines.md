@@ -32,6 +32,221 @@ user-level Go cache permissions.
 - Use `PASTEBOX_` env vars for runtime configuration and keep defaults in
   `internal/config`.
 - Keep API JSON response contracts covered by handler tests.
+- Re-run aggregate quota checks on mutating update paths, not only on create or
+  upload paths.
+- Daily upload quota preflights must count every byte that will be recorded in
+  the UTC daily upload metric, including text bytes on paste creation and
+  positive text deltas on paste updates.
+
+## Scenario: Paste Quota Enforcement On Updates
+
+### 1. Scope / Trigger
+
+- Trigger: Any backend change that can alter paste text, attachment membership,
+  active storage bytes, or paste lifetime.
+
+### 2. Signatures
+
+- Service: `UpdatePaste(userID string, id string, patch PastePatch)`
+- API: `PATCH /api/v1/pastes/{pasteID}`
+
+### 3. Contracts
+
+- `text` changes must be checked against `Plan.SingleTextBytes`.
+- The resulting text plus active attachment bytes must be checked against
+  `Plan.SinglePasteBytes`.
+- The resulting active account storage must be checked against
+  `Plan.ActiveStorageBytes`.
+- Expired, deleted, or taken-down pastes remain non-writable.
+
+### 4. Validation & Error Matrix
+
+- text bytes exceed `SingleTextBytes` -> `text_too_large`
+- resulting paste bytes exceed `SinglePasteBytes` -> `paste_too_large`
+- resulting active storage exceeds `ActiveStorageBytes` -> `storage_limit`
+- target paste is not active and unexpired -> `paste_expired`
+
+### 5. Good/Base/Bad Cases
+
+- Good: Reducing text on a paste with large attachments succeeds.
+- Base: Updating title, tags, pinned, or favorite preserves quota state.
+- Bad: Growing text on a paste that already has attachments cannot bypass
+  single-paste or account-storage limits.
+
+### 6. Tests Required
+
+- Add a regression test where a paste with attachments attempts to grow text
+  beyond `SinglePasteBytes`.
+- Assert the specific error code and also assert an in-limit update still
+  succeeds.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+Only check the new text against `SingleTextBytes` in `UpdatePaste`.
+
+#### Correct
+
+Calculate the post-update paste and account storage totals before mutating the
+stored paste, then reject quota violations with the same error codes used by
+create/upload paths.
+
+## Scenario: Daily Upload Quota Accounting
+
+### 1. Scope / Trigger
+
+- Trigger: Any backend change that creates text, uploads attachments, updates
+  paste text, or records `DailyUploadBytes`.
+
+### 2. Signatures
+
+- Service: `CreatePaste(userID string, input PasteInput)`
+- Service: `AddAttachment(userID string, pasteID string, fileName string,
+  contentType string, content []byte)`
+- Service: `UpdatePaste(userID string, id string, patch PastePatch)`
+
+### 3. Contracts
+
+- `CreatePaste` records non-empty paste text bytes in the UTC daily upload
+  metric and must preflight those same bytes before mutation.
+- `AddAttachment` records attachment content bytes and must preflight those
+  bytes before storing the object reference.
+- `UpdatePaste` records only positive text growth and must preflight that
+  positive delta before mutation.
+- The daily window key is based on `time.Now().UTC().Format("2006-01-02")`,
+  not the user's local time zone.
+
+### 4. Validation & Error Matrix
+
+- create text bytes exceed remaining daily upload window ->
+  `403 daily_upload_limit`
+- attachment bytes exceed remaining daily upload window ->
+  `403 daily_upload_limit`
+- positive text update delta exceeds remaining daily upload window ->
+  `403 daily_upload_limit`
+- reducing text or metadata-only update -> no daily upload charge
+
+### 5. Good/Base/Bad Cases
+
+- Good: A free user with 5 bytes remaining can create one 5-byte text paste,
+  then the next 1-byte text paste is rejected.
+- Base: Uploading an attachment after text creation uses the same daily metric
+  and cannot exceed the remaining window.
+- Bad: Checking only `extraBytes` in a shared create helper lets text-only
+  paste creation exceed the daily upload quota while still recording usage.
+
+### 6. Tests Required
+
+- Add a domain regression for text paste creation exhausting
+  `Plan.DailyUploadBytes`.
+- Keep attachment and update-path quota tests in `internal/app` when those
+  paths change.
+- Run full `make test` after changing quota enforcement because frontend quota
+  displays consume the same API fields.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+Only check attachment bytes in the create helper:
+
+```go
+if quota.DailyUploadBytes+extraBytes > plan.DailyUploadBytes {
+    return E(http.StatusForbidden, "daily_upload_limit", "daily upload traffic exceeds plan limit")
+}
+```
+
+#### Correct
+
+Check the exact bytes that will be recorded by the operation:
+
+```go
+if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
+    return E(http.StatusForbidden, "daily_upload_limit", "daily upload traffic exceeds plan limit")
+}
+```
+
+## Scenario: MVP HTTP Surface Contracts
+
+### 1. Scope / Trigger
+
+- Trigger: Any backend or frontend change that adds, renames, or changes a
+  `/api/v1/...` route, JSON field, cookie contract, multipart upload path, or
+  download path.
+
+### 2. Signatures
+
+- Auth: `POST /api/v1/auth/register`, `/login`, `/logout`, `/logout-all`,
+  `/magic/start`, `/magic/finish`, `/password-reset/start`,
+  `/password-reset/finish`.
+- Current user: `GET/PATCH /api/v1/me`, deletion request/cancel/execute, and
+  `GET /api/v1/me/export`.
+- Pastes: `GET/POST /api/v1/pastes`, `GET/PATCH/DELETE
+  /api/v1/pastes/{pasteID}`, `POST /extend`, `POST /attachments`, and
+  `POST /shares`.
+- Attachments and shares: owner download at
+  `/api/v1/attachments/{attachmentID}/download`; share access at
+  `/api/v1/shares/{token}/access`; shared download at
+  `/api/v1/shares/{token}/attachments/{attachmentID}/download`.
+- Billing/admin: `/api/v1/billing/prices`, `/billing/orders`, and the
+  `/api/v1/admin/...` dashboard, list, mutation, queue, audit, cleanup, and
+  manual payment routes.
+
+### 3. Contracts
+
+- Sessions use the `pastebox_session` HttpOnly cookie. Development may send it
+  without `Secure`; non-development must set `Secure`.
+- API errors use `{"error": "<code>", "message": "<human message>"}`.
+- `GET /api/v1/plans` returns `plans` and `prices`; `GET
+  /api/v1/billing/prices` returns the same catalog plus provider-enabled flags
+  on prices.
+- Attachments are uploaded as multipart form field `file`; download responses
+  must set `Content-Type`, `Content-Disposition`, `Content-Length`, and
+  `X-Content-Type-Options: nosniff`.
+- The frontend API client in `web/src/api.ts` must mirror backend response
+  fields with explicit TypeScript types and use `credentials: "include"`.
+
+### 4. Validation & Error Matrix
+
+- Missing/invalid session -> `401 unauthenticated`.
+- Expired, deleted, or taken-down content -> `410 paste_expired` or
+  `410 attachment_unavailable`.
+- Bad JSON -> `400 invalid_json`; missing upload file -> `400 missing_file`.
+- Share password mismatch -> `401 invalid_share_password`; login-required
+  anonymous access -> `401 login_required`.
+- Non-admin access to admin routes -> `403 admin_required`.
+
+### 5. Good/Base/Bad Cases
+
+- Good: Register through HTTP, receive the session cookie, create a paste,
+  upload a file, create a share, and access the share anonymously with the
+  expected JSON shapes.
+- Base: Admin login can query dashboard/list endpoints and admin mutations write
+  audit logs.
+- Bad: A frontend field rename or route rename compiles only if the typed client
+  and backend handler tests are updated together.
+
+### 6. Tests Required
+
+- Handler tests must cover representative auth, paste, upload, share, quota,
+  admin mutation, queue, and audit response contracts.
+- Domain-heavy quota, expiry, dedupe, scan, cleanup, and billing behavior stays
+  in `internal/app` tests.
+- Cross-layer changes require both `make test-api` and `make test-web`; run full
+  `make test` before reporting completion.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+Add a handler route and update only the React call site, relying on manual
+browser clicks to notice shape drift.
+
+#### Correct
+
+Keep the backend handler, typed `web/src/api.ts` client, and handler contract
+tests in sync in the same change, then run the backend and web checks.
 
 ---
 
