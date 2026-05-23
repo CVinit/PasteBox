@@ -248,6 +248,88 @@ browser clicks to notice shape drift.
 Keep the backend handler, typed `web/src/api.ts` client, and handler contract
 tests in sync in the same change, then run the backend and web checks.
 
+## Scenario: Single-Image Docker Deployment
+
+### 1. Scope / Trigger
+
+- Trigger: Any change to `Dockerfile`, `.dockerignore`,
+  `.github/workflows/docker-image.yml`, `compose.deploy.yaml`, static asset
+  serving, Vite build output assumptions, or deployment documentation.
+
+### 2. Signatures
+
+- Local image build: `docker build -t pastebox:local .`
+- Published image: `ghcr.io/cvinit/pastebox:<tag>`
+- Container command: `/usr/local/bin/pastebox`
+- Health endpoint: `GET /healthz`
+- Static frontend fallback: non-API paths should serve embedded Vite assets or
+  fall back to `/index.html`.
+
+### 3. Contracts
+
+- The Docker build must run `npm ci` and `npm run build` under `web/`.
+- The Docker build must copy `web/dist/` into
+  `internal/httpserver/static/` before compiling the Go binary, because Go
+  `embed` captures files at compile time.
+- Existing static files such as `/assets/...` and `/manifest.webmanifest` must
+  be served directly; unknown frontend routes such as `/s/<token>` must fall
+  back to `index.html`.
+- Missing asset-like paths with file extensions, such as
+  `/assets/missing.js`, must return `404` rather than `index.html`.
+- The GitHub Actions workflow publishes to GHCR on `main`, version tags, and
+  manual dispatch; pull requests build without pushing.
+- Deployment docs must state the current persistence boundary when the app still
+  uses the in-memory repository.
+
+### 4. Validation & Error Matrix
+
+- Missing embedded static directory -> build or startup failure.
+- Static asset path rewritten to `/index.html` -> browser receives HTML for JS
+  or CSS asset requests.
+- `/api/...` unknown route -> JSON `404 not_found`, never frontend HTML.
+- Docker build fails -> do not report image deployment readiness.
+- In-memory repository used for real production data -> deployment docs must
+  identify it as not production-ready.
+
+### 5. Good/Base/Bad Cases
+
+- Good: `docker build -t pastebox:local .` succeeds and the resulting container
+  serves both `/api/v1/health` and frontend routes.
+- Base: `go run ./cmd/pastebox` still serves the lightweight embedded fallback
+  page when Vite assets have not been copied into `internal/httpserver/static`.
+- Bad: Build the Vite app after `go build`; the generated files are not embedded
+  in the binary.
+
+### 6. Tests Required
+
+- Handler tests must cover direct static file serving and frontend route
+  fallback.
+- Handler tests must assert missing asset-like paths return `404` and do not
+  return index HTML.
+- Run `make test` after static-serving changes.
+- Run `docker build -t pastebox:local .` after Dockerfile or workflow changes
+  whenever the local Docker daemon is available.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+Compile Go before copying Vite assets:
+
+```dockerfile
+RUN go build -o /out/pastebox ./cmd/pastebox
+COPY --from=web-builder /src/web/dist/ ./internal/httpserver/static/
+```
+
+#### Correct
+
+Copy assets before the Go compile step:
+
+```dockerfile
+COPY --from=web-builder /src/web/dist/ ./internal/httpserver/static/
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/pastebox ./cmd/pastebox
+```
+
 ---
 
 ## Testing Requirements

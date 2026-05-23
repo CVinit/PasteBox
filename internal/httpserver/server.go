@@ -971,8 +971,28 @@ func (s *Server) staticFallback(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "static_unavailable"})
 		return
 	}
-	r.URL.Path = "/"
-	http.FileServer(http.FS(sub)).ServeHTTP(w, r)
+
+	filePath := strings.TrimPrefix(r.URL.Path, "/")
+	if filePath == "" {
+		filePath = "index.html"
+	}
+	if info, err := fs.Stat(sub, filePath); err == nil && !info.IsDir() {
+		http.FileServer(http.FS(sub)).ServeHTTP(w, r)
+		return
+	}
+	if strings.Contains(filePath, ".") {
+		http.NotFound(w, r)
+		return
+	}
+
+	index, err := fs.ReadFile(sub, "index.html")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "static_unavailable"})
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(index)
 }
 
 func (s *Server) logRequests(next http.Handler) http.Handler {

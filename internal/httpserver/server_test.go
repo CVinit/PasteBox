@@ -65,6 +65,38 @@ func TestPlanCatalogEndpoint(t *testing.T) {
 	}
 }
 
+func TestStaticFallbackServesAssetsAndFrontendRoutes(t *testing.T) {
+	handler := New(config.FromEnv(), slog.New(slog.NewTextHandler(testWriter{t: t}, nil)))
+
+	index := httptest.NewRecorder()
+	handler.ServeHTTP(index, httptest.NewRequest(http.MethodGet, "/", nil))
+	assertStatus(t, index, http.StatusOK)
+	if !strings.Contains(index.Body.String(), "PasteBox") {
+		t.Fatalf("expected embedded index to contain PasteBox, got %q", index.Body.String())
+	}
+
+	manifest := httptest.NewRecorder()
+	handler.ServeHTTP(manifest, httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil))
+	assertStatus(t, manifest, http.StatusOK)
+	if !strings.Contains(manifest.Body.String(), "PasteBox") {
+		t.Fatalf("expected embedded manifest to be served directly, got %q", manifest.Body.String())
+	}
+
+	frontendRoute := httptest.NewRecorder()
+	handler.ServeHTTP(frontendRoute, httptest.NewRequest(http.MethodGet, "/s/dev-token", nil))
+	assertStatus(t, frontendRoute, http.StatusOK)
+	if !strings.Contains(frontendRoute.Body.String(), "PasteBox") {
+		t.Fatalf("expected frontend route fallback to serve index, got %q", frontendRoute.Body.String())
+	}
+
+	missingAsset := httptest.NewRecorder()
+	handler.ServeHTTP(missingAsset, httptest.NewRequest(http.MethodGet, "/assets/missing.js", nil))
+	assertStatus(t, missingAsset, http.StatusNotFound)
+	if strings.Contains(missingAsset.Body.String(), "PasteBox") {
+		t.Fatalf("expected missing asset to return 404 instead of index HTML, got %q", missingAsset.Body.String())
+	}
+}
+
 func TestAuthPasteUploadShareAndQuotaHTTPContracts(t *testing.T) {
 	cfg := config.FromEnv()
 	cfg.BootstrapAdminEmail = ""

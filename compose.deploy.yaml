@@ -1,0 +1,22 @@
+services:
+  pastebox:
+    image: ghcr.io/cvinit/pastebox:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      PASTEBOX_APP_ENV: production
+      PASTEBOX_APP_NAME: PasteBox
+      PASTEBOX_HTTP_ADDR: :8080
+      PASTEBOX_PUBLIC_URL: https://pastebox.example.com
+      PASTEBOX_MAILER_PROVIDER: log
+      PASTEBOX_STRIPE_ENABLED: "false"
+      PASTEBOX_EPUSDT_ENABLED: "false"
+      PASTEBOX_BOOTSTRAP_ADMIN_EMAIL: admin@example.com
+      PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD: change-me-admin-password
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

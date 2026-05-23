@@ -47,6 +47,48 @@ PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=change-me-admin-password
 
 The development auth flows return dev tokens in JSON responses for email verification, magic link, and password reset so the complete flow can be exercised without a live mail provider.
 
+## Docker Image
+
+The project includes a multi-stage `Dockerfile` that builds the React frontend,
+embeds the Vite production assets into the Go binary, and serves the API and UI
+from one container.
+
+Build locally:
+
+```sh
+docker build -t pastebox:local .
+```
+
+Run locally:
+
+```sh
+docker run --rm -p 8080:8080 \
+  -e PASTEBOX_APP_ENV=development \
+  -e PASTEBOX_PUBLIC_URL=http://localhost:8080 \
+  pastebox:local
+```
+
+Open `http://localhost:8080`.
+
+GitHub Actions publishes the image to:
+
+```text
+ghcr.io/cvinit/pastebox:latest
+```
+
+See [docs/deployment.md](docs/deployment.md) for the GHCR image workflow,
+Docker Compose deployment, reverse proxy notes, and current production-readiness
+boundary.
+
+## Deployment Readiness
+
+The current MVP can be deployed immediately for demos, internal review, and
+low-risk evaluation. It is not ready for real customer data or paid public SaaS
+operation because the repository and object store are in-memory in this pass.
+Persistent PostgreSQL/sqlc, S3-compatible storage, real mail, payment webhook
+verification, scanner workers, cleanup workers, backups, and monitoring must be
+implemented before production use.
+
 ## Verification
 
 Run all local checks:
