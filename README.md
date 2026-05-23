@@ -80,6 +80,9 @@ See [docs/deployment.md](docs/deployment.md) for the GHCR image workflow,
 Docker Compose deployment, reverse proxy notes, and current production-readiness
 boundary.
 
+中文部署说明见 [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md)，其中包含
+GitHub Actions 自动构建镜像后的 Docker Compose 部署方式。
+
 ## Deployment Readiness
 
 The current MVP can be deployed immediately for demos, internal review, and
