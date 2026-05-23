@@ -82,6 +82,13 @@ func TestStaticFallbackServesAssetsAndFrontendRoutes(t *testing.T) {
 		t.Fatalf("expected embedded manifest to be served directly, got %q", manifest.Body.String())
 	}
 
+	favicon := httptest.NewRecorder()
+	handler.ServeHTTP(favicon, httptest.NewRequest(http.MethodGet, "/favicon.svg", nil))
+	assertStatus(t, favicon, http.StatusOK)
+	if !strings.Contains(favicon.Body.String(), "<svg") {
+		t.Fatalf("expected embedded favicon to be served directly, got %q", favicon.Body.String())
+	}
+
 	frontendRoute := httptest.NewRecorder()
 	handler.ServeHTTP(frontendRoute, httptest.NewRequest(http.MethodGet, "/s/dev-token", nil))
 	assertStatus(t, frontendRoute, http.StatusOK)
@@ -136,12 +143,39 @@ func TestAuthPasteUploadShareAndQuotaHTTPContracts(t *testing.T) {
 		t.Fatalf("unexpected quota body: %#v", quotaBody)
 	}
 
+	for _, item := range []struct {
+		path string
+		key  string
+	}{
+		{path: "/api/v1/pastes", key: "pastes"},
+		{path: "/api/v1/shares", key: "shares"},
+		{path: "/api/v1/billing/orders", key: "orders"},
+	} {
+		emptyList := client.json(http.MethodGet, item.path, "")
+		assertStatus(t, emptyList, http.StatusOK)
+		var body map[string]json.RawMessage
+		decodeResponse(t, emptyList, &body)
+		if got := strings.TrimSpace(string(body[item.key])); got != "[]" {
+			t.Fatalf("expected %s to return an empty JSON array, got %s", item.path, got)
+		}
+	}
+
 	createPaste := client.json(http.MethodPost, "/api/v1/pastes", `{"title":"Contract","text":"hello","tags":["alpha"],"pinned":true,"favorite":false,"expiresInSeconds":3600}`)
 	assertStatus(t, createPaste, http.StatusCreated)
 	var paste app.PasteView
 	decodeResponse(t, createPaste, &paste)
 	if paste.ID == "" || paste.Title != "Contract" || paste.Text != "hello" || len(paste.Tags) != 1 || paste.Tags[0] != "alpha" {
 		t.Fatalf("unexpected paste body: %#v", paste)
+	}
+
+	createFileOnlyPaste := client.json(http.MethodPost, "/api/v1/pastes", `{"title":"File only","text":"","tags":[],"expiresInSeconds":3600}`)
+	assertStatus(t, createFileOnlyPaste, http.StatusCreated)
+	var fileOnlyRaw map[string]json.RawMessage
+	decodeResponse(t, createFileOnlyPaste, &fileOnlyRaw)
+	for _, key := range []string{"tags", "attachments"} {
+		if got := strings.TrimSpace(string(fileOnlyRaw[key])); got != "[]" {
+			t.Fatalf("expected created paste field %s to return an empty JSON array, got %s", key, got)
+		}
 	}
 
 	upload := client.multipart("/api/v1/pastes/"+paste.ID+"/attachments", "file", "note.txt", []byte("attachment"))
@@ -218,6 +252,16 @@ func TestAdminHTTPContractsWriteAuditLogs(t *testing.T) {
 	decodeResponse(t, dashboard, &dashboardBody)
 	if dashboardBody["scanFailureQueueDepth"] == float64(0) {
 		t.Fatalf("expected scan failure queue depth in dashboard, got %#v", dashboardBody)
+	}
+
+	queues := admin.json(http.MethodGet, "/api/v1/admin/queues", "")
+	assertStatus(t, queues, http.StatusOK)
+	var queuesBody map[string]json.RawMessage
+	decodeResponse(t, queues, &queuesBody)
+	for _, key := range []string{"cleanupFailures", "reports"} {
+		if got := strings.TrimSpace(string(queuesBody[key])); got != "[]" {
+			t.Fatalf("expected admin queue field %s to return an array, got %s", key, got)
+		}
 	}
 
 	setPlan := admin.json(http.MethodPatch, "/api/v1/admin/users/"+ownerAuth.User.ID+"/plan", `{"planId":"plus"}`)

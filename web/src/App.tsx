@@ -733,9 +733,27 @@ function App() {
   }
 
   async function uploadFile(file: File) {
-    if (!selectedPaste) return;
+    let targetPaste = selectedPaste;
+    if (!targetPaste) {
+      const createdPaste = await run(
+        () =>
+          client.createPaste({
+            title: file.name,
+            text: "",
+            tags: [],
+            pinned: false,
+            favorite: false,
+            expiresInSeconds: draft.expiresInSeconds,
+        }),
+        "Paste created",
+      );
+      if (!createdPaste) return;
+      targetPaste = createdPaste;
+      setSelectedPasteId(targetPaste.id);
+    }
+
     const uploaded = await run(
-      () => client.uploadAttachment(selectedPaste.id, file),
+      () => client.uploadAttachment(targetPaste.id, file),
       "Attachment uploaded",
     );
     if (uploaded) await refreshAuthed();

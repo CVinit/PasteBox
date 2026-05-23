@@ -808,7 +808,7 @@ func (s *Service) ListPastes(userID string, opts ListOptions) ([]PasteView, erro
 	if _, err := s.activeUserLocked(userID); err != nil {
 		return nil, err
 	}
-	var out []PasteView
+	out := []PasteView{}
 	query := strings.ToLower(strings.TrimSpace(opts.Query))
 	filter := strings.TrimSpace(opts.Filter)
 	tag := strings.ToLower(strings.TrimSpace(opts.Tag))
@@ -1098,7 +1098,7 @@ func (s *Service) ListShares(userID string) ([]ShareView, error) {
 	if _, err := s.activeUserLocked(userID); err != nil {
 		return nil, err
 	}
-	var out []ShareView
+	out := []ShareView{}
 	for _, share := range s.sharesByID {
 		if share.UserID == userID {
 			out = append(out, s.viewShareLocked(share))
@@ -1368,7 +1368,7 @@ func (s *Service) ListOrders(userID string) ([]Order, error) {
 	if _, err := s.activeUserLocked(userID); err != nil {
 		return nil, err
 	}
-	var out []Order
+	out := []Order{}
 	for _, order := range s.ordersByID {
 		if order.UserID == userID {
 			out = append(out, *order)
@@ -1513,7 +1513,7 @@ func (s *Service) AdminPastes(actorID string) ([]PasteView, error) {
 	if err := s.requireAdminLocked(actorID); err != nil {
 		return nil, err
 	}
-	var out []PasteView
+	out := []PasteView{}
 	for _, paste := range s.pastesByID {
 		out = append(out, s.viewPasteLocked(paste))
 	}
@@ -1692,7 +1692,19 @@ func (s *Service) AdminQueues(actorID string) (map[string]any, error) {
 	if err := s.requireAdminLocked(actorID); err != nil {
 		return nil, err
 	}
-	return map[string]any{"cleanupFailures": s.cleanupFailures, "scanFailures": s.scanFailures, "reports": s.reports}, nil
+	cleanupFailures := s.cleanupFailures
+	if cleanupFailures == nil {
+		cleanupFailures = []*QueueItem{}
+	}
+	scanFailures := s.scanFailures
+	if scanFailures == nil {
+		scanFailures = []*QueueItem{}
+	}
+	reports := s.reports
+	if reports == nil {
+		reports = []*Report{}
+	}
+	return map[string]any{"cleanupFailures": cleanupFailures, "scanFailures": scanFailures, "reports": reports}, nil
 }
 
 func (s *Service) RunCleanup(actorID string) (map[string]int, error) {
@@ -1762,7 +1774,7 @@ func (s *Service) SeedAdmin(email string, password string) (UserView, error) {
 }
 
 func (s *Service) ListPastesLocked(userID string, opts ListOptions) ([]PasteView, error) {
-	var out []PasteView
+	out := []PasteView{}
 	query := strings.ToLower(strings.TrimSpace(opts.Query))
 	filter := strings.TrimSpace(opts.Filter)
 	tag := strings.ToLower(strings.TrimSpace(opts.Tag))
@@ -1988,7 +2000,7 @@ func (s *Service) viewPasteLocked(paste *Paste) PasteView {
 		Title:         paste.Title,
 		Text:          paste.Text,
 		TextPreview:   preview(paste.Text),
-		Tags:          append([]string(nil), paste.Tags...),
+		Tags:          append([]string{}, paste.Tags...),
 		Pinned:        paste.Pinned,
 		Favorite:      paste.Favorite,
 		Status:        paste.Status,

@@ -201,6 +201,10 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
 - `GET /api/v1/plans` returns `plans` and `prices`; `GET
   /api/v1/billing/prices` returns the same catalog plus provider-enabled flags
   on prices.
+- API response fields consumed as arrays by the frontend must encode empty
+  collections as `[]`, never `null`. This includes top-level list fields such
+  as `pastes`, `shares`, `orders`, admin queue arrays, and nested paste fields
+  such as `tags` and `attachments`.
 - Attachments are uploaded as multipart form field `file`; download responses
   must set `Content-Type`, `Content-Disposition`, `Content-Length`, and
   `X-Content-Type-Options: nosniff`.
@@ -231,6 +235,9 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
 
 - Handler tests must cover representative auth, paste, upload, share, quota,
   admin mutation, queue, and audit response contracts.
+- Handler tests must assert empty list and nested collection fields serialize as
+  JSON arrays (`[]`) rather than `null`, because React call sites use array
+  methods such as `.find()` and `.join()`.
 - Domain-heavy quota, expiry, dedupe, scan, cleanup, and billing behavior stays
   in `internal/app` tests.
 - Cross-layer changes require both `make test-api` and `make test-web`; run full
@@ -243,10 +250,24 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
 Add a handler route and update only the React call site, relying on manual
 browser clicks to notice shape drift.
 
+Return a nil Go slice from an API list response:
+
+```go
+var out []PasteView
+writeJSON(w, http.StatusOK, map[string]any{"pastes": out})
+```
+
 #### Correct
 
 Keep the backend handler, typed `web/src/api.ts` client, and handler contract
 tests in sync in the same change, then run the backend and web checks.
+
+Initialize empty response collections before encoding:
+
+```go
+out := []PasteView{}
+writeJSON(w, http.StatusOK, map[string]any{"pastes": out})
+```
 
 ## Scenario: Single-Image Docker Deployment
 
