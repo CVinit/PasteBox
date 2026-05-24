@@ -3,13 +3,15 @@ SHELL := /bin/sh
 GO_ENV := env GOCACHE=$(CURDIR)/.cache/go-build GOPATH=$(CURDIR)/.cache/gopath
 NPM := npm --prefix web --cache $(CURDIR)/.cache/npm
 
-.PHONY: help dev api web test test-api test-web build build-api build-web fmt clean
+.PHONY: help dev api web db-up db-status db-migrate db-reset test test-api test-web build build-api build-web fmt clean
 
 help:
 	@printf '%s\n' 'PasteBox commands:'
 	@printf '%s\n' '  make dev        Start local dependencies with Docker Compose'
 	@printf '%s\n' '  make api        Run the Go API'
 	@printf '%s\n' '  make web        Run the Vite dev server'
+	@printf '%s\n' '  make db-migrate Apply local PostgreSQL migrations'
+	@printf '%s\n' '  make db-reset   Reset local PostgreSQL schema and rerun migrations'
 	@printf '%s\n' '  make test       Run backend and frontend checks'
 	@printf '%s\n' '  make build      Build backend binary and frontend assets'
 
@@ -21,6 +23,19 @@ api:
 
 web:
 	$(NPM) run dev
+
+db-up:
+	docker compose up -d postgres
+
+db-status: db-up
+	$(GO_ENV) go run ./cmd/pastebox migrate status
+
+db-migrate: db-up
+	$(GO_ENV) go run ./cmd/pastebox migrate up
+
+db-reset: db-up
+	docker compose exec -T postgres psql -U pastebox -d pastebox -v ON_ERROR_STOP=1 -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'
+	$(MAKE) db-migrate
 
 test: test-api test-web
 

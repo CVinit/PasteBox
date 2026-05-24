@@ -17,6 +17,7 @@ import (
 	"pastebox/internal/app"
 	"pastebox/internal/config"
 	"pastebox/internal/httpserver"
+	"pastebox/internal/postgres"
 )
 
 func main() {
@@ -115,13 +116,9 @@ func runMigrate(args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(args) > 0 {
 		switch args[0] {
 		case "status":
-			fmt.Fprintln(stdout, "database migrations are not configured yet")
-			fmt.Fprintln(stdout, "Phase 1 must add PostgreSQL migrations before production traffic is allowed")
-			return 0
+			return runMigrateStatus(stdout, stderr)
 		case "up":
-			fmt.Fprintln(stderr, "database migrations are not implemented yet")
-			fmt.Fprintln(stderr, "Refusing to report success until Phase 1 adds real migration files and a runner.")
-			return 1
+			return runMigrateUp(stdout, stderr)
 		case "help", "-h", "--help":
 			printMigrateUsage(stdout)
 			return 0
@@ -133,6 +130,46 @@ func runMigrate(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	printMigrateUsage(stderr)
 	return 2
+}
+
+func runMigrateStatus(stdout io.Writer, stderr io.Writer) int {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	statuses, err := postgres.MigrationStatuses(ctx, config.FromEnv().DatabaseURL)
+	if err != nil {
+		fmt.Fprintf(stderr, "migrate status failed: %v\n", err)
+		return 1
+	}
+	for _, status := range statuses {
+		state := "pending"
+		if status.Dirty {
+			state = "dirty"
+		} else if status.Applied {
+			state = "applied"
+		}
+		fmt.Fprintf(stdout, "%06d %s %s\n", status.Migration.Version, state, status.Migration.Name)
+	}
+	return 0
+}
+
+func runMigrateUp(stdout io.Writer, stderr io.Writer) int {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	applied, err := postgres.ApplyMigrations(ctx, config.FromEnv().DatabaseURL)
+	if err != nil {
+		fmt.Fprintf(stderr, "migrate up failed: %v\n", err)
+		return 1
+	}
+	if len(applied) == 0 {
+		fmt.Fprintln(stdout, "database migrations already up to date")
+		return 0
+	}
+	for _, migration := range applied {
+		fmt.Fprintf(stdout, "applied %06d %s\n", migration.Version, migration.Name)
+	}
+	return 0
 }
 
 func runPreflight(args []string, stdout io.Writer, stderr io.Writer) int {

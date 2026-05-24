@@ -45,29 +45,31 @@ func TestAdminCreateCommandRequiresEmailAndPassword(t *testing.T) {
 	}
 }
 
-func TestMigrateCommandsAreExplicitAboutPhaseOneBoundary(t *testing.T) {
+func TestMigrateCommandsUseConfiguredDatabaseURL(t *testing.T) {
+	t.Setenv("PASTEBOX_DATABASE_URL", "not-a-postgres-url")
+
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
 	code := run([]string{"migrate", "status"}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("expected migrate status to exit 0, got %d stderr=%q", code, stderr.String())
+	if code != 1 {
+		t.Fatalf("expected migrate status to fail on invalid DSN, got %d", code)
 	}
-	if !strings.Contains(stdout.String(), "database migrations are not configured yet") {
-		t.Fatalf("expected migration status boundary, got %q", stdout.String())
+	if !strings.Contains(stderr.String(), "migrate status failed") {
+		t.Fatalf("expected migrate status error, got %q", stderr.String())
 	}
-	if stderr.Len() != 0 {
-		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	if stdout.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", stdout.String())
 	}
 
 	stdout.Reset()
 	stderr.Reset()
 	code = run([]string{"migrate", "up"}, &stdout, &stderr)
 	if code != 1 {
-		t.Fatalf("expected migrate up to fail until real migrations exist, got %d", code)
+		t.Fatalf("expected migrate up to fail on invalid DSN, got %d", code)
 	}
-	if !strings.Contains(stderr.String(), "database migrations are not implemented yet") {
-		t.Fatalf("expected migration implementation guard, got %q", stderr.String())
+	if !strings.Contains(stderr.String(), "migrate up failed") {
+		t.Fatalf("expected migrate up error, got %q", stderr.String())
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("expected empty stdout, got %q", stdout.String())

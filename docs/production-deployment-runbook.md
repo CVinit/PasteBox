@@ -4,10 +4,10 @@ This runbook implements Phase 0A of the production launch roadmap: a single US
 VPS running Docker Compose with an API container, worker container, PostgreSQL,
 Redis, HTTPS reverse proxy, and off-host backup flow.
 
-The stack is still gated by later roadmap phases. `pastebox migrate up` is
-intentionally a failing guard until Phase 1 adds real PostgreSQL migrations.
-Do not put real user data or paid traffic on this stack until the launch
-checklist in `docs/production-launch-roadmap.md` is complete.
+The stack is still gated by later roadmap phases. `pastebox migrate up` applies
+the PostgreSQL schema foundation, but repository persistence, object storage,
+mail, OAuth, billing, scanning, restore drills, and compliance work still need
+to be completed before real user data or paid traffic is allowed.
 
 ## Files
 
@@ -76,15 +76,15 @@ To validate the committed template without creating a real secret file:
 PASTEBOX_ENV_FILE=./deploy/production.env.example docker compose --env-file deploy/production.env.example -f compose.production.yaml config
 ```
 
-Run the migration command before traffic switch once Phase 1 implements real
-migrations:
+Run the migration command before traffic switch:
 
 ```sh
 docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm migrate
 ```
 
-For the current Phase 0A baseline, this command fails by design because no
-production schema exists yet.
+The command applies embedded SQL migrations and records applied versions in
+`schema_migrations`. Treat any checksum mismatch or failed migration as a hard
+release stop.
 
 ## Start Or Upgrade
 

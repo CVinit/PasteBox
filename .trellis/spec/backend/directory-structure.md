@@ -163,10 +163,10 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - `pastebox worker` is a supervised long-running process. Until durable queues
   are implemented, it may idle, but it must not pretend to process production
   jobs.
-- `pastebox migrate status` reports that migrations are not configured until
-  Phase 1 adds real migration files and a runner.
-- `pastebox migrate up` must fail until real migrations exist. Do not turn it
-  into a success stub.
+- `pastebox migrate status` connects to `PASTEBOX_DATABASE_URL` and reports
+  every embedded SQL migration as `pending`, `applied`, or `dirty`.
+- `pastebox migrate up` applies embedded PostgreSQL migrations transactionally
+  and records version, name, and checksum in `schema_migrations`.
 - `pastebox preflight production` must require explicit production env vars,
   reject `CHANGE_ME` placeholder values, require `PASTEBOX_PUBLIC_URL` to use
   `https://`, and reject `PASTEBOX_IMAGE=:latest`.
@@ -184,8 +184,10 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - Placeholder `CHANGE_ME` remains -> preflight exits 1 and lists affected keys.
 - `PASTEBOX_PUBLIC_URL` uses HTTP -> preflight exits 1.
 - `PASTEBOX_IMAGE` is missing or `:latest` -> preflight exits 1.
-- `pastebox migrate up` before Phase 1 migrations -> exits 1 with an explicit
-  not-implemented message.
+- `pastebox migrate status` or `up` cannot connect to PostgreSQL -> exits 1
+  with a command-specific error.
+- Stored migration checksum differs from the embedded SQL file -> exits 1 and
+  reports a dirty/checksum mismatch.
 - Unknown lifecycle subcommand -> exits 2 and prints usage.
 
 ### 5. Good/Base/Bad Cases
@@ -195,13 +197,15 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - Base: Readiness endpoints stay simple while the app still uses in-memory
   adapters; later phases can expand readiness to check PostgreSQL, Redis,
   object storage, mail, and worker health.
-- Bad: Reporting migration success before a real schema runner exists or using
-  `latest` in the production runbook.
+- Bad: Editing an already-applied migration, silently ignoring checksum drift,
+  or using `latest` in the production runbook.
 
 ### 6. Tests Required
 
-- Command tests for migration guardrails, production preflight success, missing
-  env, placeholder rejection, HTTPS enforcement, and image pinning.
+- Command tests for migration connection errors, production preflight success,
+  missing env, placeholder rejection, HTTPS enforcement, and image pinning.
+- Migration package tests for embedded migration ordering, checksums, and table
+  coverage.
 - Handler tests for `/readyz` and `/api/v1/ready` response shape.
 - `docker compose --env-file deploy/production.env.example -f
   compose.production.yaml config` must render successfully with
@@ -216,7 +220,7 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 ```sh
 PASTEBOX_IMAGE=ghcr.io/cvinit/pastebox:latest
 pastebox migrate up
-# exits 0 even though no migrations exist
+# deploys a mutable image and risks schema drift
 ```
 
 #### Correct
@@ -225,5 +229,5 @@ pastebox migrate up
 PASTEBOX_IMAGE=ghcr.io/cvinit/pastebox:sha-abc123
 pastebox preflight production
 pastebox migrate up
-# exits 1 until Phase 1 provides real migrations
+# applies embedded SQL migrations or fails loudly
 ```
