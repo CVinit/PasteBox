@@ -26,6 +26,7 @@ type UserStore interface {
 	CreateUser(ctx context.Context, user User) error
 	UserByID(ctx context.Context, id string) (User, error)
 	UserByEmail(ctx context.Context, email string) (User, error)
+	ListUsers(ctx context.Context) ([]User, error)
 	UpdateUser(ctx context.Context, user User) error
 }
 

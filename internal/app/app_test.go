@@ -204,6 +204,7 @@ func TestStoreBackedAuthStateSurvivesServiceRestart(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	stores := newMemoryAuthStores()
 	svc := newTestServiceWithAuthStores(t, &now, stores.authStores())
+	admin := seedAdminTestUser(t, svc, "durable-admin@example.com")
 
 	registered, err := svc.Register(context.Background(), RegisterInput{
 		Email:       "durable@example.com",
@@ -224,6 +225,20 @@ func TestStoreBackedAuthStateSurvivesServiceRestart(t *testing.T) {
 	}
 	if sessionUser.ID != registered.User.ID || sessionUser.Email != "durable@example.com" {
 		t.Fatalf("unexpected session user after restart: %#v", sessionUser)
+	}
+	users, err := restarted.AdminUsers(admin.ID)
+	if err != nil {
+		t.Fatalf("admin users should list persisted auth users after restart: %v", err)
+	}
+	if !hasUserEmail(users, "durable-admin@example.com") || !hasUserEmail(users, "durable@example.com") {
+		t.Fatalf("expected admin listing to include persisted users after restart, got %#v", users)
+	}
+	dashboard, err := restarted.AdminDashboard(admin.ID)
+	if err != nil {
+		t.Fatalf("admin dashboard should count persisted users after restart: %v", err)
+	}
+	if dashboard["users"] != 2 {
+		t.Fatalf("expected persisted user count after restart, got %#v", dashboard["users"])
 	}
 
 	verified, err := restarted.FinishEmailVerification(registered.DevEmailVerificationToken)
@@ -1297,6 +1312,15 @@ func hasWebhookEvent(events []WebhookEvent, idempotencyKey string) bool {
 	return false
 }
 
+func hasUserEmail(users []UserView, email string) bool {
+	for _, user := range users {
+		if user.Email == email {
+			return true
+		}
+	}
+	return false
+}
+
 type memoryAuthStores struct {
 	usersByID     map[string]User
 	userIDByEmail map[string]string
@@ -1350,6 +1374,14 @@ func (s *memoryAuthStores) UserByEmail(_ context.Context, email string) (User, e
 		return User{}, ErrStoreNotFound
 	}
 	return s.UserByID(context.Background(), userID)
+}
+
+func (s *memoryAuthStores) ListUsers(_ context.Context) ([]User, error) {
+	users := make([]User, 0, len(s.usersByID))
+	for _, user := range s.usersByID {
+		users = append(users, user)
+	}
+	return users, nil
 }
 
 func (s *memoryAuthStores) UpdateUser(_ context.Context, user User) error {

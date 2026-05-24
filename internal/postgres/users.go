@@ -103,6 +103,46 @@ WHERE email = $1
 `, email)
 }
 
+func (s *UserStore) ListUsers(ctx context.Context) ([]app.User, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT
+	id,
+	email,
+	display_name,
+	language,
+	password_hash,
+	role,
+	email_verified,
+	plan_id,
+	plan_expires_at,
+	frozen,
+	created_at,
+	updated_at,
+	delete_requested_at,
+	delete_scheduled_at,
+	deleted_at
+FROM users
+ORDER BY created_at DESC, id DESC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query users: %w", err)
+	}
+	defer rows.Close()
+
+	users := []app.User{}
+	for rows.Next() {
+		user, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, user)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read users: %w", err)
+	}
+	return users, nil
+}
+
 func (s *UserStore) UpdateUser(ctx context.Context, user app.User) error {
 	tag, err := s.pool.Exec(ctx, `
 UPDATE users

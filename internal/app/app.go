@@ -1710,6 +1710,10 @@ func (s *Service) AdminDashboard(actorID string) (map[string]any, error) {
 	if err := s.requireAdminLocked(actorID); err != nil {
 		return nil, err
 	}
+	users, err := s.listUsersLocked()
+	if err != nil {
+		return nil, err
+	}
 	var activePastes int
 	var storage int64
 	for _, paste := range s.pastesByID {
@@ -1719,7 +1723,7 @@ func (s *Service) AdminDashboard(actorID string) (map[string]any, error) {
 		}
 	}
 	return map[string]any{
-		"users":                 len(s.usersByID),
+		"users":                 len(users),
 		"activePastes":          activePastes,
 		"activeStorageBytes":    storage,
 		"reportsOpen":           countReports(s.reports, "open"),
@@ -1736,9 +1740,13 @@ func (s *Service) AdminUsers(actorID string) ([]UserView, error) {
 	if err := s.requireAdminLocked(actorID); err != nil {
 		return nil, err
 	}
-	out := make([]UserView, 0, len(s.usersByID))
-	for _, user := range s.usersByID {
-		out = append(out, viewUser(user))
+	users, err := s.listUsersLocked()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]UserView, 0, len(users))
+	for _, user := range users {
+		out = append(out, viewUser(&user))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out, nil
@@ -2614,6 +2622,24 @@ func (s *Service) cacheUserLocked(user User) *User {
 	s.usersByID[cached.ID] = &cached
 	s.userIDByEmail[cached.Email] = cached.ID
 	return &cached
+}
+
+func (s *Service) listUsersLocked() ([]User, error) {
+	if s.auth.Users != nil {
+		users, err := s.auth.Users.ListUsers(context.Background())
+		if err != nil {
+			return nil, err
+		}
+		for _, user := range users {
+			s.cacheUserLocked(user)
+		}
+		return users, nil
+	}
+	users := make([]User, 0, len(s.usersByID))
+	for _, user := range s.usersByID {
+		users = append(users, *user)
+	}
+	return users, nil
 }
 
 func (s *Service) newSessionLocked(user *User) (AuthResult, error) {

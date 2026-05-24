@@ -76,6 +76,13 @@ func TestUserStoreCreatesReadsAndUpdatesUsers(t *testing.T) {
 	if byEmail.ID != userID {
 		t.Fatalf("expected read by email to return %q, got %#v", userID, byEmail)
 	}
+	users, err := store.ListUsers(ctx)
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	if !hasPostgresUser(users, userID) {
+		t.Fatalf("expected listed users to include %q, got %#v", userID, users)
+	}
 
 	duplicate := user
 	duplicate.ID = duplicateID
@@ -125,4 +132,13 @@ func TestUserStoreCreatesReadsAndUpdatesUsers(t *testing.T) {
 	if err := store.UpdateUser(ctx, missing); !errors.Is(err, ErrUserNotFound) {
 		t.Fatalf("expected update missing user error, got %v", err)
 	}
+}
+
+func hasPostgresUser(users []app.User, id string) bool {
+	for _, user := range users {
+		if user.ID == id {
+			return true
+		}
+	}
+	return false
 }
