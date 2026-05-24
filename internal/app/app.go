@@ -51,14 +51,15 @@ func ErrorResponse(err error) (int, map[string]any) {
 }
 
 type Service struct {
-	mu      sync.Mutex
-	cfg     config.Config
-	now     func() time.Time
-	catalog plans.Catalog
-	auth    AuthStores
-	content ContentStores
-	ops     OperationalStores
-	audit   AuditLogStore
+	mu          sync.Mutex
+	cfg         config.Config
+	now         func() time.Time
+	catalog     plans.Catalog
+	auth        AuthStores
+	content     ContentStores
+	objectStore ObjectStore
+	ops         OperationalStores
+	audit       AuditLogStore
 
 	usersByID        map[string]*User
 	userIDByEmail    map[string]string
@@ -116,6 +117,7 @@ func NewWithStorage(ctx context.Context, cfg config.Config, stores Stores) (*Ser
 		catalog:          catalog,
 		auth:             stores.Auth,
 		content:          stores.Content,
+		objectStore:      stores.Objects,
 		ops:              stores.Operational,
 		audit:            stores.AuditLogs,
 		usersByID:        map[string]*User{},
@@ -163,6 +165,7 @@ func NewWithDailyMetricStore(cfg config.Config, dailyMetrics DailyMetricStore) *
 type Stores struct {
 	Auth         AuthStores
 	Content      ContentStores
+	Objects      ObjectStore
 	Operational  OperationalStores
 	DailyMetrics DailyMetricStore
 	Catalog      CatalogStore
@@ -1161,11 +1164,15 @@ func (s *Service) AddAttachment(userID string, pasteID string, fileName string, 
 	status, scanStatus, risk := classifyAttachment(fileName, contentType)
 	objectKey := userID + "/" + shaHex
 	width, height := imageDimensions(contentType, content)
-	if err := s.recordDailyUploadLocked(userID, int64(len(content))); err != nil {
+	if err := s.putObjectLocked(objectKey, content, contentType); err != nil {
 		return AttachmentView{}, err
 	}
-	if _, exists := s.objects[objectKey]; !exists {
-		s.objects[objectKey] = append([]byte(nil), content...)
+	objectStored := true
+	if err := s.recordDailyUploadLocked(userID, int64(len(content))); err != nil {
+		if objectStored && s.objectRefs[objectKey] == 0 {
+			_ = s.deleteObjectLocked(objectKey)
+		}
+		return AttachmentView{}, err
 	}
 	attachment := &Attachment{
 		ID:          s.newID("att"),
@@ -1184,12 +1191,18 @@ func (s *Service) AddAttachment(userID string, pasteID string, fileName string, 
 		CreatedAt:   now,
 	}
 	if err := s.createAttachmentLocked(attachment); err != nil {
+		if objectStored && s.objectRefs[attachment.ObjectKey] == 0 {
+			_ = s.deleteObjectLocked(attachment.ObjectKey)
+		}
 		return AttachmentView{}, err
 	}
 	s.objectRefs[attachment.ObjectKey]++
 	paste.ScanStatus = aggregateScanStatus(s.attachmentsForPasteLocked(paste))
 	paste.UpdatedAt = now
 	if err := s.updatePasteLocked(paste); err != nil {
+		if s.objectRefs[attachment.ObjectKey] == 1 {
+			_ = s.deleteObjectLocked(attachment.ObjectKey)
+		}
 		return AttachmentView{}, err
 	}
 	if scanStatus == "scan_failed" {
@@ -1223,8 +1236,8 @@ func (s *Service) DownloadAttachment(userID string, attachmentID string) (Attach
 	if attachment.ScanStatus == "malicious" {
 		return AttachmentView{}, nil, E(http.StatusForbidden, "malicious_file", "file is blocked")
 	}
-	content, ok := s.objectContentLocked(attachment)
-	if !ok {
+	content, err := s.objectContentLocked(attachment)
+	if err != nil {
 		return AttachmentView{}, nil, E(http.StatusGone, "attachment_unavailable", "attachment content is unavailable")
 	}
 	attachment.DownloadN++
@@ -1347,8 +1360,8 @@ func (s *Service) DownloadSharedAttachment(token string, password string, attach
 	if downloadBytes+attachment.Size > plan.DailyShareDownloadBytes {
 		return AttachmentView{}, nil, E(http.StatusForbidden, "daily_download_limit", "daily share download traffic exceeds plan limit")
 	}
-	content, ok := s.objectContentLocked(attachment)
-	if !ok {
+	content, err := s.objectContentLocked(attachment)
+	if err != nil {
 		return AttachmentView{}, nil, E(http.StatusGone, "attachment_unavailable", "attachment content is unavailable")
 	}
 	now := s.now().UTC()
@@ -2071,7 +2084,9 @@ func (s *Service) RunCleanup(actorID string) (map[string]int, error) {
 					s.objectRefs[att.ObjectKey]--
 					if s.objectRefs[att.ObjectKey] <= 0 {
 						delete(s.objectRefs, att.ObjectKey)
-						delete(s.objects, att.ObjectKey)
+						if err := s.deleteObjectLocked(att.ObjectKey); err != nil {
+							return nil, err
+						}
 					}
 					if err := s.updateAttachmentLocked(att); err != nil {
 						return nil, err
@@ -2148,6 +2163,7 @@ func (s *Service) loadContentCaches(ctx context.Context) error {
 		for _, attachment := range attachments {
 			s.cacheAttachmentLocked(attachment)
 		}
+		s.rebuildObjectRefsLocked()
 	}
 	if s.content.Shares != nil {
 		shares, err := s.content.Shares.ListShares(ctx)
@@ -2319,6 +2335,16 @@ func (s *Service) cacheAttachmentLocked(attachment Attachment) *Attachment {
 		paste.AttachmentIDs = append(paste.AttachmentIDs, cached.ID)
 	}
 	return &cached
+}
+
+func (s *Service) rebuildObjectRefsLocked() {
+	s.objectRefs = map[string]int{}
+	for _, attachment := range s.attachmentsByID {
+		if attachment.ObjectKey == "" || attachment.Status == "deleted" {
+			continue
+		}
+		s.objectRefs[attachment.ObjectKey]++
+	}
 }
 
 func (s *Service) createShareLocked(share *Share) error {
@@ -3423,12 +3449,41 @@ func classifyAttachment(fileName string, contentType string) (status string, sca
 	return "active", "clean", ""
 }
 
-func (s *Service) objectContentLocked(attachment *Attachment) ([]byte, bool) {
+func (s *Service) putObjectLocked(key string, content []byte, contentType string) error {
+	if s.objectStore != nil {
+		if err := s.objectStore.PutObject(context.Background(), key, content, contentType); err != nil {
+			return fmt.Errorf("put object: %w", err)
+		}
+		return nil
+	}
+	s.objects[key] = append([]byte(nil), content...)
+	return nil
+}
+
+func (s *Service) objectContentLocked(attachment *Attachment) ([]byte, error) {
+	if s.objectStore != nil {
+		content, err := s.objectStore.GetObject(context.Background(), attachment.ObjectKey)
+		if err != nil {
+			return nil, err
+		}
+		return content, nil
+	}
 	content, ok := s.objects[attachment.ObjectKey]
 	if !ok {
-		return nil, false
+		return nil, ErrObjectNotFound
 	}
-	return append([]byte(nil), content...), true
+	return append([]byte(nil), content...), nil
+}
+
+func (s *Service) deleteObjectLocked(key string) error {
+	if s.objectStore != nil {
+		if err := s.objectStore.DeleteObject(context.Background(), key); err != nil && !errors.Is(err, ErrObjectNotFound) {
+			return fmt.Errorf("delete object: %w", err)
+		}
+		return nil
+	}
+	delete(s.objects, key)
+	return nil
 }
 
 func imageDimensions(contentType string, content []byte) (int, int) {

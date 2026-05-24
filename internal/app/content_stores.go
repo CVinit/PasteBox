@@ -1,11 +1,22 @@
 package app
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+var ErrObjectNotFound = errors.New("object not found")
 
 type ContentStores struct {
 	Pastes      PasteStore
 	Attachments AttachmentStore
 	Shares      ShareStore
+}
+
+type ObjectStore interface {
+	PutObject(ctx context.Context, key string, content []byte, contentType string) error
+	GetObject(ctx context.Context, key string) ([]byte, error)
+	DeleteObject(ctx context.Context, key string) error
 }
 
 type PasteStore interface {

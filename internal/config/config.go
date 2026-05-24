@@ -29,6 +29,7 @@ type Config struct {
 type S3Config struct {
 	Endpoint     string
 	Bucket       string
+	Region       string
 	AccessKey    string
 	SecretKey    string
 	UsePathStyle bool
@@ -48,6 +49,7 @@ func FromEnv() Config {
 		S3: S3Config{
 			Endpoint:     envString("PASTEBOX_S3_ENDPOINT", "http://localhost:9000"),
 			Bucket:       envString("PASTEBOX_S3_BUCKET", "pastebox"),
+			Region:       envString("PASTEBOX_S3_REGION", "us-east-1"),
 			AccessKey:    envString("PASTEBOX_S3_ACCESS_KEY", "pastebox"),
 			SecretKey:    envString("PASTEBOX_S3_SECRET_KEY", "pastebox-secret"),
 			UsePathStyle: envBool("PASTEBOX_S3_USE_PATH_STYLE", true),

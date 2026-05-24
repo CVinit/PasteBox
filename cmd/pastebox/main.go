@@ -21,6 +21,7 @@ import (
 	"pastebox/internal/app"
 	"pastebox/internal/config"
 	"pastebox/internal/httpserver"
+	"pastebox/internal/objectstore"
 	"pastebox/internal/postgres"
 )
 
@@ -69,6 +70,11 @@ func runAPI(stdout io.Writer) int {
 
 	startupCtx, startupCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer startupCancel()
+	objects, err := objectstore.NewS3Store(cfg.S3)
+	if err != nil {
+		logger.Error("object store setup failed", "error", err)
+		return 1
+	}
 	service, err := app.NewWithStorage(startupCtx, cfg, app.Stores{
 		Auth: app.AuthStores{
 			Users:         postgres.NewUserStore(pool),
@@ -81,6 +87,7 @@ func runAPI(stdout io.Writer) int {
 			Attachments: postgres.NewAttachmentStore(pool),
 			Shares:      postgres.NewShareStore(pool),
 		},
+		Objects: objects,
 		Operational: app.OperationalStores{
 			Orders:        postgres.NewOrderStore(pool),
 			WebhookEvents: postgres.NewWebhookEventStore(pool),
@@ -246,6 +253,7 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		"PASTEBOX_REDIS_ADDR",
 		"PASTEBOX_S3_ENDPOINT",
 		"PASTEBOX_S3_BUCKET",
+		"PASTEBOX_S3_REGION",
 		"PASTEBOX_S3_ACCESS_KEY",
 		"PASTEBOX_S3_SECRET_KEY",
 		"PASTEBOX_BOOTSTRAP_ADMIN_EMAIL",

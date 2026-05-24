@@ -24,6 +24,7 @@ func TestFromEnvUsesPasteBoxDefaults(t *testing.T) {
 }
 
 func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
+	t.Setenv("PASTEBOX_S3_REGION", "auto")
 	t.Setenv("PASTEBOX_S3_USE_PATH_STYLE", "false")
 	t.Setenv("PASTEBOX_EPUSDT_ENABLED", "true")
 	t.Setenv("PASTEBOX_LOG_LEVEL", "DEBUG")
@@ -32,6 +33,9 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 
 	if cfg.S3.UsePathStyle {
 		t.Fatal("expected S3 path-style flag to parse as false")
+	}
+	if cfg.S3.Region != "auto" {
+		t.Fatalf("expected S3 region from env, got %q", cfg.S3.Region)
 	}
 	if !cfg.EpusdtEnabled {
 		t.Fatal("expected Epusdt flag to parse as true")

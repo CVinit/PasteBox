@@ -40,7 +40,7 @@ db-reset: db-up
 test: test-api test-web
 
 test-api:
-	$(GO_ENV) go test ./...
+	$(GO_ENV) go test ./cmd/... ./internal/...
 
 test-web:
 	$(NPM) run typecheck

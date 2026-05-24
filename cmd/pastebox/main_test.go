@@ -88,6 +88,7 @@ func TestProductionPreflightRequiresExplicitProductionEnvironment(t *testing.T) 
 		"PASTEBOX_REDIS_ADDR",
 		"PASTEBOX_S3_ENDPOINT",
 		"PASTEBOX_S3_BUCKET",
+		"PASTEBOX_S3_REGION",
 		"PASTEBOX_S3_ACCESS_KEY",
 		"PASTEBOX_S3_SECRET_KEY",
 		"PASTEBOX_BOOTSTRAP_ADMIN_EMAIL",
@@ -270,6 +271,7 @@ func setValidProductionEnv(t *testing.T) {
 	t.Setenv("PASTEBOX_REDIS_ADDR", "redis:6379")
 	t.Setenv("PASTEBOX_S3_ENDPOINT", "https://objects.example.com")
 	t.Setenv("PASTEBOX_S3_BUCKET", "pastebox-prod")
+	t.Setenv("PASTEBOX_S3_REGION", "us-east-1")
 	t.Setenv("PASTEBOX_S3_ACCESS_KEY", "access-key")
 	t.Setenv("PASTEBOX_S3_SECRET_KEY", "secret-key")
 	t.Setenv("PASTEBOX_BOOTSTRAP_ADMIN_EMAIL", "admin@example.com")

@@ -388,6 +388,102 @@ func TestStoreBackedContentMetadataSurvivesServiceRestart(t *testing.T) {
 	}
 }
 
+func TestObjectStoreBackedAttachmentsSurviveServiceRestartAndCleanup(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	authStores := newMemoryAuthStores()
+	contentStores := newMemoryContentStores()
+	objectStore := newMemoryObjectStore()
+
+	svc := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		Objects:      objectStore,
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	owner := registerTestUser(t, svc, "object-durable@example.com")
+	firstPaste := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "first", Text: "one", ExpiresInSeconds: 3600})
+	secondPaste := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "second", Text: "two", ExpiresInSeconds: 3600})
+	content := []byte("durable object bytes")
+	firstAttachment := addTestAttachment(t, svc, owner.User.ID, firstPaste.ID, "first.txt", content)
+	secondAttachment := addTestAttachment(t, svc, owner.User.ID, secondPaste.ID, "second.txt", content)
+	firstStored := svc.attachmentsByID[firstAttachment.ID]
+	secondStored := svc.attachmentsByID[secondAttachment.ID]
+	if firstStored.ObjectKey != secondStored.ObjectKey {
+		t.Fatalf("expected duplicate content to share object key, got %q and %q", firstStored.ObjectKey, secondStored.ObjectKey)
+	}
+	if len(svc.objects) != 0 {
+		t.Fatalf("injected object store should keep bytes out of service memory, got %d fallback objects", len(svc.objects))
+	}
+
+	restarted := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		Objects:      objectStore,
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	if refs := restarted.objectRefs[firstStored.ObjectKey]; refs != 2 {
+		t.Fatalf("expected object references to rebuild from metadata after restart, got %d", refs)
+	}
+	if _, downloaded, err := restarted.DownloadAttachment(owner.User.ID, firstAttachment.ID); err != nil || string(downloaded) != string(content) {
+		t.Fatalf("expected object-store attachment download after restart, got content=%q err=%v", string(downloaded), err)
+	}
+
+	if err := restarted.DeletePaste(owner.User.ID, firstPaste.ID); err != nil {
+		t.Fatalf("delete first paste after restart: %v", err)
+	}
+	if _, err := restarted.RunCleanup(""); err != nil {
+		t.Fatalf("cleanup first paste after restart: %v", err)
+	}
+	if refs := restarted.objectRefs[firstStored.ObjectKey]; refs != 1 {
+		t.Fatalf("expected one object reference after first cleanup, got %d", refs)
+	}
+	if !objectStore.has(firstStored.ObjectKey) {
+		t.Fatalf("expected shared object to remain while second attachment references it")
+	}
+
+	if err := restarted.DeletePaste(owner.User.ID, secondPaste.ID); err != nil {
+		t.Fatalf("delete second paste after restart: %v", err)
+	}
+	if _, err := restarted.RunCleanup(""); err != nil {
+		t.Fatalf("cleanup second paste after restart: %v", err)
+	}
+	if objectStore.has(firstStored.ObjectKey) {
+		t.Fatalf("expected object store content to be deleted after last reference cleanup")
+	}
+}
+
+func TestObjectStoreWriteFailureDoesNotCreateAttachmentMetadata(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	objectErr := errors.New("object write failed")
+	authStores := newMemoryAuthStores()
+	contentStores := newMemoryContentStores()
+	objectStore := newMemoryObjectStore()
+	objectStore.putErr = objectErr
+
+	svc := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		Objects:      objectStore,
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	owner := registerTestUser(t, svc, "object-failure@example.com")
+	paste := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "failure", Text: "base", ExpiresInSeconds: 3600})
+
+	if _, err := svc.AddAttachment(owner.User.ID, paste.ID, "broken.txt", "text/plain", []byte("broken")); !errors.Is(err, objectErr) {
+		t.Fatalf("expected object write error, got %v", err)
+	}
+	attachments, err := contentStores.ListAttachmentsByPaste(context.Background(), paste.ID)
+	if err != nil {
+		t.Fatalf("list attachments after object failure: %v", err)
+	}
+	if len(attachments) != 0 {
+		t.Fatalf("failed object write must not persist attachment metadata, got %#v", attachments)
+	}
+	if quota, err := svc.Quota(owner.User.ID); err != nil || quota.DailyUploadBytes != int64(len("base")) {
+		t.Fatalf("failed object write must not consume attachment daily quota, quota=%#v err=%v", quota, err)
+	}
+}
+
 func TestStoreBackedOperationalStateSurvivesServiceRestart(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	authStores := newMemoryAuthStores()
@@ -997,6 +1093,52 @@ func cloneAttachmentForStore(attachment Attachment) Attachment {
 	cloned := attachment
 	cloned.Content = append([]byte(nil), attachment.Content...)
 	return cloned
+}
+
+type memoryObjectStore struct {
+	objects map[string][]byte
+	putErr  error
+	getErr  error
+	delErr  error
+}
+
+func newMemoryObjectStore() *memoryObjectStore {
+	return &memoryObjectStore{objects: map[string][]byte{}}
+}
+
+func (s *memoryObjectStore) PutObject(_ context.Context, key string, content []byte, _ string) error {
+	if s.putErr != nil {
+		return s.putErr
+	}
+	s.objects[key] = append([]byte(nil), content...)
+	return nil
+}
+
+func (s *memoryObjectStore) GetObject(_ context.Context, key string) ([]byte, error) {
+	if s.getErr != nil {
+		return nil, s.getErr
+	}
+	content, ok := s.objects[key]
+	if !ok {
+		return nil, ErrObjectNotFound
+	}
+	return append([]byte(nil), content...), nil
+}
+
+func (s *memoryObjectStore) DeleteObject(_ context.Context, key string) error {
+	if s.delErr != nil {
+		return s.delErr
+	}
+	if _, ok := s.objects[key]; !ok {
+		return ErrObjectNotFound
+	}
+	delete(s.objects, key)
+	return nil
+}
+
+func (s *memoryObjectStore) has(key string) bool {
+	_, ok := s.objects[key]
+	return ok
 }
 
 type memoryOperationalStores struct {
