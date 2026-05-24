@@ -30,6 +30,9 @@ the `pastebox migrate up` command.
   responses.
 - Audit log persistence uses the PostgreSQL `AuditLogStore` boundary. Metadata
   is stored as JSONB and admin-facing listing is newest-first.
+- User persistence uses the PostgreSQL `UserStore` boundary. Runtime auth must
+  not switch to PostgreSQL users until sessions and auth tokens are switched
+  with compatible repository semantics.
 
 ---
 
@@ -290,5 +293,86 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 ```go
 func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
     writeJSON(w, http.StatusOK, s.app.PlanCatalog())
+}
+```
+
+## Scenario: User Repository Boundary
+
+### 1. Scope / Trigger
+
+- Trigger: Any change that reads, creates, or updates rows in the `users`
+  table, or prepares runtime auth to use PostgreSQL users.
+
+### 2. Signatures
+
+- Constructor: `postgres.NewUserStore(pool *pgxpool.Pool)`
+- Create: `CreateUser(ctx context.Context, user app.User) error`
+- Read by ID: `UserByID(ctx context.Context, id string) (app.User, error)`
+- Read by email: `UserByEmail(ctx context.Context, email string) (app.User, error)`
+- Update: `UpdateUser(ctx context.Context, user app.User) error`
+- Errors: `postgres.ErrUserNotFound`, `postgres.ErrUserEmailExists`
+
+### 3. Contracts
+
+- `UserStore` round-trips every current `app.User` persistence field:
+  `id`, `email`, `display_name`, `language`, `password_hash`, `role`,
+  `email_verified`, `plan_id`, `plan_expires_at`, `frozen`, `created_at`,
+  `updated_at`, `delete_requested_at`, `delete_scheduled_at`, and
+  `deleted_at`.
+- Nullable timestamp columns map to nil `*time.Time` values in `app.User`.
+- Duplicate emails return `ErrUserEmailExists` so auth registration can map the
+  database error to the existing `email_exists` API code once runtime is
+  switched.
+- Missing users return `ErrUserNotFound` from both read and update paths.
+- Runtime auth must not use PostgreSQL users while sessions, auth tokens, and
+  login-failure records are still only in memory, because a restart would
+  otherwise preserve users but lose the surrounding auth lifecycle state.
+
+### 4. Validation & Error Matrix
+
+- `users.email` unique violation -> `ErrUserEmailExists`.
+- Missing row on `UserByID` / `UserByEmail` -> `ErrUserNotFound`.
+- `UpdateUser` affects zero rows -> `ErrUserNotFound`.
+- Other PostgreSQL failures -> wrapped repository error with operation context.
+
+### 5. Good/Base/Bad Cases
+
+- Good: Registering a user through a future PostgreSQL-backed auth path creates
+  the user, email verification token, login failure state, and session in one
+  coherent durable flow.
+- Base: Introduce `UserStore` with live integration tests while keeping runtime
+  auth in memory until the dependent repositories are ready.
+- Bad: Persist users to PostgreSQL but keep sessions and auth tokens only in
+  memory in production mode; users survive restart while login/session recovery
+  behavior silently changes.
+
+### 6. Tests Required
+
+- PostgreSQL integration tests with `PASTEBOX_TEST_DATABASE_URL` assert create,
+  read by ID, read by email, update, duplicate-email error mapping, nullable
+  timestamp handling, and missing-user error mapping.
+- When runtime auth is switched, handler/domain tests must prove register,
+  login, email verification, magic link, password reset, session lookup,
+  logout, logout-all, account deletion, and admin bootstrap survive process
+  restart with PostgreSQL-backed repositories.
+- Run full `make test` after changing user repository or auth runtime wiring.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+if err := userStore.CreateUser(ctx, user); err != nil {
+    return AuthResult{}, err
+}
+```
+
+#### Correct
+
+```go
+if err := userStore.CreateUser(ctx, user); errors.Is(err, postgres.ErrUserEmailExists) {
+    return AuthResult{}, E(http.StatusConflict, "email_exists", "email is already registered")
+} else if err != nil {
+    return AuthResult{}, err
 }
 ```
