@@ -301,6 +301,78 @@ func TestStoreBackedCatalogAndAuditLogsSurviveServiceRestart(t *testing.T) {
 	assertAuditAction(t, logs, "admin.user_freeze")
 }
 
+func TestStoreBackedContentMetadataSurvivesServiceRestart(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	authStores := newMemoryAuthStores()
+	contentStores := newMemoryContentStores()
+
+	svc := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	owner := registerTestUser(t, svc, "content-durable@example.com")
+	paste := createTestPaste(t, svc, owner.User.ID, PasteInput{
+		Title:            "durable paste",
+		Text:             "metadata survives",
+		Tags:             []string{"durable"},
+		ExpiresInSeconds: 3600,
+	})
+	attachment := addTestAttachment(t, svc, owner.User.ID, paste.ID, "metadata.txt", []byte("metadata only"))
+	share := createTestShare(t, svc, owner.User.ID, paste.ID, ShareInput{
+		Password:         "pw",
+		ExpiresInSeconds: 1800,
+	})
+	if _, _, err := svc.AccessShare(share.Token, "wrong", ""); !hasAppCode(err, "invalid_share_password") {
+		t.Fatalf("expected invalid share password before restart, got %v", err)
+	}
+
+	restarted := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	pastes, err := restarted.ListPastes(owner.User.ID, ListOptions{Query: "metadata"})
+	if err != nil {
+		t.Fatalf("list store-backed pastes after restart: %v", err)
+	}
+	if len(pastes) != 1 || pastes[0].ID != paste.ID || len(pastes[0].Attachments) != 1 || pastes[0].Attachments[0].ID != attachment.ID {
+		t.Fatalf("expected restarted service to load paste and attachment metadata, got %#v", pastes)
+	}
+	shares, err := restarted.ListShares(owner.User.ID)
+	if err != nil {
+		t.Fatalf("list store-backed shares after restart: %v", err)
+	}
+	if len(shares) != 1 || shares[0].ID != share.ID {
+		t.Fatalf("expected restarted service to load share metadata, got %#v", shares)
+	}
+	persistedShare, err := contentStores.ShareByID(context.Background(), share.ID)
+	if err != nil {
+		t.Fatalf("read persisted share metadata: %v", err)
+	}
+	if persistedShare.LastAccessFailure == nil {
+		t.Fatalf("expected invalid access metadata to persist, got %#v", persistedShare)
+	}
+
+	revokedAt := now.Add(time.Minute)
+	now = revokedAt
+	if err := restarted.RevokeShare(owner.User.ID, share.ID); err != nil {
+		t.Fatalf("revoke store-backed share after restart: %v", err)
+	}
+	restartedAgain := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	shares, err = restartedAgain.ListShares(owner.User.ID)
+	if err != nil {
+		t.Fatalf("list shares after revoke restart: %v", err)
+	}
+	if len(shares) != 1 || shares[0].RevokedAt == nil {
+		t.Fatalf("expected share revocation to persist, got %#v", shares)
+	}
+}
+
 func TestGoogleOAuthCreatesVerifiedAccount(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	svc := newTestService(t, &now)
@@ -635,6 +707,182 @@ func (s *memoryAuditLogStore) AuditLogs(_ context.Context, limit int) ([]AuditLo
 		out = append(out, s.logs[i])
 	}
 	return out, nil
+}
+
+type memoryContentStores struct {
+	pastes      map[string]Paste
+	attachments map[string]Attachment
+	shares      map[string]Share
+	shareTokens map[string]string
+}
+
+func newMemoryContentStores() *memoryContentStores {
+	return &memoryContentStores{
+		pastes:      map[string]Paste{},
+		attachments: map[string]Attachment{},
+		shares:      map[string]Share{},
+		shareTokens: map[string]string{},
+	}
+}
+
+func (s *memoryContentStores) contentStores() ContentStores {
+	return ContentStores{
+		Pastes:      s,
+		Attachments: s,
+		Shares:      s,
+	}
+}
+
+func (s *memoryContentStores) CreatePaste(_ context.Context, paste Paste) error {
+	if _, ok := s.pastes[paste.ID]; ok {
+		return ErrStoreConflict
+	}
+	s.pastes[paste.ID] = clonePasteForStore(paste)
+	return nil
+}
+
+func (s *memoryContentStores) PasteByID(_ context.Context, id string) (Paste, error) {
+	paste, ok := s.pastes[id]
+	if !ok {
+		return Paste{}, ErrStoreNotFound
+	}
+	return clonePasteForStore(paste), nil
+}
+
+func (s *memoryContentStores) ListPastes(_ context.Context) ([]Paste, error) {
+	out := make([]Paste, 0, len(s.pastes))
+	for _, paste := range s.pastes {
+		out = append(out, clonePasteForStore(paste))
+	}
+	return out, nil
+}
+
+func (s *memoryContentStores) ListPastesByUser(_ context.Context, userID string) ([]Paste, error) {
+	out := []Paste{}
+	for _, paste := range s.pastes {
+		if paste.UserID == userID {
+			out = append(out, clonePasteForStore(paste))
+		}
+	}
+	return out, nil
+}
+
+func (s *memoryContentStores) UpdatePaste(_ context.Context, paste Paste) error {
+	if _, ok := s.pastes[paste.ID]; !ok {
+		return ErrStoreNotFound
+	}
+	s.pastes[paste.ID] = clonePasteForStore(paste)
+	return nil
+}
+
+func (s *memoryContentStores) CreateAttachment(_ context.Context, attachment Attachment) error {
+	if _, ok := s.attachments[attachment.ID]; ok {
+		return ErrStoreConflict
+	}
+	s.attachments[attachment.ID] = cloneAttachmentForStore(attachment)
+	return nil
+}
+
+func (s *memoryContentStores) AttachmentByID(_ context.Context, id string) (Attachment, error) {
+	attachment, ok := s.attachments[id]
+	if !ok {
+		return Attachment{}, ErrStoreNotFound
+	}
+	return cloneAttachmentForStore(attachment), nil
+}
+
+func (s *memoryContentStores) ListAttachments(_ context.Context) ([]Attachment, error) {
+	out := make([]Attachment, 0, len(s.attachments))
+	for _, attachment := range s.attachments {
+		out = append(out, cloneAttachmentForStore(attachment))
+	}
+	return out, nil
+}
+
+func (s *memoryContentStores) ListAttachmentsByPaste(_ context.Context, pasteID string) ([]Attachment, error) {
+	out := []Attachment{}
+	for _, attachment := range s.attachments {
+		if attachment.PasteID == pasteID {
+			out = append(out, cloneAttachmentForStore(attachment))
+		}
+	}
+	return out, nil
+}
+
+func (s *memoryContentStores) UpdateAttachment(_ context.Context, attachment Attachment) error {
+	if _, ok := s.attachments[attachment.ID]; !ok {
+		return ErrStoreNotFound
+	}
+	s.attachments[attachment.ID] = cloneAttachmentForStore(attachment)
+	return nil
+}
+
+func (s *memoryContentStores) CreateShare(_ context.Context, share Share) error {
+	if _, ok := s.shares[share.ID]; ok {
+		return ErrStoreConflict
+	}
+	if _, ok := s.shareTokens[share.TokenHash]; ok {
+		return ErrStoreConflict
+	}
+	s.shares[share.ID] = share
+	s.shareTokens[share.TokenHash] = share.ID
+	return nil
+}
+
+func (s *memoryContentStores) ShareByID(_ context.Context, id string) (Share, error) {
+	share, ok := s.shares[id]
+	if !ok {
+		return Share{}, ErrStoreNotFound
+	}
+	return share, nil
+}
+
+func (s *memoryContentStores) ShareByTokenHash(_ context.Context, tokenHash string) (Share, error) {
+	shareID := s.shareTokens[tokenHash]
+	if shareID == "" {
+		return Share{}, ErrStoreNotFound
+	}
+	return s.ShareByID(context.Background(), shareID)
+}
+
+func (s *memoryContentStores) ListShares(_ context.Context) ([]Share, error) {
+	out := make([]Share, 0, len(s.shares))
+	for _, share := range s.shares {
+		out = append(out, share)
+	}
+	return out, nil
+}
+
+func (s *memoryContentStores) ListSharesByUser(_ context.Context, userID string) ([]Share, error) {
+	out := []Share{}
+	for _, share := range s.shares {
+		if share.UserID == userID {
+			out = append(out, share)
+		}
+	}
+	return out, nil
+}
+
+func (s *memoryContentStores) UpdateShare(_ context.Context, share Share) error {
+	if _, ok := s.shares[share.ID]; !ok {
+		return ErrStoreNotFound
+	}
+	s.shares[share.ID] = share
+	s.shareTokens[share.TokenHash] = share.ID
+	return nil
+}
+
+func clonePasteForStore(paste Paste) Paste {
+	cloned := paste
+	cloned.Tags = append([]string(nil), paste.Tags...)
+	cloned.AttachmentIDs = append([]string(nil), paste.AttachmentIDs...)
+	return cloned
+}
+
+func cloneAttachmentForStore(attachment Attachment) Attachment {
+	cloned := attachment
+	cloned.Content = append([]byte(nil), attachment.Content...)
+	return cloned
 }
 
 type failingDailyMetricStore struct {

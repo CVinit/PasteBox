@@ -56,6 +56,7 @@ type Service struct {
 	now     func() time.Time
 	catalog plans.Catalog
 	auth    AuthStores
+	content ContentStores
 	audit   AuditLogStore
 
 	usersByID        map[string]*User
@@ -113,6 +114,7 @@ func NewWithStorage(ctx context.Context, cfg config.Config, stores Stores) (*Ser
 		now:              time.Now,
 		catalog:          catalog,
 		auth:             stores.Auth,
+		content:          stores.Content,
 		audit:            stores.AuditLogs,
 		usersByID:        map[string]*User{},
 		userIDByEmail:    map[string]string{},
@@ -134,6 +136,9 @@ func NewWithStorage(ctx context.Context, cfg config.Config, stores Stores) (*Ser
 	if stores.DailyMetrics != nil {
 		svc.dailyMetrics = stores.DailyMetrics
 	}
+	if err := svc.loadContentCaches(ctx); err != nil {
+		return nil, err
+	}
 	if cfg.BootstrapAdminEmail != "" && cfg.BootstrapAdminPassword != "" {
 		_, _ = svc.SeedAdmin(cfg.BootstrapAdminEmail, cfg.BootstrapAdminPassword)
 	}
@@ -152,6 +157,7 @@ func NewWithDailyMetricStore(cfg config.Config, dailyMetrics DailyMetricStore) *
 
 type Stores struct {
 	Auth         AuthStores
+	Content      ContentStores
 	DailyMetrics DailyMetricStore
 	Catalog      CatalogStore
 	AuditLogs    AuditLogStore
@@ -868,11 +874,17 @@ func (s *Service) ExecuteAccountDeletion(userID string) error {
 		if paste.UserID == user.ID && paste.Status == "active" {
 			paste.Status = "pending_delete"
 			paste.UpdatedAt = now
+			if err := s.updatePasteLocked(paste); err != nil {
+				return err
+			}
 		}
 	}
 	for _, share := range s.sharesByID {
 		if share.UserID == user.ID && share.RevokedAt == nil {
 			share.RevokedAt = &now
+			if err := s.updateShareLocked(share); err != nil {
+				return err
+			}
 		}
 	}
 	return s.revokeUserSessionsLocked(user.ID)
@@ -914,7 +926,9 @@ func (s *Service) CreatePaste(userID string, input PasteInput) (PasteView, error
 			return PasteView{}, err
 		}
 	}
-	s.pastesByID[paste.ID] = paste
+	if err := s.createPasteLocked(paste); err != nil {
+		return PasteView{}, err
+	}
 	return s.viewPasteLocked(paste), nil
 }
 
@@ -1020,6 +1034,9 @@ func (s *Service) UpdatePaste(userID string, id string, patch PastePatch) (Paste
 		paste.Favorite = *patch.Favorite
 	}
 	paste.UpdatedAt = s.now().UTC()
+	if err := s.updatePasteLocked(paste); err != nil {
+		return PasteView{}, err
+	}
 	return s.viewPasteLocked(paste), nil
 }
 
@@ -1034,14 +1051,23 @@ func (s *Service) DeletePaste(userID string, id string) error {
 	now := s.now().UTC()
 	paste.Status = "pending_delete"
 	paste.UpdatedAt = now
+	if err := s.updatePasteLocked(paste); err != nil {
+		return err
+	}
 	for _, attachmentID := range paste.AttachmentIDs {
 		if attachment := s.attachmentsByID[attachmentID]; attachment != nil {
 			attachment.Status = "pending_delete"
+			if err := s.updateAttachmentLocked(attachment); err != nil {
+				return err
+			}
 		}
 	}
 	for _, share := range s.sharesByID {
 		if share.PasteID == paste.ID && share.RevokedAt == nil {
 			share.RevokedAt = &now
+			if err := s.updateShareLocked(share); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -1070,6 +1096,9 @@ func (s *Service) ExtendPaste(userID string, id string, expiresInSeconds int64) 
 	}
 	paste.ExpiresAt = nextExpiresAt
 	paste.UpdatedAt = now
+	if err := s.updatePasteLocked(paste); err != nil {
+		return PasteView{}, err
+	}
 	return s.viewPasteLocked(paste), nil
 }
 
@@ -1134,11 +1163,15 @@ func (s *Service) AddAttachment(userID string, pasteID string, fileName string, 
 		ImageHeight: height,
 		CreatedAt:   now,
 	}
-	s.attachmentsByID[attachment.ID] = attachment
+	if err := s.createAttachmentLocked(attachment); err != nil {
+		return AttachmentView{}, err
+	}
 	s.objectRefs[attachment.ObjectKey]++
-	paste.AttachmentIDs = append(paste.AttachmentIDs, attachment.ID)
 	paste.ScanStatus = aggregateScanStatus(s.attachmentsForPasteLocked(paste))
 	paste.UpdatedAt = now
+	if err := s.updatePasteLocked(paste); err != nil {
+		return AttachmentView{}, err
+	}
 	if scanStatus == "scan_failed" {
 		s.scanFailures = append(s.scanFailures, &QueueItem{
 			ID:        s.newID("scanq"),
@@ -1157,12 +1190,12 @@ func (s *Service) DownloadAttachment(userID string, attachmentID string) (Attach
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	attachment := s.attachmentsByID[attachmentID]
-	if attachment == nil || attachment.UserID != userID {
+	attachment, err := s.attachmentByIDLocked(attachmentID)
+	if err != nil || attachment.UserID != userID {
 		return AttachmentView{}, nil, E(http.StatusNotFound, "attachment_not_found", "attachment not found")
 	}
-	paste := s.pastesByID[attachment.PasteID]
-	if paste == nil || !s.isPasteVisibleLocked(paste) || attachment.Status != "active" {
+	paste, err := s.pasteByIDLocked(attachment.PasteID)
+	if err != nil || !s.isPasteVisibleLocked(paste) || attachment.Status != "active" {
 		return AttachmentView{}, nil, E(http.StatusGone, "attachment_unavailable", "attachment is unavailable")
 	}
 	if attachment.ScanStatus == "malicious" {
@@ -1173,6 +1206,9 @@ func (s *Service) DownloadAttachment(userID string, attachmentID string) (Attach
 		return AttachmentView{}, nil, E(http.StatusGone, "attachment_unavailable", "attachment content is unavailable")
 	}
 	attachment.DownloadN++
+	if err := s.updateAttachmentLocked(attachment); err != nil {
+		return AttachmentView{}, nil, err
+	}
 	return viewAttachment(attachment), content, nil
 }
 
@@ -1211,8 +1247,9 @@ func (s *Service) CreateShare(userID string, pasteID string, input ShareInput) (
 		LastVisitedAt:    nil,
 		LastDownloadedAt: nil,
 	}
-	s.sharesByID[share.ID] = share
-	s.shareIDByToken[share.TokenHash] = share.ID
+	if err := s.createShareLocked(share); err != nil {
+		return ShareView{}, err
+	}
 	return s.viewShareLocked(share), nil
 }
 
@@ -1235,12 +1272,15 @@ func (s *Service) ListShares(userID string) ([]ShareView, error) {
 func (s *Service) RevokeShare(userID string, shareID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	share := s.sharesByID[shareID]
-	if share == nil || share.UserID != userID {
+	share, err := s.shareByIDLocked(shareID)
+	if err != nil || share.UserID != userID {
 		return E(http.StatusNotFound, "share_not_found", "share not found")
 	}
 	now := s.now().UTC()
 	share.RevokedAt = &now
+	if err := s.updateShareLocked(share); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1255,6 +1295,9 @@ func (s *Service) AccessShare(token string, password string, viewerUserID string
 	now := s.now().UTC()
 	share.VisitCount++
 	share.LastVisitedAt = &now
+	if err := s.updateShareLocked(share); err != nil {
+		return PasteView{}, ShareView{}, err
+	}
 	return s.viewPasteLocked(paste), s.viewShareLocked(share), nil
 }
 
@@ -1266,8 +1309,8 @@ func (s *Service) DownloadSharedAttachment(token string, password string, attach
 	if err != nil {
 		return AttachmentView{}, nil, err
 	}
-	attachment := s.attachmentsByID[attachmentID]
-	if attachment == nil || attachment.PasteID != paste.ID || attachment.Status != "active" {
+	attachment, err := s.attachmentByIDLocked(attachmentID)
+	if err != nil || attachment.PasteID != paste.ID || attachment.Status != "active" {
 		return AttachmentView{}, nil, E(http.StatusNotFound, "attachment_not_found", "attachment not found")
 	}
 	if attachment.ScanStatus != "clean" {
@@ -1293,6 +1336,12 @@ func (s *Service) DownloadSharedAttachment(token string, password string, attach
 	share.DownloadCount++
 	share.LastDownloadedAt = &now
 	attachment.DownloadN++
+	if err := s.updateShareLocked(share); err != nil {
+		return AttachmentView{}, nil, err
+	}
+	if err := s.updateAttachmentLocked(attachment); err != nil {
+		return AttachmentView{}, nil, err
+	}
 	return viewAttachment(attachment), content, nil
 }
 
@@ -1754,12 +1803,15 @@ func (s *Service) AdminTakedownPaste(actorID string, pasteID string) error {
 	if err := s.requireAdminLocked(actorID); err != nil {
 		return err
 	}
-	paste := s.pastesByID[pasteID]
-	if paste == nil {
-		return E(http.StatusNotFound, "paste_not_found", "paste not found")
+	paste, err := s.pasteByIDLocked(pasteID)
+	if err != nil {
+		return err
 	}
 	paste.Status = "taken_down"
 	paste.UpdatedAt = s.now().UTC()
+	if err := s.updatePasteLocked(paste); err != nil {
+		return err
+	}
 	if err := s.auditLocked(actorID, "admin.paste_takedown", pasteID, nil); err != nil {
 		return err
 	}
@@ -1772,9 +1824,9 @@ func (s *Service) AdminFreezeAttachment(actorID string, attachmentID string, fro
 	if err := s.requireAdminLocked(actorID); err != nil {
 		return AttachmentView{}, err
 	}
-	attachment := s.attachmentsByID[attachmentID]
-	if attachment == nil {
-		return AttachmentView{}, E(http.StatusNotFound, "attachment_not_found", "attachment not found")
+	attachment, err := s.attachmentByIDLocked(attachmentID)
+	if err != nil {
+		return AttachmentView{}, err
 	}
 	if frozen {
 		attachment.Status = "frozen"
@@ -1785,9 +1837,15 @@ func (s *Service) AdminFreezeAttachment(actorID string, attachmentID string, fro
 			attachment.Risk = ""
 		}
 	}
+	if err := s.updateAttachmentLocked(attachment); err != nil {
+		return AttachmentView{}, err
+	}
 	if paste := s.pastesByID[attachment.PasteID]; paste != nil {
 		paste.ScanStatus = aggregateScanStatus(s.attachmentsForPasteLocked(paste))
 		paste.UpdatedAt = s.now().UTC()
+		if err := s.updatePasteLocked(paste); err != nil {
+			return AttachmentView{}, err
+		}
 	}
 	if err := s.auditLocked(actorID, "admin.attachment_freeze", attachmentID, map[string]any{"frozen": frozen}); err != nil {
 		return AttachmentView{}, err
@@ -1801,9 +1859,9 @@ func (s *Service) AdminRetryScan(actorID string, attachmentID string) (Attachmen
 	if err := s.requireAdminLocked(actorID); err != nil {
 		return AttachmentView{}, err
 	}
-	attachment := s.attachmentsByID[attachmentID]
-	if attachment == nil {
-		return AttachmentView{}, E(http.StatusNotFound, "attachment_not_found", "attachment not found")
+	attachment, err := s.attachmentByIDLocked(attachmentID)
+	if err != nil {
+		return AttachmentView{}, err
 	}
 	if attachment.ScanStatus == "malicious" {
 		return AttachmentView{}, E(http.StatusForbidden, "malicious_file", "malicious files cannot be auto-retried")
@@ -1812,10 +1870,16 @@ func (s *Service) AdminRetryScan(actorID string, attachmentID string) (Attachmen
 	if attachment.Risk == "executable_file" || attachment.Risk == "scan_failed" {
 		attachment.Risk = ""
 	}
+	if err := s.updateAttachmentLocked(attachment); err != nil {
+		return AttachmentView{}, err
+	}
 	s.removeQueueItemLocked(&s.scanFailures, attachment.ID)
 	if paste := s.pastesByID[attachment.PasteID]; paste != nil {
 		paste.ScanStatus = aggregateScanStatus(s.attachmentsForPasteLocked(paste))
 		paste.UpdatedAt = s.now().UTC()
+		if err := s.updatePasteLocked(paste); err != nil {
+			return AttachmentView{}, err
+		}
 	}
 	if err := s.auditLocked(actorID, "admin.scan_retry", attachmentID, nil); err != nil {
 		return AttachmentView{}, err
@@ -1829,12 +1893,15 @@ func (s *Service) AdminRevokeShare(actorID string, shareID string) (ShareView, e
 	if err := s.requireAdminLocked(actorID); err != nil {
 		return ShareView{}, err
 	}
-	share := s.sharesByID[shareID]
-	if share == nil {
-		return ShareView{}, E(http.StatusNotFound, "share_not_found", "share not found")
+	share, err := s.shareByIDLocked(shareID)
+	if err != nil {
+		return ShareView{}, err
 	}
 	now := s.now().UTC()
 	share.RevokedAt = &now
+	if err := s.updateShareLocked(share); err != nil {
+		return ShareView{}, err
+	}
 	if err := s.auditLocked(actorID, "admin.share_revoke", shareID, nil); err != nil {
 		return ShareView{}, err
 	}
@@ -1896,9 +1963,15 @@ func (s *Service) RunCleanup(actorID string) (map[string]int, error) {
 			paste.Status = "pending_delete"
 			paste.UpdatedAt = now
 			expired++
+			if err := s.updatePasteLocked(paste); err != nil {
+				return nil, err
+			}
 			for _, id := range paste.AttachmentIDs {
 				if att := s.attachmentsByID[id]; att != nil {
 					att.Status = "pending_delete"
+					if err := s.updateAttachmentLocked(att); err != nil {
+						return nil, err
+					}
 				}
 			}
 		}
@@ -1917,6 +1990,9 @@ func (s *Service) RunCleanup(actorID string) (map[string]int, error) {
 						delete(s.objectRefs, att.ObjectKey)
 						delete(s.objects, att.ObjectKey)
 					}
+					if err := s.updateAttachmentLocked(att); err != nil {
+						return nil, err
+					}
 					deletedAttachments++
 				}
 				if att.Status != "deleted" {
@@ -1925,6 +2001,10 @@ func (s *Service) RunCleanup(actorID string) (map[string]int, error) {
 			}
 			if allDeleted {
 				paste.Status = "deleted"
+				paste.UpdatedAt = now
+				if err := s.updatePasteLocked(paste); err != nil {
+					return nil, err
+				}
 				deletedPastes++
 			}
 		}
@@ -1965,6 +2045,208 @@ func (s *Service) ListPastesLocked(userID string, opts ListOptions) ([]PasteView
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out, nil
+}
+
+func (s *Service) loadContentCaches(ctx context.Context) error {
+	if s.content.Pastes != nil {
+		pastes, err := s.content.Pastes.ListPastes(ctx)
+		if err != nil {
+			return fmt.Errorf("load pastes: %w", err)
+		}
+		for _, paste := range pastes {
+			s.cachePasteLocked(paste)
+		}
+	}
+	if s.content.Attachments != nil {
+		attachments, err := s.content.Attachments.ListAttachments(ctx)
+		if err != nil {
+			return fmt.Errorf("load attachments: %w", err)
+		}
+		for _, attachment := range attachments {
+			s.cacheAttachmentLocked(attachment)
+		}
+	}
+	if s.content.Shares != nil {
+		shares, err := s.content.Shares.ListShares(ctx)
+		if err != nil {
+			return fmt.Errorf("load shares: %w", err)
+		}
+		for _, share := range shares {
+			s.cacheShareLocked(share)
+		}
+	}
+	return nil
+}
+
+func (s *Service) createPasteLocked(paste *Paste) error {
+	if s.content.Pastes != nil {
+		if err := s.content.Pastes.CreatePaste(context.Background(), *paste); err != nil {
+			return err
+		}
+	}
+	s.cachePasteLocked(*paste)
+	return nil
+}
+
+func (s *Service) updatePasteLocked(paste *Paste) error {
+	if s.content.Pastes != nil {
+		if err := s.content.Pastes.UpdatePaste(context.Background(), *paste); err != nil {
+			return err
+		}
+	}
+	s.cachePasteLocked(*paste)
+	return nil
+}
+
+func (s *Service) pasteByIDLocked(id string) (*Paste, error) {
+	if s.content.Pastes != nil {
+		loaded, err := s.content.Pastes.PasteByID(context.Background(), id)
+		if err != nil {
+			if isStoreNotFound(err) {
+				return nil, E(http.StatusNotFound, "paste_not_found", "paste not found")
+			}
+			return nil, err
+		}
+		paste := s.cachePasteLocked(loaded)
+		if s.content.Attachments != nil {
+			attachments, err := s.content.Attachments.ListAttachmentsByPaste(context.Background(), paste.ID)
+			if err != nil {
+				return nil, err
+			}
+			paste.AttachmentIDs = paste.AttachmentIDs[:0]
+			for _, attachment := range attachments {
+				s.cacheAttachmentLocked(attachment)
+			}
+		}
+		return paste, nil
+	}
+	paste := s.pastesByID[id]
+	if paste == nil {
+		return nil, E(http.StatusNotFound, "paste_not_found", "paste not found")
+	}
+	return paste, nil
+}
+
+func (s *Service) cachePasteLocked(paste Paste) *Paste {
+	cached := paste
+	cached.AttachmentIDs = append([]string(nil), paste.AttachmentIDs...)
+	s.pastesByID[cached.ID] = &cached
+	return &cached
+}
+
+func (s *Service) createAttachmentLocked(attachment *Attachment) error {
+	if s.content.Attachments != nil {
+		if err := s.content.Attachments.CreateAttachment(context.Background(), *attachment); err != nil {
+			return err
+		}
+	}
+	s.cacheAttachmentLocked(*attachment)
+	return nil
+}
+
+func (s *Service) updateAttachmentLocked(attachment *Attachment) error {
+	if s.content.Attachments != nil {
+		if err := s.content.Attachments.UpdateAttachment(context.Background(), *attachment); err != nil {
+			return err
+		}
+	}
+	s.cacheAttachmentLocked(*attachment)
+	return nil
+}
+
+func (s *Service) attachmentByIDLocked(id string) (*Attachment, error) {
+	if s.content.Attachments != nil {
+		loaded, err := s.content.Attachments.AttachmentByID(context.Background(), id)
+		if err != nil {
+			if isStoreNotFound(err) {
+				return nil, E(http.StatusNotFound, "attachment_not_found", "attachment not found")
+			}
+			return nil, err
+		}
+		return s.cacheAttachmentLocked(loaded), nil
+	}
+	attachment := s.attachmentsByID[id]
+	if attachment == nil {
+		return nil, E(http.StatusNotFound, "attachment_not_found", "attachment not found")
+	}
+	return attachment, nil
+}
+
+func (s *Service) cacheAttachmentLocked(attachment Attachment) *Attachment {
+	cached := attachment
+	cached.Content = append([]byte(nil), attachment.Content...)
+	s.attachmentsByID[cached.ID] = &cached
+	if paste := s.pastesByID[cached.PasteID]; paste != nil && !contains(paste.AttachmentIDs, cached.ID) {
+		paste.AttachmentIDs = append(paste.AttachmentIDs, cached.ID)
+	}
+	return &cached
+}
+
+func (s *Service) createShareLocked(share *Share) error {
+	if s.content.Shares != nil {
+		if err := s.content.Shares.CreateShare(context.Background(), *share); err != nil {
+			if errors.Is(err, ErrStoreConflict) {
+				return E(http.StatusConflict, "share_token_conflict", "share token already exists")
+			}
+			return err
+		}
+	}
+	s.cacheShareLocked(*share)
+	return nil
+}
+
+func (s *Service) updateShareLocked(share *Share) error {
+	if s.content.Shares != nil {
+		if err := s.content.Shares.UpdateShare(context.Background(), *share); err != nil {
+			return err
+		}
+	}
+	s.cacheShareLocked(*share)
+	return nil
+}
+
+func (s *Service) shareByIDLocked(id string) (*Share, error) {
+	if s.content.Shares != nil {
+		loaded, err := s.content.Shares.ShareByID(context.Background(), id)
+		if err != nil {
+			if isStoreNotFound(err) {
+				return nil, E(http.StatusNotFound, "share_not_found", "share not found")
+			}
+			return nil, err
+		}
+		return s.cacheShareLocked(loaded), nil
+	}
+	share := s.sharesByID[id]
+	if share == nil {
+		return nil, E(http.StatusNotFound, "share_not_found", "share not found")
+	}
+	return share, nil
+}
+
+func (s *Service) shareByTokenHashLocked(tokenHash string) (*Share, error) {
+	if s.content.Shares != nil {
+		loaded, err := s.content.Shares.ShareByTokenHash(context.Background(), tokenHash)
+		if err != nil {
+			if isStoreNotFound(err) {
+				return nil, E(http.StatusNotFound, "share_not_found", "share not found")
+			}
+			return nil, err
+		}
+		return s.cacheShareLocked(loaded), nil
+	}
+	shareID := s.shareIDByToken[tokenHash]
+	share := s.sharesByID[shareID]
+	if share == nil {
+		return nil, E(http.StatusNotFound, "share_not_found", "share not found")
+	}
+	return share, nil
+}
+
+func (s *Service) cacheShareLocked(share Share) *Share {
+	cached := share
+	s.sharesByID[cached.ID] = &cached
+	s.shareIDByToken[cached.TokenHash] = cached.ID
+	return &cached
 }
 
 func (s *Service) createUserLocked(user *User) error {
@@ -2405,9 +2687,8 @@ func (s *Service) viewShareLocked(share *Share) ShareView {
 }
 
 func (s *Service) validShareLocked(token string, password string, viewerUserID string, forDownload bool) (*Share, *Paste, error) {
-	shareID := s.shareIDByToken[tokenHash(token)]
-	share := s.sharesByID[shareID]
-	if share == nil {
+	share, err := s.shareByTokenHashLocked(tokenHash(token))
+	if err != nil {
 		return nil, nil, E(http.StatusNotFound, "share_not_found", "share not found")
 	}
 	now := s.now().UTC()
@@ -2425,9 +2706,15 @@ func (s *Service) validShareLocked(token string, password string, viewerUserID s
 	}
 	if share.PasswordHash != "" && optionalPasswordHash(password) != share.PasswordHash {
 		share.LastAccessFailure = &now
+		if err := s.updateShareLocked(share); err != nil {
+			return nil, nil, err
+		}
 		return nil, nil, E(http.StatusUnauthorized, "invalid_share_password", "share password is invalid")
 	}
-	paste := s.pastesByID[share.PasteID]
+	paste, err := s.pasteByIDLocked(share.PasteID)
+	if err != nil {
+		return nil, nil, err
+	}
 	if !s.isPasteVisibleLocked(paste) {
 		return nil, nil, E(http.StatusGone, "paste_expired", "paste is expired or deleted")
 	}

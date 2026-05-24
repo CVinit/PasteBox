@@ -15,11 +15,11 @@ import (
 )
 
 var (
-	ErrPasteNotFound      = errors.New("postgres paste not found")
-	ErrAttachmentNotFound = errors.New("postgres attachment not found")
+	ErrPasteNotFound      = errors.Join(errors.New("postgres paste not found"), app.ErrStoreNotFound)
+	ErrAttachmentNotFound = errors.Join(errors.New("postgres attachment not found"), app.ErrStoreNotFound)
 	ErrObjectRefNotFound  = errors.New("postgres object ref not found")
-	ErrShareNotFound      = errors.New("postgres share not found")
-	ErrShareTokenExists   = errors.New("postgres share token exists")
+	ErrShareNotFound      = errors.Join(errors.New("postgres share not found"), app.ErrStoreNotFound)
+	ErrShareTokenExists   = errors.Join(errors.New("postgres share token exists"), app.ErrStoreConflict)
 )
 
 type ObjectRef struct {
@@ -84,6 +84,19 @@ ORDER BY created_at DESC, id DESC
 `, userID)
 	if err != nil {
 		return nil, fmt.Errorf("query pastes by user: %w", err)
+	}
+	defer rows.Close()
+	return scanPastes(rows)
+}
+
+func (s *PasteStore) ListPastes(ctx context.Context) ([]app.Paste, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT id, user_id, title, text_body, tags, pinned, favorite, status, scan_status, expires_at, created_at, updated_at
+FROM pastes
+ORDER BY created_at DESC, id DESC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query pastes: %w", err)
 	}
 	defer rows.Close()
 	return scanPastes(rows)
@@ -180,6 +193,30 @@ ORDER BY created_at ASC, id ASC
 `, pasteID)
 	if err != nil {
 		return nil, fmt.Errorf("query attachments by paste: %w", err)
+	}
+	defer rows.Close()
+	attachments := []app.Attachment{}
+	for rows.Next() {
+		attachment, err := scanAttachment(rows)
+		if err != nil {
+			return nil, err
+		}
+		attachments = append(attachments, attachment)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read attachments: %w", err)
+	}
+	return attachments, nil
+}
+
+func (s *AttachmentStore) ListAttachments(ctx context.Context) ([]app.Attachment, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT id, user_id, paste_id, file_name, content_type, size_bytes, sha256, object_key, status, scan_status, risk, image_width, image_height, download_count, created_at
+FROM attachments
+ORDER BY created_at ASC, id ASC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query attachments: %w", err)
 	}
 	defer rows.Close()
 	attachments := []app.Attachment{}
@@ -335,6 +372,30 @@ ORDER BY created_at DESC, id DESC
 `, userID)
 	if err != nil {
 		return nil, fmt.Errorf("query shares by user: %w", err)
+	}
+	defer rows.Close()
+	shares := []app.Share{}
+	for rows.Next() {
+		share, err := scanShare(rows)
+		if err != nil {
+			return nil, err
+		}
+		shares = append(shares, share)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read shares: %w", err)
+	}
+	return shares, nil
+}
+
+func (s *ShareStore) ListShares(ctx context.Context) ([]app.Share, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT id, paste_id, user_id, token_hash, token_ciphertext, password_hash, login_required, max_visits, max_downloads, visit_count, download_count, expires_at, revoked_at, created_at, last_visited_at, last_downloaded_at, last_access_failure
+FROM shares
+ORDER BY created_at DESC, id DESC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query shares: %w", err)
 	}
 	defer rows.Close()
 	shares := []app.Share{}

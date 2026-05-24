@@ -76,6 +76,11 @@ func runAPI(stdout io.Writer) int {
 			Tokens:        postgres.NewAuthTokenStore(pool),
 			LoginFailures: postgres.NewLoginFailureStore(pool),
 		},
+		Content: app.ContentStores{
+			Pastes:      postgres.NewPasteStore(pool),
+			Attachments: postgres.NewAttachmentStore(pool),
+			Shares:      postgres.NewShareStore(pool),
+		},
 		DailyMetrics: postgres.NewDailyMetricStore(pool),
 		Catalog:      postgres.NewCatalogStore(pool),
 		AuditLogs:    postgres.NewAuditLogStore(pool),
