@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"pastebox/internal/config"
+	"pastebox/internal/plans"
 )
 
 func TestExpiredContentIsHiddenFromOwnerSearchDownloadAndShare(t *testing.T) {
@@ -247,6 +248,57 @@ func TestStoreBackedAuthStateSurvivesServiceRestart(t *testing.T) {
 	if _, err := afterLogout.UserForSession(loggedIn.SessionID); !hasAppCode(err, "unauthenticated") {
 		t.Fatalf("logout should revoke persisted session, got %v", err)
 	}
+}
+
+func TestStoreBackedCatalogAndAuditLogsSurviveServiceRestart(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	stores := newMemoryAuthStores()
+	catalogStore := memoryCatalogStore{catalog: plans.Catalog{
+		Plans: []plans.Plan{{
+			ID:                       "free",
+			Name:                     "Free From Store",
+			ActivePasteLimit:         3,
+			ActiveStorageBytes:       1024,
+			SingleTextBytes:          128,
+			SingleFileBytes:          256,
+			SinglePasteBytes:         512,
+			AttachmentsPerPasteLimit: 2,
+			MaxRetentionSeconds:      3600,
+			DailyUploadBytes:         1024,
+			DailyShareDownloadBytes:  2048,
+		}},
+		Prices: []plans.Price{},
+	}}
+	auditStore := newMemoryAuditLogStore()
+
+	svc := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         stores.authStores(),
+		Catalog:      catalogStore,
+		AuditLogs:    auditStore,
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	admin := seedAdminTestUser(t, svc, "admin-catalog-audit@example.com")
+	owner := registerTestUser(t, svc, "owner-catalog-audit@example.com")
+
+	catalog := svc.PlanCatalog()
+	if len(catalog.Plans) != 1 || catalog.Plans[0].Name != "Free From Store" {
+		t.Fatalf("expected service catalog to come from store, got %#v", catalog)
+	}
+	if _, err := svc.AdminFreezeUser(admin.ID, owner.User.ID, true); err != nil {
+		t.Fatalf("admin freeze user: %v", err)
+	}
+
+	restarted := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         stores.authStores(),
+		Catalog:      catalogStore,
+		AuditLogs:    auditStore,
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	logs, err := restarted.AdminAuditLogs(admin.ID)
+	if err != nil {
+		t.Fatalf("read persisted audit logs: %v", err)
+	}
+	assertAuditAction(t, logs, "admin.user_freeze")
 }
 
 func TestGoogleOAuthCreatesVerifiedAccount(t *testing.T) {
@@ -538,6 +590,51 @@ func newTestServiceWithAuthStores(t *testing.T, now *time.Time, authStores AuthS
 	svc := NewWithStores(cfg, authStores, nil)
 	svc.now = func() time.Time { return *now }
 	return svc
+}
+
+func newTestServiceWithStorage(t *testing.T, now *time.Time, stores Stores) *Service {
+	t.Helper()
+	cfg := config.FromEnv()
+	cfg.BootstrapAdminEmail = ""
+	cfg.BootstrapAdminPassword = ""
+	svc, err := NewWithStorage(context.Background(), cfg, stores)
+	if err != nil {
+		t.Fatalf("new service with storage: %v", err)
+	}
+	svc.now = func() time.Time { return *now }
+	return svc
+}
+
+type memoryCatalogStore struct {
+	catalog plans.Catalog
+}
+
+func (s memoryCatalogStore) Catalog(_ context.Context) (plans.Catalog, error) {
+	return cloneCatalog(s.catalog), nil
+}
+
+type memoryAuditLogStore struct {
+	logs []AuditLog
+}
+
+func newMemoryAuditLogStore() *memoryAuditLogStore {
+	return &memoryAuditLogStore{logs: []AuditLog{}}
+}
+
+func (s *memoryAuditLogStore) RecordAuditLog(_ context.Context, log AuditLog) error {
+	s.logs = append(s.logs, log)
+	return nil
+}
+
+func (s *memoryAuditLogStore) AuditLogs(_ context.Context, limit int) ([]AuditLog, error) {
+	if limit <= 0 || limit > len(s.logs) {
+		limit = len(s.logs)
+	}
+	out := make([]AuditLog, 0, limit)
+	for i := len(s.logs) - 1; i >= 0 && len(out) < limit; i-- {
+		out = append(out, s.logs[i])
+	}
+	return out, nil
 }
 
 type failingDailyMetricStore struct {

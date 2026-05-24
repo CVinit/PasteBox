@@ -67,12 +67,23 @@ func runAPI(stdout io.Writer) int {
 	}
 	defer pool.Close()
 
-	service := app.NewWithStores(cfg, app.AuthStores{
-		Users:         postgres.NewUserStore(pool),
-		Sessions:      postgres.NewSessionStore(pool),
-		Tokens:        postgres.NewAuthTokenStore(pool),
-		LoginFailures: postgres.NewLoginFailureStore(pool),
-	}, postgres.NewDailyMetricStore(pool))
+	startupCtx, startupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer startupCancel()
+	service, err := app.NewWithStorage(startupCtx, cfg, app.Stores{
+		Auth: app.AuthStores{
+			Users:         postgres.NewUserStore(pool),
+			Sessions:      postgres.NewSessionStore(pool),
+			Tokens:        postgres.NewAuthTokenStore(pool),
+			LoginFailures: postgres.NewLoginFailureStore(pool),
+		},
+		DailyMetrics: postgres.NewDailyMetricStore(pool),
+		Catalog:      postgres.NewCatalogStore(pool),
+		AuditLogs:    postgres.NewAuditLogStore(pool),
+	})
+	if err != nil {
+		logger.Error("service setup failed", "error", err)
+		return 1
+	}
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,

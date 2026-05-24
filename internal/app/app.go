@@ -56,6 +56,7 @@ type Service struct {
 	now     func() time.Time
 	catalog plans.Catalog
 	auth    AuthStores
+	audit   AuditLogStore
 
 	usersByID        map[string]*User
 	userIDByEmail    map[string]string
@@ -87,11 +88,32 @@ func New(cfg config.Config) *Service {
 }
 
 func NewWithStores(cfg config.Config, authStores AuthStores, dailyMetrics DailyMetricStore) *Service {
+	svc, err := NewWithStorage(context.Background(), cfg, Stores{
+		Auth:         authStores,
+		DailyMetrics: dailyMetrics,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return svc
+}
+
+func NewWithStorage(ctx context.Context, cfg config.Config, stores Stores) (*Service, error) {
+	catalog := plans.DefaultCatalog()
+	if stores.Catalog != nil {
+		loaded, err := stores.Catalog.Catalog(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("load plan catalog: %w", err)
+		}
+		catalog = cloneCatalog(loaded)
+	}
+
 	svc := &Service{
 		cfg:              cfg,
 		now:              time.Now,
-		catalog:          plans.DefaultCatalog(),
-		auth:             authStores,
+		catalog:          catalog,
+		auth:             stores.Auth,
+		audit:            stores.AuditLogs,
 		usersByID:        map[string]*User{},
 		userIDByEmail:    map[string]string{},
 		sessionsByID:     map[string]*Session{},
@@ -109,13 +131,13 @@ func NewWithStores(cfg config.Config, authStores AuthStores, dailyMetrics DailyM
 		ordersByID:       map[string]*Order{},
 		webhookEventKeys: map[string]string{},
 	}
-	if dailyMetrics != nil {
-		svc.dailyMetrics = dailyMetrics
+	if stores.DailyMetrics != nil {
+		svc.dailyMetrics = stores.DailyMetrics
 	}
 	if cfg.BootstrapAdminEmail != "" && cfg.BootstrapAdminPassword != "" {
 		_, _ = svc.SeedAdmin(cfg.BootstrapAdminEmail, cfg.BootstrapAdminPassword)
 	}
-	return svc
+	return svc, nil
 }
 
 func NewForTest(now func() time.Time) *Service {
@@ -126,6 +148,22 @@ func NewForTest(now func() time.Time) *Service {
 
 func NewWithDailyMetricStore(cfg config.Config, dailyMetrics DailyMetricStore) *Service {
 	return NewWithStores(cfg, AuthStores{}, dailyMetrics)
+}
+
+type Stores struct {
+	Auth         AuthStores
+	DailyMetrics DailyMetricStore
+	Catalog      CatalogStore
+	AuditLogs    AuditLogStore
+}
+
+type CatalogStore interface {
+	Catalog(ctx context.Context) (plans.Catalog, error)
+}
+
+type AuditLogStore interface {
+	RecordAuditLog(ctx context.Context, log AuditLog) error
+	AuditLogs(ctx context.Context, limit int) ([]AuditLog, error)
 }
 
 type User struct {
@@ -588,7 +626,9 @@ func (s *Service) GoogleOAuth(_ context.Context, email string, displayName strin
 		}
 		return AuthResult{}, err
 	}
-	s.auditLocked(user.ID, "auth.google_oauth_stub", user.ID, map[string]any{"subject": googleSubject})
+	if err := s.auditLocked(user.ID, "auth.google_oauth_stub", user.ID, map[string]any{"subject": googleSubject}); err != nil {
+		return AuthResult{}, err
+	}
 	s.mail(user.Email, "Welcome to PasteBox", "Your Google-authenticated PasteBox account is ready.")
 	return s.newSessionLocked(user)
 }
@@ -1420,7 +1460,9 @@ func (s *Service) ReplayWebhookEvent(actorID string, eventID string) (WebhookEve
 	if event.ID == "" {
 		event = s.recordWebhookEventLocked(original.Provider, "webhook.replayed", original.TargetID, replayKey, metadata)
 	}
-	s.auditLocked(actorID, "admin.webhook_replay", original.ID, map[string]any{"replayEventId": event.ID})
+	if err := s.auditLocked(actorID, "admin.webhook_replay", original.ID, map[string]any{"replayEventId": event.ID}); err != nil {
+		return WebhookEvent{}, err
+	}
 	return event, nil
 }
 
@@ -1457,7 +1499,9 @@ func (s *Service) markOrderPaidLocked(actorID string, orderID string, txID strin
 	if err := s.updateUserLocked(user); err != nil {
 		return Order{}, err
 	}
-	s.auditLocked(actorID, "billing.order_paid", order.ID, map[string]any{"planId": order.PlanID, "provider": order.Provider})
+	if err := s.auditLocked(actorID, "billing.order_paid", order.ID, map[string]any{"planId": order.PlanID, "provider": order.Provider}); err != nil {
+		return Order{}, err
+	}
 	metadata = cloneMetadata(metadata)
 	if order.TxID != "" {
 		metadata["txId"] = order.TxID
@@ -1529,7 +1573,9 @@ func (s *Service) AdminResolveReport(actorID string, reportID string, status str
 	for _, report := range s.reports {
 		if report.ID == reportID {
 			report.Status = status
-			s.auditLocked(actorID, "admin.report_status", report.ID, map[string]any{"status": status})
+			if err := s.auditLocked(actorID, "admin.report_status", report.ID, map[string]any{"status": status}); err != nil {
+				return Report{}, err
+			}
 			return *report, nil
 		}
 	}
@@ -1595,7 +1641,9 @@ func (s *Service) AdminSetUserPlan(actorID string, userID string, planID string,
 	if err := s.updateUserLocked(user); err != nil {
 		return UserView{}, err
 	}
-	s.auditLocked(actorID, "admin.user_plan_set", userID, map[string]any{"planId": planID})
+	if err := s.auditLocked(actorID, "admin.user_plan_set", userID, map[string]any{"planId": planID}); err != nil {
+		return UserView{}, err
+	}
 	return viewUser(user), nil
 }
 
@@ -1614,7 +1662,9 @@ func (s *Service) AdminFreezeUser(actorID string, userID string, frozen bool) (U
 	if err := s.updateUserLocked(user); err != nil {
 		return UserView{}, err
 	}
-	s.auditLocked(actorID, "admin.user_freeze", userID, map[string]any{"frozen": frozen})
+	if err := s.auditLocked(actorID, "admin.user_freeze", userID, map[string]any{"frozen": frozen}); err != nil {
+		return UserView{}, err
+	}
 	return viewUser(user), nil
 }
 
@@ -1710,7 +1760,9 @@ func (s *Service) AdminTakedownPaste(actorID string, pasteID string) error {
 	}
 	paste.Status = "taken_down"
 	paste.UpdatedAt = s.now().UTC()
-	s.auditLocked(actorID, "admin.paste_takedown", pasteID, nil)
+	if err := s.auditLocked(actorID, "admin.paste_takedown", pasteID, nil); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1737,7 +1789,9 @@ func (s *Service) AdminFreezeAttachment(actorID string, attachmentID string, fro
 		paste.ScanStatus = aggregateScanStatus(s.attachmentsForPasteLocked(paste))
 		paste.UpdatedAt = s.now().UTC()
 	}
-	s.auditLocked(actorID, "admin.attachment_freeze", attachmentID, map[string]any{"frozen": frozen})
+	if err := s.auditLocked(actorID, "admin.attachment_freeze", attachmentID, map[string]any{"frozen": frozen}); err != nil {
+		return AttachmentView{}, err
+	}
 	return viewAttachment(attachment), nil
 }
 
@@ -1763,7 +1817,9 @@ func (s *Service) AdminRetryScan(actorID string, attachmentID string) (Attachmen
 		paste.ScanStatus = aggregateScanStatus(s.attachmentsForPasteLocked(paste))
 		paste.UpdatedAt = s.now().UTC()
 	}
-	s.auditLocked(actorID, "admin.scan_retry", attachmentID, nil)
+	if err := s.auditLocked(actorID, "admin.scan_retry", attachmentID, nil); err != nil {
+		return AttachmentView{}, err
+	}
 	return viewAttachment(attachment), nil
 }
 
@@ -1779,7 +1835,9 @@ func (s *Service) AdminRevokeShare(actorID string, shareID string) (ShareView, e
 	}
 	now := s.now().UTC()
 	share.RevokedAt = &now
-	s.auditLocked(actorID, "admin.share_revoke", shareID, nil)
+	if err := s.auditLocked(actorID, "admin.share_revoke", shareID, nil); err != nil {
+		return ShareView{}, err
+	}
 	return s.viewShareLocked(share), nil
 }
 
@@ -1788,6 +1846,9 @@ func (s *Service) AdminAuditLogs(actorID string) ([]AuditLog, error) {
 	defer s.mu.Unlock()
 	if err := s.requireAdminLocked(actorID); err != nil {
 		return nil, err
+	}
+	if s.audit != nil {
+		return s.audit.AuditLogs(context.Background(), 100)
 	}
 	out := make([]AuditLog, 0, len(s.auditLogs))
 	for _, log := range s.auditLogs {
@@ -2396,8 +2457,15 @@ func (s *Service) requireAdminLocked(userID string) error {
 	return nil
 }
 
-func (s *Service) auditLocked(actorID string, action string, target string, metadata map[string]any) {
-	s.auditLogs = append(s.auditLogs, &AuditLog{ID: s.newID("aud"), ActorID: actorID, Action: action, Target: target, Metadata: metadata, CreatedAt: s.now().UTC()})
+func (s *Service) auditLocked(actorID string, action string, target string, metadata map[string]any) error {
+	log := &AuditLog{ID: s.newID("aud"), ActorID: actorID, Action: action, Target: target, Metadata: cloneMetadata(metadata), CreatedAt: s.now().UTC()}
+	if s.audit != nil {
+		if err := s.audit.RecordAuditLog(context.Background(), *log); err != nil {
+			return err
+		}
+	}
+	s.auditLogs = append(s.auditLogs, log)
+	return nil
 }
 
 func (s *Service) recordWebhookEventLocked(provider string, eventType string, targetID string, idempotencyKey string, metadata map[string]any) WebhookEvent {
@@ -2485,8 +2553,11 @@ func (s *Service) mail(to string, subject string, body string) {
 }
 
 func (s *Service) newID(prefix string) string {
-	s.nextID++
-	return fmt.Sprintf("%s_%06d", prefix, s.nextID)
+	var raw [12]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		panic(err)
+	}
+	return fmt.Sprintf("%s_%s", prefix, hex.EncodeToString(raw[:]))
 }
 
 func viewUser(user *User) UserView {
