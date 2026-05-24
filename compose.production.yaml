@@ -37,6 +37,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      clamav:
+        condition: service_started
     logging:
       driver: json-file
       options:
@@ -74,6 +76,19 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  clamav:
+    image: ${PASTEBOX_CLAMAV_IMAGE:-clamav/clamav:1.4}
+    restart: unless-stopped
+    expose:
+      - "3310"
+    volumes:
+      - pastebox-clamav:/var/lib/clamav
     logging:
       driver: json-file
       options:
@@ -157,6 +172,7 @@ services:
 volumes:
   pastebox-postgres:
   pastebox-redis:
+  pastebox-clamav:
   pastebox-caddy-data:
   pastebox-caddy-config:
   pastebox-backups:

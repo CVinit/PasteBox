@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"pastebox/internal/app"
 	"pastebox/internal/postgres"
 )
 
@@ -92,6 +93,62 @@ func TestRunnerMarksUnsupportedJobFailedAfterMaxAttempts(t *testing.T) {
 	updated := jobs.updated[0]
 	if updated.Status != "failed" || updated.Attempts != 5 || updated.LastError != `unsupported job kind "unknown"` {
 		t.Fatalf("expected failed job update, got %#v", updated)
+	}
+}
+
+func TestRunnerCompletesScanJob(t *testing.T) {
+	now := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
+	jobs := &fakeJobStore{runnable: []postgres.JobRecord{{
+		ID:        "job_scan",
+		Kind:      "scan",
+		TargetID:  "att_scan",
+		Status:    "pending",
+		RunAfter:  now.Add(-time.Minute),
+		CreatedAt: now.Add(-time.Minute),
+		UpdatedAt: now.Add(-time.Minute),
+	}}}
+	service := &fakeCleanupService{}
+
+	runner := NewRunner(jobs, service, Config{Now: func() time.Time { return now }, Logger: slog.Default(), Scanner: fakeScanner{}})
+	summary, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if summary.Seen != 1 || summary.Completed != 1 || summary.Retried != 0 || summary.Failed != 0 {
+		t.Fatalf("unexpected summary: %#v", summary)
+	}
+	if service.scanCalls != 1 || service.scannedAttachmentID != "att_scan" {
+		t.Fatalf("expected scan call for attachment, calls=%d id=%q", service.scanCalls, service.scannedAttachmentID)
+	}
+	updated := jobs.updated[0]
+	if updated.Status != "completed" || updated.Attempts != 1 || updated.LastError != "" {
+		t.Fatalf("expected completed scan job update, got %#v", updated)
+	}
+}
+
+func TestRunnerRetriesScanWhenScannerIsMissing(t *testing.T) {
+	now := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
+	jobs := &fakeJobStore{runnable: []postgres.JobRecord{{
+		ID:        "job_scan_missing",
+		Kind:      "scan",
+		TargetID:  "att_scan",
+		Status:    "pending",
+		RunAfter:  now.Add(-time.Minute),
+		CreatedAt: now.Add(-time.Minute),
+		UpdatedAt: now.Add(-time.Minute),
+	}}}
+
+	runner := NewRunner(jobs, &fakeCleanupService{}, Config{Now: func() time.Time { return now }, Logger: slog.Default()})
+	summary, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if summary.Seen != 1 || summary.Completed != 0 || summary.Retried != 1 || summary.Failed != 0 {
+		t.Fatalf("unexpected summary: %#v", summary)
+	}
+	updated := jobs.updated[0]
+	if updated.Status != "pending" || updated.Attempts != 1 || updated.LastError != "scanner is not configured" {
+		t.Fatalf("expected retry scan job update, got %#v", updated)
 	}
 }
 
@@ -185,8 +242,11 @@ func TestRunnerMarksMailFailedAfterMaxAttempts(t *testing.T) {
 }
 
 type fakeCleanupService struct {
-	cleanupCalls int
-	err          error
+	cleanupCalls        int
+	scanCalls           int
+	scannedAttachmentID string
+	err                 error
+	scanErr             error
 }
 
 func (s *fakeCleanupService) RunCleanup(_ string) (map[string]int, error) {
@@ -195,6 +255,18 @@ func (s *fakeCleanupService) RunCleanup(_ string) (map[string]int, error) {
 		return nil, s.err
 	}
 	return map[string]int{"expired": 1}, nil
+}
+
+func (s *fakeCleanupService) RunAttachmentScan(_ app.Scanner, attachmentID string) error {
+	s.scanCalls++
+	s.scannedAttachmentID = attachmentID
+	return s.scanErr
+}
+
+type fakeScanner struct{}
+
+func (fakeScanner) Scan(_ context.Context, _ string, _ string, _ []byte) (app.ScanResult, error) {
+	return app.ScanResult{Status: "clean"}, nil
 }
 
 type fakeJobStore struct {

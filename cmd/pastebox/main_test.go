@@ -92,6 +92,8 @@ func TestProductionPreflightRequiresExplicitProductionEnvironment(t *testing.T) 
 		"PASTEBOX_S3_REGION",
 		"PASTEBOX_S3_ACCESS_KEY",
 		"PASTEBOX_S3_SECRET_KEY",
+		"PASTEBOX_SCANNER_PROVIDER",
+		"PASTEBOX_CLAMAV_ADDR",
 		"PASTEBOX_GOOGLE_OAUTH_CLIENT_ID",
 		"PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET",
 		"PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL",
@@ -376,6 +378,9 @@ func setValidProductionEnv(t *testing.T) {
 	t.Setenv("PASTEBOX_S3_REGION", "us-east-1")
 	t.Setenv("PASTEBOX_S3_ACCESS_KEY", "access-key")
 	t.Setenv("PASTEBOX_S3_SECRET_KEY", "secret-key")
+	t.Setenv("PASTEBOX_SCANNER_PROVIDER", "clamav")
+	t.Setenv("PASTEBOX_CLAMAV_ADDR", "clamav:3310")
+	t.Setenv("PASTEBOX_CLAMAV_TIMEOUT_SECONDS", "30")
 	t.Setenv("PASTEBOX_GOOGLE_OAUTH_CLIENT_ID", "google-client-id")
 	t.Setenv("PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET", "google-client-secret")
 	t.Setenv("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL", "https://pastebox.example.com/api/v1/auth/google/callback")

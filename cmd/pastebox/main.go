@@ -26,6 +26,7 @@ import (
 	"pastebox/internal/mailer"
 	"pastebox/internal/objectstore"
 	"pastebox/internal/postgres"
+	"pastebox/internal/scanner"
 	"pastebox/internal/worker"
 )
 
@@ -268,6 +269,8 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		"PASTEBOX_S3_REGION",
 		"PASTEBOX_S3_ACCESS_KEY",
 		"PASTEBOX_S3_SECRET_KEY",
+		"PASTEBOX_SCANNER_PROVIDER",
+		"PASTEBOX_CLAMAV_ADDR",
 		"PASTEBOX_GOOGLE_OAUTH_CLIENT_ID",
 		"PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET",
 		"PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL",
@@ -331,6 +334,10 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	if err := validateResticRepository(strings.TrimSpace(os.Getenv("PASTEBOX_RESTIC_REPOSITORY"))); err != nil {
+		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
+		return 1
+	}
+	if err := validateScannerConfig(cfg); err != nil {
 		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
 		return 1
 	}
@@ -440,6 +447,25 @@ func validateResticRepository(repository string) error {
 	return validateRemoteHTTPSEndpoint(rawEndpoint, "PASTEBOX_RESTIC_REPOSITORY")
 }
 
+func validateScannerConfig(cfg config.Config) error {
+	switch strings.ToLower(strings.TrimSpace(cfg.Scanner.Provider)) {
+	case "clamav":
+		if strings.TrimSpace(cfg.Scanner.ClamAV.Addr) == "" {
+			return fmt.Errorf("PASTEBOX_CLAMAV_ADDR is required when PASTEBOX_SCANNER_PROVIDER=clamav")
+		}
+		host, port, err := net.SplitHostPort(cfg.Scanner.ClamAV.Addr)
+		if err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+			return fmt.Errorf("PASTEBOX_CLAMAV_ADDR must be host:port, got %q", cfg.Scanner.ClamAV.Addr)
+		}
+		if cfg.Scanner.ClamAV.Timeout <= 0 {
+			return fmt.Errorf("PASTEBOX_CLAMAV_TIMEOUT_SECONDS must be positive")
+		}
+		return nil
+	default:
+		return fmt.Errorf("PASTEBOX_SCANNER_PROVIDER must be clamav in production, got %q", cfg.Scanner.Provider)
+	}
+}
+
 func isLocalHost(host string) bool {
 	normalized := strings.ToLower(strings.Trim(host, "[]"))
 	switch normalized {
@@ -482,11 +508,17 @@ func runWorker(args []string, stdout io.Writer, stderr io.Writer) int {
 		logger.Error("worker mailer setup failed", "error", err)
 		return 1
 	}
+	scan, err := scanner.New(cfg.Scanner)
+	if err != nil {
+		logger.Error("worker scanner setup failed", "error", err)
+		return 1
+	}
 
 	runner := worker.NewRunnerWithMail(postgres.NewJobStore(pool), postgres.NewMailStore(pool), mailSender, service, worker.Config{
 		BatchSize:    *batchSize,
 		PollInterval: *pollInterval,
 		Logger:       logger,
+		Scanner:      scan,
 	})
 
 	if *once {

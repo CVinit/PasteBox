@@ -83,6 +83,7 @@ type Service struct {
 	reports          []*Report
 	cleanupJobs      []*QueueItem
 	cleanupFailures  []*QueueItem
+	scanJobs         []*QueueItem
 	scanFailures     []*QueueItem
 	failedJobs       []*QueueItem
 	mails            []*Mail
@@ -1171,7 +1172,7 @@ func (s *Service) AddAttachment(userID string, pasteID string, fileName string, 
 		}
 	}
 	now := s.now().UTC()
-	status, scanStatus, risk := classifyAttachment(fileName, contentType)
+	status, scanStatus, risk := "active", "pending", classifyAttachmentRisk(fileName, contentType)
 	objectKey := userID + "/" + shaHex
 	width, height := imageDimensions(contentType, content)
 	existingObjectRefs := s.objectRefs[objectKey]
@@ -1210,21 +1211,11 @@ func (s *Service) AddAttachment(userID string, pasteID string, fileName string, 
 	}
 	pasteUpdated := true
 	scanQueueCreated := false
-	if scanStatus == "scan_failed" {
-		if err := s.createQueueItemLocked(&s.scanFailures, &QueueItem{
-			ID:        s.newID("scanq"),
-			Kind:      "scan_failed",
-			TargetID:  attachment.ID,
-			Error:     risk,
-			Attempts:  1,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}); err != nil {
-			s.rollbackAttachmentCreateLocked(paste, previousPasteScanStatus, previousPasteUpdatedAt, attachment, attachmentCreated, pasteUpdated, false)
-			return AttachmentView{}, err
-		}
-		scanQueueCreated = true
+	if err := s.scheduleScanJobLocked(attachment.ID, now); err != nil {
+		s.rollbackAttachmentCreateLocked(paste, previousPasteScanStatus, previousPasteUpdatedAt, attachment, attachmentCreated, pasteUpdated, false)
+		return AttachmentView{}, err
 	}
+	scanQueueCreated = true
 	if err := s.recordDailyUploadLocked(userID, int64(len(content))); err != nil {
 		s.rollbackAttachmentCreateLocked(paste, previousPasteScanStatus, previousPasteUpdatedAt, attachment, attachmentCreated, pasteUpdated, scanQueueCreated)
 		return AttachmentView{}, err
@@ -1755,6 +1746,7 @@ func (s *Service) AdminDashboard(actorID string) (map[string]any, error) {
 		"activeStorageBytes":    storage,
 		"reportsOpen":           countReports(s.reports, "open"),
 		"cleanupQueueDepth":     len(s.cleanupJobs),
+		"scanQueueDepth":        len(s.scanJobs),
 		"scanFailureQueueDepth": len(s.scanFailures),
 		"failedJobQueueDepth":   len(s.failedJobs),
 		"orders":                len(s.ordersByID),
@@ -1975,19 +1967,24 @@ func (s *Service) AdminRetryScan(actorID string, attachmentID string) (Attachmen
 	if attachment.ScanStatus == "malicious" {
 		return AttachmentView{}, E(http.StatusForbidden, "malicious_file", "malicious files cannot be auto-retried")
 	}
-	attachment.ScanStatus = "clean"
-	if attachment.Risk == "executable_file" || attachment.Risk == "scan_failed" {
-		attachment.Risk = ""
-	}
+	now := s.now().UTC()
+	attachment.ScanStatus = "pending"
+	attachment.Risk = classifyAttachmentRisk(attachment.FileName, attachment.ContentType)
 	if err := s.updateAttachmentLocked(attachment); err != nil {
 		return AttachmentView{}, err
 	}
 	if err := s.deleteQueueItemsByKindTargetLocked(&s.scanFailures, "scan_failed", attachment.ID); err != nil {
 		return AttachmentView{}, err
 	}
+	if err := s.deleteQueueItemsByKindTargetLocked(&s.scanJobs, "scan", attachment.ID); err != nil {
+		return AttachmentView{}, err
+	}
+	if err := s.scheduleScanJobLocked(attachment.ID, now); err != nil {
+		return AttachmentView{}, err
+	}
 	if paste := s.pastesByID[attachment.PasteID]; paste != nil {
 		paste.ScanStatus = aggregateScanStatus(s.attachmentsForPasteLocked(paste))
-		paste.UpdatedAt = s.now().UTC()
+		paste.UpdatedAt = now
 		if err := s.updatePasteLocked(paste); err != nil {
 			return AttachmentView{}, err
 		}
@@ -1996,6 +1993,89 @@ func (s *Service) AdminRetryScan(actorID string, attachmentID string) (Attachmen
 		return AttachmentView{}, err
 	}
 	return viewAttachment(attachment), nil
+}
+
+func (s *Service) RunAttachmentScan(scanner Scanner, attachmentID string) error {
+	if scanner == nil {
+		return errors.New("scanner is required")
+	}
+
+	s.mu.Lock()
+	attachment, err := s.attachmentByIDLocked(attachmentID)
+	if err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	if attachment.Status != "active" || attachment.ScanStatus == "malicious" {
+		s.mu.Unlock()
+		return nil
+	}
+	content, err := s.objectContentLocked(attachment)
+	fileName := attachment.FileName
+	contentType := attachment.ContentType
+	objectKey := attachment.ObjectKey
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+
+	result, scanErr := scanner.Scan(context.Background(), fileName, contentType, content)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	attachment, err = s.attachmentByIDLocked(attachmentID)
+	if err != nil {
+		return err
+	}
+	if attachment.Status != "active" || attachment.ScanStatus == "malicious" || attachment.ObjectKey != objectKey {
+		return nil
+	}
+	if scanErr != nil {
+		if err := s.applyAttachmentScanResultLocked(attachment, ScanResult{Status: "scan_failed", Risk: "scanner_unavailable"}); err != nil {
+			return err
+		}
+		return scanErr
+	}
+	switch result.Status {
+	case "clean", "malicious", "scan_failed":
+		return s.applyAttachmentScanResultLocked(attachment, result)
+	default:
+		if err := s.applyAttachmentScanResultLocked(attachment, ScanResult{Status: "scan_failed", Risk: "invalid_scanner_verdict"}); err != nil {
+			return err
+		}
+		return fmt.Errorf("invalid scanner verdict %q", result.Status)
+	}
+}
+
+func (s *Service) applyAttachmentScanResultLocked(attachment *Attachment, result ScanResult) error {
+	now := s.now().UTC()
+	attachment.ScanStatus = result.Status
+	attachment.Risk = result.Risk
+	if attachment.ScanStatus == "malicious" && attachment.Risk == "" {
+		attachment.Risk = "malware_detected"
+	}
+	if attachment.ScanStatus == "clean" && attachment.Risk == "" {
+		attachment.Risk = classifyAttachmentRisk(attachment.FileName, attachment.ContentType)
+	}
+	if err := s.updateAttachmentLocked(attachment); err != nil {
+		return err
+	}
+	if paste := s.pastesByID[attachment.PasteID]; paste != nil {
+		paste.ScanStatus = aggregateScanStatus(s.attachmentsForPasteLocked(paste))
+		paste.UpdatedAt = now
+		if err := s.updatePasteLocked(paste); err != nil {
+			return err
+		}
+	}
+	if attachment.ScanStatus == "scan_failed" {
+		return s.markScanFailureLocked(attachment.ID, defaultString(attachment.Risk, "scan_failed"), now)
+	}
+	if attachment.ScanStatus == "clean" {
+		if err := s.deleteQueueItemsByKindTargetLocked(&s.scanFailures, "scan_failed", attachment.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) AdminRevokeShare(actorID string, shareID string) (ShareView, error) {
@@ -2053,6 +2133,10 @@ func (s *Service) AdminQueues(actorID string) (map[string]any, error) {
 	if cleanupJobs == nil {
 		cleanupJobs = []*QueueItem{}
 	}
+	scanJobs := s.scanJobs
+	if scanJobs == nil {
+		scanJobs = []*QueueItem{}
+	}
 	scanFailures := s.scanFailures
 	if scanFailures == nil {
 		scanFailures = []*QueueItem{}
@@ -2065,7 +2149,7 @@ func (s *Service) AdminQueues(actorID string) (map[string]any, error) {
 	if reports == nil {
 		reports = []*Report{}
 	}
-	return map[string]any{"cleanupJobs": cleanupJobs, "cleanupFailures": cleanupFailures, "scanFailures": scanFailures, "failedJobs": failedJobs, "reports": reports}, nil
+	return map[string]any{"cleanupJobs": cleanupJobs, "cleanupFailures": cleanupFailures, "scanJobs": scanJobs, "scanFailures": scanFailures, "failedJobs": failedJobs, "reports": reports}, nil
 }
 
 func (s *Service) RunCleanup(actorID string) (map[string]int, error) {
@@ -2636,6 +2720,7 @@ func (s *Service) refreshQueueCachesLocked(ctx context.Context) error {
 	}
 	s.cleanupJobs = []*QueueItem{}
 	s.cleanupFailures = []*QueueItem{}
+	s.scanJobs = []*QueueItem{}
 	s.scanFailures = []*QueueItem{}
 	s.failedJobs = []*QueueItem{}
 
@@ -2654,6 +2739,15 @@ func (s *Service) refreshQueueCachesLocked(ctx context.Context) error {
 	}
 	for _, item := range cleanupFailures {
 		s.cacheQueueItemLocked(&s.cleanupFailures, item)
+	}
+	scanJobs, err := s.ops.Queues.ListQueueItemsByKind(ctx, "scan")
+	if err != nil {
+		return fmt.Errorf("load scan jobs: %w", err)
+	}
+	for _, item := range scanJobs {
+		if item.Status == "pending" {
+			s.cacheQueueItemLocked(&s.scanJobs, item)
+		}
 	}
 	scanFailures, err := s.ops.Queues.ListQueueItemsByKind(ctx, "scan_failed")
 	if err != nil {
@@ -2689,6 +2783,35 @@ func (s *Service) scheduleCleanupJobLocked(targetID string, now time.Time) error
 		Kind:      "cleanup",
 		TargetID:  targetID,
 		Status:    "pending",
+		RunAfter:  now,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+}
+
+func (s *Service) scheduleScanJobLocked(targetID string, now time.Time) error {
+	return s.createQueueItemLocked(&s.scanJobs, &QueueItem{
+		ID:        s.newID("job"),
+		Kind:      "scan",
+		TargetID:  targetID,
+		Status:    "pending",
+		RunAfter:  now,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+}
+
+func (s *Service) markScanFailureLocked(targetID string, reason string, now time.Time) error {
+	if err := s.deleteQueueItemsByKindTargetLocked(&s.scanFailures, "scan_failed", targetID); err != nil {
+		return err
+	}
+	return s.createQueueItemLocked(&s.scanFailures, &QueueItem{
+		ID:        s.newID("scanq"),
+		Kind:      "scan_failed",
+		TargetID:  targetID,
+		Status:    "failed",
+		Error:     reason,
+		Attempts:  1,
 		RunAfter:  now,
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -3359,6 +3482,7 @@ func (s *Service) removeQueueItemLocked(queue *[]*QueueItem, targetID string) {
 
 func (s *Service) rollbackAttachmentCreateLocked(paste *Paste, previousScanStatus string, previousUpdatedAt time.Time, attachment *Attachment, attachmentCreated bool, pasteUpdated bool, scanQueueCreated bool) {
 	if scanQueueCreated {
+		_ = s.deleteQueueItemsByKindTargetLocked(&s.scanJobs, "scan", attachment.ID)
 		_ = s.deleteQueueItemsByKindTargetLocked(&s.scanFailures, "scan_failed", attachment.ID)
 	}
 	if pasteUpdated {
@@ -3612,15 +3736,15 @@ func preview(text string) string {
 	return string(runes[:160]) + "..."
 }
 
-func classifyAttachment(fileName string, contentType string) (status string, scanStatus string, risk string) {
+func classifyAttachmentRisk(fileName string, contentType string) string {
 	ext := strings.ToLower(filepath.Ext(fileName))
 	if ext == ".exe" || ext == ".bat" || ext == ".cmd" || ext == ".scr" || ext == ".msi" {
-		return "active", "scan_failed", "executable_file"
+		return "executable_file"
 	}
 	if strings.Contains(strings.ToLower(contentType), "html") || strings.Contains(strings.ToLower(contentType), "svg") {
-		return "active", "clean", "render_as_download_only"
+		return "render_as_download_only"
 	}
-	return "active", "clean", ""
+	return ""
 }
 
 func (s *Service) putObjectLocked(key string, content []byte, contentType string) error {

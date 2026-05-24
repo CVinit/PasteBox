@@ -19,6 +19,15 @@ type ObjectStore interface {
 	DeleteObject(ctx context.Context, key string) error
 }
 
+type ScanResult struct {
+	Status string
+	Risk   string
+}
+
+type Scanner interface {
+	Scan(ctx context.Context, fileName string, contentType string, content []byte) (ScanResult, error)
+}
+
 type PasteStore interface {
 	CreatePaste(ctx context.Context, paste Paste) error
 	PasteByID(ctx context.Context, id string) (Paste, error)

@@ -7,11 +7,13 @@ import (
 	"log/slog"
 	"time"
 
+	"pastebox/internal/app"
 	"pastebox/internal/postgres"
 )
 
-type CleanupService interface {
+type Service interface {
 	RunCleanup(actorID string) (map[string]int, error)
+	RunAttachmentScan(scanner app.Scanner, attachmentID string) error
 }
 
 type JobStore interface {
@@ -34,6 +36,7 @@ type Config struct {
 	PollInterval time.Duration
 	Now          func() time.Time
 	Logger       *slog.Logger
+	Scanner      app.Scanner
 }
 
 type Summary struct {
@@ -51,15 +54,15 @@ type Runner struct {
 	jobs       JobStore
 	mails      MailStore
 	mailSender MailSender
-	service    CleanupService
+	service    Service
 	cfg        Config
 }
 
-func NewRunner(jobs JobStore, service CleanupService, cfg Config) *Runner {
+func NewRunner(jobs JobStore, service Service, cfg Config) *Runner {
 	return NewRunnerWithMail(jobs, nil, nil, service, cfg)
 }
 
-func NewRunnerWithMail(jobs JobStore, mails MailStore, mailSender MailSender, service CleanupService, cfg Config) *Runner {
+func NewRunnerWithMail(jobs JobStore, mails MailStore, mailSender MailSender, service Service, cfg Config) *Runner {
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = 25
 	}
@@ -169,6 +172,11 @@ func (r *Runner) handleJob(ctx context.Context, job postgres.JobRecord) error {
 	case "cleanup":
 		_, err := r.service.RunCleanup("")
 		return err
+	case "scan":
+		if r.cfg.Scanner == nil {
+			return errors.New("scanner is not configured")
+		}
+		return r.service.RunAttachmentScan(r.cfg.Scanner, job.TargetID)
 	default:
 		return fmt.Errorf("unsupported job kind %q", job.Kind)
 	}

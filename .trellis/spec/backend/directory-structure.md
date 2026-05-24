@@ -150,6 +150,7 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - Worker command: `pastebox worker [--once] [--batch-size <n>] [--poll-interval <duration>]`
 - Migration commands: `pastebox migrate status` and `pastebox migrate up`
 - Preflight command: `pastebox preflight production`
+- Scanner constructor: `scanner.New(config.ScannerConfig) (scanner.Scanner, error)`
 - Liveness endpoint: `GET /healthz`
 - Readiness endpoint: `GET /readyz`
 - API liveness endpoint: `GET /api/v1/health`
@@ -167,6 +168,15 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
   service cleanup path used by admin cleanup, then marking the job
   `completed`, `pending` for retry with backoff, or `failed` after the retry
   budget is exhausted.
+- The worker currently handles `kind = 'scan'` jobs by calling
+  `Service.RunAttachmentScan` with the configured scanner. Scanner results must
+  be one of `clean`, `scan_failed`, or `malicious`; invalid scanner verdicts are
+  treated as scan failures and leave the job retryable through the worker retry
+  policy.
+- Development may use `PASTEBOX_SCANNER_PROVIDER=heuristic`; production
+  preflight must require `PASTEBOX_SCANNER_PROVIDER=clamav`,
+  `PASTEBOX_CLAMAV_ADDR` as a valid `host:port`, and a positive
+  `PASTEBOX_CLAMAV_TIMEOUT_SECONDS`.
 - `pastebox migrate status` connects to `PASTEBOX_DATABASE_URL` and reports
   every embedded SQL migration as `pending`, `applied`, or `dirty`.
 - `pastebox migrate up` applies embedded PostgreSQL migrations transactionally
@@ -175,8 +185,8 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
   reject `CHANGE_ME` placeholder values, require `PASTEBOX_PUBLIC_URL` to use
   `https://`, reject `PASTEBOX_IMAGE=:latest`, require
   `PASTEBOX_S3_ENDPOINT` to be a non-local `https://` managed object-storage
-  endpoint, and require `PASTEBOX_RESTIC_REPOSITORY` to use an off-host
-  `s3:https://` repository.
+  endpoint, require `PASTEBOX_RESTIC_REPOSITORY` to use an off-host
+  `s3:https://` repository, and reject non-ClamAV production scanner settings.
 - `GET /readyz` returns `{"status":"ready"}` once the process is ready for
   traffic.
 - `GET /api/v1/ready` returns `app`, `env`, and `status`.
@@ -194,6 +204,11 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - `PASTEBOX_S3_ENDPOINT` is HTTP, invalid, or local -> preflight exits 1.
 - `PASTEBOX_RESTIC_REPOSITORY` is local, invalid, or not `s3:https://` ->
   preflight exits 1.
+- `PASTEBOX_SCANNER_PROVIDER` is not `clamav` in production -> preflight exits
+  1.
+- `PASTEBOX_CLAMAV_ADDR` is missing or not `host:port` when provider is
+  `clamav` -> preflight exits 1.
+- `PASTEBOX_CLAMAV_TIMEOUT_SECONDS` is zero or negative -> preflight exits 1.
 - `pastebox migrate status` or `up` cannot connect to PostgreSQL -> exits 1
   with a command-specific error.
 - Stored migration checksum differs from the embedded SQL file -> exits 1 and
@@ -222,8 +237,10 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - Migration package tests for embedded migration ordering, checksums, and table
   coverage.
 - Handler tests for `/readyz` and `/api/v1/ready` response shape.
-- Worker runner tests for successful cleanup completion, retry/backoff, and
-  unsupported job failure.
+- Worker runner tests for successful cleanup completion, successful scan
+  completion, missing scanner retry/backoff, and unsupported job failure.
+- Scanner package tests for provider validation, ClamAV timeout defaults,
+  heuristic verdicts, ClamAV response parsing, and risk normalization.
 - `docker compose --env-file deploy/production.env.example -f
   compose.production.yaml config` must render successfully with
   `PASTEBOX_ENV_FILE=./deploy/production.env.example`.

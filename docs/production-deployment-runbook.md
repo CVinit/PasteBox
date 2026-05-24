@@ -5,9 +5,9 @@ VPS running Docker Compose with an API container, worker container, PostgreSQL,
 Redis, HTTPS reverse proxy, and off-host backup flow.
 
 The stack is still gated by later roadmap phases. `pastebox migrate up` applies
-the PostgreSQL schema foundation, but mail delivery, billing, scanning, restore
-drills, and compliance work still need to be completed before real user data or
-paid traffic is allowed.
+the PostgreSQL schema foundation, and the worker can process mail and scan jobs,
+but billing, restore drills, and compliance work still need to be completed
+before real user data or paid traffic is allowed.
 
 ## Files
 
@@ -89,6 +89,8 @@ SMTP must use the confirmed enterprise mail service with
 `PASTEBOX_MAILER_PROVIDER=smtp`, a production host, valid credentials, a
 production sender address, and either `PASTEBOX_SMTP_TLS_MODE=starttls` or
 `PASTEBOX_SMTP_TLS_MODE=tls`. Plain SMTP is rejected in production preflight.
+Scanning must use `PASTEBOX_SCANNER_PROVIDER=clamav` with a reachable
+`PASTEBOX_CLAMAV_ADDR` such as `clamav:3310`.
 
 To validate the committed template without creating a real secret file:
 
@@ -138,15 +140,16 @@ and:
 
 The `worker` service runs `pastebox worker` under Docker Compose with
 `restart: unless-stopped`. The worker polls the PostgreSQL-backed `jobs` table
-and currently processes pending `cleanup` jobs that expire and delete content
-through the same production service wiring as the API. Use the bounded one-shot
-mode for deployment checks or maintenance:
+and currently processes pending `cleanup` and `scan` jobs through the same
+production service wiring as the API. Scan jobs use the configured ClamAV
+scanner and update attachment scan state to `clean`, `scan_failed`, or
+`malicious`. Use the bounded one-shot mode for deployment checks or maintenance:
 
 ```sh
 docker compose --env-file deploy/production.env -f compose.production.yaml run --rm worker --once
 ```
 
-Future phases will attach scan, deletion retry, notification retry, export, and
+Future phases will attach deletion retry, notification retry, export, and
 billing reconciliation jobs to this same durable worker runtime.
 
 ## HTTPS And Certificate Renewal

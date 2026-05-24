@@ -19,6 +19,7 @@ type Config struct {
 	RedisAddr   string
 
 	S3          S3Config
+	Scanner     ScannerConfig
 	GoogleOAuth GoogleOAuthConfig
 
 	MailerProvider string
@@ -38,6 +39,16 @@ type S3Config struct {
 	AccessKey    string
 	SecretKey    string
 	UsePathStyle bool
+}
+
+type ScannerConfig struct {
+	Provider string
+	ClamAV   ClamAVConfig
+}
+
+type ClamAVConfig struct {
+	Addr    string
+	Timeout int
 }
 
 type GoogleOAuthConfig struct {
@@ -76,6 +87,13 @@ func FromEnv() Config {
 			AccessKey:    envString("PASTEBOX_S3_ACCESS_KEY", "pastebox"),
 			SecretKey:    envString("PASTEBOX_S3_SECRET_KEY", "pastebox-secret"),
 			UsePathStyle: envBool("PASTEBOX_S3_USE_PATH_STYLE", true),
+		},
+		Scanner: ScannerConfig{
+			Provider: envString("PASTEBOX_SCANNER_PROVIDER", "heuristic"),
+			ClamAV: ClamAVConfig{
+				Addr:    envString("PASTEBOX_CLAMAV_ADDR", "localhost:3310"),
+				Timeout: envInt("PASTEBOX_CLAMAV_TIMEOUT_SECONDS", 30),
+			},
 		},
 		GoogleOAuth: GoogleOAuthConfig{
 			ClientID:     envString("PASTEBOX_GOOGLE_OAUTH_CLIENT_ID", ""),

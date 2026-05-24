@@ -525,8 +525,8 @@ func TestAdminHTTPContractsWriteAuditLogs(t *testing.T) {
 	assertStatus(t, upload, http.StatusCreated)
 	var attachment app.AttachmentView
 	decodeResponse(t, upload, &attachment)
-	if attachment.ScanStatus != "scan_failed" {
-		t.Fatalf("expected executable upload to create scan failure, got %#v", attachment)
+	if attachment.ScanStatus != "pending" {
+		t.Fatalf("expected upload to queue pending scan, got %#v", attachment)
 	}
 
 	admin := newHTTPTestClient(t, handler)
@@ -537,8 +537,8 @@ func TestAdminHTTPContractsWriteAuditLogs(t *testing.T) {
 	assertStatus(t, dashboard, http.StatusOK)
 	var dashboardBody map[string]any
 	decodeResponse(t, dashboard, &dashboardBody)
-	if dashboardBody["scanFailureQueueDepth"] == float64(0) {
-		t.Fatalf("expected scan failure queue depth in dashboard, got %#v", dashboardBody)
+	if dashboardBody["scanQueueDepth"] == float64(0) {
+		t.Fatalf("expected scan queue depth in dashboard, got %#v", dashboardBody)
 	}
 
 	queues := admin.json(http.MethodGet, "/api/v1/admin/queues", "")
@@ -549,6 +549,9 @@ func TestAdminHTTPContractsWriteAuditLogs(t *testing.T) {
 		if got := strings.TrimSpace(string(queuesBody[key])); got != "[]" {
 			t.Fatalf("expected admin queue field %s to return an array, got %s", key, got)
 		}
+	}
+	if got := strings.TrimSpace(string(queuesBody["scanJobs"])); got == "" || got == "null" {
+		t.Fatalf("expected admin scanJobs field to return an array, got %s", got)
 	}
 
 	setPlan := admin.json(http.MethodPatch, "/api/v1/admin/users/"+ownerAuth.User.ID+"/plan", `{"planId":"plus"}`)
@@ -563,8 +566,8 @@ func TestAdminHTTPContractsWriteAuditLogs(t *testing.T) {
 	assertStatus(t, retryScan, http.StatusOK)
 	var retriedAttachment app.AttachmentView
 	decodeResponse(t, retryScan, &retriedAttachment)
-	if retriedAttachment.ScanStatus != "clean" {
-		t.Fatalf("expected retried scan to be clean, got %#v", retriedAttachment)
+	if retriedAttachment.ScanStatus != "pending" {
+		t.Fatalf("expected retried scan to requeue pending scan, got %#v", retriedAttachment)
 	}
 
 	auditLogs := admin.json(http.MethodGet, "/api/v1/admin/audit-logs", "")

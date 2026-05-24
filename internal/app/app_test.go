@@ -50,6 +50,7 @@ func TestShareVisitAndDownloadLimitsAreSeparate(t *testing.T) {
 	user := registerTestUser(t, svc, "owner@example.com")
 	paste := createTestPaste(t, svc, user.User.ID, PasteInput{Title: "share", Text: "visible", ExpiresInSeconds: 3600})
 	attachment := addTestAttachment(t, svc, user.User.ID, paste.ID, "file.txt", []byte("download"))
+	runCleanScan(t, svc, attachment.ID)
 	share := createTestShare(t, svc, user.User.ID, paste.ID, ShareInput{
 		Password:         "pw",
 		MaxVisits:        1,
@@ -561,6 +562,10 @@ func TestAttachmentQuotaWriteFailureRollsBackMetadataObjectAndQueue(t *testing.T
 	if !ok || len(scanFailures) != 0 {
 		t.Fatalf("quota failure must roll back scan failure queue, got %#v", queues["scanFailures"])
 	}
+	scanJobs, ok := queues["scanJobs"].([]*QueueItem)
+	if !ok || len(scanJobs) != 0 {
+		t.Fatalf("quota failure must roll back scan job queue, got %#v", queues["scanJobs"])
+	}
 	if got, err := dailyMetrics.delegate.DailyMetric(context.Background(), owner.User.ID, "upload", now); err != nil || got != int64(len("base")) {
 		t.Fatalf("quota failure must not consume attachment daily quota, got %d err=%v", got, err)
 	}
@@ -683,8 +688,12 @@ func TestStoreBackedOperationalStateSurvivesServiceRestart(t *testing.T) {
 		t.Fatalf("expected resolved report to survive restart, got %#v", queues["reports"])
 	}
 	scanFailures, ok := queues["scanFailures"].([]*QueueItem)
-	if !ok || len(scanFailures) != 1 || scanFailures[0].TargetID != attachment.ID {
-		t.Fatalf("expected scan failure queue to survive restart, got %#v", queues["scanFailures"])
+	if !ok || len(scanFailures) != 0 {
+		t.Fatalf("expected no scan failure before worker scan, got %#v", queues["scanFailures"])
+	}
+	scanJobs, ok := queues["scanJobs"].([]*QueueItem)
+	if !ok || len(scanJobs) != 1 || scanJobs[0].TargetID != attachment.ID {
+		t.Fatalf("expected scan job to survive restart, got %#v", queues["scanJobs"])
 	}
 	mails, err := operationalStores.QueuedMails(context.Background(), 100)
 	if err != nil {
@@ -711,6 +720,10 @@ func TestStoreBackedOperationalStateSurvivesServiceRestart(t *testing.T) {
 	scanFailures, ok = queues["scanFailures"].([]*QueueItem)
 	if !ok || len(scanFailures) != 0 {
 		t.Fatalf("expected scan retry to delete persisted queue item, got %#v", queues["scanFailures"])
+	}
+	scanJobs, ok = queues["scanJobs"].([]*QueueItem)
+	if !ok || len(scanJobs) != 1 || scanJobs[0].TargetID != attachment.ID {
+		t.Fatalf("expected scan retry to queue persisted scan job, got %#v", queues["scanJobs"])
 	}
 }
 
@@ -828,20 +841,51 @@ func TestScanFailedAttachmentIsOwnerDownloadableButNotPublicUntilRetry(t *testin
 	attachment := addTestAttachment(t, svc, owner.User.ID, paste.ID, "tool.exe", []byte("binary"))
 	share := createTestShare(t, svc, owner.User.ID, paste.ID, ShareInput{ExpiresInSeconds: 3600})
 
-	if attachment.ScanStatus != "scan_failed" {
-		t.Fatalf("expected executable stub scan failure, got %q", attachment.ScanStatus)
+	if attachment.ScanStatus != "pending" {
+		t.Fatalf("expected executable upload to start pending scan, got %q", attachment.ScanStatus)
+	}
+	if _, _, err := svc.DownloadAttachment(owner.User.ID, attachment.ID); err != nil {
+		t.Fatalf("owner should be able to download pending attachment: %v", err)
+	}
+	if _, _, err := svc.DownloadSharedAttachment(share.Token, "", attachment.ID, ""); !hasAppCode(err, "scan_not_clean") {
+		t.Fatalf("expected public download to require clean scan while pending, got %v", err)
+	}
+	if err := svc.RunAttachmentScan(staticScanner{result: ScanResult{Status: "scan_failed", Risk: "scanner_timeout"}}, attachment.ID); err != nil {
+		t.Fatalf("run failed scan: %v", err)
 	}
 	if _, _, err := svc.DownloadAttachment(owner.User.ID, attachment.ID); err != nil {
 		t.Fatalf("owner should be able to download scan-failed attachment: %v", err)
 	}
 	if _, _, err := svc.DownloadSharedAttachment(share.Token, "", attachment.ID, ""); !hasAppCode(err, "scan_not_clean") {
-		t.Fatalf("expected public download to require clean scan, got %v", err)
+		t.Fatalf("expected public download to require clean scan after failed scan, got %v", err)
 	}
 	if _, err := svc.AdminRetryScan(admin.ID, attachment.ID); err != nil {
 		t.Fatalf("admin retry scan: %v", err)
 	}
+	if err := svc.RunAttachmentScan(staticScanner{result: ScanResult{Status: "clean"}}, attachment.ID); err != nil {
+		t.Fatalf("run clean retry scan: %v", err)
+	}
 	if _, _, err := svc.DownloadSharedAttachment(share.Token, "", attachment.ID, ""); err != nil {
 		t.Fatalf("public download after retry scan: %v", err)
+	}
+}
+
+func TestMaliciousScanBlocksOwnerAndPublicDownloads(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	owner := registerTestUser(t, svc, "malware-owner@example.com")
+	paste := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "malware", Text: "file", ExpiresInSeconds: 3600})
+	attachment := addTestAttachment(t, svc, owner.User.ID, paste.ID, "payload.bin", []byte("binary"))
+	share := createTestShare(t, svc, owner.User.ID, paste.ID, ShareInput{ExpiresInSeconds: 3600})
+
+	if err := svc.RunAttachmentScan(staticScanner{result: ScanResult{Status: "malicious", Risk: "eicar_test_file"}}, attachment.ID); err != nil {
+		t.Fatalf("run malicious scan: %v", err)
+	}
+	if _, _, err := svc.DownloadAttachment(owner.User.ID, attachment.ID); !hasAppCode(err, "malicious_file") {
+		t.Fatalf("expected owner download to block malicious file, got %v", err)
+	}
+	if _, _, err := svc.DownloadSharedAttachment(share.Token, "", attachment.ID, ""); !hasAppCode(err, "scan_not_clean") {
+		t.Fatalf("expected public download to block malicious file through clean-scan gate, got %v", err)
 	}
 }
 
@@ -892,9 +936,13 @@ func TestAdminOperationsWriteAuditLogsAndExposeQueues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("admin queues: %v", err)
 	}
-	scanFailures, ok := queues["scanFailures"].([]*QueueItem)
-	if !ok || len(scanFailures) == 0 {
-		t.Fatalf("expected scan failure queue to expose executable attachment, got %#v", queues["scanFailures"])
+	_, ok := queues["scanFailures"].([]*QueueItem)
+	if !ok {
+		t.Fatalf("expected scan failure queue in admin queues, got %#v", queues)
+	}
+	scanJobs, ok := queues["scanJobs"].([]*QueueItem)
+	if !ok || len(scanJobs) == 0 {
+		t.Fatalf("expected scan job queue to expose pending executable attachment, got %#v", queues["scanJobs"])
 	}
 	events, err := svc.AdminWebhookEvents(admin.ID)
 	if err != nil {
@@ -1581,6 +1629,22 @@ func addTestAttachment(t *testing.T, svc *Service, userID string, pasteID string
 		t.Fatalf("add attachment: %v", err)
 	}
 	return attachment
+}
+
+func runCleanScan(t *testing.T, svc *Service, attachmentID string) {
+	t.Helper()
+	if err := svc.RunAttachmentScan(staticScanner{result: ScanResult{Status: "clean"}}, attachmentID); err != nil {
+		t.Fatalf("run clean scan: %v", err)
+	}
+}
+
+type staticScanner struct {
+	result ScanResult
+	err    error
+}
+
+func (s staticScanner) Scan(_ context.Context, _ string, _ string, _ []byte) (ScanResult, error) {
+	return s.result, s.err
 }
 
 func createTestShare(t *testing.T, svc *Service, userID string, pasteID string, input ShareInput) ShareView {

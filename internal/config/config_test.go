@@ -26,6 +26,9 @@ func TestFromEnvUsesPasteBoxDefaults(t *testing.T) {
 func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	t.Setenv("PASTEBOX_S3_REGION", "auto")
 	t.Setenv("PASTEBOX_S3_USE_PATH_STYLE", "false")
+	t.Setenv("PASTEBOX_SCANNER_PROVIDER", "clamav")
+	t.Setenv("PASTEBOX_CLAMAV_ADDR", "clamav:3310")
+	t.Setenv("PASTEBOX_CLAMAV_TIMEOUT_SECONDS", "45")
 	t.Setenv("PASTEBOX_EPUSDT_ENABLED", "true")
 	t.Setenv("PASTEBOX_LOG_LEVEL", "DEBUG")
 	t.Setenv("PASTEBOX_PUBLIC_URL", "https://pastebox.example.com")
@@ -48,6 +51,9 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	}
 	if cfg.S3.Region != "auto" {
 		t.Fatalf("expected S3 region from env, got %q", cfg.S3.Region)
+	}
+	if cfg.Scanner.Provider != "clamav" || cfg.Scanner.ClamAV.Addr != "clamav:3310" || cfg.Scanner.ClamAV.Timeout != 45 {
+		t.Fatalf("expected scanner settings from env, got %#v", cfg.Scanner)
 	}
 	if !cfg.EpusdtEnabled {
 		t.Fatal("expected Epusdt flag to parse as true")

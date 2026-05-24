@@ -157,6 +157,7 @@ export type AdminShare = Share & {
 export type AdminQueues = {
   cleanupJobs: QueueItem[];
   cleanupFailures: QueueItem[];
+  scanJobs: QueueItem[];
   scanFailures: QueueItem[];
   failedJobs: QueueItem[];
   reports: Report[];
