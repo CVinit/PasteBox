@@ -104,6 +104,58 @@ func TestStaticFallbackServesAssetsAndFrontendRoutes(t *testing.T) {
 	}
 }
 
+func TestSessionCookieSecureFollowsProductionRequestScheme(t *testing.T) {
+	cfg := config.FromEnv()
+	cfg.AppEnv = "production"
+	cfg.BootstrapAdminEmail = ""
+	cfg.BootstrapAdminPassword = ""
+	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), app.New(cfg))
+
+	plain := httptest.NewRecorder()
+	plainReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/auth/google",
+		strings.NewReader(`{"email":"plain@example.com","displayName":"Plain","googleSubject":"plain-sub"}`),
+	)
+	plainReq.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(plain, plainReq)
+	assertStatus(t, plain, http.StatusOK)
+	plainCookie := sessionCookieFromResponse(t, plain)
+	if plainCookie.Secure {
+		t.Fatalf("expected plain HTTP test cookie to omit Secure, got %#v", plainCookie)
+	}
+
+	proxied := httptest.NewRecorder()
+	proxiedReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/auth/google",
+		strings.NewReader(`{"email":"proxied@example.com","displayName":"Proxied","googleSubject":"proxied-sub"}`),
+	)
+	proxiedReq.Header.Set("Content-Type", "application/json")
+	proxiedReq.Header.Set("X-Forwarded-Proto", "https")
+	handler.ServeHTTP(proxied, proxiedReq)
+	assertStatus(t, proxied, http.StatusOK)
+	proxiedCookie := sessionCookieFromResponse(t, proxied)
+	if !proxiedCookie.Secure {
+		t.Fatalf("expected HTTPS proxy cookie to set Secure, got %#v", proxiedCookie)
+	}
+
+	forwarded := httptest.NewRecorder()
+	forwardedReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/auth/google",
+		strings.NewReader(`{"email":"forwarded@example.com","displayName":"Forwarded","googleSubject":"forwarded-sub"}`),
+	)
+	forwardedReq.Header.Set("Content-Type", "application/json")
+	forwardedReq.Header.Set("Forwarded", `for=192.0.2.10; proto="https"; host=pastebox.example.com`)
+	handler.ServeHTTP(forwarded, forwardedReq)
+	assertStatus(t, forwarded, http.StatusOK)
+	forwardedCookie := sessionCookieFromResponse(t, forwarded)
+	if !forwardedCookie.Secure {
+		t.Fatalf("expected standard Forwarded HTTPS cookie to set Secure, got %#v", forwardedCookie)
+	}
+}
+
 func TestAuthPasteUploadShareAndQuotaHTTPContracts(t *testing.T) {
 	cfg := config.FromEnv()
 	cfg.BootstrapAdminEmail = ""
@@ -424,6 +476,17 @@ func decodeResponse(t *testing.T, res *httptest.ResponseRecorder, target any) {
 	if err := json.Unmarshal(res.Body.Bytes(), target); err != nil {
 		t.Fatalf("decode response body %q: %v", res.Body.String(), err)
 	}
+}
+
+func sessionCookieFromResponse(t *testing.T, res *httptest.ResponseRecorder) *http.Cookie {
+	t.Helper()
+	for _, cookie := range res.Result().Cookies() {
+		if cookie.Name == sessionCookieName {
+			return cookie
+		}
+	}
+	t.Fatalf("expected %s cookie in response headers: %v", sessionCookieName, res.Result().Header.Values("Set-Cookie"))
+	return nil
 }
 
 func containsAuditAction(logs []app.AuditLog, action string) bool {

@@ -65,8 +65,10 @@ Open:
 http://localhost:8080
 ```
 
-For HTTP-only local testing, keep `PASTEBOX_APP_ENV=development`; otherwise the
-session cookie is marked `Secure` and browsers will not send it over plain HTTP.
+For HTTP-only test deployments, PasteBox now omits the `Secure` cookie flag
+when the browser reaches the app over plain HTTP. For HTTPS deployments behind a
+reverse proxy, forward the original scheme with `X-Forwarded-Proto: https` so
+session cookies are marked `Secure`.
 
 ## Docker Compose With GHCR Image
 
@@ -114,7 +116,10 @@ and:
 
 ## TLS and Reverse Proxy
 
-For production mode, put PasteBox behind HTTPS. Example Nginx upstream:
+For production mode, put PasteBox behind HTTPS. The `X-Forwarded-Proto: https`
+header is part of the session-cookie contract: without it, PasteBox cannot tell
+that the browser used HTTPS when TLS terminates at the proxy. Example Nginx
+upstream:
 
 ```nginx
 server {

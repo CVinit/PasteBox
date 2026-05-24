@@ -179,7 +179,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	if s.handleErr(w, err) {
 		return
 	}
-	s.setSessionCookie(w, result.SessionID, result.ExpiresAt)
+	s.setSessionCookie(w, r, result.SessionID, result.ExpiresAt)
 	writeJSON(w, http.StatusCreated, result)
 }
 
@@ -195,7 +195,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if s.handleErr(w, err) {
 		return
 	}
-	s.setSessionCookie(w, result.SessionID, result.ExpiresAt)
+	s.setSessionCookie(w, r, result.SessionID, result.ExpiresAt)
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -212,7 +212,7 @@ func (s *Server) googleOAuth(w http.ResponseWriter, r *http.Request) {
 	if s.handleErr(w, err) {
 		return
 	}
-	s.setSessionCookie(w, result.SessionID, result.ExpiresAt)
+	s.setSessionCookie(w, r, result.SessionID, result.ExpiresAt)
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -220,7 +220,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie(sessionCookieName); err == nil {
 		s.app.Logout(cookie.Value)
 	}
-	s.clearSessionCookie(w)
+	s.clearSessionCookie(w, r)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -230,7 +230,7 @@ func (s *Server) logoutAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.app.LogoutAll(user.ID)
-	s.clearSessionCookie(w)
+	s.clearSessionCookie(w, r)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -285,7 +285,7 @@ func (s *Server) finishMagic(w http.ResponseWriter, r *http.Request) {
 	if s.handleErr(w, err) {
 		return
 	}
-	s.setSessionCookie(w, result.SessionID, result.ExpiresAt)
+	s.setSessionCookie(w, r, result.SessionID, result.ExpiresAt)
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -378,7 +378,7 @@ func (s *Server) executeAccountDeletion(w http.ResponseWriter, r *http.Request) 
 	if s.handleErr(w, err) {
 		return
 	}
-	s.clearSessionCookie(w)
+	s.clearSessionCookie(w, r)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -1066,19 +1066,19 @@ func (s *Server) optionalUserID(r *http.Request) string {
 	return user.ID
 }
 
-func (s *Server) setSessionCookie(w http.ResponseWriter, value string, expiresAt time.Time) {
+func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, value string, expiresAt time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    value,
 		Path:     "/",
 		Expires:  expiresAt,
 		HttpOnly: true,
-		Secure:   s.cfg.AppEnv != "development",
+		Secure:   s.secureSessionCookie(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 }
 
-func (s *Server) clearSessionCookie(w http.ResponseWriter) {
+func (s *Server) clearSessionCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
@@ -1086,9 +1086,37 @@ func (s *Server) clearSessionCookie(w http.ResponseWriter) {
 		Expires:  time.Unix(0, 0),
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   s.cfg.AppEnv != "development",
+		Secure:   s.secureSessionCookie(r),
 		SameSite: http.SameSiteLaxMode,
 	})
+}
+
+func (s *Server) secureSessionCookie(r *http.Request) bool {
+	if s.cfg.AppEnv == "development" {
+		return false
+	}
+	return requestIsHTTPS(r)
+}
+
+func requestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if proto := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])); proto == "https" {
+		return true
+	}
+	for _, entry := range strings.Split(r.Header.Get("Forwarded"), ",") {
+		for _, part := range strings.Split(entry, ";") {
+			key, value, ok := strings.Cut(part, "=")
+			if !ok || !strings.EqualFold(strings.TrimSpace(key), "proto") {
+				continue
+			}
+			if strings.EqualFold(strings.Trim(strings.TrimSpace(value), `"`), "https") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *Server) handleErr(w http.ResponseWriter, err error) bool {

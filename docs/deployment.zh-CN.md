@@ -124,7 +124,9 @@ https://pastebox.example.com
 
 ## HTTPS 反向代理示例
 
-生产模式下 Cookie 会带 `Secure` 标记，因此浏览器访问应使用 HTTPS。Nginx 示例：
+生产模式下浏览器访问应使用 HTTPS。PasteBox 会根据请求是否来自 HTTPS 来决定
+session cookie 是否带 `Secure` 标记；如果 TLS 在反向代理终止，必须转发
+`X-Forwarded-Proto: https`，否则后端无法判断浏览器原始访问协议。Nginx 示例：
 
 ```nginx
 server {
@@ -145,14 +147,17 @@ server {
 }
 ```
 
-如果只在本机 HTTP 演示，可以临时使用：
+如果只在 HTTP 测试环境演示，可以直接通过普通 HTTP 访问；此时 PasteBox 会省略
+`Secure` cookie 标记，避免浏览器丢弃登录态。不要把这种 HTTP 模式暴露给真实公网用户。
+
+如果希望明确使用开发环境文案和调试行为，可以临时设置：
 
 ```yaml
 PASTEBOX_APP_ENV: development
 PASTEBOX_PUBLIC_URL: http://localhost:8080
 ```
 
-不要把这种 HTTP 开发模式暴露给真实公网用户。
+真实生产环境仍应使用 HTTPS，并保留上方 `X-Forwarded-Proto: https` 代理头。
 
 ## 管理员账号
 
@@ -202,7 +207,7 @@ curl -v http://127.0.0.1:8080/healthz
 常见问题：
 
 - `docker pull` 返回权限错误：GHCR package 可能是私有，需要 `docker login ghcr.io`，或在 GitHub Packages 中公开该 package。
-- 浏览器登录后立即丢失登录态：生产模式要求 HTTPS；HTTP 测试请使用 `PASTEBOX_APP_ENV=development`。
+- 浏览器登录后立即丢失登录态：确认访问协议和代理头是否一致。HTTPS 反向代理必须传递 `X-Forwarded-Proto: https`；HTTP 测试环境会自动使用非 `Secure` cookie。
 - 重启后数据消失：这是当前内存 MVP 的已知边界，不是持久化部署形态。
 - 支付、邮件、病毒扫描没有真实外部效果：当前是 stub，不是生产集成。
 

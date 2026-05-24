@@ -195,8 +195,10 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
 
 ### 3. Contracts
 
-- Sessions use the `pastebox_session` HttpOnly cookie. Development may send it
-  without `Secure`; non-development must set `Secure`.
+- Sessions use the `pastebox_session` HttpOnly cookie. `Secure` is omitted in
+  development and in plain HTTP test deployments; HTTPS requests, including
+  proxied requests with `X-Forwarded-Proto: https` or `Forwarded:
+  proto=https`, must set `Secure`.
 - API errors use `{"error": "<code>", "message": "<human message>"}`.
 - `GET /api/v1/plans` returns `plans` and `prices`; `GET
   /api/v1/billing/prices` returns the same catalog plus provider-enabled flags
@@ -235,6 +237,8 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
 
 - Handler tests must cover representative auth, paste, upload, share, quota,
   admin mutation, queue, and audit response contracts.
+- Handler tests must cover session cookie `Secure` behavior when auth routes
+  run behind plain HTTP test deployments and HTTPS reverse proxies.
 - Handler tests must assert empty list and nested collection fields serialize as
   JSON arrays (`[]`) rather than `null`, because React call sites use array
   methods such as `.find()` and `.join()`.
