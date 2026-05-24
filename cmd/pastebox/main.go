@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -243,6 +245,14 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "production preflight failed: PASTEBOX_IMAGE must be a pinned non-latest tag or digest, got %q\n", image)
 		return 1
 	}
+	if err := validateRemoteHTTPSEndpoint(cfg.S3.Endpoint, "PASTEBOX_S3_ENDPOINT"); err != nil {
+		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
+		return 1
+	}
+	if err := validateResticRepository(strings.TrimSpace(os.Getenv("PASTEBOX_RESTIC_REPOSITORY"))); err != nil {
+		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
+		return 1
+	}
 
 	fmt.Fprintln(stdout, "production preflight passed")
 	return 0
@@ -259,6 +269,42 @@ func isPinnedImage(image string) bool {
 	lastSlash := strings.LastIndex(image, "/")
 	lastColon := strings.LastIndex(image, ":")
 	return lastColon > lastSlash
+}
+
+func validateRemoteHTTPSEndpoint(raw string, envKey string) error {
+	endpoint, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
+		return fmt.Errorf("%s must be a valid https URL, got %q", envKey, raw)
+	}
+	if endpoint.Scheme != "https" {
+		return fmt.Errorf("%s must use https:// managed object storage, got %q", envKey, raw)
+	}
+	host := endpoint.Hostname()
+	if isLocalHost(host) {
+		return fmt.Errorf("%s must point to off-host managed object storage, got local host %q", envKey, host)
+	}
+	return nil
+}
+
+func validateResticRepository(repository string) error {
+	if !strings.HasPrefix(repository, "s3:https://") {
+		return fmt.Errorf("PASTEBOX_RESTIC_REPOSITORY must use an off-host S3 HTTPS repository, got %q", repository)
+	}
+	rawEndpoint := strings.TrimPrefix(repository, "s3:")
+	if slash := strings.Index(rawEndpoint[len("https://"):], "/"); slash >= 0 {
+		rawEndpoint = rawEndpoint[:len("https://")+slash]
+	}
+	return validateRemoteHTTPSEndpoint(rawEndpoint, "PASTEBOX_RESTIC_REPOSITORY")
+}
+
+func isLocalHost(host string) bool {
+	normalized := strings.ToLower(strings.Trim(host, "[]"))
+	switch normalized {
+	case "", "localhost", "host.docker.internal", "minio":
+		return true
+	}
+	ip := net.ParseIP(normalized)
+	return ip != nil && ip.IsLoopback()
 }
 
 func runWorker(args []string, stdout io.Writer, stderr io.Writer) int {

@@ -204,6 +204,42 @@ func TestProductionPreflightRequiresHTTPSPublicURL(t *testing.T) {
 	}
 }
 
+func TestProductionPreflightRejectsLocalObjectStorageEndpoint(t *testing.T) {
+	setValidProductionEnv(t)
+	t.Setenv("PASTEBOX_S3_ENDPOINT", "http://localhost:9000")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"preflight", "production"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("expected local object storage endpoint to fail, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "PASTEBOX_S3_ENDPOINT must use https:// managed object storage") {
+		t.Fatalf("expected managed object storage validation error, got %q", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+}
+
+func TestProductionPreflightRejectsLocalResticRepository(t *testing.T) {
+	setValidProductionEnv(t)
+	t.Setenv("PASTEBOX_RESTIC_REPOSITORY", "local:/backups")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"preflight", "production"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("expected local restic repository to fail, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "PASTEBOX_RESTIC_REPOSITORY must use an off-host S3 HTTPS repository") {
+		t.Fatalf("expected off-host backup validation error, got %q", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+}
+
 func setValidProductionEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("PASTEBOX_IMAGE", "ghcr.io/cvinit/pastebox:sha-abc123")

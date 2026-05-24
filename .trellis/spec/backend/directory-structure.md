@@ -169,7 +169,10 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
   and records version, name, and checksum in `schema_migrations`.
 - `pastebox preflight production` must require explicit production env vars,
   reject `CHANGE_ME` placeholder values, require `PASTEBOX_PUBLIC_URL` to use
-  `https://`, and reject `PASTEBOX_IMAGE=:latest`.
+  `https://`, reject `PASTEBOX_IMAGE=:latest`, require
+  `PASTEBOX_S3_ENDPOINT` to be a non-local `https://` managed object-storage
+  endpoint, and require `PASTEBOX_RESTIC_REPOSITORY` to use an off-host
+  `s3:https://` repository.
 - `GET /readyz` returns `{"status":"ready"}` once the process is ready for
   traffic.
 - `GET /api/v1/ready` returns `app`, `env`, and `status`.
@@ -184,6 +187,9 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - Placeholder `CHANGE_ME` remains -> preflight exits 1 and lists affected keys.
 - `PASTEBOX_PUBLIC_URL` uses HTTP -> preflight exits 1.
 - `PASTEBOX_IMAGE` is missing or `:latest` -> preflight exits 1.
+- `PASTEBOX_S3_ENDPOINT` is HTTP, invalid, or local -> preflight exits 1.
+- `PASTEBOX_RESTIC_REPOSITORY` is local, invalid, or not `s3:https://` ->
+  preflight exits 1.
 - `pastebox migrate status` or `up` cannot connect to PostgreSQL -> exits 1
   with a command-specific error.
 - Stored migration checksum differs from the embedded SQL file -> exits 1 and
@@ -203,7 +209,9 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 ### 6. Tests Required
 
 - Command tests for migration connection errors, production preflight success,
-  missing env, placeholder rejection, HTTPS enforcement, and image pinning.
+  missing env, placeholder rejection, HTTPS enforcement, image pinning,
+  managed object-storage enforcement, and off-host backup repository
+  enforcement.
 - Migration package tests for embedded migration ordering, checksums, and table
   coverage.
 - Handler tests for `/readyz` and `/api/v1/ready` response shape.
