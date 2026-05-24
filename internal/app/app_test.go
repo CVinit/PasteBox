@@ -373,6 +373,105 @@ func TestStoreBackedContentMetadataSurvivesServiceRestart(t *testing.T) {
 	}
 }
 
+func TestStoreBackedOperationalStateSurvivesServiceRestart(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	authStores := newMemoryAuthStores()
+	contentStores := newMemoryContentStores()
+	operationalStores := newMemoryOperationalStores()
+	auditStore := newMemoryAuditLogStore()
+
+	svc := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		Operational:  operationalStores.operationalStores(),
+		AuditLogs:    auditStore,
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	admin := seedAdminTestUser(t, svc, "admin-operational@example.com")
+	owner := registerTestUser(t, svc, "owner-operational@example.com")
+	paste := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "ops", Text: "state", ExpiresInSeconds: 3600})
+	attachment := addTestAttachment(t, svc, owner.User.ID, paste.ID, "tool.exe", []byte("binary"))
+	order, err := svc.CreateOrder(owner.User.ID, "stripe", "plus", "monthly")
+	if err != nil {
+		t.Fatalf("create store-backed order: %v", err)
+	}
+	if _, _, err := svc.ProcessBillingWebhook(BillingWebhookInput{
+		Provider:       "stripe",
+		EventType:      "payment.failed",
+		OrderID:        order.ID,
+		IdempotencyKey: "stripe-failed-operational",
+	}); err != nil {
+		t.Fatalf("process failed webhook: %v", err)
+	}
+	report, err := svc.Report(owner.User.ID, "share:ops", "abuse")
+	if err != nil {
+		t.Fatalf("create store-backed report: %v", err)
+	}
+	if _, err := svc.AdminResolveReport(admin.ID, report.ID, "dismissed"); err != nil {
+		t.Fatalf("resolve store-backed report: %v", err)
+	}
+
+	restarted := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		Operational:  operationalStores.operationalStores(),
+		AuditLogs:    auditStore,
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	orders, err := restarted.ListOrders(owner.User.ID)
+	if err != nil {
+		t.Fatalf("list store-backed orders after restart: %v", err)
+	}
+	if len(orders) != 1 || orders[0].ID != order.ID || orders[0].Status != "needs_review" {
+		t.Fatalf("expected order status to survive restart, got %#v", orders)
+	}
+	events, err := restarted.AdminWebhookEvents(admin.ID)
+	if err != nil {
+		t.Fatalf("list store-backed webhook events after restart: %v", err)
+	}
+	if len(events) < 2 || !hasWebhookEvent(events, "stripe-failed-operational") {
+		t.Fatalf("expected webhook events to survive restart, got %#v", events)
+	}
+	queues, err := restarted.AdminQueues(admin.ID)
+	if err != nil {
+		t.Fatalf("list store-backed queues after restart: %v", err)
+	}
+	reports, ok := queues["reports"].([]*Report)
+	if !ok || len(reports) != 1 || reports[0].Status != "dismissed" {
+		t.Fatalf("expected resolved report to survive restart, got %#v", queues["reports"])
+	}
+	scanFailures, ok := queues["scanFailures"].([]*QueueItem)
+	if !ok || len(scanFailures) != 1 || scanFailures[0].TargetID != attachment.ID {
+		t.Fatalf("expected scan failure queue to survive restart, got %#v", queues["scanFailures"])
+	}
+	mails, err := operationalStores.QueuedMails(context.Background(), 100)
+	if err != nil {
+		t.Fatalf("list queued mails: %v", err)
+	}
+	if len(mails) == 0 {
+		t.Fatalf("expected auth and billing emails to be queued in operational store")
+	}
+
+	if _, err := restarted.AdminRetryScan(admin.ID, attachment.ID); err != nil {
+		t.Fatalf("retry store-backed scan: %v", err)
+	}
+	restartedAgain := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		Operational:  operationalStores.operationalStores(),
+		AuditLogs:    auditStore,
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	queues, err = restartedAgain.AdminQueues(admin.ID)
+	if err != nil {
+		t.Fatalf("list queues after retry restart: %v", err)
+	}
+	scanFailures, ok = queues["scanFailures"].([]*QueueItem)
+	if !ok || len(scanFailures) != 0 {
+		t.Fatalf("expected scan retry to delete persisted queue item, got %#v", queues["scanFailures"])
+	}
+}
+
 func TestGoogleOAuthCreatesVerifiedAccount(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	svc := newTestService(t, &now)
@@ -885,6 +984,207 @@ func cloneAttachmentForStore(attachment Attachment) Attachment {
 	return cloned
 }
 
+type memoryOperationalStores struct {
+	orders             map[string]Order
+	webhookEvents      map[string]WebhookEvent
+	webhookEventsByKey map[string]string
+	reports            map[string]Report
+	queues             map[string]QueueItem
+	mails              map[string]Mail
+}
+
+func newMemoryOperationalStores() *memoryOperationalStores {
+	return &memoryOperationalStores{
+		orders:             map[string]Order{},
+		webhookEvents:      map[string]WebhookEvent{},
+		webhookEventsByKey: map[string]string{},
+		reports:            map[string]Report{},
+		queues:             map[string]QueueItem{},
+		mails:              map[string]Mail{},
+	}
+}
+
+func (s *memoryOperationalStores) operationalStores() OperationalStores {
+	return OperationalStores{
+		Orders:        s,
+		WebhookEvents: s,
+		Reports:       s,
+		Queues:        s,
+		Mails:         s,
+	}
+}
+
+func (s *memoryOperationalStores) CreateOrder(_ context.Context, order Order) error {
+	if _, ok := s.orders[order.ID]; ok {
+		return ErrStoreConflict
+	}
+	s.orders[order.ID] = order
+	return nil
+}
+
+func (s *memoryOperationalStores) OrderByID(_ context.Context, id string) (Order, error) {
+	order, ok := s.orders[id]
+	if !ok {
+		return Order{}, ErrStoreNotFound
+	}
+	return order, nil
+}
+
+func (s *memoryOperationalStores) ListOrders(_ context.Context) ([]Order, error) {
+	out := make([]Order, 0, len(s.orders))
+	for _, order := range s.orders {
+		out = append(out, order)
+	}
+	return out, nil
+}
+
+func (s *memoryOperationalStores) ListOrdersByUser(_ context.Context, userID string) ([]Order, error) {
+	out := []Order{}
+	for _, order := range s.orders {
+		if order.UserID == userID {
+			out = append(out, order)
+		}
+	}
+	return out, nil
+}
+
+func (s *memoryOperationalStores) UpdateOrder(_ context.Context, order Order) error {
+	if _, ok := s.orders[order.ID]; !ok {
+		return ErrStoreNotFound
+	}
+	s.orders[order.ID] = order
+	return nil
+}
+
+func (s *memoryOperationalStores) CreateWebhookEvent(_ context.Context, event WebhookEvent) error {
+	if _, ok := s.webhookEvents[event.ID]; ok {
+		return ErrStoreConflict
+	}
+	if _, ok := s.webhookEventsByKey[event.IdempotencyKey]; ok {
+		return ErrStoreConflict
+	}
+	event.Metadata = cloneMetadata(event.Metadata)
+	s.webhookEvents[event.ID] = event
+	s.webhookEventsByKey[event.IdempotencyKey] = event.ID
+	return nil
+}
+
+func (s *memoryOperationalStores) WebhookEventByID(_ context.Context, id string) (WebhookEvent, error) {
+	event, ok := s.webhookEvents[id]
+	if !ok {
+		return WebhookEvent{}, ErrStoreNotFound
+	}
+	event.Metadata = cloneMetadata(event.Metadata)
+	return event, nil
+}
+
+func (s *memoryOperationalStores) WebhookEventByIdempotencyKey(_ context.Context, idempotencyKey string) (WebhookEvent, error) {
+	id := s.webhookEventsByKey[idempotencyKey]
+	if id == "" {
+		return WebhookEvent{}, ErrStoreNotFound
+	}
+	return s.WebhookEventByID(context.Background(), id)
+}
+
+func (s *memoryOperationalStores) ListWebhookEvents(_ context.Context) ([]WebhookEvent, error) {
+	out := make([]WebhookEvent, 0, len(s.webhookEvents))
+	for _, event := range s.webhookEvents {
+		event.Metadata = cloneMetadata(event.Metadata)
+		out = append(out, event)
+	}
+	return out, nil
+}
+
+func (s *memoryOperationalStores) UpdateWebhookEventProcessed(_ context.Context, id string, processed bool) error {
+	event, ok := s.webhookEvents[id]
+	if !ok {
+		return ErrStoreNotFound
+	}
+	event.Processed = processed
+	s.webhookEvents[id] = event
+	return nil
+}
+
+func (s *memoryOperationalStores) CreateReport(_ context.Context, report Report) error {
+	if _, ok := s.reports[report.ID]; ok {
+		return ErrStoreConflict
+	}
+	s.reports[report.ID] = report
+	return nil
+}
+
+func (s *memoryOperationalStores) ReportByID(_ context.Context, id string) (Report, error) {
+	report, ok := s.reports[id]
+	if !ok {
+		return Report{}, ErrStoreNotFound
+	}
+	return report, nil
+}
+
+func (s *memoryOperationalStores) ListReports(_ context.Context) ([]Report, error) {
+	out := make([]Report, 0, len(s.reports))
+	for _, report := range s.reports {
+		out = append(out, report)
+	}
+	return out, nil
+}
+
+func (s *memoryOperationalStores) UpdateReportStatus(_ context.Context, id string, status string) error {
+	report, ok := s.reports[id]
+	if !ok {
+		return ErrStoreNotFound
+	}
+	report.Status = status
+	s.reports[id] = report
+	return nil
+}
+
+func (s *memoryOperationalStores) CreateQueueItem(_ context.Context, item QueueItem) error {
+	if _, ok := s.queues[item.ID]; ok {
+		return ErrStoreConflict
+	}
+	s.queues[item.ID] = item
+	return nil
+}
+
+func (s *memoryOperationalStores) ListQueueItemsByKind(_ context.Context, kind string) ([]QueueItem, error) {
+	out := []QueueItem{}
+	for _, item := range s.queues {
+		if item.Kind == kind {
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
+
+func (s *memoryOperationalStores) DeleteQueueItemsByKindTarget(_ context.Context, kind string, targetID string) error {
+	for id, item := range s.queues {
+		if item.Kind == kind && item.TargetID == targetID {
+			delete(s.queues, id)
+		}
+	}
+	return nil
+}
+
+func (s *memoryOperationalStores) QueueMail(_ context.Context, mail Mail) error {
+	if _, ok := s.mails[mail.ID]; ok {
+		return ErrStoreConflict
+	}
+	s.mails[mail.ID] = mail
+	return nil
+}
+
+func (s *memoryOperationalStores) QueuedMails(_ context.Context, limit int) ([]Mail, error) {
+	out := make([]Mail, 0, len(s.mails))
+	for _, mail := range s.mails {
+		out = append(out, mail)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 type failingDailyMetricStore struct {
 	readErr  error
 	writeErr error
@@ -986,6 +1286,15 @@ func assertAuditAction(t *testing.T, logs []AuditLog, action string) {
 		}
 	}
 	t.Fatalf("expected audit action %q in %#v", action, logs)
+}
+
+func hasWebhookEvent(events []WebhookEvent, idempotencyKey string) bool {
+	for _, event := range events {
+		if event.IdempotencyKey == idempotencyKey {
+			return true
+		}
+	}
+	return false
 }
 
 type memoryAuthStores struct {

@@ -15,12 +15,12 @@ import (
 )
 
 var (
-	ErrOrderNotFound        = errors.New("postgres order not found")
-	ErrWebhookEventNotFound = errors.New("postgres webhook event not found")
-	ErrWebhookEventExists   = errors.New("postgres webhook event exists")
-	ErrReportNotFound       = errors.New("postgres report not found")
-	ErrJobNotFound          = errors.New("postgres job not found")
-	ErrMailNotFound         = errors.New("postgres mail not found")
+	ErrOrderNotFound        = errors.Join(errors.New("postgres order not found"), app.ErrStoreNotFound)
+	ErrWebhookEventNotFound = errors.Join(errors.New("postgres webhook event not found"), app.ErrStoreNotFound)
+	ErrWebhookEventExists   = errors.Join(errors.New("postgres webhook event exists"), app.ErrStoreConflict)
+	ErrReportNotFound       = errors.Join(errors.New("postgres report not found"), app.ErrStoreNotFound)
+	ErrJobNotFound          = errors.Join(errors.New("postgres job not found"), app.ErrStoreNotFound)
+	ErrMailNotFound         = errors.Join(errors.New("postgres mail not found"), app.ErrStoreNotFound)
 )
 
 type JobRecord struct {
@@ -122,6 +122,19 @@ ORDER BY created_at DESC, id DESC
 	return orders, nil
 }
 
+func (s *OrderStore) ListOrders(ctx context.Context) ([]app.Order, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT id, user_id, provider, plan_id, period, amount_cents, currency, status, checkout_url, address, chain, tx_id, created_at, expires_at, paid_at
+FROM orders
+ORDER BY created_at DESC, id DESC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query orders: %w", err)
+	}
+	defer rows.Close()
+	return scanOrders(rows)
+}
+
 func (s *OrderStore) UpdateOrder(ctx context.Context, order app.Order) error {
 	tag, err := s.pool.Exec(ctx, `
 UPDATE orders
@@ -215,6 +228,30 @@ WHERE id = $1
 	return nil
 }
 
+func (s *WebhookEventStore) ListWebhookEvents(ctx context.Context) ([]app.WebhookEvent, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT id, provider, event_type, target_id, idempotency_key, processed, metadata, received_at
+FROM webhook_events
+ORDER BY received_at DESC, id DESC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query webhook events: %w", err)
+	}
+	defer rows.Close()
+	events := []app.WebhookEvent{}
+	for rows.Next() {
+		event, err := scanWebhookEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read webhook events: %w", err)
+	}
+	return events, nil
+}
+
 func (s *WebhookEventStore) queryWebhookEvent(ctx context.Context, sql string, args ...any) (app.WebhookEvent, error) {
 	event, err := scanWebhookEvent(s.pool.QueryRow(ctx, sql, args...))
 	if err != nil {
@@ -275,6 +312,30 @@ WHERE id = $1
 	return nil
 }
 
+func (s *ReportStore) ListReports(ctx context.Context) ([]app.Report, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT id, user_id, target, reason, status, created_at
+FROM reports
+ORDER BY created_at DESC, id DESC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query reports: %w", err)
+	}
+	defer rows.Close()
+	reports := []app.Report{}
+	for rows.Next() {
+		report, err := scanReport(rows)
+		if err != nil {
+			return nil, err
+		}
+		reports = append(reports, report)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read reports: %w", err)
+	}
+	return reports, nil
+}
+
 type JobStore struct {
 	pool *pgxpool.Pool
 }
@@ -291,6 +352,14 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		return fmt.Errorf("create job: %w", err)
 	}
 	return nil
+}
+
+func (s *JobStore) CreateQueueItem(ctx context.Context, item app.QueueItem) error {
+	job := jobRecordFromQueueItem(item)
+	if job.Status == "" {
+		job.Status = "failed"
+	}
+	return s.CreateJob(ctx, job)
 }
 
 func (s *JobStore) JobByID(ctx context.Context, id string) (JobRecord, error) {
@@ -337,6 +406,41 @@ LIMIT $2
 	return jobs, nil
 }
 
+func (s *JobStore) ListQueueItemsByKind(ctx context.Context, kind string) ([]app.QueueItem, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT id, kind, target_id, status, attempts, last_error, run_after, created_at, updated_at
+FROM jobs
+WHERE kind = $1
+ORDER BY updated_at DESC, created_at DESC, id DESC
+`, kind)
+	if err != nil {
+		return nil, fmt.Errorf("query queue items by kind: %w", err)
+	}
+	defer rows.Close()
+	items := []app.QueueItem{}
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, queueItemFromJobRecord(job))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read queue items: %w", err)
+	}
+	return items, nil
+}
+
+func (s *JobStore) DeleteQueueItemsByKindTarget(ctx context.Context, kind string, targetID string) error {
+	if _, err := s.pool.Exec(ctx, `
+DELETE FROM jobs
+WHERE kind = $1 AND target_id = $2
+`, kind, targetID); err != nil {
+		return fmt.Errorf("delete queue items by kind target: %w", err)
+	}
+	return nil
+}
+
 func (s *JobStore) UpdateJob(ctx context.Context, job JobRecord) error {
 	tag, err := s.pool.Exec(ctx, `
 UPDATE jobs
@@ -373,6 +477,17 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		return fmt.Errorf("create mail: %w", err)
 	}
 	return nil
+}
+
+func (s *MailStore) QueueMail(ctx context.Context, mail app.Mail) error {
+	return s.CreateMail(ctx, MailRecord{
+		ID:        mail.ID,
+		To:        mail.To,
+		Subject:   mail.Subject,
+		Body:      mail.Body,
+		Status:    "queued",
+		CreatedAt: mail.CreatedAt,
+	})
 }
 
 func (s *MailStore) MailByID(ctx context.Context, id string) (MailRecord, error) {
@@ -419,6 +534,18 @@ LIMIT $1
 	return mails, nil
 }
 
+func (s *MailStore) QueuedMails(ctx context.Context, limit int) ([]app.Mail, error) {
+	records, err := s.ListQueuedMail(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	mails := make([]app.Mail, 0, len(records))
+	for _, record := range records {
+		mails = append(mails, mailFromRecord(record))
+	}
+	return mails, nil
+}
+
 func (s *MailStore) UpdateMail(ctx context.Context, mail MailRecord) error {
 	tag, err := s.pool.Exec(ctx, `
 UPDATE mails
@@ -436,6 +563,21 @@ WHERE id = $1
 		return ErrMailNotFound
 	}
 	return nil
+}
+
+func scanOrders(rows rowsScanner) ([]app.Order, error) {
+	orders := []app.Order{}
+	for rows.Next() {
+		order, err := scanOrder(rows)
+		if err != nil {
+			return nil, err
+		}
+		orders = append(orders, order)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read orders: %w", err)
+	}
+	return orders, nil
 }
 
 func scanOrder(row rowScanner) (app.Order, error) {
@@ -526,4 +668,43 @@ func nullableString(value string) *string {
 		return nil
 	}
 	return &value
+}
+
+func jobRecordFromQueueItem(item app.QueueItem) JobRecord {
+	runAfter := item.UpdatedAt
+	if runAfter.IsZero() {
+		runAfter = item.CreatedAt
+	}
+	return JobRecord{
+		ID:        item.ID,
+		Kind:      item.Kind,
+		TargetID:  item.TargetID,
+		Attempts:  item.Attempts,
+		LastError: item.Error,
+		RunAfter:  runAfter,
+		CreatedAt: item.CreatedAt,
+		UpdatedAt: item.UpdatedAt,
+	}
+}
+
+func queueItemFromJobRecord(job JobRecord) app.QueueItem {
+	return app.QueueItem{
+		ID:        job.ID,
+		Kind:      job.Kind,
+		TargetID:  job.TargetID,
+		Error:     job.LastError,
+		Attempts:  job.Attempts,
+		CreatedAt: job.CreatedAt,
+		UpdatedAt: job.UpdatedAt,
+	}
+}
+
+func mailFromRecord(record MailRecord) app.Mail {
+	return app.Mail{
+		ID:        record.ID,
+		To:        record.To,
+		Subject:   record.Subject,
+		Body:      record.Body,
+		CreatedAt: record.CreatedAt,
+	}
 }

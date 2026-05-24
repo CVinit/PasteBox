@@ -81,6 +81,13 @@ func runAPI(stdout io.Writer) int {
 			Attachments: postgres.NewAttachmentStore(pool),
 			Shares:      postgres.NewShareStore(pool),
 		},
+		Operational: app.OperationalStores{
+			Orders:        postgres.NewOrderStore(pool),
+			WebhookEvents: postgres.NewWebhookEventStore(pool),
+			Reports:       postgres.NewReportStore(pool),
+			Queues:        postgres.NewJobStore(pool),
+			Mails:         postgres.NewMailStore(pool),
+		},
 		DailyMetrics: postgres.NewDailyMetricStore(pool),
 		Catalog:      postgres.NewCatalogStore(pool),
 		AuditLogs:    postgres.NewAuditLogStore(pool),

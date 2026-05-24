@@ -57,6 +57,7 @@ type Service struct {
 	catalog plans.Catalog
 	auth    AuthStores
 	content ContentStores
+	ops     OperationalStores
 	audit   AuditLogStore
 
 	usersByID        map[string]*User
@@ -115,6 +116,7 @@ func NewWithStorage(ctx context.Context, cfg config.Config, stores Stores) (*Ser
 		catalog:          catalog,
 		auth:             stores.Auth,
 		content:          stores.Content,
+		ops:              stores.Operational,
 		audit:            stores.AuditLogs,
 		usersByID:        map[string]*User{},
 		userIDByEmail:    map[string]string{},
@@ -139,6 +141,9 @@ func NewWithStorage(ctx context.Context, cfg config.Config, stores Stores) (*Ser
 	if err := svc.loadContentCaches(ctx); err != nil {
 		return nil, err
 	}
+	if err := svc.loadOperationalCaches(ctx); err != nil {
+		return nil, err
+	}
 	if cfg.BootstrapAdminEmail != "" && cfg.BootstrapAdminPassword != "" {
 		_, _ = svc.SeedAdmin(cfg.BootstrapAdminEmail, cfg.BootstrapAdminPassword)
 	}
@@ -158,6 +163,7 @@ func NewWithDailyMetricStore(cfg config.Config, dailyMetrics DailyMetricStore) *
 type Stores struct {
 	Auth         AuthStores
 	Content      ContentStores
+	Operational  OperationalStores
 	DailyMetrics DailyMetricStore
 	Catalog      CatalogStore
 	AuditLogs    AuditLogStore
@@ -533,7 +539,9 @@ func (s *Service) Register(_ context.Context, input RegisterInput) (AuthResult, 
 		}
 		return AuthResult{}, err
 	}
-	s.mail(user.Email, "Welcome to PasteBox", "Your PasteBox account is ready.")
+	if err := s.mail(user.Email, "Welcome to PasteBox", "Your PasteBox account is ready."); err != nil {
+		return AuthResult{}, err
+	}
 	verificationToken, err := s.issueEmailVerificationLocked(user)
 	if err != nil {
 		return AuthResult{}, err
@@ -577,7 +585,9 @@ func (s *Service) Login(_ context.Context, email string, password string) (AuthR
 	if err := s.deleteLoginFailureLocked(email); err != nil {
 		return AuthResult{}, err
 	}
-	s.mail(user.Email, "New PasteBox login", "A new device logged in to your PasteBox account.")
+	if err := s.mail(user.Email, "New PasteBox login", "A new device logged in to your PasteBox account."); err != nil {
+		return AuthResult{}, err
+	}
 	return s.newSessionLocked(user)
 }
 
@@ -635,7 +645,9 @@ func (s *Service) GoogleOAuth(_ context.Context, email string, displayName strin
 	if err := s.auditLocked(user.ID, "auth.google_oauth_stub", user.ID, map[string]any{"subject": googleSubject}); err != nil {
 		return AuthResult{}, err
 	}
-	s.mail(user.Email, "Welcome to PasteBox", "Your Google-authenticated PasteBox account is ready.")
+	if err := s.mail(user.Email, "Welcome to PasteBox", "Your Google-authenticated PasteBox account is ready."); err != nil {
+		return AuthResult{}, err
+	}
 	return s.newSessionLocked(user)
 }
 
@@ -692,7 +704,9 @@ func (s *Service) StartMagicLink(_ context.Context, email string) (map[string]st
 		return nil, err
 	}
 	s.magicLinks[hash] = &authToken
-	s.mail(user.Email, "Your PasteBox magic link", "Development token: "+token)
+	if err := s.mail(user.Email, "Your PasteBox magic link", "Development token: "+token); err != nil {
+		return nil, err
+	}
 	return map[string]string{"devToken": token, "message": "magic link sent"}, nil
 }
 
@@ -734,7 +748,9 @@ func (s *Service) StartPasswordReset(_ context.Context, email string) (map[strin
 		return nil, err
 	}
 	s.passwordResets[hash] = &authToken
-	s.mail(user.Email, "Reset your PasteBox password", "Development token: "+token)
+	if err := s.mail(user.Email, "Reset your PasteBox password", "Development token: "+token); err != nil {
+		return nil, err
+	}
 	return map[string]string{"devToken": token, "message": "password reset sent"}, nil
 }
 
@@ -765,7 +781,9 @@ func (s *Service) FinishPasswordReset(_ context.Context, token string, password 
 	if err := s.revokeUserSessionsLocked(user.ID); err != nil {
 		return err
 	}
-	s.mail(user.Email, "PasteBox password changed", "Your password was changed.")
+	if err := s.mail(user.Email, "PasteBox password changed", "Your password was changed."); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -834,7 +852,9 @@ func (s *Service) RequestAccountDeletion(userID string) (UserView, error) {
 	if err := s.updateUserLocked(user); err != nil {
 		return UserView{}, err
 	}
-	s.mail(user.Email, "PasteBox account deletion requested", "Your account is scheduled for deletion in 7 days.")
+	if err := s.mail(user.Email, "PasteBox account deletion requested", "Your account is scheduled for deletion in 7 days."); err != nil {
+		return UserView{}, err
+	}
 	return viewUser(user), nil
 }
 
@@ -1173,7 +1193,7 @@ func (s *Service) AddAttachment(userID string, pasteID string, fileName string, 
 		return AttachmentView{}, err
 	}
 	if scanStatus == "scan_failed" {
-		s.scanFailures = append(s.scanFailures, &QueueItem{
+		if err := s.createQueueItemLocked(&s.scanFailures, &QueueItem{
 			ID:        s.newID("scanq"),
 			Kind:      "scan_failed",
 			TargetID:  attachment.ID,
@@ -1181,7 +1201,9 @@ func (s *Service) AddAttachment(userID string, pasteID string, fileName string, 
 			Attempts:  1,
 			CreatedAt: now,
 			UpdatedAt: now,
-		})
+		}); err != nil {
+			return AttachmentView{}, err
+		}
 	}
 	return viewAttachment(attachment), nil
 }
@@ -1423,8 +1445,12 @@ func (s *Service) CreateOrder(userID string, provider string, planID string, per
 		CreatedAt:   now,
 		ExpiresAt:   &expiresAt,
 	}
-	s.ordersByID[order.ID] = order
-	s.recordWebhookEventLocked(provider, "checkout.created", order.ID, "checkout.created:"+order.ID, map[string]any{"planId": planID, "period": period})
+	if err := s.createOrderLocked(order); err != nil {
+		return Order{}, err
+	}
+	if _, err := s.recordWebhookEventLocked(provider, "checkout.created", order.ID, "checkout.created:"+order.ID, map[string]any{"planId": planID, "period": period}); err != nil {
+		return Order{}, err
+	}
 	return *order, nil
 }
 
@@ -1449,10 +1475,16 @@ func (s *Service) ProcessBillingWebhook(input BillingWebhookInput) (WebhookEvent
 	if idempotencyKey == "" {
 		idempotencyKey = provider + ":" + eventType + ":" + orderID + ":" + txID
 	}
-	if event, ok := s.webhookEventByKeyLocked(idempotencyKey); ok {
+	if event, ok, err := s.webhookEventByKeyLocked(idempotencyKey); err != nil {
+		return WebhookEvent{}, nil, err
+	} else if ok {
 		var order *Order
 		if event.TargetID != "" {
-			order = s.ordersByID[event.TargetID]
+			loaded, err := s.orderByIDLocked(event.TargetID)
+			if err != nil && !isAppStatus(err, http.StatusNotFound) {
+				return WebhookEvent{}, nil, err
+			}
+			order = loaded
 		}
 		return event, order, nil
 	}
@@ -1467,19 +1499,38 @@ func (s *Service) ProcessBillingWebhook(input BillingWebhookInput) (WebhookEvent
 		if err != nil {
 			return WebhookEvent{}, nil, err
 		}
-		event, _ := s.webhookEventByKeyLocked(idempotencyKey)
+		event, ok, err := s.webhookEventByKeyLocked(idempotencyKey)
+		if err != nil {
+			return WebhookEvent{}, nil, err
+		}
+		if !ok {
+			return WebhookEvent{}, nil, E(http.StatusInternalServerError, "webhook_event_missing", "webhook event was not recorded")
+		}
 		return event, &order, nil
 	case "payment.failed", "invoice.payment_failed", "subscription.deleted", "subscription.canceled", "refund.created":
 		if orderID != "" {
-			if order := s.ordersByID[orderID]; order != nil && order.Status == "pending" {
+			if order, err := s.orderByIDLocked(orderID); err != nil && !isAppStatus(err, http.StatusNotFound) {
+				return WebhookEvent{}, nil, err
+			} else if order != nil && order.Status == "pending" {
 				order.Status = "needs_review"
+				if err := s.updateOrderLocked(order); err != nil {
+					return WebhookEvent{}, nil, err
+				}
 			}
 		}
-		event := s.recordWebhookEventLocked(provider, eventType, orderID, idempotencyKey, metadata)
-		return event, s.ordersByID[orderID], nil
+		event, err := s.recordWebhookEventLocked(provider, eventType, orderID, idempotencyKey, metadata)
+		if err != nil {
+			return WebhookEvent{}, nil, err
+		}
+		order, _ := s.orderByIDLocked(orderID)
+		return event, order, nil
 	default:
-		event := s.recordWebhookEventLocked(provider, eventType, orderID, idempotencyKey, metadata)
-		return event, s.ordersByID[orderID], nil
+		event, err := s.recordWebhookEventLocked(provider, eventType, orderID, idempotencyKey, metadata)
+		if err != nil {
+			return WebhookEvent{}, nil, err
+		}
+		order, _ := s.orderByIDLocked(orderID)
+		return event, order, nil
 	}
 }
 
@@ -1489,7 +1540,10 @@ func (s *Service) ReplayWebhookEvent(actorID string, eventID string) (WebhookEve
 	if err := s.requireAdminLocked(actorID); err != nil {
 		return WebhookEvent{}, err
 	}
-	original := s.webhookEventByIDLocked(eventID)
+	original, err := s.webhookEventByIDLocked(eventID)
+	if err != nil {
+		return WebhookEvent{}, err
+	}
 	if original == nil {
 		return WebhookEvent{}, E(http.StatusNotFound, "webhook_event_not_found", "webhook event not found")
 	}
@@ -1498,16 +1552,28 @@ func (s *Service) ReplayWebhookEvent(actorID string, eventID string) (WebhookEve
 	replayKey := original.IdempotencyKey + ":replay:" + s.newID("rpl")
 	var event WebhookEvent
 	if original.EventType == "payment.succeeded" && original.TargetID != "" {
-		if order := s.ordersByID[original.TargetID]; order != nil && order.Status != "paid" {
+		if order, err := s.orderByIDLocked(original.TargetID); err != nil && !isAppStatus(err, http.StatusNotFound) {
+			return WebhookEvent{}, err
+		} else if order != nil && order.Status != "paid" {
 			_, err := s.markOrderPaidLocked(actorID, original.TargetID, stringFromMetadata(original.Metadata, "txId"), replayKey, metadata)
 			if err != nil {
 				return WebhookEvent{}, err
 			}
-			event, _ = s.webhookEventByKeyLocked(replayKey)
+			loaded, ok, err := s.webhookEventByKeyLocked(replayKey)
+			if err != nil {
+				return WebhookEvent{}, err
+			}
+			if ok {
+				event = loaded
+			}
 		}
 	}
 	if event.ID == "" {
-		event = s.recordWebhookEventLocked(original.Provider, "webhook.replayed", original.TargetID, replayKey, metadata)
+		var err error
+		event, err = s.recordWebhookEventLocked(original.Provider, "webhook.replayed", original.TargetID, replayKey, metadata)
+		if err != nil {
+			return WebhookEvent{}, err
+		}
 	}
 	if err := s.auditLocked(actorID, "admin.webhook_replay", original.ID, map[string]any{"replayEventId": event.ID}); err != nil {
 		return WebhookEvent{}, err
@@ -1516,9 +1582,9 @@ func (s *Service) ReplayWebhookEvent(actorID string, eventID string) (WebhookEve
 }
 
 func (s *Service) markOrderPaidLocked(actorID string, orderID string, txID string, eventKey string, metadata map[string]any) (Order, error) {
-	order := s.ordersByID[orderID]
-	if order == nil {
-		return Order{}, E(http.StatusNotFound, "order_not_found", "order not found")
+	order, err := s.orderByIDLocked(orderID)
+	if err != nil {
+		return Order{}, err
 	}
 	if order.Status == "paid" {
 		if eventKey != "" {
@@ -1526,7 +1592,9 @@ func (s *Service) markOrderPaidLocked(actorID string, orderID string, txID strin
 			if order.TxID != "" {
 				metadata["txId"] = order.TxID
 			}
-			s.recordWebhookEventLocked(order.Provider, "payment.succeeded", order.ID, eventKey, metadata)
+			if _, err := s.recordWebhookEventLocked(order.Provider, "payment.succeeded", order.ID, eventKey, metadata); err != nil {
+				return Order{}, err
+			}
 		}
 		return *order, nil
 	}
@@ -1548,6 +1616,9 @@ func (s *Service) markOrderPaidLocked(actorID string, orderID string, txID strin
 	if err := s.updateUserLocked(user); err != nil {
 		return Order{}, err
 	}
+	if err := s.updateOrderLocked(order); err != nil {
+		return Order{}, err
+	}
 	if err := s.auditLocked(actorID, "billing.order_paid", order.ID, map[string]any{"planId": order.PlanID, "provider": order.Provider}); err != nil {
 		return Order{}, err
 	}
@@ -1555,8 +1626,12 @@ func (s *Service) markOrderPaidLocked(actorID string, orderID string, txID strin
 	if order.TxID != "" {
 		metadata["txId"] = order.TxID
 	}
-	s.recordWebhookEventLocked(order.Provider, "payment.succeeded", order.ID, eventKey, metadata)
-	s.mail(user.Email, "PasteBox payment received", "Your membership is active.")
+	if _, err := s.recordWebhookEventLocked(order.Provider, "payment.succeeded", order.ID, eventKey, metadata); err != nil {
+		return Order{}, err
+	}
+	if err := s.mail(user.Email, "PasteBox payment received", "Your membership is active."); err != nil {
+		return Order{}, err
+	}
 	return *order, nil
 }
 
@@ -1566,11 +1641,9 @@ func (s *Service) ListOrders(userID string) ([]Order, error) {
 	if _, err := s.activeUserLocked(userID); err != nil {
 		return nil, err
 	}
-	out := []Order{}
-	for _, order := range s.ordersByID {
-		if order.UserID == userID {
-			out = append(out, *order)
-		}
+	out, err := s.ordersByUserLocked(userID)
+	if err != nil {
+		return nil, err
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out, nil
@@ -1602,7 +1675,9 @@ func (s *Service) Report(userID string, target string, reason string) (Report, e
 		}
 	}
 	report := &Report{ID: s.newID("rpt"), UserID: userID, Target: target, Reason: strings.TrimSpace(reason), Status: "open", CreatedAt: s.now().UTC()}
-	s.reports = append(s.reports, report)
+	if err := s.createReportLocked(report); err != nil {
+		return Report{}, err
+	}
 	return *report, nil
 }
 
@@ -1619,16 +1694,14 @@ func (s *Service) AdminResolveReport(actorID string, reportID string, status str
 	if status != "open" && status != "resolved" && status != "dismissed" {
 		return Report{}, E(http.StatusBadRequest, "invalid_report_status", "report status must be open, resolved, or dismissed")
 	}
-	for _, report := range s.reports {
-		if report.ID == reportID {
-			report.Status = status
-			if err := s.auditLocked(actorID, "admin.report_status", report.ID, map[string]any{"status": status}); err != nil {
-				return Report{}, err
-			}
-			return *report, nil
-		}
+	report, err := s.updateReportStatusLocked(reportID, status)
+	if err != nil {
+		return Report{}, err
 	}
-	return Report{}, E(http.StatusNotFound, "report_not_found", "report not found")
+	if err := s.auditLocked(actorID, "admin.report_status", report.ID, map[string]any{"status": status}); err != nil {
+		return Report{}, err
+	}
+	return *report, nil
 }
 
 func (s *Service) AdminDashboard(actorID string) (map[string]any, error) {
@@ -1873,7 +1946,9 @@ func (s *Service) AdminRetryScan(actorID string, attachmentID string) (Attachmen
 	if err := s.updateAttachmentLocked(attachment); err != nil {
 		return AttachmentView{}, err
 	}
-	s.removeQueueItemLocked(&s.scanFailures, attachment.ID)
+	if err := s.deleteQueueItemsByKindTargetLocked(&s.scanFailures, "scan_failed", attachment.ID); err != nil {
+		return AttachmentView{}, err
+	}
 	if paste := s.pastesByID[attachment.PasteID]; paste != nil {
 		paste.ScanStatus = aggregateScanStatus(s.attachmentsForPasteLocked(paste))
 		paste.UpdatedAt = s.now().UTC()
@@ -2078,6 +2153,62 @@ func (s *Service) loadContentCaches(ctx context.Context) error {
 	return nil
 }
 
+func (s *Service) loadOperationalCaches(ctx context.Context) error {
+	if s.ops.Orders != nil {
+		orders, err := s.ops.Orders.ListOrders(ctx)
+		if err != nil {
+			return fmt.Errorf("load orders: %w", err)
+		}
+		for _, order := range orders {
+			s.cacheOrderLocked(order)
+		}
+	}
+	if s.ops.WebhookEvents != nil {
+		events, err := s.ops.WebhookEvents.ListWebhookEvents(ctx)
+		if err != nil {
+			return fmt.Errorf("load webhook events: %w", err)
+		}
+		for _, event := range events {
+			s.cacheWebhookEventLocked(event)
+		}
+	}
+	if s.ops.Reports != nil {
+		reports, err := s.ops.Reports.ListReports(ctx)
+		if err != nil {
+			return fmt.Errorf("load reports: %w", err)
+		}
+		for _, report := range reports {
+			s.cacheReportLocked(report)
+		}
+	}
+	if s.ops.Queues != nil {
+		cleanupFailures, err := s.ops.Queues.ListQueueItemsByKind(ctx, "cleanup_failed")
+		if err != nil {
+			return fmt.Errorf("load cleanup failures: %w", err)
+		}
+		for _, item := range cleanupFailures {
+			s.cacheQueueItemLocked(&s.cleanupFailures, item)
+		}
+		scanFailures, err := s.ops.Queues.ListQueueItemsByKind(ctx, "scan_failed")
+		if err != nil {
+			return fmt.Errorf("load scan failures: %w", err)
+		}
+		for _, item := range scanFailures {
+			s.cacheQueueItemLocked(&s.scanFailures, item)
+		}
+	}
+	if s.ops.Mails != nil {
+		mails, err := s.ops.Mails.QueuedMails(ctx, 1000)
+		if err != nil {
+			return fmt.Errorf("load queued mails: %w", err)
+		}
+		for _, mail := range mails {
+			s.cacheMailLocked(mail)
+		}
+	}
+	return nil
+}
+
 func (s *Service) createPasteLocked(paste *Paste) error {
 	if s.content.Pastes != nil {
 		if err := s.content.Pastes.CreatePaste(context.Background(), *paste); err != nil {
@@ -2247,6 +2378,215 @@ func (s *Service) cacheShareLocked(share Share) *Share {
 	s.sharesByID[cached.ID] = &cached
 	s.shareIDByToken[cached.TokenHash] = cached.ID
 	return &cached
+}
+
+func (s *Service) createOrderLocked(order *Order) error {
+	if s.ops.Orders != nil {
+		if err := s.ops.Orders.CreateOrder(context.Background(), *order); err != nil {
+			return err
+		}
+	}
+	s.cacheOrderLocked(*order)
+	return nil
+}
+
+func (s *Service) updateOrderLocked(order *Order) error {
+	if s.ops.Orders != nil {
+		if err := s.ops.Orders.UpdateOrder(context.Background(), *order); err != nil {
+			return err
+		}
+	}
+	s.cacheOrderLocked(*order)
+	return nil
+}
+
+func (s *Service) orderByIDLocked(id string) (*Order, error) {
+	if s.ops.Orders != nil {
+		loaded, err := s.ops.Orders.OrderByID(context.Background(), id)
+		if err != nil {
+			if isStoreNotFound(err) {
+				return nil, E(http.StatusNotFound, "order_not_found", "order not found")
+			}
+			return nil, err
+		}
+		return s.cacheOrderLocked(loaded), nil
+	}
+	order := s.ordersByID[id]
+	if order == nil {
+		return nil, E(http.StatusNotFound, "order_not_found", "order not found")
+	}
+	return order, nil
+}
+
+func (s *Service) cacheOrderLocked(order Order) *Order {
+	cached := order
+	s.ordersByID[cached.ID] = &cached
+	return &cached
+}
+
+func (s *Service) ordersByUserLocked(userID string) ([]Order, error) {
+	if s.ops.Orders != nil {
+		orders, err := s.ops.Orders.ListOrdersByUser(context.Background(), userID)
+		if err != nil {
+			return nil, err
+		}
+		for _, order := range orders {
+			s.cacheOrderLocked(order)
+		}
+		return orders, nil
+	}
+	out := []Order{}
+	for _, order := range s.ordersByID {
+		if order.UserID == userID {
+			out = append(out, *order)
+		}
+	}
+	return out, nil
+}
+
+func (s *Service) createReportLocked(report *Report) error {
+	if s.ops.Reports != nil {
+		if err := s.ops.Reports.CreateReport(context.Background(), *report); err != nil {
+			return err
+		}
+	}
+	s.cacheReportLocked(*report)
+	return nil
+}
+
+func (s *Service) updateReportStatusLocked(reportID string, status string) (*Report, error) {
+	if s.ops.Reports != nil {
+		if err := s.ops.Reports.UpdateReportStatus(context.Background(), reportID, status); err != nil {
+			if isStoreNotFound(err) {
+				return nil, E(http.StatusNotFound, "report_not_found", "report not found")
+			}
+			return nil, err
+		}
+	}
+	report, err := s.reportByIDLocked(reportID)
+	if err != nil {
+		return nil, err
+	}
+	report.Status = status
+	s.cacheReportLocked(*report)
+	return report, nil
+}
+
+func (s *Service) reportByIDLocked(id string) (*Report, error) {
+	if s.ops.Reports != nil {
+		loaded, err := s.ops.Reports.ReportByID(context.Background(), id)
+		if err != nil {
+			if isStoreNotFound(err) {
+				return nil, E(http.StatusNotFound, "report_not_found", "report not found")
+			}
+			return nil, err
+		}
+		return s.cacheReportLocked(loaded), nil
+	}
+	for _, report := range s.reports {
+		if report.ID == id {
+			return report, nil
+		}
+	}
+	return nil, E(http.StatusNotFound, "report_not_found", "report not found")
+}
+
+func (s *Service) cacheReportLocked(report Report) *Report {
+	cached := report
+	for i, existing := range s.reports {
+		if existing.ID == cached.ID {
+			s.reports[i] = &cached
+			return &cached
+		}
+	}
+	s.reports = append(s.reports, &cached)
+	return &cached
+}
+
+func (s *Service) createWebhookEventLocked(event *WebhookEvent) error {
+	if s.ops.WebhookEvents != nil {
+		if err := s.ops.WebhookEvents.CreateWebhookEvent(context.Background(), *event); err != nil {
+			if errors.Is(err, ErrStoreConflict) {
+				loaded, err := s.ops.WebhookEvents.WebhookEventByIdempotencyKey(context.Background(), event.IdempotencyKey)
+				if err != nil {
+					return err
+				}
+				s.cacheWebhookEventLocked(loaded)
+				return nil
+			}
+			return err
+		}
+	}
+	s.cacheWebhookEventLocked(*event)
+	return nil
+}
+
+func (s *Service) cacheWebhookEventLocked(event WebhookEvent) *WebhookEvent {
+	cached := event
+	cached.Metadata = cloneMetadata(event.Metadata)
+	for i, existing := range s.webhookEvents {
+		if existing.ID == cached.ID {
+			s.webhookEvents[i] = &cached
+			s.webhookEventKeys[cached.IdempotencyKey] = cached.ID
+			return &cached
+		}
+	}
+	s.webhookEvents = append(s.webhookEvents, &cached)
+	s.webhookEventKeys[cached.IdempotencyKey] = cached.ID
+	return &cached
+}
+
+func (s *Service) createQueueItemLocked(queue *[]*QueueItem, item *QueueItem) error {
+	if s.ops.Queues != nil {
+		if err := s.ops.Queues.CreateQueueItem(context.Background(), *item); err != nil {
+			return err
+		}
+	}
+	s.cacheQueueItemLocked(queue, *item)
+	return nil
+}
+
+func (s *Service) deleteQueueItemsByKindTargetLocked(queue *[]*QueueItem, kind string, targetID string) error {
+	if s.ops.Queues != nil {
+		if err := s.ops.Queues.DeleteQueueItemsByKindTarget(context.Background(), kind, targetID); err != nil {
+			return err
+		}
+	}
+	s.removeQueueItemLocked(queue, targetID)
+	return nil
+}
+
+func (s *Service) cacheQueueItemLocked(queue *[]*QueueItem, item QueueItem) {
+	cached := item
+	for i, existing := range *queue {
+		if existing.ID == cached.ID {
+			(*queue)[i] = &cached
+			return
+		}
+	}
+	*queue = append(*queue, &cached)
+}
+
+func (s *Service) cacheMailLocked(mail Mail) *Mail {
+	cached := mail
+	for i, existing := range s.mails {
+		if existing.ID == cached.ID {
+			s.mails[i] = &cached
+			return &cached
+		}
+	}
+	s.mails = append(s.mails, &cached)
+	return &cached
+}
+
+func (s *Service) createMailLocked(mail *Mail) error {
+	if s.ops.Mails != nil {
+		if err := s.ops.Mails.QueueMail(context.Background(), *mail); err != nil {
+			return err
+		}
+	}
+	s.cacheMailLocked(*mail)
+	return nil
 }
 
 func (s *Service) createUserLocked(user *User) error {
@@ -2477,7 +2817,9 @@ func (s *Service) issueEmailVerificationLocked(user *User) (string, error) {
 		return "", err
 	}
 	s.emailVerifies[hash] = &authToken
-	s.mail(user.Email, "Verify your PasteBox email", "Development token: "+token)
+	if err := s.mail(user.Email, "Verify your PasteBox email", "Development token: "+token); err != nil {
+		return "", err
+	}
 	return token, nil
 }
 
@@ -2755,14 +3097,16 @@ func (s *Service) auditLocked(actorID string, action string, target string, meta
 	return nil
 }
 
-func (s *Service) recordWebhookEventLocked(provider string, eventType string, targetID string, idempotencyKey string, metadata map[string]any) WebhookEvent {
+func (s *Service) recordWebhookEventLocked(provider string, eventType string, targetID string, idempotencyKey string, metadata map[string]any) (WebhookEvent, error) {
 	provider = defaultString(normalizeProvider(provider), "local")
 	eventType = strings.TrimSpace(eventType)
 	if idempotencyKey == "" {
 		idempotencyKey = provider + ":" + eventType + ":" + targetID + ":" + s.newID("idem")
 	}
-	if event, ok := s.webhookEventByKeyLocked(idempotencyKey); ok {
-		return event
+	if event, ok, err := s.webhookEventByKeyLocked(idempotencyKey); err != nil {
+		return WebhookEvent{}, err
+	} else if ok {
+		return event, nil
 	}
 	event := &WebhookEvent{
 		ID:             s.newID("wh"),
@@ -2774,30 +3118,62 @@ func (s *Service) recordWebhookEventLocked(provider string, eventType string, ta
 		Metadata:       cloneMetadata(metadata),
 		ReceivedAt:     s.now().UTC(),
 	}
-	s.webhookEvents = append(s.webhookEvents, event)
-	s.webhookEventKeys[idempotencyKey] = event.ID
-	return *event
+	if err := s.createWebhookEventLocked(event); err != nil {
+		return WebhookEvent{}, err
+	}
+	loaded, ok, err := s.webhookEventByKeyLocked(idempotencyKey)
+	if err != nil {
+		return WebhookEvent{}, err
+	}
+	if ok {
+		return loaded, nil
+	}
+	return *event, nil
 }
 
-func (s *Service) webhookEventByKeyLocked(idempotencyKey string) (WebhookEvent, bool) {
-	eventID := s.webhookEventKeys[strings.TrimSpace(idempotencyKey)]
+func (s *Service) webhookEventByKeyLocked(idempotencyKey string) (WebhookEvent, bool, error) {
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if s.ops.WebhookEvents != nil {
+		event, err := s.ops.WebhookEvents.WebhookEventByIdempotencyKey(context.Background(), idempotencyKey)
+		if err != nil {
+			if isStoreNotFound(err) {
+				return WebhookEvent{}, false, nil
+			}
+			return WebhookEvent{}, false, err
+		}
+		return *s.cacheWebhookEventLocked(event), true, nil
+	}
+	eventID := s.webhookEventKeys[idempotencyKey]
 	if eventID == "" {
-		return WebhookEvent{}, false
+		return WebhookEvent{}, false, nil
 	}
-	event := s.webhookEventByIDLocked(eventID)
+	event, err := s.webhookEventByIDLocked(eventID)
+	if err != nil {
+		return WebhookEvent{}, false, err
+	}
 	if event == nil {
-		return WebhookEvent{}, false
+		return WebhookEvent{}, false, nil
 	}
-	return *event, true
+	return *event, true, nil
 }
 
-func (s *Service) webhookEventByIDLocked(eventID string) *WebhookEvent {
+func (s *Service) webhookEventByIDLocked(eventID string) (*WebhookEvent, error) {
+	if s.ops.WebhookEvents != nil {
+		event, err := s.ops.WebhookEvents.WebhookEventByID(context.Background(), eventID)
+		if err != nil {
+			if isStoreNotFound(err) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		return s.cacheWebhookEventLocked(event), nil
+	}
 	for _, event := range s.webhookEvents {
 		if event.ID == eventID {
-			return event
+			return event, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 func normalizeProvider(provider string) string {
@@ -2835,8 +3211,8 @@ func (s *Service) removeQueueItemLocked(queue *[]*QueueItem, targetID string) {
 	*queue = filtered
 }
 
-func (s *Service) mail(to string, subject string, body string) {
-	s.mails = append(s.mails, &Mail{ID: s.newID("mail"), To: to, Subject: subject, Body: body, CreatedAt: s.now().UTC()})
+func (s *Service) mail(to string, subject string, body string) error {
+	return s.createMailLocked(&Mail{ID: s.newID("mail"), To: to, Subject: subject, Body: body, CreatedAt: s.now().UTC()})
 }
 
 func (s *Service) newID(prefix string) string {

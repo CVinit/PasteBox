@@ -581,25 +581,37 @@ content, err := objectStore.Get(ctx, attachment.ObjectKey)
 
 ### 2. Signatures
 
+- Runtime service wiring: `app.Stores{Operational: app.OperationalStores{...}}`
+- Runtime operational boundary: `app.OperationalStores`
+- Runtime order interface: `app.OrderStore`
+- Runtime webhook interface: `app.WebhookEventStore`
+- Runtime report interface: `app.ReportStore`
+- Runtime queue interface: `app.QueueStore`
+- Runtime mail interface: `app.MailStore`
 - Order constructor: `postgres.NewOrderStore(pool *pgxpool.Pool)`
 - Order create: `CreateOrder(ctx context.Context, order app.Order) error`
 - Order read: `OrderByID(ctx context.Context, id string) (app.Order, error)`
+- Order list all: `ListOrders(ctx context.Context) ([]app.Order, error)`
 - Order list: `ListOrdersByUser(ctx context.Context, userID string) ([]app.Order, error)`
 - Order update: `UpdateOrder(ctx context.Context, order app.Order) error`
 - Webhook constructor: `postgres.NewWebhookEventStore(pool *pgxpool.Pool)`
 - Webhook create: `CreateWebhookEvent(ctx context.Context, event app.WebhookEvent) error`
 - Webhook read by ID: `WebhookEventByID(ctx context.Context, id string) (app.WebhookEvent, error)`
 - Webhook idempotency lookup: `WebhookEventByIdempotencyKey(ctx context.Context, idempotencyKey string) (app.WebhookEvent, error)`
+- Webhook list all: `ListWebhookEvents(ctx context.Context) ([]app.WebhookEvent, error)`
 - Webhook processed marker: `UpdateWebhookEventProcessed(ctx context.Context, id string, processed bool) error`
 - Report constructor: `postgres.NewReportStore(pool *pgxpool.Pool)`
-- Report create/read/status update: `CreateReport`, `ReportByID`,
-  `UpdateReportStatus`
+- Report create/read/list/status update: `CreateReport`, `ReportByID`,
+  `ListReports`, `UpdateReportStatus`
 - Job constructor: `postgres.NewJobStore(pool *pgxpool.Pool)`
 - Job create/read/list/update: `CreateJob`, `JobByID`, `ListRunnableJobs`,
   `UpdateJob`
+- Queue compatibility create/list/delete: `CreateQueueItem`,
+  `ListQueueItemsByKind`, `DeleteQueueItemsByKindTarget`
 - Mail constructor: `postgres.NewMailStore(pool *pgxpool.Pool)`
 - Mail create/read/list/update: `CreateMail`, `MailByID`, `ListQueuedMail`,
   `UpdateMail`
+- Mail runtime queue compatibility: `QueueMail`, `QueuedMails`
 - Errors: `ErrOrderNotFound`, `ErrWebhookEventNotFound`,
   `ErrWebhookEventExists`, `ErrReportNotFound`, `ErrJobNotFound`,
   `ErrMailNotFound`
@@ -616,10 +628,18 @@ content, err := objectStore.Get(ctx, attachment.ObjectKey)
 - Jobs are the durable retry boundary for workers. `ListRunnableJobs` returns
   pending jobs with `run_after <= now`, ordered by `run_after`, `created_at`,
   and `id`.
+- Runtime scan and cleanup queue compatibility uses the `jobs` table through
+  `app.QueueStore`, not in-memory queue slices, once operational stores are
+  configured.
 - Mails are the durable retry boundary for SMTP delivery. `ListQueuedMail`
   returns only `status = 'queued'` rows in oldest-first order.
-- Runtime billing, support, worker, and mail code must not treat in-memory
-  slices as production source of truth once these repositories are wired.
+- Runtime billing, support, worker, queue, and mail code must not treat
+  in-memory maps or slices as production source of truth once these repositories
+  are wired.
+- `cmd/pastebox` API startup must wire PostgreSQL operational stores together
+  with PostgreSQL auth/content/catalog/audit stores. Partial operational wiring
+  is not production-safe because webhook idempotency, order state, reports,
+  queue items, and mail retries must survive the same restart boundary.
 
 ### 4. Validation & Error Matrix
 
@@ -651,6 +671,8 @@ content, err := objectStore.Get(ctx, attachment.ObjectKey)
   queued mail filtering/update.
 - Runtime switch tests must prove billing order state, webhook idempotency,
   reports, jobs, and mail queues survive process restart.
+- Runtime switch tests must also prove scan queue items are deleted from the
+  durable queue when admin retry succeeds.
 - Run full `make test` after changing operational repositories or runtime
   wiring.
 
