@@ -36,6 +36,9 @@ the `pastebox migrate up` command.
 - Auth lifecycle state uses the PostgreSQL `SessionStore`, `AuthTokenStore`,
   and `LoginFailureStore` boundaries. These stores must move with user runtime
   wiring so restart behavior is coherent.
+- Content metadata uses PostgreSQL `PasteStore`, `AttachmentStore`, and
+  `ShareStore` boundaries. Attachment bytes are intentionally not stored in
+  PostgreSQL; Phase 2 object storage owns byte persistence.
 
 ---
 
@@ -468,4 +471,100 @@ if errors.Is(err, postgres.ErrAuthTokenNotFound) {
 } else if err != nil {
     return AuthResult{}, err
 }
+```
+
+## Scenario: Content Metadata Repository Boundaries
+
+### 1. Scope / Trigger
+
+- Trigger: Any change that reads or writes `pastes`, `attachments`,
+  `object_refs`, or `shares`.
+
+### 2. Signatures
+
+- Paste constructor: `postgres.NewPasteStore(pool *pgxpool.Pool)`
+- Paste create: `CreatePaste(ctx context.Context, paste app.Paste) error`
+- Paste read: `PasteByID(ctx context.Context, id string) (app.Paste, error)`
+- Paste list: `ListPastesByUser(ctx context.Context, userID string) ([]app.Paste, error)`
+- Paste update: `UpdatePaste(ctx context.Context, paste app.Paste) error`
+- Attachment constructor: `postgres.NewAttachmentStore(pool *pgxpool.Pool)`
+- Attachment create: `CreateAttachment(ctx context.Context, attachment app.Attachment) error`
+- Attachment read: `AttachmentByID(ctx context.Context, id string) (app.Attachment, error)`
+- Attachment list: `ListAttachmentsByPaste(ctx context.Context, pasteID string) ([]app.Attachment, error)`
+- Attachment update: `UpdateAttachment(ctx context.Context, attachment app.Attachment) error`
+- Object ref upsert: `UpsertObjectRef(ctx context.Context, ref postgres.ObjectRef) error`
+- Object ref read: `ObjectRef(ctx context.Context, objectKey string) (postgres.ObjectRef, error)`
+- Share constructor: `postgres.NewShareStore(pool *pgxpool.Pool)`
+- Share create: `CreateShare(ctx context.Context, share app.Share) error`
+- Share read: `ShareByID(ctx context.Context, id string) (app.Share, error)`
+- Share token lookup: `ShareByTokenHash(ctx context.Context, tokenHash string) (app.Share, error)`
+- Share list: `ListSharesByUser(ctx context.Context, userID string) ([]app.Share, error)`
+- Share update: `UpdateShare(ctx context.Context, share app.Share) error`
+- Errors: `ErrPasteNotFound`, `ErrAttachmentNotFound`, `ErrObjectRefNotFound`,
+  `ErrShareNotFound`, `ErrShareTokenExists`
+
+### 3. Contracts
+
+- Paste tags are stored in `pastes.tags` as JSONB and must round-trip nil tags
+  as an empty slice so API responses can keep returning `[]`, not `null`.
+- Paste repository methods persist metadata and text body only. They do not
+  compute quota, scan aggregation, share counts, or view fields.
+- Attachment repository methods persist metadata, scan state, object key,
+  preview dimensions, and download count. `app.Attachment.Content` is not
+  persisted in PostgreSQL and must remain nil after repository reads.
+- `object_refs` stores object-key reference counts and object metadata only.
+  Actual object bytes belong to the S3-compatible object storage phase.
+- Shares store `token_hash` for lookup and `token_ciphertext` through the
+  current `app.Share.Token` field. Runtime share URLs must not depend on
+  plaintext tokens being recoverable from PostgreSQL unless encryption is
+  explicitly implemented.
+- Duplicate `shares.token_hash` returns `ErrShareTokenExists`.
+
+### 4. Validation & Error Matrix
+
+- Missing paste on read/update -> `ErrPasteNotFound`.
+- Missing attachment on read/update -> `ErrAttachmentNotFound`.
+- Missing object ref on read -> `ErrObjectRefNotFound`.
+- Missing share on read/update -> `ErrShareNotFound`.
+- Duplicate share token hash -> `ErrShareTokenExists`.
+- Invalid paste tag JSON in the database -> repository read error; do not
+  silently drop tags.
+- Other PostgreSQL failures -> wrapped repository error with operation context.
+
+### 5. Good/Base/Bad Cases
+
+- Good: A future PostgreSQL-backed paste flow writes paste metadata, attachment
+  metadata, object refs, and share rows while object bytes are written to the
+  object storage adapter with rollback semantics.
+- Base: Introduce metadata repositories with live integration tests before
+  switching runtime storage.
+- Bad: Persist attachment metadata in PostgreSQL but continue treating
+  `Attachment.Content` as durable; bytes would still disappear on restart.
+
+### 6. Tests Required
+
+- PostgreSQL integration tests with `PASTEBOX_TEST_DATABASE_URL` assert paste
+  create/read/list/update with JSONB tags, attachment create/read/list/update
+  without content bytes, object ref upsert/read, share create/read by token
+  hash/list/update, duplicate share token mapping, and missing-row errors.
+- Runtime storage switch tests must prove app restart preserves paste metadata,
+  attachment metadata, object references, and shares; Phase 2 tests must also
+  prove attachment bytes survive through object storage.
+- Run full `make test` after changing content metadata repositories or runtime
+  storage wiring.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+attachment, err := attachmentStore.AttachmentByID(ctx, id)
+content := attachment.Content
+```
+
+#### Correct
+
+```go
+attachment, err := attachmentStore.AttachmentByID(ctx, id)
+content, err := objectStore.Get(ctx, attachment.ObjectKey)
 ```
