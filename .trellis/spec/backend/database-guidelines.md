@@ -33,6 +33,9 @@ the `pastebox migrate up` command.
 - User persistence uses the PostgreSQL `UserStore` boundary. Runtime auth must
   not switch to PostgreSQL users until sessions and auth tokens are switched
   with compatible repository semantics.
+- Auth lifecycle state uses the PostgreSQL `SessionStore`, `AuthTokenStore`,
+  and `LoginFailureStore` boundaries. These stores must move with user runtime
+  wiring so restart behavior is coherent.
 
 ---
 
@@ -372,6 +375,96 @@ if err := userStore.CreateUser(ctx, user); err != nil {
 ```go
 if err := userStore.CreateUser(ctx, user); errors.Is(err, postgres.ErrUserEmailExists) {
     return AuthResult{}, E(http.StatusConflict, "email_exists", "email is already registered")
+} else if err != nil {
+    return AuthResult{}, err
+}
+```
+
+## Scenario: Auth State Repository Boundaries
+
+### 1. Scope / Trigger
+
+- Trigger: Any change that reads or writes `sessions`, `auth_tokens`, or
+  `login_failures`, or prepares runtime auth to use PostgreSQL-backed users.
+
+### 2. Signatures
+
+- Session constructor: `postgres.NewSessionStore(pool *pgxpool.Pool)`
+- Session create: `CreateSession(ctx context.Context, session app.Session) error`
+- Session read: `SessionByID(ctx context.Context, id string) (app.Session, error)`
+- Session revoke: `RevokeSession(ctx context.Context, id string, revokedAt time.Time) error`
+- User-session revoke: `RevokeUserSessions(ctx context.Context, userID string, revokedAt time.Time) (int64, error)`
+- Token constructor: `postgres.NewAuthTokenStore(pool *pgxpool.Pool)`
+- Token create: `CreateAuthToken(ctx context.Context, kind string, token app.AuthToken) error`
+- Token read: `AuthToken(ctx context.Context, kind string, hash string) (app.AuthToken, error)`
+- Token consume marker: `MarkAuthTokenUsed(ctx context.Context, kind string, hash string, usedAt time.Time) error`
+- Login-failure constructor: `postgres.NewLoginFailureStore(pool *pgxpool.Pool)`
+- Login-failure read: `LoginFailure(ctx context.Context, email string) (app.LoginFailure, error)`
+- Login-failure save: `SaveLoginFailure(ctx context.Context, email string, failure app.LoginFailure) error`
+- Login-failure delete: `DeleteLoginFailure(ctx context.Context, email string) error`
+- Errors: `ErrSessionNotFound`, `ErrAuthTokenNotFound`,
+  `ErrLoginFailureNotFound`
+
+### 3. Contracts
+
+- Sessions round-trip `id`, `user_id`, `created_at`, `expires_at`, and nullable
+  `revoked_at`.
+- Auth tokens are looked up by both `kind` and `hash`; a valid hash under the
+  wrong kind must be treated as missing.
+- Auth token `used_at` is nullable and is the durable consume marker for email
+  verification, magic link, and password reset flows.
+- Login failures upsert by normalized email, preserving `count`,
+  `window_start`, and nullable `locked_until`.
+- Deleting a missing login-failure row is a no-op success.
+- Runtime auth must switch users, sessions, auth tokens, and login failures
+  together so registration, login, verification, password reset, magic link,
+  logout, and account deletion survive process restart consistently.
+
+### 4. Validation & Error Matrix
+
+- Missing session on read or direct revoke -> `ErrSessionNotFound`.
+- Missing auth token on read or consume marker update -> `ErrAuthTokenNotFound`.
+- Wrong token kind -> `ErrAuthTokenNotFound`.
+- Missing login-failure row on read -> `ErrLoginFailureNotFound`.
+- Other PostgreSQL failures -> wrapped repository error with operation context.
+
+### 5. Good/Base/Bad Cases
+
+- Good: A future PostgreSQL-backed auth runtime creates the user, verification
+  token, login failure state, and session through repository boundaries and
+  proves the flow survives process restart.
+- Base: Introduce repository boundaries with live integration tests while
+  runtime auth remains in-memory until all dependent stores are ready.
+- Bad: Persist sessions but leave auth tokens in memory; password-reset and
+  magic-link flows would still fail across restarts.
+
+### 6. Tests Required
+
+- PostgreSQL integration tests with `PASTEBOX_TEST_DATABASE_URL` assert session
+  create/read/revoke/user-revoke, auth token create/read/wrong-kind miss/used
+  marker, and login-failure save/read/delete behavior.
+- Runtime auth switch tests must prove restart persistence for register,
+  login, email verification, magic link, password reset, session lookup,
+  logout, logout-all, account deletion, and bootstrap admin.
+- Run full `make test` after changing auth-state repository or runtime wiring.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+token, err := tokenStore.AuthToken(ctx, "email_verification", hash)
+if err != nil {
+    token = app.AuthToken{}
+}
+```
+
+#### Correct
+
+```go
+token, err := tokenStore.AuthToken(ctx, "email_verification", hash)
+if errors.Is(err, postgres.ErrAuthTokenNotFound) {
+    return AuthResult{}, E(http.StatusUnauthorized, "invalid_token", "token is invalid or expired")
 } else if err != nil {
     return AuthResult{}, err
 }
