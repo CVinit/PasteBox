@@ -29,6 +29,8 @@ ghcr.io/cvinit/pastebox:sha-<commit>
 ghcr.io/cvinit/pastebox:<tag>
 ```
 
+部署时应使用 `sha-*` 标签或 digest。`latest` 只是便于人工检查的移动标签，不能作为生产上线基线的部署镜像。
+
 Pull Request 只构建镜像，不推送镜像。
 
 如果目标机器拉取镜像失败，请检查：
@@ -62,38 +64,21 @@ mkdir -p /opt/pastebox
 cd /opt/pastebox
 ```
 
-创建 `compose.yaml`：
+可以复制仓库中的演示部署模板：
 
-```yaml
-services:
-  pastebox:
-    image: ghcr.io/cvinit/pastebox:latest
-    restart: unless-stopped
-    ports:
-      - "8080:8080"
-    environment:
-      PASTEBOX_APP_ENV: production
-      PASTEBOX_APP_NAME: PasteBox
-      PASTEBOX_HTTP_ADDR: :8080
-      PASTEBOX_PUBLIC_URL: https://pastebox.example.com
-      PASTEBOX_MAILER_PROVIDER: log
-      PASTEBOX_STRIPE_ENABLED: "false"
-      PASTEBOX_EPUSDT_ENABLED: "false"
-      PASTEBOX_BOOTSTRAP_ADMIN_EMAIL: admin@example.com
-      PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD: change-me-admin-password
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+```sh
+cp compose.deploy.yaml compose.yaml
 ```
 
-必须修改：
+在 `compose.yaml` 同目录创建 `.env`，或先导出这些变量。镜像必须使用 GitHub Actions 产出的不可变 `sha-*` 标签，或 registry digest：
 
-- `PASTEBOX_PUBLIC_URL`：改成你的真实 HTTPS 访问地址。
-- `PASTEBOX_BOOTSTRAP_ADMIN_EMAIL`：改成你的管理员邮箱。
-- `PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD`：改成强密码。
+```sh
+PASTEBOX_IMAGE=ghcr.io/cvinit/pastebox:sha-<commit>
+PASTEBOX_PUBLIC_URL=https://pastebox.example.com
+PASTEBOX_CSRF_SECRET=<long-random-secret>
+PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=<long-random-password>
+```
 
 启动：
 
@@ -116,6 +101,12 @@ curl -fsS http://127.0.0.1:8080/api/v1/ready
 
 ```json
 {"status":"ok"}
+```
+
+以及：
+
+```json
+{"status":"ready"}
 ```
 
 以及：
@@ -179,7 +170,7 @@ PASTEBOX_PUBLIC_URL: http://localhost:8080
 
 ```sh
 PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=change-me-admin-password
+PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=<long-random-password>
 ```
 
 因为数据保存在内存中，容器每次重启后都会重新初始化数据和管理员账号。
@@ -190,6 +181,8 @@ PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=change-me-admin-password
 
 ```sh
 cd /opt/pastebox
+grep '^PASTEBOX_IMAGE=' .env
+# 编辑 .env，把 PASTEBOX_IMAGE 替换为新的 sha-* 标签或 digest。
 docker compose pull pastebox
 docker compose up -d pastebox
 docker compose logs -f pastebox
@@ -209,7 +202,7 @@ docker compose logs --tail=200 pastebox
 确认镜像是否能拉取：
 
 ```sh
-docker pull ghcr.io/cvinit/pastebox:latest
+docker pull ghcr.io/cvinit/pastebox:sha-<commit>
 ```
 
 确认端口监听：

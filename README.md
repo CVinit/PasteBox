@@ -42,7 +42,7 @@ Optional bootstrap admin credentials can be set in `.env`:
 
 ```sh
 PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=change-me-admin-password
+PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=<dev-admin-password>
 ```
 
 The development auth flows return dev tokens in JSON responses for email verification, magic link, and password reset so the complete flow can be exercised without a live mail provider.
@@ -70,15 +70,19 @@ docker run --rm -p 8080:8080 \
 
 Open `http://localhost:8080`.
 
-GitHub Actions publishes the image to:
+GitHub Actions publishes a moving convenience tag and immutable release
+references:
 
 ```text
 ghcr.io/cvinit/pastebox:latest
+ghcr.io/cvinit/pastebox:sha-<commit>
+ghcr.io/cvinit/pastebox:<tag>
 ```
 
 See [docs/deployment.md](docs/deployment.md) for the GHCR image workflow,
 Docker Compose deployment, reverse proxy notes, and current production-readiness
-boundary.
+boundary. Use `sha-*` tags or digests for deployments; `latest` is only a
+convenience tag.
 
 中文部署说明见 [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md)，其中包含
 GitHub Actions 自动构建镜像后的 Docker Compose 部署方式。

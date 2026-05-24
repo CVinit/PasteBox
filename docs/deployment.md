@@ -42,6 +42,10 @@ ghcr.io/cvinit/pastebox:sha-<commit>
 ghcr.io/cvinit/pastebox:<tag>
 ```
 
+Use `sha-*` tags or digests for deployments. `latest` is a moving convenience
+tag for manual inspection and must not be used for the production launch
+baseline.
+
 Pull requests build the image without pushing it.
 
 The workflow uses `GITHUB_TOKEN` with `packages: write` to publish to GHCR. The
@@ -79,19 +83,23 @@ session cookies are marked `Secure`.
 
 ## Docker Compose With GHCR Image
 
-After the GitHub Actions workflow publishes the image, copy the deployment
-compose file:
+After the GitHub Actions workflow publishes the image, copy the demo deployment
+Compose file:
 
 ```sh
 cp compose.deploy.yaml compose.yaml
 ```
 
-Edit these values before starting:
+Create a `.env` file next to `compose.yaml` or export these variables before
+starting. Use the immutable `sha-*` image tag from the workflow run, or a
+registry digest:
 
-```yaml
-PASTEBOX_PUBLIC_URL: https://pastebox.example.com
-PASTEBOX_BOOTSTRAP_ADMIN_EMAIL: admin@example.com
-PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD: change-me-admin-password
+```sh
+PASTEBOX_IMAGE=ghcr.io/cvinit/pastebox:sha-<commit>
+PASTEBOX_PUBLIC_URL=https://pastebox.example.com
+PASTEBOX_CSRF_SECRET=<long-random-secret>
+PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=<long-random-password>
 ```
 
 Then run:
@@ -115,6 +123,12 @@ Expected response:
 
 ```json
 {"status":"ok"}
+```
+
+and:
+
+```json
+{"status":"ready"}
 ```
 
 and:
@@ -164,7 +178,7 @@ For this in-memory MVP, the bootstrap admin is created at process startup from:
 
 ```sh
 PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=change-me-admin-password
+PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=<long-random-password>
 ```
 
 Change the password before exposing the service. Because data is in memory, the
@@ -175,6 +189,8 @@ same bootstrap admin is recreated after every restart.
 To deploy a new image published by GitHub Actions:
 
 ```sh
+grep '^PASTEBOX_IMAGE=' .env
+# Edit .env and replace PASTEBOX_IMAGE with the new sha-* tag or digest.
 docker compose pull pastebox
 docker compose up -d pastebox
 docker compose logs -f pastebox
