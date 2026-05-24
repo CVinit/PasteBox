@@ -75,3 +75,37 @@ Implemented the PasteBox MVP, added single-image deployment support, stabilized 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: Fix Google test login session
+
+**Date**: 2026-05-24
+**Task**: Fix Google test login session
+**Branch**: `main`
+
+### Summary
+
+Fixed HTTP test-environment Google auth session persistence by making session cookie Secure behavior follow the request scheme, documented proxy and test deployment behavior, updated the backend cookie contract, and verified make test plus production-image HTTP LAN login refresh.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4edb817` | (see git log) |
+| `8d7bdb5` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
