@@ -125,6 +125,42 @@ func TestTextCreateCountsAgainstDailyUploadQuota(t *testing.T) {
 	}
 }
 
+func TestDailyMetricReadFailureBlocksQuotaMutations(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	storeErr := errors.New("daily metric read failed")
+	svc := newTestServiceWithDailyMetrics(t, &now, failingDailyMetricStore{readErr: storeErr})
+	user := registerTestUser(t, svc, "metric-read@example.com")
+
+	if _, err := svc.CreatePaste(user.User.ID, PasteInput{Text: "blocked", ExpiresInSeconds: 60}); !errors.Is(err, storeErr) {
+		t.Fatalf("expected daily metric read error, got %v", err)
+	}
+	pastes, err := svc.ListPastes(user.User.ID, ListOptions{})
+	if err != nil {
+		t.Fatalf("list pastes after failed create: %v", err)
+	}
+	if len(pastes) != 0 {
+		t.Fatalf("failed quota read must not create paste, got %#v", pastes)
+	}
+}
+
+func TestDailyMetricWriteFailureDoesNotPartiallyCreatePaste(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	storeErr := errors.New("daily metric write failed")
+	svc := newTestServiceWithDailyMetrics(t, &now, failingDailyMetricStore{writeErr: storeErr})
+	user := registerTestUser(t, svc, "metric-write@example.com")
+
+	if _, err := svc.CreatePaste(user.User.ID, PasteInput{Text: "blocked", ExpiresInSeconds: 60}); !errors.Is(err, storeErr) {
+		t.Fatalf("expected daily metric write error, got %v", err)
+	}
+	pastes, err := svc.ListPastes(user.User.ID, ListOptions{})
+	if err != nil {
+		t.Fatalf("list pastes after failed create: %v", err)
+	}
+	if len(pastes) != 0 {
+		t.Fatalf("failed metric write must not create paste, got %#v", pastes)
+	}
+}
+
 func TestEmailVerificationRequiredBeforePasswordLoginAndWrites(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	svc := newTestService(t, &now)
@@ -432,6 +468,32 @@ func newTestService(t *testing.T, now *time.Time) *Service {
 	svc := New(cfg)
 	svc.now = func() time.Time { return *now }
 	return svc
+}
+
+func newTestServiceWithDailyMetrics(t *testing.T, now *time.Time, store DailyMetricStore) *Service {
+	t.Helper()
+	cfg := config.FromEnv()
+	cfg.BootstrapAdminEmail = ""
+	cfg.BootstrapAdminPassword = ""
+	svc := NewWithDailyMetricStore(cfg, store)
+	svc.now = func() time.Time { return *now }
+	return svc
+}
+
+type failingDailyMetricStore struct {
+	readErr  error
+	writeErr error
+}
+
+func (s failingDailyMetricStore) DailyMetric(_ context.Context, _ string, _ string, _ time.Time) (int64, error) {
+	if s.readErr != nil {
+		return 0, s.readErr
+	}
+	return 0, nil
+}
+
+func (s failingDailyMetricStore) RecordDailyMetric(_ context.Context, _ string, _ string, _ time.Time, _ int64) error {
+	return s.writeErr
 }
 
 func registerTestUser(t *testing.T, svc *Service, email string) AuthResult {

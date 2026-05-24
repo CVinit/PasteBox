@@ -20,6 +20,10 @@ the `pastebox migrate up` command.
   object references, and final order state.
 - Use JSONB only where the application data is naturally variable, such as
   paste tags and audit/webhook metadata.
+- Daily quota counters use the `app.DailyMetricStore` boundary. The in-memory
+  store remains the default until users and related source-of-truth entities are
+  PostgreSQL-backed; PostgreSQL implementations must read/write
+  `daily_metrics` through typed repository methods.
 
 ---
 
@@ -125,3 +129,81 @@ pastebox migrate up
 - Do not edit an applied migration file; add a new migration.
 - Do not report a production deployment as ready if `pastebox migrate up` has
   not run successfully against the target database.
+- Do not treat a daily-metric repository error as zero usage. Quota checks must
+  fail closed so a database outage cannot bypass upload/download limits.
+
+## Scenario: Daily Metrics Repository Boundary
+
+### 1. Scope / Trigger
+
+- Trigger: Any change that reads or writes `DailyUploadBytes`,
+  `DailyShareDownloadBytes`, or the `daily_metrics` table.
+
+### 2. Signatures
+
+- Interface: `app.DailyMetricStore`
+- Read: `DailyMetric(ctx context.Context, userID string, kind string, day time.Time) (int64, error)`
+- Write: `RecordDailyMetric(ctx context.Context, userID string, kind string, day time.Time, bytes int64) error`
+- PostgreSQL constructor: `postgres.NewDailyMetricStore(pool *pgxpool.Pool)`
+- Table key: `daily_metrics(user_id, metric_kind, metric_day)`
+
+### 3. Contracts
+
+- `kind` values currently used by the service are `upload` and
+  `share_download`.
+- The day bucket is UTC date based, matching the existing quota contract.
+- Missing PostgreSQL rows read as zero bytes.
+- Positive writes accumulate with an upsert:
+  `bytes = daily_metrics.bytes + EXCLUDED.bytes`.
+- Zero or negative writes are ignored.
+- Service quota paths must propagate repository errors instead of converting
+  them to zero.
+- Runtime API wiring must not switch daily metrics to PostgreSQL before users
+  are PostgreSQL-backed, because `daily_metrics.user_id` references `users(id)`.
+
+### 4. Validation & Error Matrix
+
+- Missing daily metric row -> return `0, nil`.
+- Store read failure during quota check -> return the store error and block the
+  mutation.
+- Store write failure during upload/download accounting -> return the store
+  error before applying related in-memory mutation.
+- `bytes <= 0` on write -> no-op success.
+
+### 5. Good/Base/Bad Cases
+
+- Good: `CreatePaste` reads the quota, records positive text bytes, then stores
+  the paste only after the metric write succeeds.
+- Base: In-memory `DailyMetricStore` keeps local development and unit tests
+  lightweight while repository code is introduced.
+- Bad: Enable the PostgreSQL daily metrics store while users are still only
+  in-memory; the foreign key will reject writes for missing users.
+
+### 6. Tests Required
+
+- App tests assert daily metric read failures block quota mutations.
+- App tests assert daily metric write failures do not partially create pastes.
+- PostgreSQL integration tests with `PASTEBOX_TEST_DATABASE_URL` assert missing
+  rows read as zero, UTC-day accumulation works, and zero writes are ignored.
+- Run full `make test` after changing daily metric quota paths because frontend
+  quota displays consume these API fields.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+upload, err := store.DailyMetric(ctx, userID, "upload", now)
+if err != nil {
+    upload = 0
+}
+```
+
+#### Correct
+
+```go
+upload, err := store.DailyMetric(ctx, userID, "upload", now)
+if err != nil {
+    return QuotaView{}, err
+}
+```

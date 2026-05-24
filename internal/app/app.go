@@ -67,7 +67,7 @@ type Service struct {
 	attachmentsByID  map[string]*Attachment
 	objects          map[string][]byte
 	objectRefs       map[string]int
-	dailyMetrics     map[string]int64
+	dailyMetrics     DailyMetricStore
 	sharesByID       map[string]*Share
 	shareIDByToken   map[string]string
 	ordersByID       map[string]*Order
@@ -97,7 +97,7 @@ func New(cfg config.Config) *Service {
 		attachmentsByID:  map[string]*Attachment{},
 		objects:          map[string][]byte{},
 		objectRefs:       map[string]int{},
-		dailyMetrics:     map[string]int64{},
+		dailyMetrics:     newMemoryDailyMetricStore(),
 		sharesByID:       map[string]*Share{},
 		shareIDByToken:   map[string]string{},
 		ordersByID:       map[string]*Order{},
@@ -112,6 +112,14 @@ func New(cfg config.Config) *Service {
 func NewForTest(now func() time.Time) *Service {
 	svc := New(config.FromEnv())
 	svc.now = now
+	return svc
+}
+
+func NewWithDailyMetricStore(cfg config.Config, dailyMetrics DailyMetricStore) *Service {
+	svc := New(cfg)
+	if dailyMetrics != nil {
+		svc.dailyMetrics = dailyMetrics
+	}
 	return svc
 }
 
@@ -794,10 +802,12 @@ func (s *Service) CreatePaste(userID string, input PasteInput) (PasteView, error
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
-	s.pastesByID[paste.ID] = paste
 	if textBytes := int64(len([]byte(paste.Text))); textBytes > 0 {
-		s.recordDailyUploadLocked(user.ID, textBytes)
+		if err := s.recordDailyUploadLocked(user.ID, textBytes); err != nil {
+			return PasteView{}, err
+		}
 	}
+	s.pastesByID[paste.ID] = paste
 	return s.viewPasteLocked(paste), nil
 }
 
@@ -871,7 +881,10 @@ func (s *Service) UpdatePaste(userID string, id string, patch PastePatch) (Paste
 	if attachmentsBytes+nextTextBytes > plan.SinglePasteBytes {
 		return PasteView{}, E(http.StatusRequestEntityTooLarge, "paste_too_large", "paste exceeds plan total size")
 	}
-	quota := s.quotaLocked(user.ID, plan)
+	quota, err := s.quotaLocked(user.ID, plan)
+	if err != nil {
+		return PasteView{}, err
+	}
 	nextStorageBytes := quota.ActiveStorageBytes - currentTextBytes + nextTextBytes
 	if nextStorageBytes > plan.ActiveStorageBytes {
 		return PasteView{}, E(http.StatusForbidden, "storage_limit", "active storage exceeds plan limit")
@@ -879,14 +892,16 @@ func (s *Service) UpdatePaste(userID string, id string, patch PastePatch) (Paste
 	if textDelta := nextTextBytes - currentTextBytes; textDelta > 0 && quota.DailyUploadBytes+textDelta > plan.DailyUploadBytes {
 		return PasteView{}, E(http.StatusForbidden, "daily_upload_limit", "daily upload traffic exceeds plan limit")
 	}
+	if textDelta := nextTextBytes - currentTextBytes; textDelta > 0 {
+		if err := s.recordDailyUploadLocked(user.ID, textDelta); err != nil {
+			return PasteView{}, err
+		}
+	}
 	if patch.Title != nil {
 		paste.Title = strings.TrimSpace(*patch.Title)
 	}
 	if patch.Text != nil {
 		paste.Text = *patch.Text
-		if textDelta := nextTextBytes - currentTextBytes; textDelta > 0 {
-			s.recordDailyUploadLocked(user.ID, textDelta)
-		}
 	}
 	if patch.HasTags {
 		paste.Tags = normalizeTags(patch.Tags)
@@ -990,6 +1005,9 @@ func (s *Service) AddAttachment(userID string, pasteID string, fileName string, 
 	status, scanStatus, risk := classifyAttachment(fileName, contentType)
 	objectKey := userID + "/" + shaHex
 	width, height := imageDimensions(contentType, content)
+	if err := s.recordDailyUploadLocked(userID, int64(len(content))); err != nil {
+		return AttachmentView{}, err
+	}
 	if _, exists := s.objects[objectKey]; !exists {
 		s.objects[objectKey] = append([]byte(nil), content...)
 	}
@@ -1025,7 +1043,6 @@ func (s *Service) AddAttachment(userID string, pasteID string, fileName string, 
 			UpdatedAt: now,
 		})
 	}
-	s.recordDailyUploadLocked(userID, attachment.Size)
 	return viewAttachment(attachment), nil
 }
 
@@ -1151,7 +1168,11 @@ func (s *Service) DownloadSharedAttachment(token string, password string, attach
 	}
 	owner := s.usersByID[share.UserID]
 	plan, _ := s.planForUserLocked(owner)
-	if s.dailyMetricLocked(share.UserID, "share_download")+attachment.Size > plan.DailyShareDownloadBytes {
+	downloadBytes, err := s.dailyMetricLocked(share.UserID, "share_download")
+	if err != nil {
+		return AttachmentView{}, nil, err
+	}
+	if downloadBytes+attachment.Size > plan.DailyShareDownloadBytes {
 		return AttachmentView{}, nil, E(http.StatusForbidden, "daily_download_limit", "daily share download traffic exceeds plan limit")
 	}
 	content, ok := s.objectContentLocked(attachment)
@@ -1159,10 +1180,12 @@ func (s *Service) DownloadSharedAttachment(token string, password string, attach
 		return AttachmentView{}, nil, E(http.StatusGone, "attachment_unavailable", "attachment content is unavailable")
 	}
 	now := s.now().UTC()
+	if err := s.recordDailyShareDownloadLocked(share.UserID, attachment.Size); err != nil {
+		return AttachmentView{}, nil, err
+	}
 	share.DownloadCount++
 	share.LastDownloadedAt = &now
 	attachment.DownloadN++
-	s.recordDailyShareDownloadLocked(share.UserID, attachment.Size)
 	return viewAttachment(attachment), content, nil
 }
 
@@ -1174,7 +1197,7 @@ func (s *Service) Quota(userID string) (QuotaView, error) {
 		return QuotaView{}, err
 	}
 	plan, _ := s.planForUserLocked(user)
-	return s.quotaLocked(user.ID, plan), nil
+	return s.quotaLocked(user.ID, plan)
 }
 
 func (s *Service) Prices() map[string]any {
@@ -1916,7 +1939,10 @@ func (s *Service) ensureUserCanWriteLocked(user *User, plan plans.Plan) error {
 	if !user.EmailVerified {
 		return E(http.StatusForbidden, "email_not_verified", "email verification is required before writing content")
 	}
-	quota := s.quotaLocked(user.ID, plan)
+	quota, err := s.quotaLocked(user.ID, plan)
+	if err != nil {
+		return err
+	}
 	if quota.OverLimit {
 		return E(http.StatusForbidden, "quota_read_only", "account is over current plan limits")
 	}
@@ -1937,7 +1963,10 @@ func (s *Service) ensureCanCreatePasteLocked(user *User, plan plans.Plan, input 
 	if textBytes+extraBytes > plan.SinglePasteBytes {
 		return E(http.StatusRequestEntityTooLarge, "paste_too_large", "paste exceeds plan total size")
 	}
-	quota := s.quotaLocked(user.ID, plan)
+	quota, err := s.quotaLocked(user.ID, plan)
+	if err != nil {
+		return err
+	}
 	if extraAttachments == 0 && quota.ActivePasteCount+1 > plan.ActivePasteLimit {
 		return E(http.StatusForbidden, "active_paste_limit", "active paste count exceeds plan limit")
 	}
@@ -1950,7 +1979,7 @@ func (s *Service) ensureCanCreatePasteLocked(user *User, plan plans.Plan, input 
 	return nil
 }
 
-func (s *Service) quotaLocked(userID string, plan plans.Plan) QuotaView {
+func (s *Service) quotaLocked(userID string, plan plans.Plan) (QuotaView, error) {
 	var activeCount int
 	var activeStorage int64
 	for _, paste := range s.pastesByID {
@@ -1960,8 +1989,14 @@ func (s *Service) quotaLocked(userID string, plan plans.Plan) QuotaView {
 		activeCount++
 		activeStorage += s.pasteSizeLocked(paste)
 	}
-	upload := s.dailyMetricLocked(userID, "upload")
-	download := s.dailyMetricLocked(userID, "share_download")
+	upload, err := s.dailyMetricLocked(userID, "upload")
+	if err != nil {
+		return QuotaView{}, err
+	}
+	download, err := s.dailyMetricLocked(userID, "share_download")
+	if err != nil {
+		return QuotaView{}, err
+	}
 	return QuotaView{
 		Plan:                    plan,
 		ActivePasteCount:        activeCount,
@@ -1969,7 +2004,7 @@ func (s *Service) quotaLocked(userID string, plan plans.Plan) QuotaView {
 		DailyUploadBytes:        upload,
 		DailyShareDownloadBytes: download,
 		OverLimit:               activeCount > plan.ActivePasteLimit || activeStorage > plan.ActiveStorageBytes,
-	}
+	}, nil
 }
 
 func (s *Service) pasteSizeLocked(paste *Paste) int64 {
@@ -2077,24 +2112,16 @@ func (s *Service) validShareLocked(token string, password string, viewerUserID s
 	return share, paste, nil
 }
 
-func (s *Service) dailyMetricLocked(userID string, kind string) int64 {
-	return s.dailyMetrics[s.utcDayKey(kind, userID)]
+func (s *Service) dailyMetricLocked(userID string, kind string) (int64, error) {
+	return s.dailyMetrics.DailyMetric(context.Background(), userID, kind, s.now().UTC())
 }
 
-func (s *Service) recordDailyUploadLocked(userID string, bytes int64) {
-	if bytes > 0 {
-		s.dailyMetrics[s.utcDayKey("upload", userID)] += bytes
-	}
+func (s *Service) recordDailyUploadLocked(userID string, bytes int64) error {
+	return s.dailyMetrics.RecordDailyMetric(context.Background(), userID, "upload", s.now().UTC(), bytes)
 }
 
-func (s *Service) recordDailyShareDownloadLocked(userID string, bytes int64) {
-	if bytes > 0 {
-		s.dailyMetrics[s.utcDayKey("share_download", userID)] += bytes
-	}
-}
-
-func (s *Service) utcDayKey(kind string, userID string) string {
-	return "metric/" + kind + "/" + userID + "/" + s.now().UTC().Format("2006-01-02")
+func (s *Service) recordDailyShareDownloadLocked(userID string, bytes int64) error {
+	return s.dailyMetrics.RecordDailyMetric(context.Background(), userID, "share_download", s.now().UTC(), bytes)
 }
 
 func (s *Service) requireAdminLocked(userID string) error {
