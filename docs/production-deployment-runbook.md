@@ -71,9 +71,10 @@ docker compose --env-file deploy/production.env -f compose.production.yaml pull
 ```
 
 The production preflight fails if `PASTEBOX_IMAGE` is mutable, if
-`PASTEBOX_PUBLIC_URL` is not HTTPS, if Google OAuth client settings are missing,
-if SMTP is not configured for TLS delivery, if `PASTEBOX_S3_ENDPOINT` points to
-a local or HTTP object store, or if `PASTEBOX_RESTIC_REPOSITORY` is not an
+`PASTEBOX_PUBLIC_URL` is not HTTPS, if `PASTEBOX_CSRF_SECRET` is missing or
+left at the development default, if Google OAuth client settings are missing, if
+SMTP is not configured for TLS delivery, if `PASTEBOX_S3_ENDPOINT` points to a
+local or HTTP object store, or if `PASTEBOX_RESTIC_REPOSITORY` is not an
 off-host `s3:https://` repository. Use managed S3-compatible storage for
 attachment objects and a separate off-host S3-compatible restic repository for
 backups.

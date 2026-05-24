@@ -29,6 +29,7 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	t.Setenv("PASTEBOX_EPUSDT_ENABLED", "true")
 	t.Setenv("PASTEBOX_LOG_LEVEL", "DEBUG")
 	t.Setenv("PASTEBOX_PUBLIC_URL", "https://pastebox.example.com")
+	t.Setenv("PASTEBOX_CSRF_SECRET", "test-csrf-secret")
 	t.Setenv("PASTEBOX_GOOGLE_OAUTH_CLIENT_ID", "google-client-id")
 	t.Setenv("PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET", "google-client-secret")
 	t.Setenv("PASTEBOX_MAILER_PROVIDER", "smtp")
@@ -53,6 +54,9 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	}
 	if cfg.LogLevel != slog.LevelDebug {
 		t.Fatalf("expected debug log level, got %s", cfg.LogLevel)
+	}
+	if cfg.CSRFSecret != "test-csrf-secret" {
+		t.Fatalf("expected CSRF secret from env, got %q", cfg.CSRFSecret)
 	}
 	if cfg.GoogleOAuth.ClientID != "google-client-id" || cfg.GoogleOAuth.ClientSecret != "google-client-secret" {
 		t.Fatalf("expected Google OAuth credentials from env, got %#v", cfg.GoogleOAuth)

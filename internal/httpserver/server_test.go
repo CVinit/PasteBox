@@ -149,6 +149,7 @@ func TestSessionCookieSecureFollowsProductionRequestScheme(t *testing.T) {
 		strings.NewReader(`{"email":"plain@example.com","password":"password123","displayName":"Plain"}`),
 	)
 	plainReq.Header.Set("Content-Type", "application/json")
+	addCSRFToken(t, handler, plainReq)
 	handler.ServeHTTP(plain, plainReq)
 	assertStatus(t, plain, http.StatusCreated)
 	plainCookie := sessionCookieFromResponse(t, plain)
@@ -164,6 +165,7 @@ func TestSessionCookieSecureFollowsProductionRequestScheme(t *testing.T) {
 	)
 	proxiedReq.Header.Set("Content-Type", "application/json")
 	proxiedReq.Header.Set("X-Forwarded-Proto", "https")
+	addCSRFToken(t, handler, proxiedReq)
 	handler.ServeHTTP(proxied, proxiedReq)
 	assertStatus(t, proxied, http.StatusCreated)
 	proxiedCookie := sessionCookieFromResponse(t, proxied)
@@ -179,11 +181,56 @@ func TestSessionCookieSecureFollowsProductionRequestScheme(t *testing.T) {
 	)
 	forwardedReq.Header.Set("Content-Type", "application/json")
 	forwardedReq.Header.Set("Forwarded", `for=192.0.2.10; proto="https"; host=pastebox.example.com`)
+	addCSRFToken(t, handler, forwardedReq)
 	handler.ServeHTTP(forwarded, forwardedReq)
 	assertStatus(t, forwarded, http.StatusCreated)
 	forwardedCookie := sessionCookieFromResponse(t, forwarded)
 	if !forwardedCookie.Secure {
 		t.Fatalf("expected standard Forwarded HTTPS cookie to set Secure, got %#v", forwardedCookie)
+	}
+}
+
+func TestCSRFTokenProtectsUnsafeBrowserRoutes(t *testing.T) {
+	cfg := config.FromEnv()
+	cfg.BootstrapAdminEmail = ""
+	cfg.BootstrapAdminPassword = ""
+	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), app.New(cfg))
+
+	missing := httptest.NewRecorder()
+	missingReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/auth/register",
+		strings.NewReader(`{"email":"csrf-missing@example.com","password":"password123","displayName":"Missing"}`),
+	)
+	missingReq.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(missing, missingReq)
+	assertStatus(t, missing, http.StatusForbidden)
+	var missingBody map[string]string
+	decodeResponse(t, missing, &missingBody)
+	if missingBody["error"] != "csrf_required" {
+		t.Fatalf("expected csrf_required error, got %#v", missingBody)
+	}
+
+	protected := httptest.NewRecorder()
+	protectedReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/auth/register",
+		strings.NewReader(`{"email":"csrf-ok@example.com","password":"password123","displayName":"Protected"}`),
+	)
+	protectedReq.Header.Set("Content-Type", "application/json")
+	addCSRFToken(t, handler, protectedReq)
+	handler.ServeHTTP(protected, protectedReq)
+	assertStatus(t, protected, http.StatusCreated)
+
+	webhook := httptest.NewRecorder()
+	webhookReq := httptest.NewRequest(http.MethodPost, "/api/v1/billing/webhooks/stripe", strings.NewReader(`{}`))
+	webhookReq.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(webhook, webhookReq)
+	assertStatus(t, webhook, http.StatusBadRequest)
+	var webhookBody map[string]string
+	decodeResponse(t, webhook, &webhookBody)
+	if webhookBody["error"] == "csrf_required" {
+		t.Fatalf("provider webhook route must not use browser CSRF gate: %#v", webhookBody)
 	}
 }
 
@@ -595,9 +642,10 @@ func TestOAuthWebhookReplayAndReportHTTPContracts(t *testing.T) {
 }
 
 type httpTestClient struct {
-	t       *testing.T
-	handler http.Handler
-	cookies map[string]*http.Cookie
+	t         *testing.T
+	handler   http.Handler
+	cookies   map[string]*http.Cookie
+	csrfToken string
 }
 
 func newHTTPTestClient(t *testing.T, handler http.Handler) *httpTestClient {
@@ -637,6 +685,46 @@ func (c *httpTestClient) multipart(path string, fieldName string, fileName strin
 
 func (c *httpTestClient) do(req *http.Request) *httptest.ResponseRecorder {
 	c.t.Helper()
+	if requiresCSRF(req) && req.Header.Get(csrfHeaderName) == "" {
+		c.ensureCSRF()
+		req.Header.Set(csrfHeaderName, c.csrfToken)
+	}
+	for _, cookie := range c.cookies {
+		req.AddCookie(cookie)
+	}
+	res := httptest.NewRecorder()
+	c.handler.ServeHTTP(res, req)
+	for _, cookie := range res.Result().Cookies() {
+		if cookie.MaxAge < 0 {
+			delete(c.cookies, cookie.Name)
+			continue
+		}
+		c.cookies[cookie.Name] = cookie
+	}
+	return res
+}
+
+func (c *httpTestClient) ensureCSRF() {
+	c.t.Helper()
+	if c.csrfToken != "" {
+		return
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/csrf", nil)
+	req.Header.Set("Accept", "application/json")
+	res := c.doWithoutCSRF(req)
+	assertStatus(c.t, res, http.StatusOK)
+	var body struct {
+		CSRFToken string `json:"csrfToken"`
+	}
+	decodeResponse(c.t, res, &body)
+	if body.CSRFToken == "" {
+		c.t.Fatalf("expected csrf token response, got %#v", body)
+	}
+	c.csrfToken = body.CSRFToken
+}
+
+func (c *httpTestClient) doWithoutCSRF(req *http.Request) *httptest.ResponseRecorder {
+	c.t.Helper()
 	for _, cookie := range c.cookies {
 		req.AddCookie(cookie)
 	}
@@ -669,6 +757,29 @@ func decodeResponse(t *testing.T, res *httptest.ResponseRecorder, target any) {
 func sessionCookieFromResponse(t *testing.T, res *httptest.ResponseRecorder) *http.Cookie {
 	t.Helper()
 	return cookieFromResponse(t, res, sessionCookieName)
+}
+
+func addCSRFToken(t *testing.T, handler http.Handler, req *http.Request) {
+	t.Helper()
+	tokenReq := httptest.NewRequest(http.MethodGet, "/api/v1/csrf", nil)
+	if req.Header.Get("X-Forwarded-Proto") != "" {
+		tokenReq.Header.Set("X-Forwarded-Proto", req.Header.Get("X-Forwarded-Proto"))
+	}
+	if req.Header.Get("Forwarded") != "" {
+		tokenReq.Header.Set("Forwarded", req.Header.Get("Forwarded"))
+	}
+	tokenRes := httptest.NewRecorder()
+	handler.ServeHTTP(tokenRes, tokenReq)
+	assertStatus(t, tokenRes, http.StatusOK)
+	var body struct {
+		CSRFToken string `json:"csrfToken"`
+	}
+	decodeResponse(t, tokenRes, &body)
+	if body.CSRFToken == "" {
+		t.Fatalf("expected csrf token response, got %#v", body)
+	}
+	req.Header.Set(csrfHeaderName, body.CSRFToken)
+	req.AddCookie(cookieFromResponse(t, tokenRes, csrfCookieName))
 }
 
 func cookieFromResponse(t *testing.T, res *httptest.ResponseRecorder, name string) *http.Cookie {

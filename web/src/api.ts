@@ -194,6 +194,26 @@ export type AuthResult = {
   devEmailVerificationToken?: string;
 };
 
+let csrfToken: string | null = null;
+
+function requiresCsrf(init: RequestInit): boolean {
+  const method = (init.method ?? "GET").toUpperCase();
+  return !["GET", "HEAD", "OPTIONS"].includes(method);
+}
+
+async function fetchCsrfToken(): Promise<string> {
+  const response = await fetch("/api/v1/csrf", {
+    headers: { Accept: "application/json" },
+    credentials: "include",
+  });
+  if (!response.ok) {
+    throw new Error("failed to initialize request protection");
+  }
+  const payload = (await response.json()) as { csrfToken: string };
+  csrfToken = payload.csrfToken;
+  return payload.csrfToken;
+}
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   const isForm = init.body instanceof FormData;
@@ -202,12 +222,32 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
   headers.set("Accept", "application/json");
+  if (requiresCsrf(init) && !headers.has("X-CSRF-Token")) {
+    headers.set("X-CSRF-Token", csrfToken ?? (await fetchCsrfToken()));
+  }
 
-  const response = await fetch(`/api/v1${path}`, {
+  let response = await fetch(`/api/v1${path}`, {
     ...init,
     headers,
     credentials: "include",
   });
+
+  if (response.status === 403 && requiresCsrf(init)) {
+    const clone = response.clone();
+    try {
+      const payload = (await clone.json()) as { error?: string };
+      if (payload.error === "csrf_required") {
+        headers.set("X-CSRF-Token", await fetchCsrfToken());
+        response = await fetch(`/api/v1${path}`, {
+          ...init,
+          headers,
+          credentials: "include",
+        });
+      }
+    } catch {
+      // Fall through to the normal error handler below.
+    }
+  }
 
   if (!response.ok) {
     let message = response.statusText;

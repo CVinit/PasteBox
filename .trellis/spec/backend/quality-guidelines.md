@@ -199,6 +199,11 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
   development and in plain HTTP test deployments; HTTPS requests, including
   proxied requests with `X-Forwarded-Proto: https` or `Forwarded:
   proto=https`, must set `Secure`.
+- Browser state-changing API requests under `/api/v1` must use the signed
+  double-submit CSRF flow. `GET /api/v1/csrf` returns `{"csrfToken": "..."}` and
+  sets the HttpOnly `pastebox_csrf` cookie; unsafe methods must send the token
+  in `X-CSRF-Token`. Provider webhook routes are excluded from the browser CSRF
+  gate and must be protected by provider-specific signature verification.
 - API errors use `{"error": "<code>", "message": "<human message>"}`.
 - `GET /api/v1/plans` returns `plans` and `prices`; `GET
   /api/v1/billing/prices` returns the same catalog plus provider-enabled flags
@@ -216,6 +221,7 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
 ### 4. Validation & Error Matrix
 
 - Missing/invalid session -> `401 unauthenticated`.
+- Missing/invalid CSRF token on browser unsafe methods -> `403 csrf_required`.
 - Expired, deleted, or taken-down content -> `410 paste_expired` or
   `410 attachment_unavailable`.
 - Bad JSON -> `400 invalid_json`; missing upload file -> `400 missing_file`.
@@ -239,6 +245,8 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
   admin mutation, queue, and audit response contracts.
 - Handler tests must cover session cookie `Secure` behavior when auth routes
   run behind plain HTTP test deployments and HTTPS reverse proxies.
+- Handler tests must cover CSRF token issuance, required `X-CSRF-Token` on
+  unsafe browser routes, and webhook-route exclusion from browser CSRF.
 - Handler tests must assert empty list and nested collection fields serialize as
   JSON arrays (`[]`) rather than `null`, because React call sites use array
   methods such as `.find()` and `.join()`.

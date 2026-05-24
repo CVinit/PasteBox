@@ -33,6 +33,8 @@ import (
 const (
 	sessionCookieName          = "pastebox_session"
 	googleOAuthStateCookieName = "pastebox_google_oauth_state"
+	csrfCookieName             = "pastebox_csrf"
+	csrfHeaderName             = "X-CSRF-Token"
 )
 
 var (
@@ -82,8 +84,10 @@ func (s *Server) routes() http.Handler {
 	r.Get("/readyz", s.readyz)
 
 	r.Route("/api/v1", func(r chi.Router) {
+		r.Use(s.csrfProtection)
 		r.Get("/health", s.apiHealth)
 		r.Get("/ready", s.apiReady)
+		r.Get("/csrf", s.csrf)
 		r.Get("/plans", s.planCatalog)
 
 		r.Route("/auth", func(r chi.Router) {
@@ -196,6 +200,16 @@ func (s *Server) apiReady(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.app.PlanCatalog())
+}
+
+func (s *Server) csrf(w http.ResponseWriter, r *http.Request) {
+	token, signed, err := s.newCSRFToken()
+	if err != nil {
+		s.handleErr(w, err)
+		return
+	}
+	s.setCSRFCookie(w, r, signed)
+	writeJSON(w, http.StatusOK, map[string]string{"csrfToken": token})
 }
 
 func (s *Server) register(w http.ResponseWriter, r *http.Request) {
@@ -1135,6 +1149,28 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) csrfProtection(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !requiresCSRF(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !s.validCSRF(r) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "csrf_required", "message": "CSRF token is missing or invalid"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func requiresCSRF(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	}
+	return !strings.HasPrefix(r.URL.Path, "/api/v1/billing/webhooks/")
+}
+
 type pasteRequest struct {
 	Title            string   `json:"title"`
 	Text             string   `json:"text"`
@@ -1314,6 +1350,53 @@ func (s *Server) setGoogleOAuthStateCookie(w http.ResponseWriter, r *http.Reques
 		Value:    value,
 		Path:     "/api/v1/auth/google",
 		Expires:  time.Now().UTC().Add(ttl),
+		HttpOnly: true,
+		Secure:   s.secureSessionCookie(r),
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func (s *Server) newCSRFToken() (string, string, error) {
+	token, err := randomURLToken(32)
+	if err != nil {
+		return "", "", err
+	}
+	return token, s.signCSRFToken(token), nil
+}
+
+func (s *Server) signCSRFToken(token string) string {
+	mac := hmac.New(sha256.New, []byte(s.cfg.CSRFSecret))
+	_, _ = mac.Write([]byte(token))
+	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return token + "." + signature
+}
+
+func (s *Server) validCSRF(r *http.Request) bool {
+	headerToken := strings.TrimSpace(r.Header.Get(csrfHeaderName))
+	if headerToken == "" {
+		return false
+	}
+	cookie, err := r.Cookie(csrfCookieName)
+	if err != nil || cookie.Value == "" {
+		return false
+	}
+	token, signature, ok := strings.Cut(cookie.Value, ".")
+	if !ok || token == "" || signature == "" {
+		return false
+	}
+	if subtle.ConstantTimeCompare([]byte(headerToken), []byte(token)) != 1 {
+		return false
+	}
+	want := s.signCSRFToken(token)
+	return subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(want)) == 1
+}
+
+func (s *Server) setCSRFCookie(w http.ResponseWriter, r *http.Request, value string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     csrfCookieName,
+		Value:    value,
+		Path:     "/",
+		Expires:  time.Now().UTC().Add(12 * time.Hour),
 		HttpOnly: true,
 		Secure:   s.secureSessionCookie(r),
 		SameSite: http.SameSiteLaxMode,

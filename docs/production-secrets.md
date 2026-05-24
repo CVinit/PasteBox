@@ -17,6 +17,7 @@ mode `600`.
 - Managed S3-compatible object storage access key and secret key.
 - Restic repository password and backup object-storage credentials.
 - Bootstrap admin password.
+- CSRF signing secret.
 - SMTP credentials.
 - Stripe webhook/signing secrets and API keys once Phase 6 enables Stripe.
 - Epusdt API credentials and callback secrets once Phase 6 enables Epusdt.
