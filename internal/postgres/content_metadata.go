@@ -259,6 +259,17 @@ WHERE id = $1
 	return nil
 }
 
+func (s *AttachmentStore) DeleteAttachment(ctx context.Context, id string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM attachments WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete attachment: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrAttachmentNotFound
+	}
+	return nil
+}
+
 func (s *AttachmentStore) UpsertObjectRef(ctx context.Context, ref ObjectRef) error {
 	if ref.CreatedAt.IsZero() {
 		ref.CreatedAt = time.Now().UTC()

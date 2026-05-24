@@ -1174,14 +1174,8 @@ func (s *Service) AddAttachment(userID string, pasteID string, fileName string, 
 	status, scanStatus, risk := classifyAttachment(fileName, contentType)
 	objectKey := userID + "/" + shaHex
 	width, height := imageDimensions(contentType, content)
+	existingObjectRefs := s.objectRefs[objectKey]
 	if err := s.putObjectLocked(objectKey, content, contentType); err != nil {
-		return AttachmentView{}, err
-	}
-	objectStored := true
-	if err := s.recordDailyUploadLocked(userID, int64(len(content))); err != nil {
-		if objectStored && s.objectRefs[objectKey] == 0 {
-			_ = s.deleteObjectLocked(objectKey)
-		}
 		return AttachmentView{}, err
 	}
 	attachment := &Attachment{
@@ -1201,20 +1195,21 @@ func (s *Service) AddAttachment(userID string, pasteID string, fileName string, 
 		CreatedAt:   now,
 	}
 	if err := s.createAttachmentLocked(attachment); err != nil {
-		if objectStored && s.objectRefs[attachment.ObjectKey] == 0 {
-			_ = s.deleteObjectLocked(attachment.ObjectKey)
-		}
+		s.rollbackUnreferencedStoredObjectLocked(attachment.ObjectKey, existingObjectRefs)
 		return AttachmentView{}, err
 	}
 	s.objectRefs[attachment.ObjectKey]++
+	attachmentCreated := true
+	previousPasteScanStatus := paste.ScanStatus
+	previousPasteUpdatedAt := paste.UpdatedAt
 	paste.ScanStatus = aggregateScanStatus(s.attachmentsForPasteLocked(paste))
 	paste.UpdatedAt = now
 	if err := s.updatePasteLocked(paste); err != nil {
-		if s.objectRefs[attachment.ObjectKey] == 1 {
-			_ = s.deleteObjectLocked(attachment.ObjectKey)
-		}
+		s.rollbackAttachmentCreateLocked(paste, previousPasteScanStatus, previousPasteUpdatedAt, attachment, attachmentCreated, false, false)
 		return AttachmentView{}, err
 	}
+	pasteUpdated := true
+	scanQueueCreated := false
 	if scanStatus == "scan_failed" {
 		if err := s.createQueueItemLocked(&s.scanFailures, &QueueItem{
 			ID:        s.newID("scanq"),
@@ -1225,8 +1220,14 @@ func (s *Service) AddAttachment(userID string, pasteID string, fileName string, 
 			CreatedAt: now,
 			UpdatedAt: now,
 		}); err != nil {
+			s.rollbackAttachmentCreateLocked(paste, previousPasteScanStatus, previousPasteUpdatedAt, attachment, attachmentCreated, pasteUpdated, false)
 			return AttachmentView{}, err
 		}
+		scanQueueCreated = true
+	}
+	if err := s.recordDailyUploadLocked(userID, int64(len(content))); err != nil {
+		s.rollbackAttachmentCreateLocked(paste, previousPasteScanStatus, previousPasteUpdatedAt, attachment, attachmentCreated, pasteUpdated, scanQueueCreated)
+		return AttachmentView{}, err
 	}
 	return viewAttachment(attachment), nil
 }
@@ -2323,6 +2324,19 @@ func (s *Service) updateAttachmentLocked(attachment *Attachment) error {
 	return nil
 }
 
+func (s *Service) deleteAttachmentLocked(attachment *Attachment) error {
+	if s.content.Attachments != nil {
+		if err := s.content.Attachments.DeleteAttachment(context.Background(), attachment.ID); err != nil && !isStoreNotFound(err) {
+			return err
+		}
+	}
+	delete(s.attachmentsByID, attachment.ID)
+	if paste := s.pastesByID[attachment.PasteID]; paste != nil {
+		paste.AttachmentIDs = removeString(paste.AttachmentIDs, attachment.ID)
+	}
+	return nil
+}
+
 func (s *Service) attachmentByIDLocked(id string) (*Attachment, error) {
 	if s.content.Attachments != nil {
 		loaded, err := s.content.Attachments.AttachmentByID(context.Background(), id)
@@ -3343,6 +3357,45 @@ func (s *Service) removeQueueItemLocked(queue *[]*QueueItem, targetID string) {
 	*queue = filtered
 }
 
+func (s *Service) rollbackAttachmentCreateLocked(paste *Paste, previousScanStatus string, previousUpdatedAt time.Time, attachment *Attachment, attachmentCreated bool, pasteUpdated bool, scanQueueCreated bool) {
+	if scanQueueCreated {
+		_ = s.deleteQueueItemsByKindTargetLocked(&s.scanFailures, "scan_failed", attachment.ID)
+	}
+	if pasteUpdated {
+		paste.ScanStatus = previousScanStatus
+		paste.UpdatedAt = previousUpdatedAt
+		_ = s.updatePasteLocked(paste)
+	} else {
+		paste.ScanStatus = previousScanStatus
+		paste.UpdatedAt = previousUpdatedAt
+	}
+	if attachmentCreated {
+		_ = s.deleteAttachmentLocked(attachment)
+	}
+	s.rollbackStoredObjectLocked(attachment.ObjectKey)
+}
+
+func (s *Service) rollbackStoredObjectLocked(objectKey string) {
+	if objectKey == "" {
+		return
+	}
+	if refs := s.objectRefs[objectKey]; refs > 0 {
+		s.objectRefs[objectKey] = refs - 1
+		if s.objectRefs[objectKey] > 0 {
+			return
+		}
+	}
+	delete(s.objectRefs, objectKey)
+	_ = s.deleteObjectLocked(objectKey)
+}
+
+func (s *Service) rollbackUnreferencedStoredObjectLocked(objectKey string, previousRefs int) {
+	if previousRefs > 0 {
+		return
+	}
+	_ = s.deleteObjectLocked(objectKey)
+}
+
 func (s *Service) mail(to string, subject string, body string) error {
 	return s.createMailLocked(&Mail{ID: s.newID("mail"), To: to, Subject: subject, Body: body, CreatedAt: s.now().UTC()})
 }
@@ -3659,6 +3712,16 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func removeString(values []string, target string) []string {
+	out := values[:0]
+	for _, value := range values {
+		if value != target {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func defaultString(value string, fallback string) string {

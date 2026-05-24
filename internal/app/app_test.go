@@ -484,6 +484,88 @@ func TestObjectStoreWriteFailureDoesNotCreateAttachmentMetadata(t *testing.T) {
 	}
 }
 
+func TestAttachmentMetadataFailureRollsBackStoredObject(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	updateErr := errors.New("paste metadata unavailable")
+	authStores := newMemoryAuthStores()
+	contentStores := newMemoryContentStores()
+	objectStore := newMemoryObjectStore()
+	dailyMetrics := newMemoryDailyMetricStore()
+
+	svc := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		Objects:      objectStore,
+		DailyMetrics: dailyMetrics,
+	})
+	owner := registerTestUser(t, svc, "object-rollback@example.com")
+	paste := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "rollback", Text: "base", ExpiresInSeconds: 3600})
+	contentStores.updatePasteErr = updateErr
+
+	if _, err := svc.AddAttachment(owner.User.ID, paste.ID, "rollback.txt", "text/plain", []byte("rollback")); !errors.Is(err, updateErr) {
+		t.Fatalf("expected paste update error, got %v", err)
+	}
+	attachments, err := contentStores.ListAttachmentsByPaste(context.Background(), paste.ID)
+	if err != nil {
+		t.Fatalf("list attachments after rollback: %v", err)
+	}
+	if len(attachments) != 0 {
+		t.Fatalf("metadata failure must roll back attachment row, got %#v", attachments)
+	}
+	if len(objectStore.objects) != 0 || len(svc.objectRefs) != 0 {
+		t.Fatalf("metadata failure must roll back object storage, objects=%#v refs=%#v", objectStore.objects, svc.objectRefs)
+	}
+	if got, err := dailyMetrics.DailyMetric(context.Background(), owner.User.ID, "upload", now); err != nil || got != int64(len("base")) {
+		t.Fatalf("metadata failure must not consume attachment daily quota, got %d err=%v", got, err)
+	}
+}
+
+func TestAttachmentQuotaWriteFailureRollsBackMetadataObjectAndQueue(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	quotaErr := errors.New("daily metric unavailable")
+	authStores := newMemoryAuthStores()
+	contentStores := newMemoryContentStores()
+	operationalStores := newMemoryOperationalStores()
+	objectStore := newMemoryObjectStore()
+	dailyMetrics := &failingAfterFirstMetricStore{delegate: newMemoryDailyMetricStore(), writeErr: quotaErr}
+
+	svc := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		Operational:  operationalStores.operationalStores(),
+		Objects:      objectStore,
+		DailyMetrics: dailyMetrics,
+	})
+	owner := registerTestUser(t, svc, "quota-rollback@example.com")
+	admin := seedAdminTestUser(t, svc, "quota-rollback-admin@example.com")
+	paste := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "rollback", Text: "base", ExpiresInSeconds: 3600})
+
+	if _, err := svc.AddAttachment(owner.User.ID, paste.ID, "blocked.exe", "application/octet-stream", []byte("rollback")); !errors.Is(err, quotaErr) {
+		t.Fatalf("expected daily metric error, got %v", err)
+	}
+	attachments, err := contentStores.ListAttachmentsByPaste(context.Background(), paste.ID)
+	if err != nil {
+		t.Fatalf("list attachments after rollback: %v", err)
+	}
+	if len(attachments) != 0 {
+		t.Fatalf("quota failure must roll back attachment row, got %#v", attachments)
+	}
+	if len(objectStore.objects) != 0 || len(svc.objectRefs) != 0 {
+		t.Fatalf("quota failure must roll back object storage, objects=%#v refs=%#v", objectStore.objects, svc.objectRefs)
+	}
+	queues, err := svc.AdminQueues(admin.ID)
+	if err != nil {
+		t.Fatalf("admin queues after rollback: %v", err)
+	}
+	scanFailures, ok := queues["scanFailures"].([]*QueueItem)
+	if !ok || len(scanFailures) != 0 {
+		t.Fatalf("quota failure must roll back scan failure queue, got %#v", queues["scanFailures"])
+	}
+	if got, err := dailyMetrics.delegate.DailyMetric(context.Background(), owner.User.ID, "upload", now); err != nil || got != int64(len("base")) {
+		t.Fatalf("quota failure must not consume attachment daily quota, got %d err=%v", got, err)
+	}
+}
+
 func TestDeletePasteSchedulesDurableCleanupJob(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	authStores := newMemoryAuthStores()
@@ -973,10 +1055,11 @@ func (s *memoryAuditLogStore) AuditLogs(_ context.Context, limit int) ([]AuditLo
 }
 
 type memoryContentStores struct {
-	pastes      map[string]Paste
-	attachments map[string]Attachment
-	shares      map[string]Share
-	shareTokens map[string]string
+	pastes         map[string]Paste
+	attachments    map[string]Attachment
+	shares         map[string]Share
+	shareTokens    map[string]string
+	updatePasteErr error
 }
 
 func newMemoryContentStores() *memoryContentStores {
@@ -1031,6 +1114,9 @@ func (s *memoryContentStores) ListPastesByUser(_ context.Context, userID string)
 }
 
 func (s *memoryContentStores) UpdatePaste(_ context.Context, paste Paste) error {
+	if s.updatePasteErr != nil {
+		return s.updatePasteErr
+	}
 	if _, ok := s.pastes[paste.ID]; !ok {
 		return ErrStoreNotFound
 	}
@@ -1077,6 +1163,14 @@ func (s *memoryContentStores) UpdateAttachment(_ context.Context, attachment Att
 		return ErrStoreNotFound
 	}
 	s.attachments[attachment.ID] = cloneAttachmentForStore(attachment)
+	return nil
+}
+
+func (s *memoryContentStores) DeleteAttachment(_ context.Context, id string) error {
+	if _, ok := s.attachments[id]; !ok {
+		return ErrStoreNotFound
+	}
+	delete(s.attachments, id)
 	return nil
 }
 
@@ -1422,6 +1516,24 @@ func (s failingDailyMetricStore) DailyMetric(_ context.Context, _ string, _ stri
 
 func (s failingDailyMetricStore) RecordDailyMetric(_ context.Context, _ string, _ string, _ time.Time, _ int64) error {
 	return s.writeErr
+}
+
+type failingAfterFirstMetricStore struct {
+	delegate *memoryDailyMetricStore
+	writeErr error
+	writes   int
+}
+
+func (s *failingAfterFirstMetricStore) DailyMetric(ctx context.Context, userID string, kind string, day time.Time) (int64, error) {
+	return s.delegate.DailyMetric(ctx, userID, kind, day)
+}
+
+func (s *failingAfterFirstMetricStore) RecordDailyMetric(ctx context.Context, userID string, kind string, day time.Time, bytes int64) error {
+	s.writes++
+	if s.writes > 1 {
+		return s.writeErr
+	}
+	return s.delegate.RecordDailyMetric(ctx, userID, kind, day, bytes)
 }
 
 func registerTestUser(t *testing.T, svc *Service, email string) AuthResult {

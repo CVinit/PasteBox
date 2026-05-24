@@ -33,6 +33,7 @@ type AttachmentStore interface {
 	ListAttachments(ctx context.Context) ([]Attachment, error)
 	ListAttachmentsByPaste(ctx context.Context, pasteID string) ([]Attachment, error)
 	UpdateAttachment(ctx context.Context, attachment Attachment) error
+	DeleteAttachment(ctx context.Context, id string) error
 }
 
 type ShareStore interface {
