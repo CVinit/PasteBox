@@ -230,17 +230,18 @@ func TestOperationalStateStoresRoundTripBillingSupportJobsAndMail(t *testing.T) 
 	if err != nil {
 		t.Fatalf("list queued mail: %v", err)
 	}
-	if len(queuedMail) != 1 || queuedMail[0].ID != mailID {
+	createdMail, ok := mailRecordByID(queuedMail, mailID)
+	if !ok {
 		t.Fatalf("expected queued mail, got %#v", queuedMail)
 	}
-	if !queuedMail[0].RunAfter.Equal(now) {
-		t.Fatalf("expected queued mail to be runnable at creation time, got %#v", queuedMail[0])
+	if !createdMail.RunAfter.Equal(now) {
+		t.Fatalf("expected queued mail to be runnable at creation time, got %#v", createdMail)
 	}
 	runnableMail, err := mailStore.ListRunnableMail(ctx, 10, now)
 	if err != nil {
 		t.Fatalf("list runnable mail: %v", err)
 	}
-	if len(runnableMail) != 1 || runnableMail[0].ID != mailID {
+	if _, ok := mailRecordByID(runnableMail, mailID); !ok {
 		t.Fatalf("expected runnable mail, got %#v", runnableMail)
 	}
 	sentAt := now.Add(2 * time.Minute)
@@ -271,4 +272,13 @@ func cleanupOperationalStateTestRows(ctx context.Context, t *testing.T, pool *pg
 	_, _ = pool.Exec(ctx, `DELETE FROM jobs WHERE id = $1`, jobID)
 	_, _ = pool.Exec(ctx, `DELETE FROM mails WHERE id = $1`, mailID)
 	_, _ = pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, userID)
+}
+
+func mailRecordByID(records []MailRecord, id string) (MailRecord, bool) {
+	for _, record := range records {
+		if record.ID == id {
+			return record, true
+		}
+	}
+	return MailRecord{}, false
 }

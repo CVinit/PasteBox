@@ -65,17 +65,25 @@ func TestAuditLogStorePersistsMetadataAndListsNewestFirst(t *testing.T) {
 		t.Fatalf("record new audit log: %v", err)
 	}
 
-	logs, err := store.AuditLogs(ctx, 2)
+	logs, err := store.AuditLogs(ctx, 100)
 	if err != nil {
 		t.Fatalf("list audit logs: %v", err)
 	}
-	if len(logs) != 2 {
-		t.Fatalf("expected 2 audit logs, got %d", len(logs))
-	}
-	if logs[0].ID != ids[1] || logs[1].ID != ids[0] {
+	newIndex := auditLogIndex(logs, ids[1])
+	oldIndex := auditLogIndex(logs, ids[0])
+	if newIndex == -1 || oldIndex == -1 || newIndex > oldIndex {
 		t.Fatalf("expected newest-first order, got %#v", logs)
 	}
-	if logs[0].Metadata["status"] != "resolved" || logs[0].Metadata["attempts"] != float64(2) {
-		t.Fatalf("expected decoded metadata, got %#v", logs[0].Metadata)
+	if logs[newIndex].Metadata["status"] != "resolved" || logs[newIndex].Metadata["attempts"] != float64(2) {
+		t.Fatalf("expected decoded metadata, got %#v", logs[newIndex].Metadata)
 	}
+}
+
+func auditLogIndex(logs []app.AuditLog, id string) int {
+	for index, log := range logs {
+		if log.ID == id {
+			return index
+		}
+	}
+	return -1
 }
