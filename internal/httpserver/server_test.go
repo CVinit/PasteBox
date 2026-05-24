@@ -184,6 +184,7 @@ func TestAuthPasteUploadShareAndQuotaHTTPContracts(t *testing.T) {
 	cfg := config.FromEnv()
 	cfg.BootstrapAdminEmail = ""
 	cfg.BootstrapAdminPassword = ""
+	cfg.DevAuthTokens = true
 	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), app.New(cfg))
 	client := newHTTPTestClient(t, handler)
 
@@ -288,6 +289,7 @@ func TestAdminHTTPContractsWriteAuditLogs(t *testing.T) {
 	cfg := config.FromEnv()
 	cfg.BootstrapAdminEmail = ""
 	cfg.BootstrapAdminPassword = ""
+	cfg.DevAuthTokens = true
 	service := app.New(cfg)
 	if _, err := service.SeedAdmin("admin@example.com", "password123"); err != nil {
 		t.Fatalf("seed admin: %v", err)

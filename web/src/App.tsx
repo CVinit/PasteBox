@@ -647,7 +647,7 @@ function App() {
       () => client.startMagic(auth.email),
       "Magic link issued",
     );
-    if (result) setMagicToken(result.devToken);
+    if (result) setMagicToken(result.devToken ?? "");
   }
 
   async function finishMagic() {
@@ -687,7 +687,7 @@ function App() {
       () => client.passwordReset(auth.email),
       "Password reset issued",
     );
-    if (result) setResetToken(result.devToken);
+    if (result) setResetToken(result.devToken ?? "");
   }
 
   async function finishPasswordReset() {

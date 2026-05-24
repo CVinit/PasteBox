@@ -270,7 +270,7 @@ export const client = {
       body: JSON.stringify({ token }),
     }),
   startMagic: (email: string) =>
-    api<{ devToken: string; message: string }>("/auth/magic/start", {
+    api<{ devToken?: string; message: string }>("/auth/magic/start", {
       method: "POST",
       body: JSON.stringify({ email }),
     }),
@@ -280,7 +280,7 @@ export const client = {
       body: JSON.stringify({ token }),
     }),
   passwordReset: (email: string) =>
-    api<{ devToken: string; message: string }>("/auth/password-reset/start", {
+    api<{ devToken?: string; message: string }>("/auth/password-reset/start", {
       method: "POST",
       body: JSON.stringify({ email }),
     }),

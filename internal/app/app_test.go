@@ -898,6 +898,7 @@ func newTestService(t *testing.T, now *time.Time) *Service {
 	cfg := config.FromEnv()
 	cfg.BootstrapAdminEmail = ""
 	cfg.BootstrapAdminPassword = ""
+	cfg.DevAuthTokens = true
 	svc := New(cfg)
 	svc.now = func() time.Time { return *now }
 	return svc
@@ -908,6 +909,7 @@ func newTestServiceWithDailyMetrics(t *testing.T, now *time.Time, store DailyMet
 	cfg := config.FromEnv()
 	cfg.BootstrapAdminEmail = ""
 	cfg.BootstrapAdminPassword = ""
+	cfg.DevAuthTokens = true
 	svc := NewWithDailyMetricStore(cfg, store)
 	svc.now = func() time.Time { return *now }
 	return svc
@@ -918,6 +920,7 @@ func newTestServiceWithAuthStores(t *testing.T, now *time.Time, authStores AuthS
 	cfg := config.FromEnv()
 	cfg.BootstrapAdminEmail = ""
 	cfg.BootstrapAdminPassword = ""
+	cfg.DevAuthTokens = true
 	svc := NewWithStores(cfg, authStores, nil)
 	svc.now = func() time.Time { return *now }
 	return svc
@@ -928,6 +931,7 @@ func newTestServiceWithStorage(t *testing.T, now *time.Time, stores Stores) *Ser
 	cfg := config.FromEnv()
 	cfg.BootstrapAdminEmail = ""
 	cfg.BootstrapAdminPassword = ""
+	cfg.DevAuthTokens = true
 	svc, err := NewWithStorage(context.Background(), cfg, stores)
 	if err != nil {
 		t.Fatalf("new service with storage: %v", err)

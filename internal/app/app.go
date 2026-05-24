@@ -16,6 +16,7 @@ import (
 	_ "image/png"
 	"mime"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -558,7 +559,9 @@ func (s *Service) Register(_ context.Context, input RegisterInput) (AuthResult, 
 	if err != nil {
 		return AuthResult{}, err
 	}
-	result.DevEmailVerificationToken = verificationToken
+	if s.cfg.ExposeDevAuthTokens() {
+		result.DevEmailVerificationToken = verificationToken
+	}
 	return result, nil
 }
 
@@ -673,7 +676,7 @@ func (s *Service) StartEmailVerification(userID string) (map[string]string, erro
 	if err != nil {
 		return nil, err
 	}
-	return map[string]string{"devToken": token, "message": "verification sent"}, nil
+	return s.authTokenResponse(token, "verification sent"), nil
 }
 
 func (s *Service) FinishEmailVerification(token string) (UserView, error) {
@@ -711,10 +714,10 @@ func (s *Service) StartMagicLink(_ context.Context, email string) (map[string]st
 		return nil, err
 	}
 	s.magicLinks[hash] = &authToken
-	if err := s.mail(user.Email, "Your PasteBox magic link", "Development token: "+token); err != nil {
+	if err := s.mail(user.Email, "Your PasteBox magic link", s.authLinkBody("Sign in to PasteBox", "/magic", token, 15*time.Minute)); err != nil {
 		return nil, err
 	}
-	return map[string]string{"devToken": token, "message": "magic link sent"}, nil
+	return s.authTokenResponse(token, "magic link sent"), nil
 }
 
 func (s *Service) ConsumeMagicLink(_ context.Context, token string) (AuthResult, error) {
@@ -755,10 +758,10 @@ func (s *Service) StartPasswordReset(_ context.Context, email string) (map[strin
 		return nil, err
 	}
 	s.passwordResets[hash] = &authToken
-	if err := s.mail(user.Email, "Reset your PasteBox password", "Development token: "+token); err != nil {
+	if err := s.mail(user.Email, "Reset your PasteBox password", s.authLinkBody("Reset your PasteBox password", "/password-reset", token, 30*time.Minute)); err != nil {
 		return nil, err
 	}
-	return map[string]string{"devToken": token, "message": "password reset sent"}, nil
+	return s.authTokenResponse(token, "password reset sent"), nil
 }
 
 func (s *Service) FinishPasswordReset(_ context.Context, token string, password string) error {
@@ -2946,7 +2949,7 @@ func (s *Service) issueEmailVerificationLocked(user *User) (string, error) {
 		return "", err
 	}
 	s.emailVerifies[hash] = &authToken
-	if err := s.mail(user.Email, "Verify your PasteBox email", "Development token: "+token); err != nil {
+	if err := s.mail(user.Email, "Verify your PasteBox email", s.authLinkBody("Verify your PasteBox email", "/email-verification", token, 24*time.Hour)); err != nil {
 		return "", err
 	}
 	return token, nil
@@ -3342,6 +3345,47 @@ func (s *Service) removeQueueItemLocked(queue *[]*QueueItem, targetID string) {
 
 func (s *Service) mail(to string, subject string, body string) error {
 	return s.createMailLocked(&Mail{ID: s.newID("mail"), To: to, Subject: subject, Body: body, CreatedAt: s.now().UTC()})
+}
+
+func (s *Service) authTokenResponse(token string, message string) map[string]string {
+	response := map[string]string{"message": message}
+	if s.cfg.ExposeDevAuthTokens() {
+		response["devToken"] = token
+	}
+	return response
+}
+
+func (s *Service) authLinkBody(action string, tokenParam string, token string, ttl time.Duration) string {
+	link := s.publicURLWithToken(tokenParam, token)
+	return fmt.Sprintf("%s:\n\n%s\n\nThis link expires in %s.", action, link, authTokenTTL(ttl))
+}
+
+func (s *Service) publicURLWithToken(tokenParam string, token string) string {
+	base := strings.TrimRight(s.cfg.PublicURL, "/")
+	if base == "" {
+		base = "http://localhost:5173"
+	}
+	values := url.Values{}
+	values.Set(tokenParam, token)
+	return base + "/?" + values.Encode()
+}
+
+func authTokenTTL(ttl time.Duration) string {
+	if ttl%time.Hour == 0 {
+		hours := int(ttl / time.Hour)
+		if hours == 1 {
+			return "1 hour"
+		}
+		return fmt.Sprintf("%d hours", hours)
+	}
+	if ttl%time.Minute == 0 {
+		minutes := int(ttl / time.Minute)
+		if minutes == 1 {
+			return "1 minute"
+		}
+		return fmt.Sprintf("%d minutes", minutes)
+	}
+	return ttl.String()
 }
 
 func (s *Service) newID(prefix string) string {

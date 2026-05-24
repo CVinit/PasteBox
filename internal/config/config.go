@@ -19,6 +19,7 @@ type Config struct {
 	S3 S3Config
 
 	MailerProvider string
+	DevAuthTokens  bool
 	StripeEnabled  bool
 	EpusdtEnabled  bool
 
@@ -56,12 +57,17 @@ func FromEnv() Config {
 		},
 
 		MailerProvider: envString("PASTEBOX_MAILER_PROVIDER", "log"),
+		DevAuthTokens:  envBool("PASTEBOX_DEV_AUTH_TOKENS", false),
 		StripeEnabled:  envBool("PASTEBOX_STRIPE_ENABLED", false),
 		EpusdtEnabled:  envBool("PASTEBOX_EPUSDT_ENABLED", false),
 
 		BootstrapAdminEmail:    envString("PASTEBOX_BOOTSTRAP_ADMIN_EMAIL", ""),
 		BootstrapAdminPassword: envString("PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD", ""),
 	}
+}
+
+func (c Config) ExposeDevAuthTokens() bool {
+	return c.AppEnv != "production" && c.DevAuthTokens
 }
 
 func envString(key string, fallback string) string {
