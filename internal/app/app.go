@@ -1200,7 +1200,16 @@ func (s *Service) Quota(userID string) (QuotaView, error) {
 	return s.quotaLocked(user.ID, plan)
 }
 
+func (s *Service) PlanCatalog() plans.Catalog {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneCatalog(s.catalog)
+}
+
 func (s *Service) Prices() map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	prices := make([]BillingPrice, 0, len(s.catalog.Prices))
 	for _, price := range s.catalog.Prices {
 		prices = append(prices, BillingPrice{
@@ -1216,7 +1225,7 @@ func (s *Service) Prices() map[string]any {
 		})
 	}
 	return map[string]any{
-		"plans":  s.catalog.Plans,
+		"plans":  cloneCatalog(s.catalog).Plans,
 		"prices": prices,
 	}
 }
@@ -1933,6 +1942,13 @@ func (s *Service) planForUserLocked(user *User) (plans.Plan, error) {
 		plan, _ = plans.Find(s.catalog, "free")
 	}
 	return plan, nil
+}
+
+func cloneCatalog(catalog plans.Catalog) plans.Catalog {
+	return plans.Catalog{
+		Plans:  append([]plans.Plan(nil), catalog.Plans...),
+		Prices: append([]plans.Price(nil), catalog.Prices...),
+	}
 }
 
 func (s *Service) ensureUserCanWriteLocked(user *User, plan plans.Plan) error {

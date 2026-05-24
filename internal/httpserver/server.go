@@ -17,7 +17,6 @@ import (
 
 	"pastebox/internal/app"
 	"pastebox/internal/config"
-	"pastebox/internal/plans"
 )
 
 const sessionCookieName = "pastebox_session"
@@ -173,7 +172,7 @@ func (s *Server) apiReady(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, plans.DefaultCatalog())
+	writeJSON(w, http.StatusOK, s.app.PlanCatalog())
 }
 
 func (s *Server) register(w http.ResponseWriter, r *http.Request) {

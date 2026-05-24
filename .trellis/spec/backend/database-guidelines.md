@@ -24,6 +24,12 @@ the `pastebox migrate up` command.
   store remains the default until users and related source-of-truth entities are
   PostgreSQL-backed; PostgreSQL implementations must read/write
   `daily_metrics` through typed repository methods.
+- Plan and price reads use the PostgreSQL `CatalogStore` boundary once runtime
+  catalog wiring is switched to durable storage. The service-level catalog
+  remains the single HTTP source for `/api/v1/plans` and billing price
+  responses.
+- Audit log persistence uses the PostgreSQL `AuditLogStore` boundary. Metadata
+  is stored as JSONB and admin-facing listing is newest-first.
 
 ---
 
@@ -205,5 +211,84 @@ if err != nil {
 upload, err := store.DailyMetric(ctx, userID, "upload", now)
 if err != nil {
     return QuotaView{}, err
+}
+```
+
+## Scenario: Catalog And Audit Repository Boundaries
+
+### 1. Scope / Trigger
+
+- Trigger: Any change that reads or writes `plans`, `prices`, or `audit_logs`.
+
+### 2. Signatures
+
+- Catalog constructor: `postgres.NewCatalogStore(pool *pgxpool.Pool)`
+- Catalog read: `Catalog(ctx context.Context) (plans.Catalog, error)`
+- Audit constructor: `postgres.NewAuditLogStore(pool *pgxpool.Pool)`
+- Audit write: `RecordAuditLog(ctx context.Context, log app.AuditLog) error`
+- Audit read: `AuditLogs(ctx context.Context, limit int) ([]app.AuditLog, error)`
+- Service catalog accessor: `app.Service.PlanCatalog() plans.Catalog`
+
+### 3. Contracts
+
+- `/api/v1/plans` must read from the service catalog accessor, not directly
+  from `plans.DefaultCatalog()`, so HTTP plans and billing prices share one
+  catalog source.
+- PostgreSQL catalog ordering is stable: `free`, `plus`, `pro`, followed by
+  unknown plan IDs alphabetically.
+- PostgreSQL price ordering is stable by plan order, then `monthly`, `yearly`,
+  then unknown periods alphabetically by ID.
+- The initial migration seeds the same launch catalog as `plans.DefaultCatalog()`
+  until the runtime catalog is fully PostgreSQL-backed.
+- Audit metadata must be JSON-serializable and stored in `audit_logs.metadata`
+  as JSONB. Nil metadata is stored and returned as an empty object.
+- Audit listing defaults to a bounded newest-first result when the caller passes
+  a non-positive limit.
+
+### 4. Validation & Error Matrix
+
+- Catalog query failure -> return an error; do not silently fall back to default
+  catalog in repository code.
+- Audit metadata cannot be marshaled -> return an error before inserting.
+- Audit insert failure -> return an error with audit context.
+- Audit metadata cannot be decoded on read -> return an error; do not drop
+  metadata.
+
+### 5. Good/Base/Bad Cases
+
+- Good: Add a new price row through a migration and update both
+  `plans.DefaultCatalog()` and the catalog integration test while the runtime
+  service is still hybrid.
+- Base: Keep the in-memory catalog as runtime default while other source-of-
+  truth tables are still in-memory, but expose it only through
+  `Service.PlanCatalog()`.
+- Bad: Return `plans.DefaultCatalog()` directly from an HTTP handler or store
+  audit metadata as an opaque string outside JSONB.
+
+### 6. Tests Required
+
+- PostgreSQL catalog integration tests with `PASTEBOX_TEST_DATABASE_URL` assert
+  migrated `plans` and `prices` match the launch catalog contract.
+- PostgreSQL audit log integration tests assert JSONB metadata round-trips and
+  listing order is newest-first.
+- Handler tests for `/api/v1/plans` must continue to cover response shape.
+- Run full `make test` after changing catalog, billing price, or audit-log API
+  contracts.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
+    writeJSON(w, http.StatusOK, plans.DefaultCatalog())
+}
+```
+
+#### Correct
+
+```go
+func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
+    writeJSON(w, http.StatusOK, s.app.PlanCatalog())
 }
 ```
