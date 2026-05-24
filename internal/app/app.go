@@ -652,7 +652,7 @@ func (s *Service) GoogleOAuth(_ context.Context, email string, displayName strin
 		}
 		return AuthResult{}, err
 	}
-	if err := s.auditLocked(user.ID, "auth.google_oauth_stub", user.ID, map[string]any{"subject": googleSubject}); err != nil {
+	if err := s.auditLocked(user.ID, "auth.google_oauth", user.ID, map[string]any{"subject": googleSubject}); err != nil {
 		return AuthResult{}, err
 	}
 	if err := s.mail(user.Email, "Welcome to PasteBox", "Your Google-authenticated PasteBox account is ready."); err != nil {

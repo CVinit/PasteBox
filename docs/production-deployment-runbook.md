@@ -5,9 +5,9 @@ VPS running Docker Compose with an API container, worker container, PostgreSQL,
 Redis, HTTPS reverse proxy, and off-host backup flow.
 
 The stack is still gated by later roadmap phases. `pastebox migrate up` applies
-the PostgreSQL schema foundation, but repository persistence, object storage,
-mail, OAuth, billing, scanning, restore drills, and compliance work still need
-to be completed before real user data or paid traffic is allowed.
+the PostgreSQL schema foundation, but mail delivery, billing, scanning, restore
+drills, and compliance work still need to be completed before real user data or
+paid traffic is allowed.
 
 ## Files
 
@@ -71,10 +71,17 @@ docker compose --env-file deploy/production.env -f compose.production.yaml pull
 ```
 
 The production preflight fails if `PASTEBOX_IMAGE` is mutable, if
-`PASTEBOX_PUBLIC_URL` is not HTTPS, if `PASTEBOX_S3_ENDPOINT` points to a local
-or HTTP object store, or if `PASTEBOX_RESTIC_REPOSITORY` is not an off-host
-`s3:https://` repository. Use managed S3-compatible storage for attachment
-objects and a separate off-host S3-compatible restic repository for backups.
+`PASTEBOX_PUBLIC_URL` is not HTTPS, if Google OAuth client settings are missing,
+if `PASTEBOX_S3_ENDPOINT` points to a local or HTTP object store, or if
+`PASTEBOX_RESTIC_REPOSITORY` is not an off-host `s3:https://` repository. Use
+managed S3-compatible storage for attachment objects and a separate off-host
+S3-compatible restic repository for backups.
+
+The Google OAuth app must include this authorized redirect URI:
+
+```text
+https://pastebox.example.com/api/v1/auth/google/callback
+```
 
 To validate the committed template without creating a real secret file:
 

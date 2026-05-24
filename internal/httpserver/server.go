@@ -1,13 +1,24 @@
 package httpserver
 
 import (
+	"context"
+	"crypto"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/subtle"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
+	"math/big"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -19,7 +30,17 @@ import (
 	"pastebox/internal/config"
 )
 
-const sessionCookieName = "pastebox_session"
+const (
+	sessionCookieName          = "pastebox_session"
+	googleOAuthStateCookieName = "pastebox_google_oauth_state"
+)
+
+var (
+	googleOAuthAuthorizeURL = "https://accounts.google.com/o/oauth2/v2/auth"
+	googleOAuthTokenURL     = "https://oauth2.googleapis.com/token"
+	googleOAuthJWKSURL      = "https://www.googleapis.com/oauth2/v3/certs"
+	googleOAuthHTTPClient   = &http.Client{Timeout: 10 * time.Second}
+)
 
 //go:embed static
 var staticFS embed.FS
@@ -70,6 +91,8 @@ func (s *Server) routes() http.Handler {
 			r.Post("/login", s.login)
 			r.Post("/logout", s.logout)
 			r.Post("/logout-all", s.logoutAll)
+			r.Get("/google/start", s.googleOAuthStart)
+			r.Get("/google/callback", s.googleOAuthCallback)
 			r.Post("/google", s.googleOAuth)
 			r.Post("/email-verification/start", s.startEmailVerification)
 			r.Post("/email-verification/finish", s.finishEmailVerification)
@@ -215,6 +238,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) googleOAuth(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.AppEnv == "production" {
+		s.handleErr(w, app.E(http.StatusNotFound, "not_found", "use the Google OAuth redirect flow"))
+		return
+	}
 	var req struct {
 		Email         string `json:"email"`
 		DisplayName   string `json:"displayName"`
@@ -229,6 +256,86 @@ func (s *Server) googleOAuth(w http.ResponseWriter, r *http.Request) {
 	}
 	s.setSessionCookie(w, r, result.SessionID, result.ExpiresAt)
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) googleOAuthStart(w http.ResponseWriter, r *http.Request) {
+	if !s.googleOAuthConfigured() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "google_oauth_not_configured", "message": "Google OAuth is not configured"})
+		return
+	}
+	state, err := randomURLToken(32)
+	if err != nil {
+		s.handleErr(w, err)
+		return
+	}
+	nonce, err := randomURLToken(32)
+	if err != nil {
+		s.handleErr(w, err)
+		return
+	}
+	returnTo := sanitizeOAuthReturnTo(r.URL.Query().Get("returnTo"))
+	cookieValue, err := s.signGoogleOAuthState(googleOAuthState{
+		State:    state,
+		Nonce:    nonce,
+		ReturnTo: returnTo,
+		IssuedAt: time.Now().UTC().Unix(),
+	})
+	if err != nil {
+		s.handleErr(w, err)
+		return
+	}
+	s.setGoogleOAuthStateCookie(w, r, cookieValue, 10*time.Minute)
+
+	params := url.Values{}
+	params.Set("client_id", s.cfg.GoogleOAuth.ClientID)
+	params.Set("redirect_uri", s.cfg.GoogleOAuth.RedirectURL)
+	params.Set("response_type", "code")
+	params.Set("scope", "openid email profile")
+	params.Set("state", state)
+	params.Set("nonce", nonce)
+	params.Set("prompt", "select_account")
+	http.Redirect(w, r, googleOAuthAuthorizeURL+"?"+params.Encode(), http.StatusSeeOther)
+}
+
+func (s *Server) googleOAuthCallback(w http.ResponseWriter, r *http.Request) {
+	if !s.googleOAuthConfigured() {
+		s.redirectGoogleOAuthError(w, r, "google_oauth_not_configured")
+		return
+	}
+	if providerErr := strings.TrimSpace(r.URL.Query().Get("error")); providerErr != "" {
+		s.redirectGoogleOAuthError(w, r, "google_"+providerErr)
+		return
+	}
+	code := strings.TrimSpace(r.URL.Query().Get("code"))
+	state := strings.TrimSpace(r.URL.Query().Get("state"))
+	if code == "" || state == "" {
+		s.redirectGoogleOAuthError(w, r, "invalid_google_callback")
+		return
+	}
+	statePayload, err := s.googleOAuthStateFromRequest(r)
+	if err != nil || subtle.ConstantTimeCompare([]byte(statePayload.State), []byte(state)) != 1 {
+		s.redirectGoogleOAuthError(w, r, "invalid_google_state")
+		return
+	}
+	s.clearGoogleOAuthStateCookie(w, r)
+
+	idToken, err := exchangeGoogleOAuthCode(r.Context(), s.cfg.GoogleOAuth, code)
+	if err != nil {
+		s.redirectGoogleOAuthError(w, r, "google_token_exchange_failed")
+		return
+	}
+	identity, err := verifyGoogleIDToken(r.Context(), s.cfg.GoogleOAuth.ClientID, statePayload.Nonce, idToken)
+	if err != nil {
+		s.redirectGoogleOAuthError(w, r, "google_identity_failed")
+		return
+	}
+	result, err := s.app.GoogleOAuth(r.Context(), identity.Email, identity.Name, identity.Subject)
+	if err != nil {
+		s.redirectGoogleOAuthError(w, r, "google_account_failed")
+		return
+	}
+	s.setSessionCookie(w, r, result.SessionID, result.ExpiresAt)
+	http.Redirect(w, r, statePayload.ReturnTo, http.StatusSeeOther)
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -1079,6 +1186,311 @@ func (s *Server) optionalUserID(r *http.Request) string {
 		return ""
 	}
 	return user.ID
+}
+
+type googleOAuthState struct {
+	State    string `json:"state"`
+	Nonce    string `json:"nonce"`
+	ReturnTo string `json:"returnTo"`
+	IssuedAt int64  `json:"issuedAt"`
+}
+
+type googleTokenResponse struct {
+	IDToken string `json:"id_token"`
+	Error   string `json:"error"`
+}
+
+type googleIdentity struct {
+	Subject string
+	Email   string
+	Name    string
+}
+
+type googleIDTokenHeader struct {
+	Algorithm string `json:"alg"`
+	KeyID     string `json:"kid"`
+}
+
+type googleIDTokenClaims struct {
+	Issuer        string `json:"iss"`
+	Audience      string `json:"aud"`
+	Subject       string `json:"sub"`
+	Email         string `json:"email"`
+	EmailVerified any    `json:"email_verified"`
+	Name          string `json:"name"`
+	Nonce         string `json:"nonce"`
+	ExpiresAt     int64  `json:"exp"`
+	NotBefore     int64  `json:"nbf"`
+}
+
+type googleJWKS struct {
+	Keys []googleJWK `json:"keys"`
+}
+
+type googleJWK struct {
+	KeyType   string `json:"kty"`
+	Use       string `json:"use"`
+	Algorithm string `json:"alg"`
+	KeyID     string `json:"kid"`
+	Modulus   string `json:"n"`
+	Exponent  string `json:"e"`
+}
+
+func (s *Server) googleOAuthConfigured() bool {
+	return strings.TrimSpace(s.cfg.GoogleOAuth.ClientID) != "" &&
+		strings.TrimSpace(s.cfg.GoogleOAuth.ClientSecret) != "" &&
+		strings.TrimSpace(s.cfg.GoogleOAuth.RedirectURL) != ""
+}
+
+func randomURLToken(bytesN int) (string, error) {
+	buf := make([]byte, bytesN)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate random token: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+func (s *Server) signGoogleOAuthState(state googleOAuthState) (string, error) {
+	payload, err := json.Marshal(state)
+	if err != nil {
+		return "", fmt.Errorf("marshal oauth state: %w", err)
+	}
+	encodedPayload := base64.RawURLEncoding.EncodeToString(payload)
+	mac := hmac.New(sha256.New, []byte(s.cfg.GoogleOAuth.ClientSecret))
+	_, _ = mac.Write([]byte(encodedPayload))
+	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return encodedPayload + "." + signature, nil
+}
+
+func (s *Server) googleOAuthStateFromRequest(r *http.Request) (googleOAuthState, error) {
+	cookie, err := r.Cookie(googleOAuthStateCookieName)
+	if err != nil || cookie.Value == "" {
+		return googleOAuthState{}, fmt.Errorf("missing oauth state cookie")
+	}
+	payload, signature, ok := strings.Cut(cookie.Value, ".")
+	if !ok || payload == "" || signature == "" {
+		return googleOAuthState{}, fmt.Errorf("invalid oauth state cookie")
+	}
+	mac := hmac.New(sha256.New, []byte(s.cfg.GoogleOAuth.ClientSecret))
+	_, _ = mac.Write([]byte(payload))
+	want := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	if subtle.ConstantTimeCompare([]byte(signature), []byte(want)) != 1 {
+		return googleOAuthState{}, fmt.Errorf("invalid oauth state signature")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		return googleOAuthState{}, fmt.Errorf("decode oauth state: %w", err)
+	}
+	var state googleOAuthState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return googleOAuthState{}, fmt.Errorf("unmarshal oauth state: %w", err)
+	}
+	if state.State == "" || state.Nonce == "" || state.ReturnTo == "" {
+		return googleOAuthState{}, fmt.Errorf("incomplete oauth state")
+	}
+	if time.Since(time.Unix(state.IssuedAt, 0)) > 10*time.Minute {
+		return googleOAuthState{}, fmt.Errorf("expired oauth state")
+	}
+	return state, nil
+}
+
+func sanitizeOAuthReturnTo(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "/"
+	}
+	if strings.HasPrefix(value, "//") {
+		return "/"
+	}
+	if parsed, err := url.Parse(value); err != nil || parsed.IsAbs() || !strings.HasPrefix(parsed.Path, "/") {
+		return "/"
+	}
+	return value
+}
+
+func (s *Server) setGoogleOAuthStateCookie(w http.ResponseWriter, r *http.Request, value string, ttl time.Duration) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     googleOAuthStateCookieName,
+		Value:    value,
+		Path:     "/api/v1/auth/google",
+		Expires:  time.Now().UTC().Add(ttl),
+		HttpOnly: true,
+		Secure:   s.secureSessionCookie(r),
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func (s *Server) clearGoogleOAuthStateCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     googleOAuthStateCookieName,
+		Value:    "",
+		Path:     "/api/v1/auth/google",
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   s.secureSessionCookie(r),
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func (s *Server) redirectGoogleOAuthError(w http.ResponseWriter, r *http.Request, code string) {
+	s.clearGoogleOAuthStateCookie(w, r)
+	http.Redirect(w, r, "/?authError="+url.QueryEscape(code), http.StatusSeeOther)
+}
+
+func exchangeGoogleOAuthCode(ctx context.Context, cfg config.GoogleOAuthConfig, code string) (string, error) {
+	body := url.Values{}
+	body.Set("client_id", cfg.ClientID)
+	body.Set("client_secret", cfg.ClientSecret)
+	body.Set("code", code)
+	body.Set("grant_type", "authorization_code")
+	body.Set("redirect_uri", cfg.RedirectURL)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, googleOAuthTokenURL, strings.NewReader(body.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("create google token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	res, err := googleOAuthHTTPClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("exchange google code: %w", err)
+	}
+	defer res.Body.Close()
+
+	var token googleTokenResponse
+	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&token); err != nil {
+		return "", fmt.Errorf("decode google token response: %w", err)
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 || token.Error != "" || token.IDToken == "" {
+		return "", fmt.Errorf("google token exchange failed")
+	}
+	return token.IDToken, nil
+}
+
+func verifyGoogleIDToken(ctx context.Context, clientID string, nonce string, idToken string) (googleIdentity, error) {
+	header, claims, signingInput, signature, err := parseGoogleIDToken(idToken)
+	if err != nil {
+		return googleIdentity{}, err
+	}
+	if header.Algorithm != "RS256" || header.KeyID == "" {
+		return googleIdentity{}, fmt.Errorf("google id token uses unsupported signing header")
+	}
+	key, err := fetchGoogleJWKSKey(ctx, header.KeyID)
+	if err != nil {
+		return googleIdentity{}, err
+	}
+	digest := sha256.Sum256([]byte(signingInput))
+	if err := rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], signature); err != nil {
+		return googleIdentity{}, fmt.Errorf("google id token signature mismatch")
+	}
+	now := time.Now().UTC().Unix()
+	if claims.ExpiresAt <= now || (claims.NotBefore != 0 && claims.NotBefore > now) {
+		return googleIdentity{}, fmt.Errorf("google id token is outside its valid time window")
+	}
+	if claims.Issuer != "accounts.google.com" && claims.Issuer != "https://accounts.google.com" {
+		return googleIdentity{}, fmt.Errorf("google id token issuer mismatch")
+	}
+	if claims.Audience != clientID || claims.Subject == "" || claims.Email == "" {
+		return googleIdentity{}, fmt.Errorf("google id token claims mismatch")
+	}
+	if claims.Nonce != nonce {
+		return googleIdentity{}, fmt.Errorf("google nonce mismatch")
+	}
+	if !googleEmailVerified(claims.EmailVerified) {
+		return googleIdentity{}, fmt.Errorf("google email is not verified")
+	}
+	return googleIdentity{Subject: claims.Subject, Email: claims.Email, Name: claims.Name}, nil
+}
+
+func parseGoogleIDToken(token string) (googleIDTokenHeader, googleIDTokenClaims, string, []byte, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return googleIDTokenHeader{}, googleIDTokenClaims{}, "", nil, fmt.Errorf("invalid google id token")
+	}
+	headerRaw, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return googleIDTokenHeader{}, googleIDTokenClaims{}, "", nil, fmt.Errorf("decode google id token header: %w", err)
+	}
+	var header googleIDTokenHeader
+	if err := json.Unmarshal(headerRaw, &header); err != nil {
+		return googleIDTokenHeader{}, googleIDTokenClaims{}, "", nil, fmt.Errorf("unmarshal google id token header: %w", err)
+	}
+	claimsRaw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return googleIDTokenHeader{}, googleIDTokenClaims{}, "", nil, fmt.Errorf("decode google id token claims: %w", err)
+	}
+	var claims googleIDTokenClaims
+	if err := json.Unmarshal(claimsRaw, &claims); err != nil {
+		return googleIDTokenHeader{}, googleIDTokenClaims{}, "", nil, fmt.Errorf("unmarshal google id token claims: %w", err)
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return googleIDTokenHeader{}, googleIDTokenClaims{}, "", nil, fmt.Errorf("decode google id token signature: %w", err)
+	}
+	return header, claims, parts[0] + "." + parts[1], signature, nil
+}
+
+func fetchGoogleJWKSKey(ctx context.Context, kid string) (*rsa.PublicKey, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, googleOAuthJWKSURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create google jwks request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	res, err := googleOAuthHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch google jwks: %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return nil, fmt.Errorf("google jwks fetch failed")
+	}
+	var jwks googleJWKS
+	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&jwks); err != nil {
+		return nil, fmt.Errorf("decode google jwks: %w", err)
+	}
+	for _, key := range jwks.Keys {
+		if key.KeyID != kid {
+			continue
+		}
+		publicKey, err := googleJWKPublicKey(key)
+		if err != nil {
+			return nil, err
+		}
+		return publicKey, nil
+	}
+	return nil, fmt.Errorf("google jwks key not found")
+}
+
+func googleJWKPublicKey(key googleJWK) (*rsa.PublicKey, error) {
+	if key.KeyType != "RSA" || (key.Use != "" && key.Use != "sig") || (key.Algorithm != "" && key.Algorithm != "RS256") {
+		return nil, fmt.Errorf("google jwks key is not an RSA signing key")
+	}
+	modulus, err := base64.RawURLEncoding.DecodeString(key.Modulus)
+	if err != nil {
+		return nil, fmt.Errorf("decode google jwks modulus: %w", err)
+	}
+	exponentBytes, err := base64.RawURLEncoding.DecodeString(key.Exponent)
+	if err != nil {
+		return nil, fmt.Errorf("decode google jwks exponent: %w", err)
+	}
+	exponent := new(big.Int).SetBytes(exponentBytes).Int64()
+	if exponent <= 1 || exponent > int64(^uint(0)>>1) {
+		return nil, fmt.Errorf("google jwks exponent is invalid")
+	}
+	return &rsa.PublicKey{N: new(big.Int).SetBytes(modulus), E: int(exponent)}, nil
+}
+
+func googleEmailVerified(value any) bool {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		return typed == "true"
+	default:
+		return false
+	}
 }
 
 func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, value string, expiresAt time.Time) {

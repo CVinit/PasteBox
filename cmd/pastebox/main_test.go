@@ -91,6 +91,9 @@ func TestProductionPreflightRequiresExplicitProductionEnvironment(t *testing.T) 
 		"PASTEBOX_S3_REGION",
 		"PASTEBOX_S3_ACCESS_KEY",
 		"PASTEBOX_S3_SECRET_KEY",
+		"PASTEBOX_GOOGLE_OAUTH_CLIENT_ID",
+		"PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET",
+		"PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL",
 		"PASTEBOX_BOOTSTRAP_ADMIN_EMAIL",
 		"PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD",
 		"PASTEBOX_RESTIC_REPOSITORY",
@@ -223,6 +226,24 @@ func TestProductionPreflightRequiresHTTPSPublicURL(t *testing.T) {
 	}
 }
 
+func TestProductionPreflightRejectsGoogleOAuthRedirectHostMismatch(t *testing.T) {
+	setValidProductionEnv(t)
+	t.Setenv("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL", "https://auth.example.com/api/v1/auth/google/callback")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"preflight", "production"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("expected OAuth redirect host mismatch to fail, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "host must match PASTEBOX_PUBLIC_URL host") {
+		t.Fatalf("expected Google OAuth redirect host validation error, got %q", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+}
+
 func TestProductionPreflightRejectsLocalObjectStorageEndpoint(t *testing.T) {
 	setValidProductionEnv(t)
 	t.Setenv("PASTEBOX_S3_ENDPOINT", "http://localhost:9000")
@@ -274,6 +295,9 @@ func setValidProductionEnv(t *testing.T) {
 	t.Setenv("PASTEBOX_S3_REGION", "us-east-1")
 	t.Setenv("PASTEBOX_S3_ACCESS_KEY", "access-key")
 	t.Setenv("PASTEBOX_S3_SECRET_KEY", "secret-key")
+	t.Setenv("PASTEBOX_GOOGLE_OAUTH_CLIENT_ID", "google-client-id")
+	t.Setenv("PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET", "google-client-secret")
+	t.Setenv("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL", "https://pastebox.example.com/api/v1/auth/google/callback")
 	t.Setenv("PASTEBOX_BOOTSTRAP_ADMIN_EMAIL", "admin@example.com")
 	t.Setenv("PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD", "change-me")
 	t.Setenv("PASTEBOX_RESTIC_REPOSITORY", "s3:https://objects.example.com/pastebox-backups")

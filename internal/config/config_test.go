@@ -28,6 +28,9 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	t.Setenv("PASTEBOX_S3_USE_PATH_STYLE", "false")
 	t.Setenv("PASTEBOX_EPUSDT_ENABLED", "true")
 	t.Setenv("PASTEBOX_LOG_LEVEL", "DEBUG")
+	t.Setenv("PASTEBOX_PUBLIC_URL", "https://pastebox.example.com")
+	t.Setenv("PASTEBOX_GOOGLE_OAUTH_CLIENT_ID", "google-client-id")
+	t.Setenv("PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET", "google-client-secret")
 
 	cfg := FromEnv()
 
@@ -42,5 +45,11 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	}
 	if cfg.LogLevel != slog.LevelDebug {
 		t.Fatalf("expected debug log level, got %s", cfg.LogLevel)
+	}
+	if cfg.GoogleOAuth.ClientID != "google-client-id" || cfg.GoogleOAuth.ClientSecret != "google-client-secret" {
+		t.Fatalf("expected Google OAuth credentials from env, got %#v", cfg.GoogleOAuth)
+	}
+	if cfg.GoogleOAuth.RedirectURL != "https://pastebox.example.com/api/v1/auth/google/callback" {
+		t.Fatalf("expected default Google OAuth redirect URL from public URL, got %q", cfg.GoogleOAuth.RedirectURL)
 	}
 }

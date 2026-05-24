@@ -248,15 +248,8 @@ export const client = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  googleOAuth: (body: {
-    email: string;
-    displayName: string;
-    googleSubject: string;
-  }) =>
-    api<AuthResult>("/auth/google", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
+  googleOAuthStartPath: (returnTo = "/") =>
+    `/api/v1/auth/google/start?${new URLSearchParams({ returnTo }).toString()}`,
   logout: () => api<{ status: string }>("/auth/logout", { method: "POST" }),
   logoutAll: () =>
     api<{ status: string }>("/auth/logout-all", { method: "POST" }),

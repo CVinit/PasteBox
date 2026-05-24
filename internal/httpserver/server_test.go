@@ -2,15 +2,22 @@ package httpserver
 
 import (
 	"bytes"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
+	"math/big"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"pastebox/internal/app"
 	"pastebox/internal/config"
@@ -138,12 +145,12 @@ func TestSessionCookieSecureFollowsProductionRequestScheme(t *testing.T) {
 	plain := httptest.NewRecorder()
 	plainReq := httptest.NewRequest(
 		http.MethodPost,
-		"/api/v1/auth/google",
-		strings.NewReader(`{"email":"plain@example.com","displayName":"Plain","googleSubject":"plain-sub"}`),
+		"/api/v1/auth/register",
+		strings.NewReader(`{"email":"plain@example.com","password":"password123","displayName":"Plain"}`),
 	)
 	plainReq.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(plain, plainReq)
-	assertStatus(t, plain, http.StatusOK)
+	assertStatus(t, plain, http.StatusCreated)
 	plainCookie := sessionCookieFromResponse(t, plain)
 	if plainCookie.Secure {
 		t.Fatalf("expected plain HTTP test cookie to omit Secure, got %#v", plainCookie)
@@ -152,13 +159,13 @@ func TestSessionCookieSecureFollowsProductionRequestScheme(t *testing.T) {
 	proxied := httptest.NewRecorder()
 	proxiedReq := httptest.NewRequest(
 		http.MethodPost,
-		"/api/v1/auth/google",
-		strings.NewReader(`{"email":"proxied@example.com","displayName":"Proxied","googleSubject":"proxied-sub"}`),
+		"/api/v1/auth/register",
+		strings.NewReader(`{"email":"proxied@example.com","password":"password123","displayName":"Proxied"}`),
 	)
 	proxiedReq.Header.Set("Content-Type", "application/json")
 	proxiedReq.Header.Set("X-Forwarded-Proto", "https")
 	handler.ServeHTTP(proxied, proxiedReq)
-	assertStatus(t, proxied, http.StatusOK)
+	assertStatus(t, proxied, http.StatusCreated)
 	proxiedCookie := sessionCookieFromResponse(t, proxied)
 	if !proxiedCookie.Secure {
 		t.Fatalf("expected HTTPS proxy cookie to set Secure, got %#v", proxiedCookie)
@@ -167,16 +174,171 @@ func TestSessionCookieSecureFollowsProductionRequestScheme(t *testing.T) {
 	forwarded := httptest.NewRecorder()
 	forwardedReq := httptest.NewRequest(
 		http.MethodPost,
-		"/api/v1/auth/google",
-		strings.NewReader(`{"email":"forwarded@example.com","displayName":"Forwarded","googleSubject":"forwarded-sub"}`),
+		"/api/v1/auth/register",
+		strings.NewReader(`{"email":"forwarded@example.com","password":"password123","displayName":"Forwarded"}`),
 	)
 	forwardedReq.Header.Set("Content-Type", "application/json")
 	forwardedReq.Header.Set("Forwarded", `for=192.0.2.10; proto="https"; host=pastebox.example.com`)
 	handler.ServeHTTP(forwarded, forwardedReq)
-	assertStatus(t, forwarded, http.StatusOK)
+	assertStatus(t, forwarded, http.StatusCreated)
 	forwardedCookie := sessionCookieFromResponse(t, forwarded)
 	if !forwardedCookie.Secure {
 		t.Fatalf("expected standard Forwarded HTTPS cookie to set Secure, got %#v", forwardedCookie)
+	}
+}
+
+func TestGoogleOAuthRedirectFlowCreatesSession(t *testing.T) {
+	cfg := config.FromEnv()
+	cfg.AppEnv = "production"
+	cfg.GoogleOAuth.ClientID = "google-client-id"
+	cfg.GoogleOAuth.ClientSecret = "google-client-secret"
+	cfg.GoogleOAuth.RedirectURL = "https://pastebox.example.com/api/v1/auth/google/callback"
+	service := app.New(cfg)
+	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), service)
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate test google key: %v", err)
+	}
+	const keyID = "google-test-key"
+	var wantedNonce string
+	testIDToken := func() string {
+		return signGoogleTestIDToken(t, privateKey, keyID, map[string]any{
+			"iss":            "https://accounts.google.com",
+			"aud":            cfg.GoogleOAuth.ClientID,
+			"sub":            "google-subject-1",
+			"email":          "oauth-redirect@example.com",
+			"email_verified": true,
+			"name":           "OAuth Redirect",
+			"nonce":          wantedNonce,
+			"exp":            time.Now().UTC().Add(5 * time.Minute).Unix(),
+		})
+	}
+	google := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse token form: %v", err)
+			}
+			if r.Form.Get("client_id") != cfg.GoogleOAuth.ClientID ||
+				r.Form.Get("client_secret") != cfg.GoogleOAuth.ClientSecret ||
+				r.Form.Get("redirect_uri") != cfg.GoogleOAuth.RedirectURL ||
+				r.Form.Get("code") != "google-code" {
+				t.Fatalf("unexpected token form: %#v", r.Form)
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"id_token": testIDToken()})
+		case "/certs":
+			writeJSON(w, http.StatusOK, map[string]any{
+				"keys": []map[string]string{
+					googleTestJWK(keyID, &privateKey.PublicKey),
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer google.Close()
+	oldTokenURL := googleOAuthTokenURL
+	oldJWKSURL := googleOAuthJWKSURL
+	oldHTTPClient := googleOAuthHTTPClient
+	googleOAuthTokenURL = google.URL + "/token"
+	googleOAuthJWKSURL = google.URL + "/certs"
+	googleOAuthHTTPClient = google.Client()
+	t.Cleanup(func() {
+		googleOAuthTokenURL = oldTokenURL
+		googleOAuthJWKSURL = oldJWKSURL
+		googleOAuthHTTPClient = oldHTTPClient
+	})
+
+	start := httptest.NewRecorder()
+	startReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/google/start?returnTo=%2Fbilling", nil)
+	handler.ServeHTTP(start, startReq)
+	assertStatus(t, start, http.StatusSeeOther)
+	location, err := url.Parse(start.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse google redirect location: %v", err)
+	}
+	if location.Host != "accounts.google.com" || location.Query().Get("client_id") != cfg.GoogleOAuth.ClientID {
+		t.Fatalf("unexpected google redirect: %s", location.String())
+	}
+	state := location.Query().Get("state")
+	if state == "" {
+		t.Fatalf("expected state in redirect: %s", location.String())
+	}
+	oauthCookie := cookieFromResponse(t, start, googleOAuthStateCookieName)
+	if !oauthCookie.HttpOnly || oauthCookie.Value == "" {
+		t.Fatalf("expected signed HttpOnly state cookie, got %#v", oauthCookie)
+	}
+	stateReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/google/callback", nil)
+	stateReq.AddCookie(oauthCookie)
+	decodedState, err := (&Server{cfg: cfg}).googleOAuthStateFromRequest(stateReq)
+	if err != nil {
+		t.Fatalf("decode signed oauth state: %v", err)
+	}
+	if decodedState.State != state || decodedState.ReturnTo != "/billing" {
+		t.Fatalf("unexpected signed oauth state: %#v", decodedState)
+	}
+	wantedNonce = decodedState.Nonce
+
+	callback := httptest.NewRecorder()
+	callbackReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/google/callback?code=google-code&state="+url.QueryEscape(state), nil)
+	callbackReq.AddCookie(oauthCookie)
+	handler.ServeHTTP(callback, callbackReq)
+	assertStatus(t, callback, http.StatusSeeOther)
+	if got := callback.Header().Get("Location"); got != "/billing" {
+		t.Fatalf("expected return redirect to /billing, got %q", got)
+	}
+	sessionCookie := sessionCookieFromResponse(t, callback)
+	if sessionCookie.Value == "" {
+		t.Fatalf("expected session cookie after callback: %#v", sessionCookie)
+	}
+	clearedState := cookieFromResponse(t, callback, googleOAuthStateCookieName)
+	if clearedState.MaxAge >= 0 {
+		t.Fatalf("expected state cookie to be cleared, got %#v", clearedState)
+	}
+
+	me := httptest.NewRecorder()
+	meReq := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	meReq.AddCookie(sessionCookie)
+	handler.ServeHTTP(me, meReq)
+	assertStatus(t, me, http.StatusOK)
+	var user app.UserView
+	decodeResponse(t, me, &user)
+	if user.Email != "oauth-redirect@example.com" || !user.EmailVerified || user.DisplayName != "OAuth Redirect" {
+		t.Fatalf("unexpected oauth user: %#v", user)
+	}
+}
+
+func TestGoogleOAuthCallbackRejectsStateMismatch(t *testing.T) {
+	cfg := config.FromEnv()
+	cfg.AppEnv = "production"
+	cfg.GoogleOAuth.ClientID = "google-client-id"
+	cfg.GoogleOAuth.ClientSecret = "google-client-secret"
+	cfg.GoogleOAuth.RedirectURL = "https://pastebox.example.com/api/v1/auth/google/callback"
+	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), app.New(cfg))
+
+	start := httptest.NewRecorder()
+	startReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/google/start?returnTo=%2Fbilling", nil)
+	handler.ServeHTTP(start, startReq)
+	assertStatus(t, start, http.StatusSeeOther)
+	oauthCookie := cookieFromResponse(t, start, googleOAuthStateCookieName)
+
+	callback := httptest.NewRecorder()
+	callbackReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/google/callback?code=google-code&state=wrong-state", nil)
+	callbackReq.AddCookie(oauthCookie)
+	handler.ServeHTTP(callback, callbackReq)
+	assertStatus(t, callback, http.StatusSeeOther)
+	if got := callback.Header().Get("Location"); got != "/?authError=invalid_google_state" {
+		t.Fatalf("expected invalid state redirect, got %q", got)
+	}
+	clearedState := cookieFromResponse(t, callback, googleOAuthStateCookieName)
+	if clearedState.MaxAge >= 0 {
+		t.Fatalf("expected state cookie to be cleared, got %#v", clearedState)
+	}
+	for _, cookie := range callback.Result().Cookies() {
+		if cookie.Name == sessionCookieName && cookie.Value != "" && cookie.MaxAge >= 0 {
+			t.Fatalf("state mismatch must not create a session cookie, got %#v", cookie)
+		}
 	}
 }
 
@@ -506,13 +668,48 @@ func decodeResponse(t *testing.T, res *httptest.ResponseRecorder, target any) {
 
 func sessionCookieFromResponse(t *testing.T, res *httptest.ResponseRecorder) *http.Cookie {
 	t.Helper()
+	return cookieFromResponse(t, res, sessionCookieName)
+}
+
+func cookieFromResponse(t *testing.T, res *httptest.ResponseRecorder, name string) *http.Cookie {
+	t.Helper()
 	for _, cookie := range res.Result().Cookies() {
-		if cookie.Name == sessionCookieName {
+		if cookie.Name == name {
 			return cookie
 		}
 	}
-	t.Fatalf("expected %s cookie in response headers: %v", sessionCookieName, res.Result().Header.Values("Set-Cookie"))
+	t.Fatalf("expected %s cookie in response headers: %v", name, res.Result().Header.Values("Set-Cookie"))
 	return nil
+}
+
+func signGoogleTestIDToken(t *testing.T, key *rsa.PrivateKey, keyID string, claims map[string]any) string {
+	t.Helper()
+	header, err := json.Marshal(map[string]string{"alg": "RS256", "kid": keyID, "typ": "JWT"})
+	if err != nil {
+		t.Fatalf("marshal test google id token header: %v", err)
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("marshal test google id token claims: %v", err)
+	}
+	signingInput := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)
+	digest := sha256.Sum256([]byte(signingInput))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatalf("sign test google id token: %v", err)
+	}
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
+}
+
+func googleTestJWK(keyID string, key *rsa.PublicKey) map[string]string {
+	return map[string]string{
+		"kty": "RSA",
+		"use": "sig",
+		"alg": "RS256",
+		"kid": keyID,
+		"n":   base64.RawURLEncoding.EncodeToString(key.N.Bytes()),
+		"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.E)).Bytes()),
+	}
 }
 
 func containsAuditAction(logs []app.AuditLog, action string) bool {

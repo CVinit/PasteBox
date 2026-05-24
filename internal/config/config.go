@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -16,7 +17,8 @@ type Config struct {
 	DatabaseURL string
 	RedisAddr   string
 
-	S3 S3Config
+	S3          S3Config
+	GoogleOAuth GoogleOAuthConfig
 
 	MailerProvider string
 	DevAuthTokens  bool
@@ -36,12 +38,19 @@ type S3Config struct {
 	UsePathStyle bool
 }
 
+type GoogleOAuthConfig struct {
+	ClientID     string
+	ClientSecret string
+	RedirectURL  string
+}
+
 func FromEnv() Config {
+	publicURL := envString("PASTEBOX_PUBLIC_URL", "http://localhost:5173")
 	return Config{
 		AppName:   envString("PASTEBOX_APP_NAME", "PasteBox"),
 		AppEnv:    envString("PASTEBOX_APP_ENV", "development"),
 		HTTPAddr:  envString("PASTEBOX_HTTP_ADDR", ":8080"),
-		PublicURL: envString("PASTEBOX_PUBLIC_URL", "http://localhost:5173"),
+		PublicURL: publicURL,
 		LogLevel:  envLogLevel("PASTEBOX_LOG_LEVEL", slog.LevelInfo),
 
 		DatabaseURL: envString("PASTEBOX_DATABASE_URL", "postgres://pastebox:pastebox@localhost:5432/pastebox?sslmode=disable"),
@@ -54,6 +63,11 @@ func FromEnv() Config {
 			AccessKey:    envString("PASTEBOX_S3_ACCESS_KEY", "pastebox"),
 			SecretKey:    envString("PASTEBOX_S3_SECRET_KEY", "pastebox-secret"),
 			UsePathStyle: envBool("PASTEBOX_S3_USE_PATH_STYLE", true),
+		},
+		GoogleOAuth: GoogleOAuthConfig{
+			ClientID:     envString("PASTEBOX_GOOGLE_OAUTH_CLIENT_ID", ""),
+			ClientSecret: envString("PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET", ""),
+			RedirectURL:  envString("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL", strings.TrimRight(publicURL, "/")+"/api/v1/auth/google/callback"),
 		},
 
 		MailerProvider: envString("PASTEBOX_MAILER_PROVIDER", "log"),

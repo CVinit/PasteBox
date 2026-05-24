@@ -264,6 +264,9 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		"PASTEBOX_S3_REGION",
 		"PASTEBOX_S3_ACCESS_KEY",
 		"PASTEBOX_S3_SECRET_KEY",
+		"PASTEBOX_GOOGLE_OAUTH_CLIENT_ID",
+		"PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET",
+		"PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL",
 		"PASTEBOX_BOOTSTRAP_ADMIN_EMAIL",
 		"PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD",
 		"PASTEBOX_RESTIC_REPOSITORY",
@@ -294,6 +297,10 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 	}
 	if !strings.HasPrefix(cfg.PublicURL, "https://") {
 		fmt.Fprintf(stderr, "production preflight failed: PASTEBOX_PUBLIC_URL must use https://, got %q\n", cfg.PublicURL)
+		return 1
+	}
+	if err := validateGoogleOAuthRedirectURL(cfg.GoogleOAuth.RedirectURL, cfg.PublicURL); err != nil {
+		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
 		return 1
 	}
 	if image := strings.TrimSpace(os.Getenv("PASTEBOX_IMAGE")); !isPinnedImage(image) {
@@ -328,6 +335,30 @@ func isPinnedImage(image string) bool {
 		return false
 	}
 	return strings.HasPrefix(image[lastColon+1:], "sha-")
+}
+
+func validateGoogleOAuthRedirectURL(raw string, publicRaw string) error {
+	redirectURL, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || redirectURL.Scheme == "" || redirectURL.Host == "" {
+		return fmt.Errorf("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL must be a valid https URL, got %q", raw)
+	}
+	if redirectURL.Scheme != "https" {
+		return fmt.Errorf("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL must use https://, got %q", raw)
+	}
+	if redirectURL.Path != "/api/v1/auth/google/callback" {
+		return fmt.Errorf("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL must end with /api/v1/auth/google/callback, got %q", raw)
+	}
+	if isLocalHost(redirectURL.Hostname()) {
+		return fmt.Errorf("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL must use the production domain, got local host %q", redirectURL.Hostname())
+	}
+	publicURL, err := url.Parse(strings.TrimSpace(publicRaw))
+	if err != nil || publicURL.Host == "" {
+		return fmt.Errorf("PASTEBOX_PUBLIC_URL must be valid before validating Google OAuth redirect URL, got %q", publicRaw)
+	}
+	if !strings.EqualFold(redirectURL.Hostname(), publicURL.Hostname()) {
+		return fmt.Errorf("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL host must match PASTEBOX_PUBLIC_URL host, got %q", redirectURL.Hostname())
+	}
+	return nil
 }
 
 func validateRemoteHTTPSEndpoint(raw string, envKey string) error {

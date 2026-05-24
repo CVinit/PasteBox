@@ -133,7 +133,6 @@ const copy: Record<Locale, Record<string, string>> = {
     login: "Login",
     register: "Register",
     google: "Google",
-    googleSubject: "google subject",
     verificationToken: "verification token",
     verify: "Verify",
     magicLink: "Magic link",
@@ -253,7 +252,6 @@ const copy: Record<Locale, Record<string, string>> = {
     login: "登录",
     register: "注册",
     google: "Google",
-    googleSubject: "Google subject",
     verificationToken: "邮箱验证码",
     verify: "验证",
     magicLink: "魔法链接",
@@ -407,7 +405,6 @@ function App() {
     share: Share;
   } | null>(null);
   const [verificationToken, setVerificationToken] = useState("");
-  const [googleSubject, setGoogleSubject] = useState("google-demo-subject");
   const [reportDraft, setReportDraft] = useState({
     target: "",
     reason: "",
@@ -601,25 +598,8 @@ function App() {
     }
   }
 
-  async function googleOAuth() {
-    const result = await run(
-      () =>
-        client.googleOAuth({
-          email: auth.email,
-          displayName: auth.displayName,
-          googleSubject,
-        }),
-      "Signed in with Google",
-    );
-    if (result) {
-      setUser(result.user);
-      setVerificationToken("");
-      setProfileDraft({
-        displayName: result.user.displayName,
-        language: result.user.language || "en",
-      });
-      await refreshAuthed();
-    }
+  function googleOAuth() {
+    window.location.assign(client.googleOAuthStartPath(window.location.pathname));
   }
 
   async function startVerification() {
@@ -1037,13 +1017,6 @@ function App() {
                 <ShieldCheck size={16} aria-hidden="true" />
                 Google
               </button>
-            </div>
-            <div className="magic-row">
-              <input
-                value={googleSubject}
-                onChange={(event) => setGoogleSubject(event.target.value)}
-                placeholder="google subject"
-              />
             </div>
             <div className="magic-row">
               <input
