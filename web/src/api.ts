@@ -155,8 +155,10 @@ export type AdminShare = Share & {
 };
 
 export type AdminQueues = {
+  cleanupJobs: QueueItem[];
   cleanupFailures: QueueItem[];
   scanFailures: QueueItem[];
+  failedJobs: QueueItem[];
   reports: Report[];
 };
 
@@ -164,8 +166,10 @@ export type QueueItem = {
   id: string;
   kind: string;
   targetId: string;
+  status: string;
   error?: string;
   attempts: number;
+  runAfter: string;
   createdAt: string;
   updatedAt: string;
 };

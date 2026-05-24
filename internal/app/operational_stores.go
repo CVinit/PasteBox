@@ -36,6 +36,7 @@ type ReportStore interface {
 type QueueStore interface {
 	CreateQueueItem(ctx context.Context, item QueueItem) error
 	ListQueueItemsByKind(ctx context.Context, kind string) ([]QueueItem, error)
+	ListQueueItemsByStatus(ctx context.Context, status string, limit int) ([]QueueItem, error)
 	DeleteQueueItemsByKindTarget(ctx context.Context, kind string, targetID string) error
 }
 

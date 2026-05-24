@@ -1689,8 +1689,16 @@ function App() {
                   <span>{adminData.queues?.scanFailures.length ?? 0}</span>
                 </article>
                 <article className="list-card">
-                  <strong>Delete failures</strong>
+                  <strong>Cleanup jobs</strong>
+                  <span>{adminData.queues?.cleanupJobs.length ?? 0}</span>
+                </article>
+                <article className="list-card">
+                  <strong>Cleanup failures</strong>
                   <span>{adminData.queues?.cleanupFailures.length ?? 0}</span>
+                </article>
+                <article className="list-card">
+                  <strong>Failed jobs</strong>
+                  <span>{adminData.queues?.failedJobs.length ?? 0}</span>
                 </article>
                 {(adminData.queues?.reports ?? []).slice(0, 5).map((report) => (
                   <article className="list-card" key={report.id}>

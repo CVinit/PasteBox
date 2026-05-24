@@ -80,8 +80,10 @@ type Service struct {
 	webhookEvents    []*WebhookEvent
 	auditLogs        []*AuditLog
 	reports          []*Report
+	cleanupJobs      []*QueueItem
 	cleanupFailures  []*QueueItem
 	scanFailures     []*QueueItem
+	failedJobs       []*QueueItem
 	mails            []*Mail
 	nextID           int64
 }
@@ -407,8 +409,10 @@ type QueueItem struct {
 	ID        string    `json:"id"`
 	Kind      string    `json:"kind"`
 	TargetID  string    `json:"targetId"`
+	Status    string    `json:"status"`
 	Error     string    `json:"error,omitempty"`
 	Attempts  int       `json:"attempts"`
+	RunAfter  time.Time `json:"runAfter"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
@@ -1093,6 +1097,9 @@ func (s *Service) DeletePaste(userID string, id string) error {
 			}
 		}
 	}
+	if err := s.scheduleCleanupJobLocked(paste.ID, now); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1723,6 +1730,9 @@ func (s *Service) AdminDashboard(actorID string) (map[string]any, error) {
 	if err := s.requireAdminLocked(actorID); err != nil {
 		return nil, err
 	}
+	if err := s.refreshQueueCachesLocked(context.Background()); err != nil {
+		return nil, err
+	}
 	users, err := s.listUsersLocked()
 	if err != nil {
 		return nil, err
@@ -1740,8 +1750,9 @@ func (s *Service) AdminDashboard(actorID string) (map[string]any, error) {
 		"activePastes":          activePastes,
 		"activeStorageBytes":    storage,
 		"reportsOpen":           countReports(s.reports, "open"),
-		"cleanupQueueDepth":     len(s.cleanupFailures),
+		"cleanupQueueDepth":     len(s.cleanupJobs),
 		"scanFailureQueueDepth": len(s.scanFailures),
+		"failedJobQueueDepth":   len(s.failedJobs),
 		"orders":                len(s.ordersByID),
 		"webhookEvents":         len(s.webhookEvents),
 	}, nil
@@ -2027,19 +2038,30 @@ func (s *Service) AdminQueues(actorID string) (map[string]any, error) {
 	if err := s.requireAdminLocked(actorID); err != nil {
 		return nil, err
 	}
+	if err := s.refreshQueueCachesLocked(context.Background()); err != nil {
+		return nil, err
+	}
 	cleanupFailures := s.cleanupFailures
 	if cleanupFailures == nil {
 		cleanupFailures = []*QueueItem{}
+	}
+	cleanupJobs := s.cleanupJobs
+	if cleanupJobs == nil {
+		cleanupJobs = []*QueueItem{}
 	}
 	scanFailures := s.scanFailures
 	if scanFailures == nil {
 		scanFailures = []*QueueItem{}
 	}
+	failedJobs := s.failedJobs
+	if failedJobs == nil {
+		failedJobs = []*QueueItem{}
+	}
 	reports := s.reports
 	if reports == nil {
 		reports = []*Report{}
 	}
-	return map[string]any{"cleanupFailures": cleanupFailures, "scanFailures": scanFailures, "reports": reports}, nil
+	return map[string]any{"cleanupJobs": cleanupJobs, "cleanupFailures": cleanupFailures, "scanFailures": scanFailures, "failedJobs": failedJobs, "reports": reports}, nil
 }
 
 func (s *Service) RunCleanup(actorID string) (map[string]int, error) {
@@ -2206,19 +2228,8 @@ func (s *Service) loadOperationalCaches(ctx context.Context) error {
 		}
 	}
 	if s.ops.Queues != nil {
-		cleanupFailures, err := s.ops.Queues.ListQueueItemsByKind(ctx, "cleanup_failed")
-		if err != nil {
-			return fmt.Errorf("load cleanup failures: %w", err)
-		}
-		for _, item := range cleanupFailures {
-			s.cacheQueueItemLocked(&s.cleanupFailures, item)
-		}
-		scanFailures, err := s.ops.Queues.ListQueueItemsByKind(ctx, "scan_failed")
-		if err != nil {
-			return fmt.Errorf("load scan failures: %w", err)
-		}
-		for _, item := range scanFailures {
-			s.cacheQueueItemLocked(&s.scanFailures, item)
+		if err := s.refreshQueueCachesLocked(ctx); err != nil {
+			return err
 		}
 	}
 	if s.ops.Mails != nil {
@@ -2571,6 +2582,18 @@ func (s *Service) cacheWebhookEventLocked(event WebhookEvent) *WebhookEvent {
 }
 
 func (s *Service) createQueueItemLocked(queue *[]*QueueItem, item *QueueItem) error {
+	if item.Status == "" {
+		item.Status = "failed"
+	}
+	if item.CreatedAt.IsZero() {
+		item.CreatedAt = s.now().UTC()
+	}
+	if item.UpdatedAt.IsZero() {
+		item.UpdatedAt = item.CreatedAt
+	}
+	if item.RunAfter.IsZero() {
+		item.RunAfter = item.UpdatedAt
+	}
 	if s.ops.Queues != nil {
 		if err := s.ops.Queues.CreateQueueItem(context.Background(), *item); err != nil {
 			return err
@@ -2590,6 +2613,48 @@ func (s *Service) deleteQueueItemsByKindTargetLocked(queue *[]*QueueItem, kind s
 	return nil
 }
 
+func (s *Service) refreshQueueCachesLocked(ctx context.Context) error {
+	if s.ops.Queues == nil {
+		return nil
+	}
+	s.cleanupJobs = []*QueueItem{}
+	s.cleanupFailures = []*QueueItem{}
+	s.scanFailures = []*QueueItem{}
+	s.failedJobs = []*QueueItem{}
+
+	cleanupJobs, err := s.ops.Queues.ListQueueItemsByKind(ctx, "cleanup")
+	if err != nil {
+		return fmt.Errorf("load cleanup jobs: %w", err)
+	}
+	for _, item := range cleanupJobs {
+		if item.Status == "pending" {
+			s.cacheQueueItemLocked(&s.cleanupJobs, item)
+		}
+	}
+	cleanupFailures, err := s.ops.Queues.ListQueueItemsByKind(ctx, "cleanup_failed")
+	if err != nil {
+		return fmt.Errorf("load cleanup failures: %w", err)
+	}
+	for _, item := range cleanupFailures {
+		s.cacheQueueItemLocked(&s.cleanupFailures, item)
+	}
+	scanFailures, err := s.ops.Queues.ListQueueItemsByKind(ctx, "scan_failed")
+	if err != nil {
+		return fmt.Errorf("load scan failures: %w", err)
+	}
+	for _, item := range scanFailures {
+		s.cacheQueueItemLocked(&s.scanFailures, item)
+	}
+	failedJobs, err := s.ops.Queues.ListQueueItemsByStatus(ctx, "failed", 100)
+	if err != nil {
+		return fmt.Errorf("load failed jobs: %w", err)
+	}
+	for _, item := range failedJobs {
+		s.cacheQueueItemLocked(&s.failedJobs, item)
+	}
+	return nil
+}
+
 func (s *Service) cacheQueueItemLocked(queue *[]*QueueItem, item QueueItem) {
 	cached := item
 	for i, existing := range *queue {
@@ -2599,6 +2664,18 @@ func (s *Service) cacheQueueItemLocked(queue *[]*QueueItem, item QueueItem) {
 		}
 	}
 	*queue = append(*queue, &cached)
+}
+
+func (s *Service) scheduleCleanupJobLocked(targetID string, now time.Time) error {
+	return s.createQueueItemLocked(&s.cleanupJobs, &QueueItem{
+		ID:        s.newID("job"),
+		Kind:      "cleanup",
+		TargetID:  targetID,
+		Status:    "pending",
+		RunAfter:  now,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
 }
 
 func (s *Service) cacheMailLocked(mail Mail) *Mail {

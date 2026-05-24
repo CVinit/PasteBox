@@ -23,6 +23,7 @@ import (
 	"pastebox/internal/httpserver"
 	"pastebox/internal/objectstore"
 	"pastebox/internal/postgres"
+	"pastebox/internal/worker"
 )
 
 func main() {
@@ -61,48 +62,14 @@ func runAPI(stdout io.Writer) int {
 		Level: cfg.LogLevel,
 	}))
 
-	pool, err := pgxpool.New(context.Background(), cfg.DatabaseURL)
-	if err != nil {
-		logger.Error("postgres pool setup failed", "error", err)
-		return 1
-	}
-	defer pool.Close()
-
 	startupCtx, startupCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer startupCancel()
-	objects, err := objectstore.NewS3Store(cfg.S3)
-	if err != nil {
-		logger.Error("object store setup failed", "error", err)
-		return 1
-	}
-	service, err := app.NewWithStorage(startupCtx, cfg, app.Stores{
-		Auth: app.AuthStores{
-			Users:         postgres.NewUserStore(pool),
-			Sessions:      postgres.NewSessionStore(pool),
-			Tokens:        postgres.NewAuthTokenStore(pool),
-			LoginFailures: postgres.NewLoginFailureStore(pool),
-		},
-		Content: app.ContentStores{
-			Pastes:      postgres.NewPasteStore(pool),
-			Attachments: postgres.NewAttachmentStore(pool),
-			Shares:      postgres.NewShareStore(pool),
-		},
-		Objects: objects,
-		Operational: app.OperationalStores{
-			Orders:        postgres.NewOrderStore(pool),
-			WebhookEvents: postgres.NewWebhookEventStore(pool),
-			Reports:       postgres.NewReportStore(pool),
-			Queues:        postgres.NewJobStore(pool),
-			Mails:         postgres.NewMailStore(pool),
-		},
-		DailyMetrics: postgres.NewDailyMetricStore(pool),
-		Catalog:      postgres.NewCatalogStore(pool),
-		AuditLogs:    postgres.NewAuditLogStore(pool),
-	})
+	service, pool, err := newProductionService(startupCtx, cfg)
 	if err != nil {
 		logger.Error("service setup failed", "error", err)
 		return 1
 	}
+	defer pool.Close()
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -140,6 +107,47 @@ func runAPI(stdout io.Writer) int {
 
 	logger.Info("api server stopped")
 	return 0
+}
+
+func newProductionService(ctx context.Context, cfg config.Config) (*app.Service, *pgxpool.Pool, error) {
+	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("postgres pool setup: %w", err)
+	}
+	objects, err := objectstore.NewS3Store(cfg.S3)
+	if err != nil {
+		pool.Close()
+		return nil, nil, fmt.Errorf("object store setup: %w", err)
+	}
+	service, err := app.NewWithStorage(ctx, cfg, app.Stores{
+		Auth: app.AuthStores{
+			Users:         postgres.NewUserStore(pool),
+			Sessions:      postgres.NewSessionStore(pool),
+			Tokens:        postgres.NewAuthTokenStore(pool),
+			LoginFailures: postgres.NewLoginFailureStore(pool),
+		},
+		Content: app.ContentStores{
+			Pastes:      postgres.NewPasteStore(pool),
+			Attachments: postgres.NewAttachmentStore(pool),
+			Shares:      postgres.NewShareStore(pool),
+		},
+		Objects: objects,
+		Operational: app.OperationalStores{
+			Orders:        postgres.NewOrderStore(pool),
+			WebhookEvents: postgres.NewWebhookEventStore(pool),
+			Reports:       postgres.NewReportStore(pool),
+			Queues:        postgres.NewJobStore(pool),
+			Mails:         postgres.NewMailStore(pool),
+		},
+		DailyMetrics: postgres.NewDailyMetricStore(pool),
+		Catalog:      postgres.NewCatalogStore(pool),
+		AuditLogs:    postgres.NewAuditLogStore(pool),
+	})
+	if err != nil {
+		pool.Close()
+		return nil, nil, err
+	}
+	return service, pool, nil
 }
 
 func runAdmin(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -359,30 +367,56 @@ func isLocalHost(host string) bool {
 }
 
 func runWorker(args []string, stdout io.Writer, stderr io.Writer) int {
-	if len(args) > 0 {
-		switch args[0] {
-		case "help", "-h", "--help":
-			printWorkerUsage(stdout)
+	fs := flag.NewFlagSet("pastebox worker", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	once := fs.Bool("once", false, "process one runnable job batch and exit")
+	batchSize := fs.Int("batch-size", 25, "maximum runnable jobs to process per batch")
+	pollInterval := fs.Duration("poll-interval", 30*time.Second, "delay between worker polls")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
 			return 0
-		default:
-			fmt.Fprintf(stderr, "unknown worker command %q\n", args[0])
-			printWorkerUsage(stderr)
-			return 2
 		}
+		return 2
 	}
-
-	_ = stdout
-	_ = stderr
 
 	cfg := config.FromEnv()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: cfg.LogLevel,
 	}))
-	logger.Info("pastebox worker idle", "env", cfg.AppEnv, "reason", "durable queues are scheduled for Phase 3")
+
+	startupCtx, startupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer startupCancel()
+	service, pool, err := newProductionService(startupCtx, cfg)
+	if err != nil {
+		logger.Error("worker service setup failed", "error", err)
+		return 1
+	}
+	defer pool.Close()
+
+	runner := worker.NewRunner(postgres.NewJobStore(pool), service, worker.Config{
+		BatchSize:    *batchSize,
+		PollInterval: *pollInterval,
+		Logger:       logger,
+	})
+
+	if *once {
+		summary, err := runner.RunOnce(context.Background())
+		if err != nil {
+			fmt.Fprintf(stderr, "worker run once failed: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "worker processed seen=%d completed=%d retried=%d failed=%d\n", summary.Seen, summary.Completed, summary.Retried, summary.Failed)
+		return 0
+	}
+
+	logger.Info("pastebox worker started", "env", cfg.AppEnv, "batchSize", *batchSize, "pollInterval", pollInterval.String())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	<-ctx.Done()
+	if err := runner.Run(ctx); err != nil {
+		logger.Error("pastebox worker failed", "error", err)
+		return 1
+	}
 
 	logger.Info("pastebox worker stopped")
 	return 0
@@ -446,5 +480,5 @@ func printPreflightUsage(w io.Writer) {
 
 func printWorkerUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  pastebox worker")
+	fmt.Fprintln(w, "  pastebox worker [--once] [--batch-size <n>] [--poll-interval <duration>]")
 }

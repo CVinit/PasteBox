@@ -484,6 +484,55 @@ func TestObjectStoreWriteFailureDoesNotCreateAttachmentMetadata(t *testing.T) {
 	}
 }
 
+func TestDeletePasteSchedulesDurableCleanupJob(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	authStores := newMemoryAuthStores()
+	contentStores := newMemoryContentStores()
+	operationalStores := newMemoryOperationalStores()
+
+	svc := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		Operational:  operationalStores.operationalStores(),
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	admin := seedAdminTestUser(t, svc, "admin-cleanup-job@example.com")
+	owner := registerTestUser(t, svc, "owner-cleanup-job@example.com")
+	paste := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "cleanup", Text: "delete", ExpiresInSeconds: 3600})
+	addTestAttachment(t, svc, owner.User.ID, paste.ID, "delete.txt", []byte("delete"))
+
+	if err := svc.DeletePaste(owner.User.ID, paste.ID); err != nil {
+		t.Fatalf("delete paste: %v", err)
+	}
+
+	queues, err := svc.AdminQueues(admin.ID)
+	if err != nil {
+		t.Fatalf("admin queues: %v", err)
+	}
+	cleanupJobs, ok := queues["cleanupJobs"].([]*QueueItem)
+	if !ok || len(cleanupJobs) != 1 {
+		t.Fatalf("expected cleanup job queue item, got %#v", queues["cleanupJobs"])
+	}
+	if cleanupJobs[0].Kind != "cleanup" || cleanupJobs[0].TargetID != paste.ID || cleanupJobs[0].Status != "pending" || !cleanupJobs[0].RunAfter.Equal(now) {
+		t.Fatalf("unexpected cleanup job: %#v", cleanupJobs[0])
+	}
+
+	restarted := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		Operational:  operationalStores.operationalStores(),
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	queues, err = restarted.AdminQueues(admin.ID)
+	if err != nil {
+		t.Fatalf("admin queues after restart: %v", err)
+	}
+	cleanupJobs, ok = queues["cleanupJobs"].([]*QueueItem)
+	if !ok || len(cleanupJobs) != 1 || cleanupJobs[0].TargetID != paste.ID {
+		t.Fatalf("expected cleanup job to survive restart, got %#v", queues["cleanupJobs"])
+	}
+}
+
 func TestStoreBackedOperationalStateSurvivesServiceRestart(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	authStores := newMemoryAuthStores()
@@ -1310,6 +1359,19 @@ func (s *memoryOperationalStores) ListQueueItemsByKind(_ context.Context, kind s
 		if item.Kind == kind {
 			out = append(out, item)
 		}
+	}
+	return out, nil
+}
+
+func (s *memoryOperationalStores) ListQueueItemsByStatus(_ context.Context, status string, limit int) ([]QueueItem, error) {
+	out := []QueueItem{}
+	for _, item := range s.queues {
+		if item.Status == status {
+			out = append(out, item)
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
 	}
 	return out, nil
 }

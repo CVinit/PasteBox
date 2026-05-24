@@ -147,7 +147,7 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 ### 2. Signatures
 
 - API command: `pastebox` or `pastebox api`
-- Worker command: `pastebox worker`
+- Worker command: `pastebox worker [--once] [--batch-size <n>] [--poll-interval <duration>]`
 - Migration commands: `pastebox migrate status` and `pastebox migrate up`
 - Preflight command: `pastebox preflight production`
 - Liveness endpoint: `GET /healthz`
@@ -160,9 +160,13 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 ### 3. Contracts
 
 - `pastebox api` and bare `pastebox` start the HTTP server.
-- `pastebox worker` is a supervised long-running process. Until durable queues
-  are implemented, it may idle, but it must not pretend to process production
-  jobs.
+- `pastebox worker` is a supervised long-running process that polls the
+  PostgreSQL-backed `jobs` table. `--once` processes one runnable batch and
+  exits for deployment checks or maintenance.
+- The worker currently handles `kind = 'cleanup'` jobs by calling the same
+  service cleanup path used by admin cleanup, then marking the job
+  `completed`, `pending` for retry with backoff, or `failed` after the retry
+  budget is exhausted.
 - `pastebox migrate status` connects to `PASTEBOX_DATABASE_URL` and reports
   every embedded SQL migration as `pending`, `applied`, or `dirty`.
 - `pastebox migrate up` applies embedded PostgreSQL migrations transactionally
@@ -194,17 +198,20 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
   with a command-specific error.
 - Stored migration checksum differs from the embedded SQL file -> exits 1 and
   reports a dirty/checksum mismatch.
+- `pastebox worker --once` cannot list runnable jobs or update job state ->
+  exits 1 with a worker-specific error.
+- `pastebox worker --help` exits 0 and prints worker usage.
 - Unknown lifecycle subcommand -> exits 2 and prints usage.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: Adding a new production dependency updates `deploy/production.env.example`,
   `pastebox preflight production`, Compose wiring, runbooks, and tests together.
-- Base: Readiness endpoints stay simple while the app still uses in-memory
-  adapters; later phases can expand readiness to check PostgreSQL, Redis,
-  object storage, mail, and worker health.
+- Base: Worker support may start with one job kind, but it must use the durable
+  `jobs` table and preserve retry state across process restarts.
 - Bad: Editing an already-applied migration, silently ignoring checksum drift,
-  or using `latest` in the production runbook.
+  using `latest` in the production runbook, or leaving `pastebox worker` as an
+  idle process once runnable jobs exist.
 
 ### 6. Tests Required
 
@@ -215,6 +222,8 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - Migration package tests for embedded migration ordering, checksums, and table
   coverage.
 - Handler tests for `/readyz` and `/api/v1/ready` response shape.
+- Worker runner tests for successful cleanup completion, retry/backoff, and
+  unsupported job failure.
 - `docker compose --env-file deploy/production.env.example -f
   compose.production.yaml config` must render successfully with
   `PASTEBOX_ENV_FILE=./deploy/production.env.example`.

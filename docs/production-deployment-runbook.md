@@ -123,9 +123,17 @@ and:
 ## Worker Supervision
 
 The `worker` service runs `pastebox worker` under Docker Compose with
-`restart: unless-stopped`. In Phase 0A it idles and logs that durable queues are
-not implemented yet. Phase 3 will attach scan, cleanup, deletion retry,
-notification retry, export, and billing reconciliation jobs to this process.
+`restart: unless-stopped`. The worker polls the PostgreSQL-backed `jobs` table
+and currently processes pending `cleanup` jobs that expire and delete content
+through the same production service wiring as the API. Use the bounded one-shot
+mode for deployment checks or maintenance:
+
+```sh
+docker compose --env-file deploy/production.env -f compose.production.yaml run --rm worker --once
+```
+
+Future phases will attach scan, deletion retry, notification retry, export, and
+billing reconciliation jobs to this same durable worker runtime.
 
 ## HTTPS And Certificate Renewal
 

@@ -431,6 +431,35 @@ ORDER BY updated_at DESC, created_at DESC, id DESC
 	return items, nil
 }
 
+func (s *JobStore) ListQueueItemsByStatus(ctx context.Context, status string, limit int) ([]app.QueueItem, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+SELECT id, kind, target_id, status, attempts, last_error, run_after, created_at, updated_at
+FROM jobs
+WHERE status = $1
+ORDER BY updated_at DESC, created_at DESC, id DESC
+LIMIT $2
+`, status, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query queue items by status: %w", err)
+	}
+	defer rows.Close()
+	items := []app.QueueItem{}
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, queueItemFromJobRecord(job))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read queue items by status: %w", err)
+	}
+	return items, nil
+}
+
 func (s *JobStore) DeleteQueueItemsByKindTarget(ctx context.Context, kind string, targetID string) error {
 	if _, err := s.pool.Exec(ctx, `
 DELETE FROM jobs
@@ -679,6 +708,7 @@ func jobRecordFromQueueItem(item app.QueueItem) JobRecord {
 		ID:        item.ID,
 		Kind:      item.Kind,
 		TargetID:  item.TargetID,
+		Status:    item.Status,
 		Attempts:  item.Attempts,
 		LastError: item.Error,
 		RunAfter:  runAfter,
@@ -692,8 +722,10 @@ func queueItemFromJobRecord(job JobRecord) app.QueueItem {
 		ID:        job.ID,
 		Kind:      job.Kind,
 		TargetID:  job.TargetID,
+		Status:    job.Status,
 		Error:     job.LastError,
 		Attempts:  job.Attempts,
+		RunAfter:  job.RunAfter,
 		CreatedAt: job.CreatedAt,
 		UpdatedAt: job.UpdatedAt,
 	}

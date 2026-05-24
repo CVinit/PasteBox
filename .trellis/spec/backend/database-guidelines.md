@@ -607,7 +607,8 @@ content, err := objectStore.Get(ctx, attachment.ObjectKey)
 - Job create/read/list/update: `CreateJob`, `JobByID`, `ListRunnableJobs`,
   `UpdateJob`
 - Queue compatibility create/list/delete: `CreateQueueItem`,
-  `ListQueueItemsByKind`, `DeleteQueueItemsByKindTarget`
+  `ListQueueItemsByKind`, `ListQueueItemsByStatus`,
+  `DeleteQueueItemsByKindTarget`
 - Mail constructor: `postgres.NewMailStore(pool *pgxpool.Pool)`
 - Mail create/read/list/update: `CreateMail`, `MailByID`, `ListQueuedMail`,
   `UpdateMail`
@@ -628,9 +629,18 @@ content, err := objectStore.Get(ctx, attachment.ObjectKey)
 - Jobs are the durable retry boundary for workers. `ListRunnableJobs` returns
   pending jobs with `run_after <= now`, ordered by `run_after`, `created_at`,
   and `id`.
+- `ListQueueItemsByStatus` returns durable job rows by status for admin
+  visibility. Failed worker jobs must be visible without direct database
+  access.
 - Runtime scan and cleanup queue compatibility uses the `jobs` table through
   `app.QueueStore`, not in-memory queue slices, once operational stores are
   configured.
+- Deleting a paste schedules a `kind = 'cleanup'`, `status = 'pending'` job.
+  Admin queue responses expose pending cleanup jobs separately from historical
+  cleanup failures.
+- `pastebox worker` processes pending cleanup jobs and writes `completed`,
+  retryable `pending`, or terminal `failed` status back to the same `jobs`
+  table.
 - Mails are the durable retry boundary for SMTP delivery. `ListQueuedMail`
   returns only `status = 'queued'` rows in oldest-first order.
 - Runtime billing, support, worker, queue, and mail code must not treat
@@ -649,17 +659,18 @@ content, err := objectStore.Get(ctx, attachment.ObjectKey)
 - Missing report on read/update -> `ErrReportNotFound`.
 - Missing job on read/update -> `ErrJobNotFound`.
 - Missing mail on read/update -> `ErrMailNotFound`.
+- Unsupported worker job kind -> job attempt increments; status remains
+  `pending` with backoff until max attempts, then becomes `failed`.
 - Invalid webhook metadata JSON in the database -> repository read error; do
   not silently drop metadata.
 - Other PostgreSQL failures -> wrapped repository error with operation context.
 
 ### 5. Good/Base/Bad Cases
 
-- Good: A future production billing flow creates the order and webhook event
-  through PostgreSQL stores, then idempotently updates order/user state and
-  queues notification mail.
-- Base: Introduce repository boundaries with live integration tests before
-  switching runtime billing, support, workers, and mail.
+- Good: A paste deletion creates a pending cleanup job; a restarted worker
+  consumes it and persists completion or retry state.
+- Base: Introduce one worker job kind at a time, using the same durable jobs
+  table and retry semantics.
 - Bad: Process provider webhooks only in memory; replay after restart would not
   see the original idempotency key and could double-activate a plan.
 
@@ -673,6 +684,11 @@ content, err := objectStore.Get(ctx, attachment.ObjectKey)
   reports, jobs, and mail queues survive process restart.
 - Runtime switch tests must also prove scan queue items are deleted from the
   durable queue when admin retry succeeds.
+- Runtime switch tests must prove delete-paste cleanup jobs are durable across
+  restart and admin queues distinguish `cleanupJobs`, `cleanupFailures`,
+  `scanFailures`, and `failedJobs`.
+- Worker tests must prove cleanup job completion, retry/backoff, and terminal
+  failure for unsupported job kinds.
 - Run full `make test` after changing operational repositories or runtime
   wiring.
 
@@ -696,4 +712,21 @@ if err == nil {
 if !errors.Is(err, postgres.ErrWebhookEventNotFound) {
     return WebhookEvent{}, nil, err
 }
+```
+
+#### Wrong
+
+```go
+// A separate worker completed this job, but the API still serves stale startup
+// cache state.
+return map[string]any{"cleanupJobs": s.cleanupJobs}, nil
+```
+
+#### Correct
+
+```go
+if err := s.refreshQueueCachesLocked(ctx); err != nil {
+    return nil, err
+}
+return map[string]any{"cleanupJobs": s.cleanupJobs}, nil
 ```
