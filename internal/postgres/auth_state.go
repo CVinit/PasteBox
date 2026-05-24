@@ -14,9 +14,9 @@ import (
 )
 
 var (
-	ErrSessionNotFound      = errors.New("postgres session not found")
-	ErrAuthTokenNotFound    = errors.New("postgres auth token not found")
-	ErrLoginFailureNotFound = errors.New("postgres login failure not found")
+	ErrSessionNotFound      = errors.Join(errors.New("postgres session not found"), app.ErrStoreNotFound)
+	ErrAuthTokenNotFound    = errors.Join(errors.New("postgres auth token not found"), app.ErrStoreNotFound)
+	ErrLoginFailureNotFound = errors.Join(errors.New("postgres login failure not found"), app.ErrStoreNotFound)
 )
 
 type SessionStore struct {

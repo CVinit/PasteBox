@@ -15,8 +15,8 @@ import (
 )
 
 var (
-	ErrUserNotFound    = errors.New("postgres user not found")
-	ErrUserEmailExists = errors.New("postgres user email exists")
+	ErrUserNotFound    = errors.Join(errors.New("postgres user not found"), app.ErrStoreNotFound)
+	ErrUserEmailExists = errors.Join(errors.New("postgres user email exists"), app.ErrStoreConflict)
 )
 
 type UserStore struct {

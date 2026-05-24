@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"pastebox/internal/app"
 	"pastebox/internal/config"
 	"pastebox/internal/httpserver"
@@ -58,9 +60,23 @@ func runAPI(stdout io.Writer) int {
 		Level: cfg.LogLevel,
 	}))
 
+	pool, err := pgxpool.New(context.Background(), cfg.DatabaseURL)
+	if err != nil {
+		logger.Error("postgres pool setup failed", "error", err)
+		return 1
+	}
+	defer pool.Close()
+
+	service := app.NewWithStores(cfg, app.AuthStores{
+		Users:         postgres.NewUserStore(pool),
+		Sessions:      postgres.NewSessionStore(pool),
+		Tokens:        postgres.NewAuthTokenStore(pool),
+		LoginFailures: postgres.NewLoginFailureStore(pool),
+	}, postgres.NewDailyMetricStore(pool))
+
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpserver.New(cfg, logger),
+		Handler:           httpserver.NewWithService(cfg, logger, service),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,

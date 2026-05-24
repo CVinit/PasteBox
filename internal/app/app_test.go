@@ -199,6 +199,56 @@ func TestEmailVerificationRequiredBeforePasswordLoginAndWrites(t *testing.T) {
 	}
 }
 
+func TestStoreBackedAuthStateSurvivesServiceRestart(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	stores := newMemoryAuthStores()
+	svc := newTestServiceWithAuthStores(t, &now, stores.authStores())
+
+	registered, err := svc.Register(context.Background(), RegisterInput{
+		Email:       "durable@example.com",
+		Password:    "password123",
+		DisplayName: "Durable",
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if registered.DevEmailVerificationToken == "" || registered.SessionID == "" {
+		t.Fatalf("expected register to issue session and verification token, got %#v", registered)
+	}
+
+	restarted := newTestServiceWithAuthStores(t, &now, stores.authStores())
+	sessionUser, err := restarted.UserForSession(registered.SessionID)
+	if err != nil {
+		t.Fatalf("session should survive a fresh service instance: %v", err)
+	}
+	if sessionUser.ID != registered.User.ID || sessionUser.Email != "durable@example.com" {
+		t.Fatalf("unexpected session user after restart: %#v", sessionUser)
+	}
+
+	verified, err := restarted.FinishEmailVerification(registered.DevEmailVerificationToken)
+	if err != nil {
+		t.Fatalf("email verification token should survive restart: %v", err)
+	}
+	if !verified.EmailVerified {
+		t.Fatalf("expected verified user after restart, got %#v", verified)
+	}
+
+	restartedAgain := newTestServiceWithAuthStores(t, &now, stores.authStores())
+	loggedIn, err := restartedAgain.Login(context.Background(), "durable@example.com", "password123")
+	if err != nil {
+		t.Fatalf("verified user should be loginable after another restart: %v", err)
+	}
+	if loggedIn.User.ID != registered.User.ID || loggedIn.SessionID == "" {
+		t.Fatalf("unexpected login after restart: %#v", loggedIn)
+	}
+
+	restartedAgain.Logout(loggedIn.SessionID)
+	afterLogout := newTestServiceWithAuthStores(t, &now, stores.authStores())
+	if _, err := afterLogout.UserForSession(loggedIn.SessionID); !hasAppCode(err, "unauthenticated") {
+		t.Fatalf("logout should revoke persisted session, got %v", err)
+	}
+}
+
 func TestGoogleOAuthCreatesVerifiedAccount(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	svc := newTestService(t, &now)
@@ -480,6 +530,16 @@ func newTestServiceWithDailyMetrics(t *testing.T, now *time.Time, store DailyMet
 	return svc
 }
 
+func newTestServiceWithAuthStores(t *testing.T, now *time.Time, authStores AuthStores) *Service {
+	t.Helper()
+	cfg := config.FromEnv()
+	cfg.BootstrapAdminEmail = ""
+	cfg.BootstrapAdminPassword = ""
+	svc := NewWithStores(cfg, authStores, nil)
+	svc.now = func() time.Time { return *now }
+	return svc
+}
+
 type failingDailyMetricStore struct {
 	readErr  error
 	writeErr error
@@ -581,4 +641,153 @@ func assertAuditAction(t *testing.T, logs []AuditLog, action string) {
 		}
 	}
 	t.Fatalf("expected audit action %q in %#v", action, logs)
+}
+
+type memoryAuthStores struct {
+	usersByID     map[string]User
+	userIDByEmail map[string]string
+	sessions      map[string]Session
+	tokens        map[string]AuthToken
+	loginFailures map[string]LoginFailure
+}
+
+func newMemoryAuthStores() *memoryAuthStores {
+	return &memoryAuthStores{
+		usersByID:     map[string]User{},
+		userIDByEmail: map[string]string{},
+		sessions:      map[string]Session{},
+		tokens:        map[string]AuthToken{},
+		loginFailures: map[string]LoginFailure{},
+	}
+}
+
+func (s *memoryAuthStores) authStores() AuthStores {
+	return AuthStores{
+		Users:         s,
+		Sessions:      s,
+		Tokens:        s,
+		LoginFailures: s,
+	}
+}
+
+func (s *memoryAuthStores) CreateUser(_ context.Context, user User) error {
+	if _, ok := s.usersByID[user.ID]; ok {
+		return ErrStoreConflict
+	}
+	if _, ok := s.userIDByEmail[user.Email]; ok {
+		return ErrStoreConflict
+	}
+	s.usersByID[user.ID] = user
+	s.userIDByEmail[user.Email] = user.ID
+	return nil
+}
+
+func (s *memoryAuthStores) UserByID(_ context.Context, id string) (User, error) {
+	user, ok := s.usersByID[id]
+	if !ok {
+		return User{}, ErrStoreNotFound
+	}
+	return user, nil
+}
+
+func (s *memoryAuthStores) UserByEmail(_ context.Context, email string) (User, error) {
+	userID := s.userIDByEmail[normalizeEmail(email)]
+	if userID == "" {
+		return User{}, ErrStoreNotFound
+	}
+	return s.UserByID(context.Background(), userID)
+}
+
+func (s *memoryAuthStores) UpdateUser(_ context.Context, user User) error {
+	previous, ok := s.usersByID[user.ID]
+	if !ok {
+		return ErrStoreNotFound
+	}
+	if previous.Email != user.Email {
+		if existing := s.userIDByEmail[user.Email]; existing != "" && existing != user.ID {
+			return ErrStoreConflict
+		}
+		delete(s.userIDByEmail, previous.Email)
+	}
+	s.usersByID[user.ID] = user
+	s.userIDByEmail[user.Email] = user.ID
+	return nil
+}
+
+func (s *memoryAuthStores) CreateSession(_ context.Context, session Session) error {
+	s.sessions[session.ID] = session
+	return nil
+}
+
+func (s *memoryAuthStores) SessionByID(_ context.Context, id string) (Session, error) {
+	session, ok := s.sessions[id]
+	if !ok {
+		return Session{}, ErrStoreNotFound
+	}
+	return session, nil
+}
+
+func (s *memoryAuthStores) RevokeSession(_ context.Context, id string, revokedAt time.Time) error {
+	session, ok := s.sessions[id]
+	if !ok {
+		return ErrStoreNotFound
+	}
+	session.RevokedAt = &revokedAt
+	s.sessions[id] = session
+	return nil
+}
+
+func (s *memoryAuthStores) RevokeUserSessions(_ context.Context, userID string, revokedAt time.Time) (int64, error) {
+	var count int64
+	for id, session := range s.sessions {
+		if session.UserID != userID || session.RevokedAt != nil {
+			continue
+		}
+		session.RevokedAt = &revokedAt
+		s.sessions[id] = session
+		count++
+	}
+	return count, nil
+}
+
+func (s *memoryAuthStores) CreateAuthToken(_ context.Context, kind string, token AuthToken) error {
+	s.tokens[kind+"\x00"+token.Hash] = token
+	return nil
+}
+
+func (s *memoryAuthStores) AuthToken(_ context.Context, kind string, hash string) (AuthToken, error) {
+	token, ok := s.tokens[kind+"\x00"+hash]
+	if !ok {
+		return AuthToken{}, ErrStoreNotFound
+	}
+	return token, nil
+}
+
+func (s *memoryAuthStores) MarkAuthTokenUsed(_ context.Context, kind string, hash string, usedAt time.Time) error {
+	key := kind + "\x00" + hash
+	token, ok := s.tokens[key]
+	if !ok {
+		return ErrStoreNotFound
+	}
+	token.UsedAt = &usedAt
+	s.tokens[key] = token
+	return nil
+}
+
+func (s *memoryAuthStores) LoginFailure(_ context.Context, email string) (LoginFailure, error) {
+	failure, ok := s.loginFailures[email]
+	if !ok {
+		return LoginFailure{}, ErrStoreNotFound
+	}
+	return failure, nil
+}
+
+func (s *memoryAuthStores) SaveLoginFailure(_ context.Context, email string, failure LoginFailure) error {
+	s.loginFailures[email] = failure
+	return nil
+}
+
+func (s *memoryAuthStores) DeleteLoginFailure(_ context.Context, email string) error {
+	delete(s.loginFailures, email)
+	return nil
 }

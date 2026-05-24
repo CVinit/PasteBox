@@ -55,6 +55,7 @@ type Service struct {
 	cfg     config.Config
 	now     func() time.Time
 	catalog plans.Catalog
+	auth    AuthStores
 
 	usersByID        map[string]*User
 	userIDByEmail    map[string]string
@@ -82,10 +83,15 @@ type Service struct {
 }
 
 func New(cfg config.Config) *Service {
+	return NewWithStores(cfg, AuthStores{}, nil)
+}
+
+func NewWithStores(cfg config.Config, authStores AuthStores, dailyMetrics DailyMetricStore) *Service {
 	svc := &Service{
 		cfg:              cfg,
 		now:              time.Now,
 		catalog:          plans.DefaultCatalog(),
+		auth:             authStores,
 		usersByID:        map[string]*User{},
 		userIDByEmail:    map[string]string{},
 		sessionsByID:     map[string]*Session{},
@@ -103,6 +109,9 @@ func New(cfg config.Config) *Service {
 		ordersByID:       map[string]*Order{},
 		webhookEventKeys: map[string]string{},
 	}
+	if dailyMetrics != nil {
+		svc.dailyMetrics = dailyMetrics
+	}
 	if cfg.BootstrapAdminEmail != "" && cfg.BootstrapAdminPassword != "" {
 		_, _ = svc.SeedAdmin(cfg.BootstrapAdminEmail, cfg.BootstrapAdminPassword)
 	}
@@ -116,11 +125,7 @@ func NewForTest(now func() time.Time) *Service {
 }
 
 func NewWithDailyMetricStore(cfg config.Config, dailyMetrics DailyMetricStore) *Service {
-	svc := New(cfg)
-	if dailyMetrics != nil {
-		svc.dailyMetrics = dailyMetrics
-	}
-	return svc
+	return NewWithStores(cfg, AuthStores{}, dailyMetrics)
 }
 
 type User struct {
@@ -454,8 +459,10 @@ func (s *Service) Register(_ context.Context, input RegisterInput) (AuthResult, 
 	if len(input.Password) < 8 {
 		return AuthResult{}, E(http.StatusBadRequest, "weak_password", "password must be at least 8 characters")
 	}
-	if _, exists := s.userIDByEmail[email]; exists {
+	if _, err := s.userByEmailLocked(email); err == nil {
 		return AuthResult{}, E(http.StatusConflict, "email_exists", "email is already registered")
+	} else if !isStoreNotFound(err) && !isAppStatus(err, http.StatusNotFound) {
+		return AuthResult{}, err
 	}
 
 	passwordHash, err := hashPassword(input.Password)
@@ -476,10 +483,17 @@ func (s *Service) Register(_ context.Context, input RegisterInput) (AuthResult, 
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
-	s.usersByID[user.ID] = user
-	s.userIDByEmail[user.Email] = user.ID
+	if err := s.createUserLocked(user); err != nil {
+		if errors.Is(err, ErrStoreConflict) {
+			return AuthResult{}, E(http.StatusConflict, "email_exists", "email is already registered")
+		}
+		return AuthResult{}, err
+	}
 	s.mail(user.Email, "Welcome to PasteBox", "Your PasteBox account is ready.")
-	verificationToken := s.issueEmailVerificationLocked(user)
+	verificationToken, err := s.issueEmailVerificationLocked(user)
+	if err != nil {
+		return AuthResult{}, err
+	}
 
 	result, err := s.newSessionLocked(user)
 	if err != nil {
@@ -499,20 +513,26 @@ func (s *Service) Login(_ context.Context, email string, password string) (AuthR
 	}
 	user, err := s.userByEmailLocked(email)
 	if err != nil {
-		s.recordLoginFailureLocked(email)
+		if recordErr := s.recordLoginFailureLocked(email); recordErr != nil {
+			return AuthResult{}, recordErr
+		}
 		return AuthResult{}, E(http.StatusUnauthorized, "invalid_credentials", "invalid email or password")
 	}
 	if user.DeletedAt != nil || user.Frozen {
 		return AuthResult{}, E(http.StatusForbidden, "account_unavailable", "account is unavailable")
 	}
 	if err := verifyPassword(user.PasswordHash, password); err != nil {
-		s.recordLoginFailureLocked(email)
+		if recordErr := s.recordLoginFailureLocked(email); recordErr != nil {
+			return AuthResult{}, recordErr
+		}
 		return AuthResult{}, E(http.StatusUnauthorized, "invalid_credentials", "invalid email or password")
 	}
 	if !user.EmailVerified {
 		return AuthResult{}, E(http.StatusForbidden, "email_not_verified", "email verification is required before password login")
 	}
-	delete(s.loginFailures, email)
+	if err := s.deleteLoginFailureLocked(email); err != nil {
+		return AuthResult{}, err
+	}
 	s.mail(user.Email, "New PasteBox login", "A new device logged in to your PasteBox account.")
 	return s.newSessionLocked(user)
 }
@@ -528,8 +548,7 @@ func (s *Service) GoogleOAuth(_ context.Context, email string, displayName strin
 	if strings.TrimSpace(googleSubject) == "" {
 		return AuthResult{}, E(http.StatusBadRequest, "missing_oauth_subject", "google subject is required")
 	}
-	if userID := s.userIDByEmail[email]; userID != "" {
-		user := s.usersByID[userID]
+	if user, err := s.userByEmailLocked(email); err == nil {
 		if user.DeletedAt != nil || user.Frozen {
 			return AuthResult{}, E(http.StatusForbidden, "account_unavailable", "account is unavailable")
 		}
@@ -538,7 +557,12 @@ func (s *Service) GoogleOAuth(_ context.Context, email string, displayName strin
 			user.DisplayName = strings.TrimSpace(displayName)
 		}
 		user.UpdatedAt = s.now().UTC()
+		if err := s.updateUserLocked(user); err != nil {
+			return AuthResult{}, err
+		}
 		return s.newSessionLocked(user)
+	} else if !isStoreNotFound(err) && !isAppStatus(err, http.StatusNotFound) {
+		return AuthResult{}, err
 	}
 
 	passwordHash, err := hashPassword(newToken())
@@ -558,8 +582,12 @@ func (s *Service) GoogleOAuth(_ context.Context, email string, displayName strin
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
-	s.usersByID[user.ID] = user
-	s.userIDByEmail[user.Email] = user.ID
+	if err := s.createUserLocked(user); err != nil {
+		if errors.Is(err, ErrStoreConflict) {
+			return AuthResult{}, E(http.StatusConflict, "email_exists", "email is already registered")
+		}
+		return AuthResult{}, err
+	}
 	s.auditLocked(user.ID, "auth.google_oauth_stub", user.ID, map[string]any{"subject": googleSubject})
 	s.mail(user.Email, "Welcome to PasteBox", "Your Google-authenticated PasteBox account is ready.")
 	return s.newSessionLocked(user)
@@ -576,7 +604,10 @@ func (s *Service) StartEmailVerification(userID string) (map[string]string, erro
 	if user.EmailVerified {
 		return map[string]string{"message": "email already verified"}, nil
 	}
-	token := s.issueEmailVerificationLocked(user)
+	token, err := s.issueEmailVerificationLocked(user)
+	if err != nil {
+		return nil, err
+	}
 	return map[string]string{"devToken": token, "message": "verification sent"}, nil
 }
 
@@ -584,16 +615,19 @@ func (s *Service) FinishEmailVerification(token string) (UserView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	authToken, err := s.consumeTokenLocked(s.emailVerifies, token)
+	authToken, err := s.consumeTokenLocked("email_verification", s.emailVerifies, token)
 	if err != nil {
 		return UserView{}, err
 	}
-	user := s.usersByID[authToken.UserID]
-	if user == nil || user.DeletedAt != nil {
+	user, err := s.activeUserLocked(authToken.UserID)
+	if err != nil {
 		return UserView{}, E(http.StatusUnauthorized, "user_not_found", "user not found")
 	}
 	user.EmailVerified = true
 	user.UpdatedAt = s.now().UTC()
+	if err := s.updateUserLocked(user); err != nil {
+		return UserView{}, err
+	}
 	return viewUser(user), nil
 }
 
@@ -607,7 +641,11 @@ func (s *Service) StartMagicLink(_ context.Context, email string) (map[string]st
 	}
 	token := newToken()
 	hash := tokenHash(token)
-	s.magicLinks[hash] = &AuthToken{Hash: hash, UserID: user.ID, Email: user.Email, ExpiresAt: s.now().UTC().Add(15 * time.Minute)}
+	authToken := AuthToken{Hash: hash, UserID: user.ID, Email: user.Email, ExpiresAt: s.now().UTC().Add(15 * time.Minute)}
+	if err := s.createAuthTokenLocked("magic_link", authToken); err != nil {
+		return nil, err
+	}
+	s.magicLinks[hash] = &authToken
 	s.mail(user.Email, "Your PasteBox magic link", "Development token: "+token)
 	return map[string]string{"devToken": token, "message": "magic link sent"}, nil
 }
@@ -616,16 +654,19 @@ func (s *Service) ConsumeMagicLink(_ context.Context, token string) (AuthResult,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	authToken, err := s.consumeTokenLocked(s.magicLinks, token)
+	authToken, err := s.consumeTokenLocked("magic_link", s.magicLinks, token)
 	if err != nil {
 		return AuthResult{}, err
 	}
-	user := s.usersByID[authToken.UserID]
-	if user == nil || user.DeletedAt != nil || user.Frozen {
+	user, err := s.activeUserLocked(authToken.UserID)
+	if err != nil {
 		return AuthResult{}, E(http.StatusForbidden, "account_unavailable", "account is unavailable")
 	}
 	user.EmailVerified = true
 	user.UpdatedAt = s.now().UTC()
+	if err := s.updateUserLocked(user); err != nil {
+		return AuthResult{}, err
+	}
 	return s.newSessionLocked(user)
 }
 
@@ -642,7 +683,11 @@ func (s *Service) StartPasswordReset(_ context.Context, email string) (map[strin
 	}
 	token := newToken()
 	hash := tokenHash(token)
-	s.passwordResets[hash] = &AuthToken{Hash: hash, UserID: user.ID, Email: user.Email, ExpiresAt: s.now().UTC().Add(30 * time.Minute)}
+	authToken := AuthToken{Hash: hash, UserID: user.ID, Email: user.Email, ExpiresAt: s.now().UTC().Add(30 * time.Minute)}
+	if err := s.createAuthTokenLocked("password_reset", authToken); err != nil {
+		return nil, err
+	}
+	s.passwordResets[hash] = &authToken
 	s.mail(user.Email, "Reset your PasteBox password", "Development token: "+token)
 	return map[string]string{"devToken": token, "message": "password reset sent"}, nil
 }
@@ -654,7 +699,7 @@ func (s *Service) FinishPasswordReset(_ context.Context, token string, password 
 	if len(password) < 8 {
 		return E(http.StatusBadRequest, "weak_password", "password must be at least 8 characters")
 	}
-	authToken, err := s.consumeTokenLocked(s.passwordResets, token)
+	authToken, err := s.consumeTokenLocked("password_reset", s.passwordResets, token)
 	if err != nil {
 		return err
 	}
@@ -662,10 +707,18 @@ func (s *Service) FinishPasswordReset(_ context.Context, token string, password 
 	if err != nil {
 		return err
 	}
-	user := s.usersByID[authToken.UserID]
+	user, err := s.activeUserLocked(authToken.UserID)
+	if err != nil {
+		return err
+	}
 	user.PasswordHash = hash
 	user.UpdatedAt = s.now().UTC()
-	s.revokeUserSessionsLocked(user.ID)
+	if err := s.updateUserLocked(user); err != nil {
+		return err
+	}
+	if err := s.revokeUserSessionsLocked(user.ID); err != nil {
+		return err
+	}
 	s.mail(user.Email, "PasteBox password changed", "Your password was changed.")
 	return nil
 }
@@ -684,8 +737,11 @@ func (s *Service) UserForSession(sessionID string) (UserView, error) {
 func (s *Service) Logout(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := s.now().UTC()
+	if s.auth.Sessions != nil {
+		_ = s.auth.Sessions.RevokeSession(context.Background(), sessionID, now)
+	}
 	if session := s.sessionsByID[sessionID]; session != nil {
-		now := s.now().UTC()
 		session.RevokedAt = &now
 	}
 }
@@ -693,7 +749,7 @@ func (s *Service) Logout(sessionID string) {
 func (s *Service) LogoutAll(userID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.revokeUserSessionsLocked(userID)
+	_ = s.revokeUserSessionsLocked(userID)
 }
 
 func (s *Service) UpdateProfile(userID string, displayName string, language string) (UserView, error) {
@@ -711,6 +767,9 @@ func (s *Service) UpdateProfile(userID string, displayName string, language stri
 		user.Language = strings.TrimSpace(language)
 	}
 	user.UpdatedAt = s.now().UTC()
+	if err := s.updateUserLocked(user); err != nil {
+		return UserView{}, err
+	}
 	return viewUser(user), nil
 }
 
@@ -726,6 +785,9 @@ func (s *Service) RequestAccountDeletion(userID string) (UserView, error) {
 	scheduled := now.Add(7 * 24 * time.Hour)
 	user.DeleteRequestedAt = &now
 	user.DeleteScheduledAt = &scheduled
+	if err := s.updateUserLocked(user); err != nil {
+		return UserView{}, err
+	}
 	s.mail(user.Email, "PasteBox account deletion requested", "Your account is scheduled for deletion in 7 days.")
 	return viewUser(user), nil
 }
@@ -740,6 +802,9 @@ func (s *Service) CancelAccountDeletion(userID string) (UserView, error) {
 	}
 	user.DeleteRequestedAt = nil
 	user.DeleteScheduledAt = nil
+	if err := s.updateUserLocked(user); err != nil {
+		return UserView{}, err
+	}
 	return viewUser(user), nil
 }
 
@@ -756,6 +821,9 @@ func (s *Service) ExecuteAccountDeletion(userID string) error {
 	user.Frozen = true
 	user.DeleteRequestedAt = &now
 	user.DeleteScheduledAt = &now
+	if err := s.updateUserLocked(user); err != nil {
+		return err
+	}
 	for _, paste := range s.pastesByID {
 		if paste.UserID == user.ID && paste.Status == "active" {
 			paste.Status = "pending_delete"
@@ -767,8 +835,7 @@ func (s *Service) ExecuteAccountDeletion(userID string) error {
 			share.RevokedAt = &now
 		}
 	}
-	s.revokeUserSessionsLocked(user.ID)
-	return nil
+	return s.revokeUserSessionsLocked(user.ID)
 }
 
 func (s *Service) CreatePaste(userID string, input PasteInput) (PasteView, error) {
@@ -1376,7 +1443,10 @@ func (s *Service) markOrderPaidLocked(actorID string, orderID string, txID strin
 	order.Status = "paid"
 	order.TxID = strings.TrimSpace(txID)
 	order.PaidAt = &now
-	user := s.usersByID[order.UserID]
+	user, err := s.userByIDLocked(order.UserID)
+	if err != nil {
+		return Order{}, err
+	}
 	user.PlanID = order.PlanID
 	days := 30
 	if order.Period == "yearly" {
@@ -1384,6 +1454,9 @@ func (s *Service) markOrderPaidLocked(actorID string, orderID string, txID strin
 	}
 	expires := now.Add(time.Duration(days) * 24 * time.Hour)
 	user.PlanExpiresAt = &expires
+	if err := s.updateUserLocked(user); err != nil {
+		return Order{}, err
+	}
 	s.auditLocked(actorID, "billing.order_paid", order.ID, map[string]any{"planId": order.PlanID, "provider": order.Provider})
 	metadata = cloneMetadata(metadata)
 	if order.TxID != "" {
@@ -1509,9 +1582,9 @@ func (s *Service) AdminSetUserPlan(actorID string, userID string, planID string,
 	if err := s.requireAdminLocked(actorID); err != nil {
 		return UserView{}, err
 	}
-	user := s.usersByID[userID]
-	if user == nil {
-		return UserView{}, E(http.StatusNotFound, "user_not_found", "user not found")
+	user, err := s.userByIDLocked(userID)
+	if err != nil {
+		return UserView{}, err
 	}
 	if _, ok := plans.Find(s.catalog, planID); !ok {
 		return UserView{}, E(http.StatusBadRequest, "invalid_plan", "plan does not exist")
@@ -1519,6 +1592,9 @@ func (s *Service) AdminSetUserPlan(actorID string, userID string, planID string,
 	user.PlanID = planID
 	user.PlanExpiresAt = expiresAt
 	user.UpdatedAt = s.now().UTC()
+	if err := s.updateUserLocked(user); err != nil {
+		return UserView{}, err
+	}
 	s.auditLocked(actorID, "admin.user_plan_set", userID, map[string]any{"planId": planID})
 	return viewUser(user), nil
 }
@@ -1529,12 +1605,15 @@ func (s *Service) AdminFreezeUser(actorID string, userID string, frozen bool) (U
 	if err := s.requireAdminLocked(actorID); err != nil {
 		return UserView{}, err
 	}
-	user := s.usersByID[userID]
-	if user == nil {
-		return UserView{}, E(http.StatusNotFound, "user_not_found", "user not found")
+	user, err := s.userByIDLocked(userID)
+	if err != nil {
+		return UserView{}, err
 	}
 	user.Frozen = frozen
 	user.UpdatedAt = s.now().UTC()
+	if err := s.updateUserLocked(user); err != nil {
+		return UserView{}, err
+	}
 	s.auditLocked(actorID, "admin.user_freeze", userID, map[string]any{"frozen": frozen})
 	return viewUser(user), nil
 }
@@ -1802,6 +1881,9 @@ func (s *Service) SeedAdmin(email string, password string) (UserView, error) {
 	user := s.usersByID[result.User.ID]
 	user.Role = "admin"
 	user.EmailVerified = true
+	if err := s.updateUserLocked(user); err != nil {
+		return UserView{}, err
+	}
 	return viewUser(user), nil
 }
 
@@ -1824,9 +1906,41 @@ func (s *Service) ListPastesLocked(userID string, opts ListOptions) ([]PasteView
 	return out, nil
 }
 
+func (s *Service) createUserLocked(user *User) error {
+	if s.auth.Users != nil {
+		if err := s.auth.Users.CreateUser(context.Background(), *user); err != nil {
+			return err
+		}
+	}
+	s.cacheUserLocked(*user)
+	return nil
+}
+
+func (s *Service) updateUserLocked(user *User) error {
+	if s.auth.Users != nil {
+		if err := s.auth.Users.UpdateUser(context.Background(), *user); err != nil {
+			return err
+		}
+	}
+	s.cacheUserLocked(*user)
+	return nil
+}
+
+func (s *Service) cacheUserLocked(user User) *User {
+	cached := user
+	s.usersByID[cached.ID] = &cached
+	s.userIDByEmail[cached.Email] = cached.ID
+	return &cached
+}
+
 func (s *Service) newSessionLocked(user *User) (AuthResult, error) {
 	now := s.now().UTC()
 	session := &Session{ID: newToken(), UserID: user.ID, CreatedAt: now, ExpiresAt: now.Add(30 * 24 * time.Hour)}
+	if s.auth.Sessions != nil {
+		if err := s.auth.Sessions.CreateSession(context.Background(), *session); err != nil {
+			return AuthResult{}, err
+		}
+	}
 	s.sessionsByID[session.ID] = session
 	return AuthResult{User: viewUser(user), SessionID: session.ID, ExpiresAt: session.ExpiresAt}, nil
 }
@@ -1835,7 +1949,20 @@ func (s *Service) userForSessionLocked(sessionID string) (*User, error) {
 	if sessionID == "" {
 		return nil, E(http.StatusUnauthorized, "unauthenticated", "login required")
 	}
-	session := s.sessionsByID[sessionID]
+	var session *Session
+	if s.auth.Sessions != nil {
+		loaded, err := s.auth.Sessions.SessionByID(context.Background(), sessionID)
+		if err != nil {
+			if isStoreNotFound(err) {
+				return nil, E(http.StatusUnauthorized, "unauthenticated", "login required")
+			}
+			return nil, err
+		}
+		session = &loaded
+		s.sessionsByID[session.ID] = session
+	} else {
+		session = s.sessionsByID[sessionID]
+	}
 	if session == nil || session.RevokedAt != nil || !session.ExpiresAt.After(s.now().UTC()) {
 		return nil, E(http.StatusUnauthorized, "unauthenticated", "login required")
 	}
@@ -1843,8 +1970,11 @@ func (s *Service) userForSessionLocked(sessionID string) (*User, error) {
 }
 
 func (s *Service) activeUserLocked(userID string) (*User, error) {
-	user := s.usersByID[userID]
-	if user == nil || user.DeletedAt != nil {
+	user, err := s.userByIDLocked(userID)
+	if err != nil {
+		return nil, E(http.StatusUnauthorized, "user_not_found", "user not found")
+	}
+	if user.DeletedAt != nil {
 		return nil, E(http.StatusUnauthorized, "user_not_found", "user not found")
 	}
 	if user.Frozen {
@@ -1853,8 +1983,37 @@ func (s *Service) activeUserLocked(userID string) (*User, error) {
 	return user, nil
 }
 
+func (s *Service) userByIDLocked(userID string) (*User, error) {
+	if s.auth.Users != nil {
+		user, err := s.auth.Users.UserByID(context.Background(), userID)
+		if err != nil {
+			if isStoreNotFound(err) {
+				return nil, E(http.StatusNotFound, "user_not_found", "user not found")
+			}
+			return nil, err
+		}
+		return s.cacheUserLocked(user), nil
+	}
+	user := s.usersByID[userID]
+	if user == nil {
+		return nil, E(http.StatusNotFound, "user_not_found", "user not found")
+	}
+	return user, nil
+}
+
 func (s *Service) userByEmailLocked(email string) (*User, error) {
-	userID := s.userIDByEmail[normalizeEmail(email)]
+	email = normalizeEmail(email)
+	if s.auth.Users != nil {
+		user, err := s.auth.Users.UserByEmail(context.Background(), email)
+		if err != nil {
+			if isStoreNotFound(err) {
+				return nil, E(http.StatusNotFound, "user_not_found", "user not found")
+			}
+			return nil, err
+		}
+		return s.cacheUserLocked(user), nil
+	}
+	userID := s.userIDByEmail[email]
 	if userID == "" {
 		return nil, E(http.StatusNotFound, "user_not_found", "user not found")
 	}
@@ -1862,8 +2021,11 @@ func (s *Service) userByEmailLocked(email string) (*User, error) {
 }
 
 func (s *Service) checkLoginRateLimitLocked(email string) error {
-	failure := s.loginFailures[email]
-	if failure == nil {
+	failure, ok, err := s.loginFailureLocked(email)
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return nil
 	}
 	now := s.now().UTC()
@@ -1871,50 +2033,133 @@ func (s *Service) checkLoginRateLimitLocked(email string) error {
 		return E(http.StatusTooManyRequests, "login_rate_limited", "too many failed login attempts")
 	}
 	if now.Sub(failure.WindowStart) > 15*time.Minute {
-		delete(s.loginFailures, email)
+		return s.deleteLoginFailureLocked(email)
 	}
 	return nil
 }
 
-func (s *Service) recordLoginFailureLocked(email string) {
-	now := s.now().UTC()
-	failure := s.loginFailures[email]
-	if failure == nil || now.Sub(failure.WindowStart) > 15*time.Minute {
-		s.loginFailures[email] = &LoginFailure{Count: 1, WindowStart: now}
-		return
+func (s *Service) loginFailureLocked(email string) (LoginFailure, bool, error) {
+	if s.auth.LoginFailures != nil {
+		failure, err := s.auth.LoginFailures.LoginFailure(context.Background(), email)
+		if err != nil {
+			if isStoreNotFound(err) {
+				return LoginFailure{}, false, nil
+			}
+			return LoginFailure{}, false, err
+		}
+		s.loginFailures[email] = &failure
+		return failure, true, nil
 	}
-	failure.Count++
+	failure := s.loginFailures[email]
+	if failure == nil {
+		return LoginFailure{}, false, nil
+	}
+	return *failure, true, nil
+}
+
+func (s *Service) recordLoginFailureLocked(email string) error {
+	now := s.now().UTC()
+	failure, ok, err := s.loginFailureLocked(email)
+	if err != nil {
+		return err
+	}
+	if !ok || now.Sub(failure.WindowStart) > 15*time.Minute {
+		failure = LoginFailure{Count: 1, WindowStart: now}
+	} else {
+		failure.Count++
+	}
 	if failure.Count >= 5 {
 		failure.LockedUntil = now.Add(15 * time.Minute)
 	}
+	if s.auth.LoginFailures != nil {
+		if err := s.auth.LoginFailures.SaveLoginFailure(context.Background(), email, failure); err != nil {
+			return err
+		}
+	}
+	s.loginFailures[email] = &failure
+	return nil
 }
 
-func (s *Service) consumeTokenLocked(tokens map[string]*AuthToken, token string) (*AuthToken, error) {
+func (s *Service) deleteLoginFailureLocked(email string) error {
+	if s.auth.LoginFailures != nil {
+		if err := s.auth.LoginFailures.DeleteLoginFailure(context.Background(), email); err != nil {
+			return err
+		}
+	}
+	delete(s.loginFailures, email)
+	return nil
+}
+
+func (s *Service) createAuthTokenLocked(kind string, token AuthToken) error {
+	if s.auth.Tokens != nil {
+		if err := s.auth.Tokens.CreateAuthToken(context.Background(), kind, token); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) consumeTokenLocked(kind string, tokens map[string]*AuthToken, token string) (*AuthToken, error) {
 	hash := tokenHash(token)
 	authToken := tokens[hash]
+	if s.auth.Tokens != nil {
+		loaded, err := s.auth.Tokens.AuthToken(context.Background(), kind, hash)
+		if err != nil {
+			if isStoreNotFound(err) {
+				return nil, E(http.StatusUnauthorized, "invalid_token", "token is invalid or expired")
+			}
+			return nil, err
+		}
+		authToken = &loaded
+		tokens[hash] = authToken
+	}
 	if authToken == nil || authToken.UsedAt != nil || !authToken.ExpiresAt.After(s.now().UTC()) {
 		return nil, E(http.StatusUnauthorized, "invalid_token", "token is invalid or expired")
 	}
 	now := s.now().UTC()
+	if s.auth.Tokens != nil {
+		if err := s.auth.Tokens.MarkAuthTokenUsed(context.Background(), kind, hash, now); err != nil {
+			return nil, err
+		}
+	}
 	authToken.UsedAt = &now
 	return authToken, nil
 }
 
-func (s *Service) issueEmailVerificationLocked(user *User) string {
+func (s *Service) issueEmailVerificationLocked(user *User) (string, error) {
 	token := newToken()
 	hash := tokenHash(token)
-	s.emailVerifies[hash] = &AuthToken{Hash: hash, UserID: user.ID, Email: user.Email, ExpiresAt: s.now().UTC().Add(24 * time.Hour)}
+	authToken := AuthToken{Hash: hash, UserID: user.ID, Email: user.Email, ExpiresAt: s.now().UTC().Add(24 * time.Hour)}
+	if err := s.createAuthTokenLocked("email_verification", authToken); err != nil {
+		return "", err
+	}
+	s.emailVerifies[hash] = &authToken
 	s.mail(user.Email, "Verify your PasteBox email", "Development token: "+token)
-	return token
+	return token, nil
 }
 
-func (s *Service) revokeUserSessionsLocked(userID string) {
+func (s *Service) revokeUserSessionsLocked(userID string) error {
 	now := s.now().UTC()
+	if s.auth.Sessions != nil {
+		if _, err := s.auth.Sessions.RevokeUserSessions(context.Background(), userID, now); err != nil {
+			return err
+		}
+	}
 	for _, session := range s.sessionsByID {
 		if session.UserID == userID && session.RevokedAt == nil {
 			session.RevokedAt = &now
 		}
 	}
+	return nil
+}
+
+func isStoreNotFound(err error) bool {
+	return errors.Is(err, ErrStoreNotFound)
+}
+
+func isAppStatus(err error, status int) bool {
+	var appErr *Error
+	return errors.As(err, &appErr) && appErr.Status == status
 }
 
 func (s *Service) ownerPasteLocked(userID string, id string) (*Paste, error) {
