@@ -39,6 +39,9 @@ the `pastebox migrate up` command.
 - Content metadata uses PostgreSQL `PasteStore`, `AttachmentStore`, and
   `ShareStore` boundaries. Attachment bytes are intentionally not stored in
   PostgreSQL; Phase 2 object storage owns byte persistence.
+- Billing, support, worker, and notification state use PostgreSQL
+  `OrderStore`, `WebhookEventStore`, `ReportStore`, `JobStore`, and
+  `MailStore` boundaries.
 
 ---
 
@@ -567,4 +570,108 @@ content := attachment.Content
 ```go
 attachment, err := attachmentStore.AttachmentByID(ctx, id)
 content, err := objectStore.Get(ctx, attachment.ObjectKey)
+```
+
+## Scenario: Operational State Repository Boundaries
+
+### 1. Scope / Trigger
+
+- Trigger: Any change that reads or writes `orders`, `webhook_events`,
+  `reports`, `jobs`, or `mails`.
+
+### 2. Signatures
+
+- Order constructor: `postgres.NewOrderStore(pool *pgxpool.Pool)`
+- Order create: `CreateOrder(ctx context.Context, order app.Order) error`
+- Order read: `OrderByID(ctx context.Context, id string) (app.Order, error)`
+- Order list: `ListOrdersByUser(ctx context.Context, userID string) ([]app.Order, error)`
+- Order update: `UpdateOrder(ctx context.Context, order app.Order) error`
+- Webhook constructor: `postgres.NewWebhookEventStore(pool *pgxpool.Pool)`
+- Webhook create: `CreateWebhookEvent(ctx context.Context, event app.WebhookEvent) error`
+- Webhook read by ID: `WebhookEventByID(ctx context.Context, id string) (app.WebhookEvent, error)`
+- Webhook idempotency lookup: `WebhookEventByIdempotencyKey(ctx context.Context, idempotencyKey string) (app.WebhookEvent, error)`
+- Webhook processed marker: `UpdateWebhookEventProcessed(ctx context.Context, id string, processed bool) error`
+- Report constructor: `postgres.NewReportStore(pool *pgxpool.Pool)`
+- Report create/read/status update: `CreateReport`, `ReportByID`,
+  `UpdateReportStatus`
+- Job constructor: `postgres.NewJobStore(pool *pgxpool.Pool)`
+- Job create/read/list/update: `CreateJob`, `JobByID`, `ListRunnableJobs`,
+  `UpdateJob`
+- Mail constructor: `postgres.NewMailStore(pool *pgxpool.Pool)`
+- Mail create/read/list/update: `CreateMail`, `MailByID`, `ListQueuedMail`,
+  `UpdateMail`
+- Errors: `ErrOrderNotFound`, `ErrWebhookEventNotFound`,
+  `ErrWebhookEventExists`, `ErrReportNotFound`, `ErrJobNotFound`,
+  `ErrMailNotFound`
+
+### 3. Contracts
+
+- Orders round-trip current billing lifecycle fields including nullable
+  `expires_at` and `paid_at`.
+- Webhook events store `metadata` as JSONB and enforce unique
+  `idempotency_key`; duplicate delivery must map to `ErrWebhookEventExists`
+  at repository level.
+- Reports may be anonymous. Empty `app.Report.UserID` is stored as SQL NULL and
+  read back as an empty string.
+- Jobs are the durable retry boundary for workers. `ListRunnableJobs` returns
+  pending jobs with `run_after <= now`, ordered by `run_after`, `created_at`,
+  and `id`.
+- Mails are the durable retry boundary for SMTP delivery. `ListQueuedMail`
+  returns only `status = 'queued'` rows in oldest-first order.
+- Runtime billing, support, worker, and mail code must not treat in-memory
+  slices as production source of truth once these repositories are wired.
+
+### 4. Validation & Error Matrix
+
+- Missing order on read/update -> `ErrOrderNotFound`.
+- Duplicate webhook idempotency key -> `ErrWebhookEventExists`.
+- Missing webhook event on read/update -> `ErrWebhookEventNotFound`.
+- Missing report on read/update -> `ErrReportNotFound`.
+- Missing job on read/update -> `ErrJobNotFound`.
+- Missing mail on read/update -> `ErrMailNotFound`.
+- Invalid webhook metadata JSON in the database -> repository read error; do
+  not silently drop metadata.
+- Other PostgreSQL failures -> wrapped repository error with operation context.
+
+### 5. Good/Base/Bad Cases
+
+- Good: A future production billing flow creates the order and webhook event
+  through PostgreSQL stores, then idempotently updates order/user state and
+  queues notification mail.
+- Base: Introduce repository boundaries with live integration tests before
+  switching runtime billing, support, workers, and mail.
+- Bad: Process provider webhooks only in memory; replay after restart would not
+  see the original idempotency key and could double-activate a plan.
+
+### 6. Tests Required
+
+- PostgreSQL integration tests with `PASTEBOX_TEST_DATABASE_URL` assert order
+  create/read/list/update, webhook JSONB metadata and duplicate idempotency
+  mapping, report create/read/status update, runnable job filtering/update, and
+  queued mail filtering/update.
+- Runtime switch tests must prove billing order state, webhook idempotency,
+  reports, jobs, and mail queues survive process restart.
+- Run full `make test` after changing operational repositories or runtime
+  wiring.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+if _, ok := s.webhookEventKeys[idempotencyKey]; ok {
+    return existingEvent, order, nil
+}
+```
+
+#### Correct
+
+```go
+event, err := webhookStore.WebhookEventByIdempotencyKey(ctx, idempotencyKey)
+if err == nil {
+    return event, order, nil
+}
+if !errors.Is(err, postgres.ErrWebhookEventNotFound) {
+    return WebhookEvent{}, nil, err
+}
 ```
