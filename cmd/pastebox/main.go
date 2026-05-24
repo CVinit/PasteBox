@@ -242,7 +242,7 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	if image := strings.TrimSpace(os.Getenv("PASTEBOX_IMAGE")); !isPinnedImage(image) {
-		fmt.Fprintf(stderr, "production preflight failed: PASTEBOX_IMAGE must be a pinned non-latest tag or digest, got %q\n", image)
+		fmt.Fprintf(stderr, "production preflight failed: PASTEBOX_IMAGE must be a sha-* tag or digest, got %q\n", image)
 		return 1
 	}
 	if err := validateRemoteHTTPSEndpoint(cfg.S3.Endpoint, "PASTEBOX_S3_ENDPOINT"); err != nil {
@@ -259,6 +259,7 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 }
 
 func isPinnedImage(image string) bool {
+	image = strings.TrimSpace(image)
 	if image == "" || strings.HasSuffix(image, ":latest") {
 		return false
 	}
@@ -268,7 +269,10 @@ func isPinnedImage(image string) bool {
 
 	lastSlash := strings.LastIndex(image, "/")
 	lastColon := strings.LastIndex(image, ":")
-	return lastColon > lastSlash
+	if lastColon <= lastSlash {
+		return false
+	}
+	return strings.HasPrefix(image[lastColon+1:], "sha-")
 }
 
 func validateRemoteHTTPSEndpoint(raw string, envKey string) error {

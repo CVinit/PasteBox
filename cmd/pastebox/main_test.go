@@ -160,7 +160,25 @@ func TestProductionPreflightRejectsLatestImage(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("expected latest image to fail, got %d", code)
 	}
-	if !strings.Contains(stderr.String(), "must be a pinned non-latest tag or digest") {
+	if !strings.Contains(stderr.String(), "must be a sha-* tag or digest") {
+		t.Fatalf("expected pinned image validation error, got %q", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+}
+
+func TestProductionPreflightRejectsNonShaImageTag(t *testing.T) {
+	setValidProductionEnv(t)
+	t.Setenv("PASTEBOX_IMAGE", "ghcr.io/cvinit/pastebox:v1.2.3")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"preflight", "production"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("expected mutable version tag to fail, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "must be a sha-* tag or digest") {
 		t.Fatalf("expected pinned image validation error, got %q", stderr.String())
 	}
 	if stdout.Len() != 0 {
