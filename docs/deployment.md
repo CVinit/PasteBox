@@ -21,6 +21,13 @@ customer data until persistent adapters, migrations, real object storage,
 payment webhooks, mail delivery, scanner workers, backups, and operational
 monitoring are implemented.
 
+For the confirmed production-launch baseline, use
+`docs/production-deployment-runbook.md` and `compose.production.yaml` instead of
+this demo deployment file. The production baseline adds API/worker services,
+PostgreSQL, Redis, HTTPS reverse proxy, production preflight, readiness checks,
+backup jobs, and rollback gates, but it is still blocked from public beta until
+the remaining production roadmap phases are complete.
+
 ## GitHub Actions Image Build
 
 The repository includes `.github/workflows/docker-image.yml`.
@@ -99,7 +106,9 @@ Check health:
 
 ```sh
 curl -fsS http://127.0.0.1:8080/healthz
+curl -fsS http://127.0.0.1:8080/readyz
 curl -fsS http://127.0.0.1:8080/api/v1/health
+curl -fsS http://127.0.0.1:8080/api/v1/ready
 ```
 
 Expected response:
@@ -112,6 +121,12 @@ and:
 
 ```json
 {"app":"PasteBox","env":"production","status":"ok"}
+```
+
+and:
+
+```json
+{"app":"PasteBox","env":"production","status":"ready"}
 ```
 
 ## TLS and Reverse Proxy

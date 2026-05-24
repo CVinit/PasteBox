@@ -59,9 +59,11 @@ func (s *Server) routes() http.Handler {
 	r.Use(s.logRequests)
 
 	r.Get("/healthz", s.healthz)
+	r.Get("/readyz", s.readyz)
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/health", s.apiHealth)
+		r.Get("/ready", s.apiReady)
 		r.Get("/plans", s.planCatalog)
 
 		r.Route("/auth", func(r chi.Router) {
@@ -148,11 +150,25 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+func (s *Server) readyz(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status": "ready",
+	})
+}
+
 func (s *Server) apiHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"app":    s.cfg.AppName,
 		"env":    s.cfg.AppEnv,
 		"status": "ok",
+	})
+}
+
+func (s *Server) apiReady(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{
+		"app":    s.cfg.AppName,
+		"env":    s.cfg.AppEnv,
+		"status": "ready",
 	})
 }
 

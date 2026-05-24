@@ -83,14 +83,24 @@ boundary.
 中文部署说明见 [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md)，其中包含
 GitHub Actions 自动构建镜像后的 Docker Compose 部署方式。
 
+The production launch baseline now lives in
+[docs/production-deployment-runbook.md](docs/production-deployment-runbook.md)
+with `compose.production.yaml`, `deploy/production.env.example`, HTTPS reverse
+proxy config, backup jobs, production preflight, readiness checks, and rollback
+runbook. It is the Phase 0A deployment foundation; later phases still need to
+complete durable PostgreSQL, object storage, workers, mail, OAuth, billing,
+scanning, operations, and compliance before public beta.
+
 ## Deployment Readiness
 
 The current MVP can be deployed immediately for demos, internal review, and
 low-risk evaluation. It is not ready for real customer data or paid public SaaS
 operation because the repository and object store are in-memory in this pass.
-Persistent PostgreSQL/sqlc, S3-compatible storage, real mail, payment webhook
-verification, scanner workers, cleanup workers, backups, and monitoring must be
-implemented before production use.
+The Phase 0A production deployment baseline is present, but production use is
+still gated by the remaining roadmap phases. Persistent PostgreSQL/sqlc,
+S3-compatible storage, real mail, payment webhook verification, scanner
+workers, cleanup workers, restore drills, and monitoring must be implemented
+before public beta.
 
 ## Verification
 

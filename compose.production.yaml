@@ -1,0 +1,162 @@
+name: pastebox
+
+services:
+  api:
+    image: ${PASTEBOX_IMAGE:?set PASTEBOX_IMAGE to a pinned ghcr.io/cvinit/pastebox:sha-* tag or digest}
+    command: ["api"]
+    restart: unless-stopped
+    env_file:
+      - ${PASTEBOX_ENV_FILE:-./deploy/production.env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  worker:
+    image: ${PASTEBOX_IMAGE:?set PASTEBOX_IMAGE to a pinned ghcr.io/cvinit/pastebox:sha-* tag or digest}
+    command: ["worker"]
+    restart: unless-stopped
+    env_file:
+      - ${PASTEBOX_ENV_FILE:-./deploy/production.env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  postgres:
+    image: ${PASTEBOX_POSTGRES_IMAGE:-postgres:17-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${PASTEBOX_POSTGRES_DB:-pastebox}
+      POSTGRES_USER: ${PASTEBOX_POSTGRES_USER:-pastebox}
+      POSTGRES_PASSWORD: ${PASTEBOX_POSTGRES_PASSWORD:?set PASTEBOX_POSTGRES_PASSWORD}
+    volumes:
+      - pastebox-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  redis:
+    image: ${PASTEBOX_REDIS_IMAGE:-redis:7-alpine}
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes:
+      - pastebox-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  caddy:
+    image: ${PASTEBOX_CADDY_IMAGE:-caddy:2.10-alpine}
+    restart: unless-stopped
+    env_file:
+      - ${PASTEBOX_ENV_FILE:-./deploy/production.env}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - pastebox-caddy-data:/data
+      - pastebox-caddy-config:/config
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  preflight:
+    image: ${PASTEBOX_IMAGE:?set PASTEBOX_IMAGE to a pinned ghcr.io/cvinit/pastebox:sha-* tag or digest}
+    command: ["preflight", "production"]
+    profiles: ["maintenance"]
+    env_file:
+      - ${PASTEBOX_ENV_FILE:-./deploy/production.env}
+
+  migrate:
+    image: ${PASTEBOX_IMAGE:?set PASTEBOX_IMAGE to a pinned ghcr.io/cvinit/pastebox:sha-* tag or digest}
+    command: ["migrate", "up"]
+    profiles: ["maintenance"]
+    env_file:
+      - ${PASTEBOX_ENV_FILE:-./deploy/production.env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres-backup:
+    image: ${PASTEBOX_POSTGRES_IMAGE:-postgres:17-alpine}
+    profiles: ["maintenance"]
+    environment:
+      PGHOST: postgres
+      PGDATABASE: ${PASTEBOX_POSTGRES_DB:-pastebox}
+      PGUSER: ${PASTEBOX_POSTGRES_USER:-pastebox}
+      PGPASSWORD: ${PASTEBOX_POSTGRES_PASSWORD:?set PASTEBOX_POSTGRES_PASSWORD}
+      PASTEBOX_BACKUP_RETENTION_DAYS: ${PASTEBOX_BACKUP_RETENTION_DAYS:-30}
+    volumes:
+      - pastebox-backups:/backups
+      - ./deploy/backup/postgres-backup.sh:/usr/local/bin/pastebox-postgres-backup.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/usr/local/bin/pastebox-postgres-backup.sh"]
+
+  backup-push:
+    image: ${PASTEBOX_RESTIC_IMAGE:-restic/restic:0.18.1}
+    profiles: ["maintenance"]
+    environment:
+      RESTIC_REPOSITORY: ${PASTEBOX_RESTIC_REPOSITORY:?set PASTEBOX_RESTIC_REPOSITORY}
+      RESTIC_PASSWORD: ${PASTEBOX_RESTIC_PASSWORD:?set PASTEBOX_RESTIC_PASSWORD}
+      AWS_ACCESS_KEY_ID: ${PASTEBOX_BACKUP_S3_ACCESS_KEY:?set PASTEBOX_BACKUP_S3_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${PASTEBOX_BACKUP_S3_SECRET_KEY:?set PASTEBOX_BACKUP_S3_SECRET_KEY}
+      AWS_DEFAULT_REGION: ${PASTEBOX_BACKUP_S3_REGION:-us-east-1}
+    volumes:
+      - pastebox-backups:/backups:ro
+      - ./deploy/backup/restic-backup.sh:/usr/local/bin/pastebox-restic-backup.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/pastebox-restic-backup.sh"]
+
+volumes:
+  pastebox-postgres:
+  pastebox-redis:
+  pastebox-caddy-data:
+  pastebox-caddy-config:
+  pastebox-backups:

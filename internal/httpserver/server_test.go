@@ -37,6 +37,30 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
+func TestReadinessEndpoints(t *testing.T) {
+	cfg := config.FromEnv()
+	cfg.AppEnv = "production"
+	handler := New(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)))
+
+	readyz := httptest.NewRecorder()
+	handler.ServeHTTP(readyz, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	assertStatus(t, readyz, http.StatusOK)
+	var rootBody map[string]string
+	decodeResponse(t, readyz, &rootBody)
+	if rootBody["status"] != "ready" {
+		t.Fatalf("expected root readiness status, got %#v", rootBody)
+	}
+
+	apiReady := httptest.NewRecorder()
+	handler.ServeHTTP(apiReady, httptest.NewRequest(http.MethodGet, "/api/v1/ready", nil))
+	assertStatus(t, apiReady, http.StatusOK)
+	var apiBody map[string]string
+	decodeResponse(t, apiReady, &apiBody)
+	if apiBody["app"] != "PasteBox" || apiBody["env"] != "production" || apiBody["status"] != "ready" {
+		t.Fatalf("unexpected api readiness body: %#v", apiBody)
+	}
+}
+
 func TestPlanCatalogEndpoint(t *testing.T) {
 	handler := New(config.FromEnv(), slog.New(slog.NewTextHandler(testWriter{t: t}, nil)))
 

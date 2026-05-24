@@ -135,3 +135,95 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - `internal/config`: env parsing stays isolated and tested.
 - `internal/plans`: PRD membership limits live in a domain package, not in the
   handler or frontend only.
+
+## Scenario: Production Deployment Lifecycle Baseline
+
+### 1. Scope / Trigger
+
+- Trigger: Any backend or deployment change that affects production process
+  startup, readiness checks, migration commands, worker supervision, pinned
+  image rollout, or production preflight.
+
+### 2. Signatures
+
+- API command: `pastebox` or `pastebox api`
+- Worker command: `pastebox worker`
+- Migration commands: `pastebox migrate status` and `pastebox migrate up`
+- Preflight command: `pastebox preflight production`
+- Liveness endpoint: `GET /healthz`
+- Readiness endpoint: `GET /readyz`
+- API liveness endpoint: `GET /api/v1/health`
+- API readiness endpoint: `GET /api/v1/ready`
+- Production Compose file: `compose.production.yaml`
+- Production env template: `deploy/production.env.example`
+
+### 3. Contracts
+
+- `pastebox api` and bare `pastebox` start the HTTP server.
+- `pastebox worker` is a supervised long-running process. Until durable queues
+  are implemented, it may idle, but it must not pretend to process production
+  jobs.
+- `pastebox migrate status` reports that migrations are not configured until
+  Phase 1 adds real migration files and a runner.
+- `pastebox migrate up` must fail until real migrations exist. Do not turn it
+  into a success stub.
+- `pastebox preflight production` must require explicit production env vars,
+  reject `CHANGE_ME` placeholder values, require `PASTEBOX_PUBLIC_URL` to use
+  `https://`, and reject `PASTEBOX_IMAGE=:latest`.
+- `GET /readyz` returns `{"status":"ready"}` once the process is ready for
+  traffic.
+- `GET /api/v1/ready` returns `app`, `env`, and `status`.
+- Production deployment uses `compose.production.yaml`, a non-committed
+  `deploy/production.env`, and a pinned `PASTEBOX_IMAGE` tag or digest.
+- The committed env template may contain placeholders; the real production env
+  file must not be committed.
+
+### 4. Validation & Error Matrix
+
+- Missing required production env -> preflight exits 1 and lists missing keys.
+- Placeholder `CHANGE_ME` remains -> preflight exits 1 and lists affected keys.
+- `PASTEBOX_PUBLIC_URL` uses HTTP -> preflight exits 1.
+- `PASTEBOX_IMAGE` is missing or `:latest` -> preflight exits 1.
+- `pastebox migrate up` before Phase 1 migrations -> exits 1 with an explicit
+  not-implemented message.
+- Unknown lifecycle subcommand -> exits 2 and prints usage.
+
+### 5. Good/Base/Bad Cases
+
+- Good: Adding a new production dependency updates `deploy/production.env.example`,
+  `pastebox preflight production`, Compose wiring, runbooks, and tests together.
+- Base: Readiness endpoints stay simple while the app still uses in-memory
+  adapters; later phases can expand readiness to check PostgreSQL, Redis,
+  object storage, mail, and worker health.
+- Bad: Reporting migration success before a real schema runner exists or using
+  `latest` in the production runbook.
+
+### 6. Tests Required
+
+- Command tests for migration guardrails, production preflight success, missing
+  env, placeholder rejection, HTTPS enforcement, and image pinning.
+- Handler tests for `/readyz` and `/api/v1/ready` response shape.
+- `docker compose --env-file deploy/production.env.example -f
+  compose.production.yaml config` must render successfully with
+  `PASTEBOX_ENV_FILE=./deploy/production.env.example`.
+- Run full `make test` after changing production lifecycle commands or HTTP
+  readiness endpoints.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```sh
+PASTEBOX_IMAGE=ghcr.io/cvinit/pastebox:latest
+pastebox migrate up
+# exits 0 even though no migrations exist
+```
+
+#### Correct
+
+```sh
+PASTEBOX_IMAGE=ghcr.io/cvinit/pastebox:sha-abc123
+pastebox preflight production
+pastebox migrate up
+# exits 1 until Phase 1 provides real migrations
+```

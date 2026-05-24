@@ -13,6 +13,12 @@
 - 开发认证流程会在 JSON 响应中返回邮箱验证、magic link 和密码重置 token，便于演示，但不应暴露给真实公网用户。
 - Billing webhook 是本地桩流程，不包含真实支付平台签名验证。
 
+如果要执行已确认的生产上线 Phase 0A 基线，请使用
+`docs/production-deployment-runbook.md` 和 `compose.production.yaml`，不要使用本
+文的单容器演示部署文件。生产基线包含 API/worker、PostgreSQL、Redis、HTTPS
+反向代理、production preflight、readiness 检查、备份任务和回滚 gate；但在
+后续 roadmap 阶段完成前，仍不能承载真实公网用户或付费业务。
+
 ## 镜像构建与发布
 
 仓库包含 `.github/workflows/docker-image.yml`。当代码推送到 `main`、推送 `v*.*.*` 版本标签，或手动运行 `workflow_dispatch` 时，GitHub Actions 会构建多架构 Docker 镜像并推送到 GitHub Container Registry：
@@ -101,7 +107,9 @@ docker compose logs -f pastebox
 
 ```sh
 curl -fsS http://127.0.0.1:8080/healthz
+curl -fsS http://127.0.0.1:8080/readyz
 curl -fsS http://127.0.0.1:8080/api/v1/health
+curl -fsS http://127.0.0.1:8080/api/v1/ready
 ```
 
 预期返回：
@@ -114,6 +122,12 @@ curl -fsS http://127.0.0.1:8080/api/v1/health
 
 ```json
 {"app":"PasteBox","env":"production","status":"ok"}
+```
+
+以及：
+
+```json
+{"app":"PasteBox","env":"production","status":"ready"}
 ```
 
 浏览器打开：
