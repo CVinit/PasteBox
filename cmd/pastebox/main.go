@@ -9,9 +9,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -21,6 +23,7 @@ import (
 	"pastebox/internal/app"
 	"pastebox/internal/config"
 	"pastebox/internal/httpserver"
+	"pastebox/internal/mailer"
 	"pastebox/internal/objectstore"
 	"pastebox/internal/postgres"
 	"pastebox/internal/worker"
@@ -267,6 +270,13 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		"PASTEBOX_GOOGLE_OAUTH_CLIENT_ID",
 		"PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET",
 		"PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL",
+		"PASTEBOX_MAILER_PROVIDER",
+		"PASTEBOX_SMTP_HOST",
+		"PASTEBOX_SMTP_PORT",
+		"PASTEBOX_SMTP_USERNAME",
+		"PASTEBOX_SMTP_PASSWORD",
+		"PASTEBOX_SMTP_FROM_EMAIL",
+		"PASTEBOX_SMTP_TLS_MODE",
 		"PASTEBOX_BOOTSTRAP_ADMIN_EMAIL",
 		"PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD",
 		"PASTEBOX_RESTIC_REPOSITORY",
@@ -300,6 +310,10 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	if err := validateGoogleOAuthRedirectURL(cfg.GoogleOAuth.RedirectURL, cfg.PublicURL); err != nil {
+		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
+		return 1
+	}
+	if err := validateSMTPConfig(cfg); err != nil {
 		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
 		return 1
 	}
@@ -359,6 +373,40 @@ func validateGoogleOAuthRedirectURL(raw string, publicRaw string) error {
 		return fmt.Errorf("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL host must match PASTEBOX_PUBLIC_URL host, got %q", redirectURL.Hostname())
 	}
 	return nil
+}
+
+func validateSMTPConfig(cfg config.Config) error {
+	if strings.ToLower(strings.TrimSpace(cfg.MailerProvider)) != "smtp" {
+		return fmt.Errorf("PASTEBOX_MAILER_PROVIDER must be smtp in production, got %q", cfg.MailerProvider)
+	}
+	if strings.TrimSpace(cfg.SMTP.Host) == "" {
+		return fmt.Errorf("PASTEBOX_SMTP_HOST is required")
+	}
+	if isLocalHost(cfg.SMTP.Host) {
+		return fmt.Errorf("PASTEBOX_SMTP_HOST must point to the production SMTP service, got local host %q", cfg.SMTP.Host)
+	}
+	rawPort := strings.TrimSpace(os.Getenv("PASTEBOX_SMTP_PORT"))
+	port, err := strconv.Atoi(rawPort)
+	if err != nil || port <= 0 || port > 65535 {
+		return fmt.Errorf("PASTEBOX_SMTP_PORT must be a valid TCP port, got %q", rawPort)
+	}
+	if cfg.SMTP.Port != port {
+		return fmt.Errorf("PASTEBOX_SMTP_PORT could not be parsed consistently, got %q", rawPort)
+	}
+	if strings.TrimSpace(cfg.SMTP.Username) == "" || strings.TrimSpace(cfg.SMTP.Password) == "" {
+		return fmt.Errorf("PASTEBOX_SMTP_USERNAME and PASTEBOX_SMTP_PASSWORD are required")
+	}
+	if _, err := mail.ParseAddress(cfg.SMTP.FromEmail); err != nil {
+		return fmt.Errorf("PASTEBOX_SMTP_FROM_EMAIL must be a valid email address: %w", err)
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.SMTP.TLSMode)) {
+	case "starttls", "tls":
+		return nil
+	case "none":
+		return fmt.Errorf("PASTEBOX_SMTP_TLS_MODE must be starttls or tls in production, got %q", cfg.SMTP.TLSMode)
+	default:
+		return fmt.Errorf("PASTEBOX_SMTP_TLS_MODE must be starttls or tls, got %q", cfg.SMTP.TLSMode)
+	}
 }
 
 func validateRemoteHTTPSEndpoint(raw string, envKey string) error {
@@ -424,7 +472,13 @@ func runWorker(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	defer pool.Close()
 
-	runner := worker.NewRunner(postgres.NewJobStore(pool), service, worker.Config{
+	mailSender, err := mailer.NewSender(cfg, logger)
+	if err != nil {
+		logger.Error("worker mailer setup failed", "error", err)
+		return 1
+	}
+
+	runner := worker.NewRunnerWithMail(postgres.NewJobStore(pool), postgres.NewMailStore(pool), mailSender, service, worker.Config{
 		BatchSize:    *batchSize,
 		PollInterval: *pollInterval,
 		Logger:       logger,
@@ -436,7 +490,7 @@ func runWorker(args []string, stdout io.Writer, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "worker run once failed: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "worker processed seen=%d completed=%d retried=%d failed=%d\n", summary.Seen, summary.Completed, summary.Retried, summary.Failed)
+		fmt.Fprintf(stdout, "worker processed seen=%d completed=%d retried=%d failed=%d mailSeen=%d mailSent=%d mailRetried=%d mailFailed=%d\n", summary.Seen, summary.Completed, summary.Retried, summary.Failed, summary.MailSeen, summary.MailSent, summary.MailRetried, summary.MailFailed)
 		return 0
 	}
 

@@ -94,6 +94,13 @@ func TestProductionPreflightRequiresExplicitProductionEnvironment(t *testing.T) 
 		"PASTEBOX_GOOGLE_OAUTH_CLIENT_ID",
 		"PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET",
 		"PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL",
+		"PASTEBOX_MAILER_PROVIDER",
+		"PASTEBOX_SMTP_HOST",
+		"PASTEBOX_SMTP_PORT",
+		"PASTEBOX_SMTP_USERNAME",
+		"PASTEBOX_SMTP_PASSWORD",
+		"PASTEBOX_SMTP_FROM_EMAIL",
+		"PASTEBOX_SMTP_TLS_MODE",
 		"PASTEBOX_BOOTSTRAP_ADMIN_EMAIL",
 		"PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD",
 		"PASTEBOX_RESTIC_REPOSITORY",
@@ -244,6 +251,60 @@ func TestProductionPreflightRejectsGoogleOAuthRedirectHostMismatch(t *testing.T)
 	}
 }
 
+func TestProductionPreflightRequiresSMTPProvider(t *testing.T) {
+	setValidProductionEnv(t)
+	t.Setenv("PASTEBOX_MAILER_PROVIDER", "log")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"preflight", "production"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("expected non-SMTP provider to fail, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "PASTEBOX_MAILER_PROVIDER must be smtp") {
+		t.Fatalf("expected SMTP provider validation error, got %q", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+}
+
+func TestProductionPreflightRejectsLocalSMTPHost(t *testing.T) {
+	setValidProductionEnv(t)
+	t.Setenv("PASTEBOX_SMTP_HOST", "localhost")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"preflight", "production"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("expected local SMTP host to fail, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "PASTEBOX_SMTP_HOST must point to the production SMTP service") {
+		t.Fatalf("expected SMTP host validation error, got %q", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+}
+
+func TestProductionPreflightRejectsPlainSMTP(t *testing.T) {
+	setValidProductionEnv(t)
+	t.Setenv("PASTEBOX_SMTP_TLS_MODE", "none")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"preflight", "production"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("expected plain SMTP to fail, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "PASTEBOX_SMTP_TLS_MODE must be starttls or tls") {
+		t.Fatalf("expected SMTP TLS validation error, got %q", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+}
+
 func TestProductionPreflightRejectsLocalObjectStorageEndpoint(t *testing.T) {
 	setValidProductionEnv(t)
 	t.Setenv("PASTEBOX_S3_ENDPOINT", "http://localhost:9000")
@@ -298,6 +359,13 @@ func setValidProductionEnv(t *testing.T) {
 	t.Setenv("PASTEBOX_GOOGLE_OAUTH_CLIENT_ID", "google-client-id")
 	t.Setenv("PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET", "google-client-secret")
 	t.Setenv("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL", "https://pastebox.example.com/api/v1/auth/google/callback")
+	t.Setenv("PASTEBOX_MAILER_PROVIDER", "smtp")
+	t.Setenv("PASTEBOX_SMTP_HOST", "smtp.example.com")
+	t.Setenv("PASTEBOX_SMTP_PORT", "587")
+	t.Setenv("PASTEBOX_SMTP_USERNAME", "smtp-user")
+	t.Setenv("PASTEBOX_SMTP_PASSWORD", "smtp-secret")
+	t.Setenv("PASTEBOX_SMTP_FROM_EMAIL", "noreply@pastebox.example.com")
+	t.Setenv("PASTEBOX_SMTP_TLS_MODE", "starttls")
 	t.Setenv("PASTEBOX_BOOTSTRAP_ADMIN_EMAIL", "admin@example.com")
 	t.Setenv("PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD", "change-me")
 	t.Setenv("PASTEBOX_RESTIC_REPOSITORY", "s3:https://objects.example.com/pastebox-backups")

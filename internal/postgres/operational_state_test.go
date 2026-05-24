@@ -233,9 +233,20 @@ func TestOperationalStateStoresRoundTripBillingSupportJobsAndMail(t *testing.T) 
 	if len(queuedMail) != 1 || queuedMail[0].ID != mailID {
 		t.Fatalf("expected queued mail, got %#v", queuedMail)
 	}
+	if !queuedMail[0].RunAfter.Equal(now) {
+		t.Fatalf("expected queued mail to be runnable at creation time, got %#v", queuedMail[0])
+	}
+	runnableMail, err := mailStore.ListRunnableMail(ctx, 10, now)
+	if err != nil {
+		t.Fatalf("list runnable mail: %v", err)
+	}
+	if len(runnableMail) != 1 || runnableMail[0].ID != mailID {
+		t.Fatalf("expected runnable mail, got %#v", runnableMail)
+	}
 	sentAt := now.Add(2 * time.Minute)
 	mail.Status = "sent"
 	mail.Attempts = 1
+	mail.RunAfter = sentAt
 	mail.SentAt = &sentAt
 	if err := mailStore.UpdateMail(ctx, mail); err != nil {
 		t.Fatalf("update mail: %v", err)
@@ -244,7 +255,7 @@ func TestOperationalStateStoresRoundTripBillingSupportJobsAndMail(t *testing.T) 
 	if err != nil {
 		t.Fatalf("read sent mail: %v", err)
 	}
-	if sentMail.Status != "sent" || sentMail.SentAt == nil || !sentMail.SentAt.Equal(sentAt) {
+	if sentMail.Status != "sent" || sentMail.SentAt == nil || !sentMail.SentAt.Equal(sentAt) || !sentMail.RunAfter.Equal(sentAt) {
 		t.Fatalf("unexpected sent mail: %#v", sentMail)
 	}
 	if _, err := mailStore.MailByID(ctx, "mail_operational_state_missing"); !errors.Is(err, ErrMailNotFound) {

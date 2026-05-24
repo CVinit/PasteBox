@@ -43,6 +43,7 @@ type MailRecord struct {
 	Status    string
 	Attempts  int
 	LastError string
+	RunAfter  time.Time
 	CreatedAt time.Time
 	SentAt    *time.Time
 }
@@ -499,10 +500,11 @@ func NewMailStore(pool *pgxpool.Pool) *MailStore {
 }
 
 func (s *MailStore) CreateMail(ctx context.Context, mail MailRecord) error {
+	mail = mailRecordWithDefaults(mail)
 	if _, err := s.pool.Exec(ctx, `
-INSERT INTO mails (id, recipient, subject, body, status, attempts, last_error, created_at, sent_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-`, mail.ID, mail.To, mail.Subject, mail.Body, mail.Status, mail.Attempts, mail.LastError, mail.CreatedAt, mail.SentAt); err != nil {
+INSERT INTO mails (id, recipient, subject, body, status, attempts, last_error, run_after, created_at, sent_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+`, mail.ID, mail.To, mail.Subject, mail.Body, mail.Status, mail.Attempts, mail.LastError, mail.RunAfter, mail.CreatedAt, mail.SentAt); err != nil {
 		return fmt.Errorf("create mail: %w", err)
 	}
 	return nil
@@ -521,7 +523,7 @@ func (s *MailStore) QueueMail(ctx context.Context, mail app.Mail) error {
 
 func (s *MailStore) MailByID(ctx context.Context, id string) (MailRecord, error) {
 	mail, err := scanMail(s.pool.QueryRow(ctx, `
-SELECT id, recipient, subject, body, status, attempts, last_error, created_at, sent_at
+SELECT id, recipient, subject, body, status, attempts, last_error, run_after, created_at, sent_at
 FROM mails
 WHERE id = $1
 `, id))
@@ -539,7 +541,7 @@ func (s *MailStore) ListQueuedMail(ctx context.Context, limit int) ([]MailRecord
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `
-SELECT id, recipient, subject, body, status, attempts, last_error, created_at, sent_at
+SELECT id, recipient, subject, body, status, attempts, last_error, run_after, created_at, sent_at
 FROM mails
 WHERE status = 'queued'
 ORDER BY created_at ASC, id ASC
@@ -563,6 +565,35 @@ LIMIT $1
 	return mails, nil
 }
 
+func (s *MailStore) ListRunnableMail(ctx context.Context, limit int, now time.Time) ([]MailRecord, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+SELECT id, recipient, subject, body, status, attempts, last_error, run_after, created_at, sent_at
+FROM mails
+WHERE status = 'queued' AND run_after <= $2
+ORDER BY run_after ASC, created_at ASC, id ASC
+LIMIT $1
+`, limit, now)
+	if err != nil {
+		return nil, fmt.Errorf("query runnable mail: %w", err)
+	}
+	defer rows.Close()
+	mails := []MailRecord{}
+	for rows.Next() {
+		mail, err := scanMail(rows)
+		if err != nil {
+			return nil, err
+		}
+		mails = append(mails, mail)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read runnable mail: %w", err)
+	}
+	return mails, nil
+}
+
 func (s *MailStore) QueuedMails(ctx context.Context, limit int) ([]app.Mail, error) {
 	records, err := s.ListQueuedMail(ctx, limit)
 	if err != nil {
@@ -576,15 +607,17 @@ func (s *MailStore) QueuedMails(ctx context.Context, limit int) ([]app.Mail, err
 }
 
 func (s *MailStore) UpdateMail(ctx context.Context, mail MailRecord) error {
+	mail = mailRecordWithDefaults(mail)
 	tag, err := s.pool.Exec(ctx, `
 UPDATE mails
 SET
 	status = $2,
 	attempts = $3,
 	last_error = $4,
-	sent_at = $5
+	run_after = $5,
+	sent_at = $6
 WHERE id = $1
-`, mail.ID, mail.Status, mail.Attempts, mail.LastError, mail.SentAt)
+`, mail.ID, mail.Status, mail.Attempts, mail.LastError, mail.RunAfter, mail.SentAt)
 	if err != nil {
 		return fmt.Errorf("update mail: %w", err)
 	}
@@ -685,11 +718,24 @@ func scanJob(row rowScanner) (JobRecord, error) {
 func scanMail(row rowScanner) (MailRecord, error) {
 	var mail MailRecord
 	var sentAt pgtype.Timestamptz
-	if err := row.Scan(&mail.ID, &mail.To, &mail.Subject, &mail.Body, &mail.Status, &mail.Attempts, &mail.LastError, &mail.CreatedAt, &sentAt); err != nil {
+	if err := row.Scan(&mail.ID, &mail.To, &mail.Subject, &mail.Body, &mail.Status, &mail.Attempts, &mail.LastError, &mail.RunAfter, &mail.CreatedAt, &sentAt); err != nil {
 		return MailRecord{}, fmt.Errorf("scan mail: %w", err)
 	}
 	mail.SentAt = optionalTime(sentAt)
 	return mail, nil
+}
+
+func mailRecordWithDefaults(mail MailRecord) MailRecord {
+	if mail.Status == "" {
+		mail.Status = "queued"
+	}
+	if mail.CreatedAt.IsZero() {
+		mail.CreatedAt = time.Now().UTC()
+	}
+	if mail.RunAfter.IsZero() {
+		mail.RunAfter = mail.CreatedAt
+	}
+	return mail
 }
 
 func nullableString(value string) *string {

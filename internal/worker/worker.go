@@ -19,6 +19,15 @@ type JobStore interface {
 	UpdateJob(ctx context.Context, job postgres.JobRecord) error
 }
 
+type MailStore interface {
+	ListRunnableMail(ctx context.Context, limit int, now time.Time) ([]postgres.MailRecord, error)
+	UpdateMail(ctx context.Context, mail postgres.MailRecord) error
+}
+
+type MailSender interface {
+	Send(ctx context.Context, to string, subject string, body string) error
+}
+
 type Config struct {
 	BatchSize    int
 	MaxAttempts  int
@@ -28,19 +37,29 @@ type Config struct {
 }
 
 type Summary struct {
-	Seen      int
-	Completed int
-	Retried   int
-	Failed    int
+	Seen        int
+	Completed   int
+	Retried     int
+	Failed      int
+	MailSeen    int
+	MailSent    int
+	MailRetried int
+	MailFailed  int
 }
 
 type Runner struct {
-	jobs    JobStore
-	service CleanupService
-	cfg     Config
+	jobs       JobStore
+	mails      MailStore
+	mailSender MailSender
+	service    CleanupService
+	cfg        Config
 }
 
 func NewRunner(jobs JobStore, service CleanupService, cfg Config) *Runner {
+	return NewRunnerWithMail(jobs, nil, nil, service, cfg)
+}
+
+func NewRunnerWithMail(jobs JobStore, mails MailStore, mailSender MailSender, service CleanupService, cfg Config) *Runner {
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = 25
 	}
@@ -56,7 +75,7 @@ func NewRunner(jobs JobStore, service CleanupService, cfg Config) *Runner {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	return &Runner{jobs: jobs, service: service, cfg: cfg}
+	return &Runner{jobs: jobs, mails: mails, mailSender: mailSender, service: service, cfg: cfg}
 }
 
 func (r *Runner) Run(ctx context.Context) error {
@@ -65,8 +84,18 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if summary.Seen > 0 {
-			r.cfg.Logger.Info("worker batch processed", "seen", summary.Seen, "completed", summary.Completed, "retried", summary.Retried, "failed", summary.Failed)
+		if summary.Seen > 0 || summary.MailSeen > 0 {
+			r.cfg.Logger.Info(
+				"worker batch processed",
+				"seen", summary.Seen,
+				"completed", summary.Completed,
+				"retried", summary.Retried,
+				"failed", summary.Failed,
+				"mailSeen", summary.MailSeen,
+				"mailSent", summary.MailSent,
+				"mailRetried", summary.MailRetried,
+				"mailFailed", summary.MailFailed,
+			)
 		}
 
 		timer := time.NewTimer(r.cfg.PollInterval)
@@ -103,6 +132,31 @@ func (r *Runner) RunOnce(ctx context.Context) (Summary, error) {
 			return summary, err
 		}
 		summary.Completed++
+	}
+	if r.mails == nil || r.mailSender == nil {
+		return summary, nil
+	}
+	mails, err := r.mails.ListRunnableMail(ctx, r.cfg.BatchSize, now)
+	if err != nil {
+		return summary, fmt.Errorf("list runnable mail: %w", err)
+	}
+	summary.MailSeen = len(mails)
+	for _, mail := range mails {
+		if err := r.mailSender.Send(ctx, mail.To, mail.Subject, mail.Body); err != nil {
+			if updateErr := r.markMailFailedOrRetry(ctx, mail, err); updateErr != nil {
+				return summary, updateErr
+			}
+			if mail.Attempts+1 >= r.cfg.MaxAttempts {
+				summary.MailFailed++
+			} else {
+				summary.MailRetried++
+			}
+			continue
+		}
+		if err := r.markMailSent(ctx, mail); err != nil {
+			return summary, err
+		}
+		summary.MailSent++
 	}
 	return summary, nil
 }
@@ -147,6 +201,37 @@ func (r *Runner) markJobFailedOrRetry(ctx context.Context, job postgres.JobRecor
 	}
 	if err := r.jobs.UpdateJob(ctx, job); err != nil {
 		return fmt.Errorf("mark job failed %s: %w", job.ID, err)
+	}
+	return nil
+}
+
+func (r *Runner) markMailSent(ctx context.Context, mail postgres.MailRecord) error {
+	now := r.cfg.Now().UTC()
+	mail.Status = "sent"
+	mail.Attempts++
+	mail.LastError = ""
+	mail.RunAfter = now
+	mail.SentAt = &now
+	if err := r.mails.UpdateMail(ctx, mail); err != nil {
+		return fmt.Errorf("mark mail sent %s: %w", mail.ID, err)
+	}
+	return nil
+}
+
+func (r *Runner) markMailFailedOrRetry(ctx context.Context, mail postgres.MailRecord, cause error) error {
+	now := r.cfg.Now().UTC()
+	mail.Attempts++
+	mail.LastError = errorString(cause)
+	mail.SentAt = nil
+	if mail.Attempts >= r.cfg.MaxAttempts || errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
+		mail.Status = "failed"
+		mail.RunAfter = now
+	} else {
+		mail.Status = "queued"
+		mail.RunAfter = now.Add(retryBackoff(mail.Attempts))
+	}
+	if err := r.mails.UpdateMail(ctx, mail); err != nil {
+		return fmt.Errorf("mark mail failed %s: %w", mail.ID, err)
 	}
 	return nil
 }

@@ -21,6 +21,7 @@ type Config struct {
 	GoogleOAuth GoogleOAuthConfig
 
 	MailerProvider string
+	SMTP           SMTPConfig
 	DevAuthTokens  bool
 	StripeEnabled  bool
 	EpusdtEnabled  bool
@@ -42,6 +43,16 @@ type GoogleOAuthConfig struct {
 	ClientID     string
 	ClientSecret string
 	RedirectURL  string
+}
+
+type SMTPConfig struct {
+	Host      string
+	Port      int
+	Username  string
+	Password  string
+	FromEmail string
+	FromName  string
+	TLSMode   string
 }
 
 func FromEnv() Config {
@@ -71,9 +82,18 @@ func FromEnv() Config {
 		},
 
 		MailerProvider: envString("PASTEBOX_MAILER_PROVIDER", "log"),
-		DevAuthTokens:  envBool("PASTEBOX_DEV_AUTH_TOKENS", false),
-		StripeEnabled:  envBool("PASTEBOX_STRIPE_ENABLED", false),
-		EpusdtEnabled:  envBool("PASTEBOX_EPUSDT_ENABLED", false),
+		SMTP: SMTPConfig{
+			Host:      envString("PASTEBOX_SMTP_HOST", "localhost"),
+			Port:      envInt("PASTEBOX_SMTP_PORT", 1025),
+			Username:  envString("PASTEBOX_SMTP_USERNAME", ""),
+			Password:  envString("PASTEBOX_SMTP_PASSWORD", ""),
+			FromEmail: envString("PASTEBOX_SMTP_FROM_EMAIL", "noreply@localhost"),
+			FromName:  envString("PASTEBOX_SMTP_FROM_NAME", "PasteBox"),
+			TLSMode:   envString("PASTEBOX_SMTP_TLS_MODE", "starttls"),
+		},
+		DevAuthTokens: envBool("PASTEBOX_DEV_AUTH_TOKENS", false),
+		StripeEnabled: envBool("PASTEBOX_STRIPE_ENABLED", false),
+		EpusdtEnabled: envBool("PASTEBOX_EPUSDT_ENABLED", false),
 
 		BootstrapAdminEmail:    envString("PASTEBOX_BOOTSTRAP_ADMIN_EMAIL", ""),
 		BootstrapAdminPassword: envString("PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD", ""),
@@ -99,6 +119,19 @@ func envBool(key string, fallback bool) bool {
 	}
 
 	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func envInt(key string, fallback int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+
+	parsed, err := strconv.Atoi(value)
 	if err != nil {
 		return fallback
 	}

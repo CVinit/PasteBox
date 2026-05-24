@@ -611,7 +611,7 @@ content, err := objectStore.Get(ctx, attachment.ObjectKey)
   `DeleteQueueItemsByKindTarget`
 - Mail constructor: `postgres.NewMailStore(pool *pgxpool.Pool)`
 - Mail create/read/list/update: `CreateMail`, `MailByID`, `ListQueuedMail`,
-  `UpdateMail`
+  `ListRunnableMail`, `UpdateMail`
 - Mail runtime queue compatibility: `QueueMail`, `QueuedMails`
 - Errors: `ErrOrderNotFound`, `ErrWebhookEventNotFound`,
   `ErrWebhookEventExists`, `ErrReportNotFound`, `ErrJobNotFound`,
@@ -642,7 +642,9 @@ content, err := objectStore.Get(ctx, attachment.ObjectKey)
   retryable `pending`, or terminal `failed` status back to the same `jobs`
   table.
 - Mails are the durable retry boundary for SMTP delivery. `ListQueuedMail`
-  returns only `status = 'queued'` rows in oldest-first order.
+  returns only `status = 'queued'` rows in oldest-first order. Worker delivery
+  uses `ListRunnableMail`, which returns queued rows with `run_after <= now`
+  ordered by `run_after`, `created_at`, and `id`.
 - Runtime billing, support, worker, queue, and mail code must not treat
   in-memory maps or slices as production source of truth once these repositories
   are wired.

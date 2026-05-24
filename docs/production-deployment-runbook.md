@@ -72,16 +72,22 @@ docker compose --env-file deploy/production.env -f compose.production.yaml pull
 
 The production preflight fails if `PASTEBOX_IMAGE` is mutable, if
 `PASTEBOX_PUBLIC_URL` is not HTTPS, if Google OAuth client settings are missing,
-if `PASTEBOX_S3_ENDPOINT` points to a local or HTTP object store, or if
-`PASTEBOX_RESTIC_REPOSITORY` is not an off-host `s3:https://` repository. Use
-managed S3-compatible storage for attachment objects and a separate off-host
-S3-compatible restic repository for backups.
+if SMTP is not configured for TLS delivery, if `PASTEBOX_S3_ENDPOINT` points to
+a local or HTTP object store, or if `PASTEBOX_RESTIC_REPOSITORY` is not an
+off-host `s3:https://` repository. Use managed S3-compatible storage for
+attachment objects and a separate off-host S3-compatible restic repository for
+backups.
 
 The Google OAuth app must include this authorized redirect URI:
 
 ```text
 https://pastebox.example.com/api/v1/auth/google/callback
 ```
+
+SMTP must use the confirmed enterprise mail service with
+`PASTEBOX_MAILER_PROVIDER=smtp`, a production host, valid credentials, a
+production sender address, and either `PASTEBOX_SMTP_TLS_MODE=starttls` or
+`PASTEBOX_SMTP_TLS_MODE=tls`. Plain SMTP is rejected in production preflight.
 
 To validate the committed template without creating a real secret file:
 

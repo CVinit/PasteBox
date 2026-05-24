@@ -95,6 +95,95 @@ func TestRunnerMarksUnsupportedJobFailedAfterMaxAttempts(t *testing.T) {
 	}
 }
 
+func TestRunnerSendsRunnableMail(t *testing.T) {
+	now := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
+	mails := &fakeMailStore{runnable: []postgres.MailRecord{{
+		ID:        "mail_verify",
+		To:        "user@example.com",
+		Subject:   "Verify",
+		Body:      "Token",
+		Status:    "queued",
+		RunAfter:  now.Add(-time.Minute),
+		CreatedAt: now.Add(-time.Minute),
+	}}}
+	sender := &fakeMailSender{}
+
+	runner := NewRunnerWithMail(&fakeJobStore{}, mails, sender, &fakeCleanupService{}, Config{Now: func() time.Time { return now }, Logger: slog.Default()})
+	summary, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if summary.MailSeen != 1 || summary.MailSent != 1 || summary.MailRetried != 0 || summary.MailFailed != 0 {
+		t.Fatalf("unexpected summary: %#v", summary)
+	}
+	if len(sender.sent) != 1 || sender.sent[0].to != "user@example.com" || sender.sent[0].subject != "Verify" {
+		t.Fatalf("expected mail delivery, got %#v", sender.sent)
+	}
+	updated := mails.updated[0]
+	if updated.Status != "sent" || updated.Attempts != 1 || updated.LastError != "" || updated.SentAt == nil || !updated.SentAt.Equal(now) {
+		t.Fatalf("expected sent mail update, got %#v", updated)
+	}
+}
+
+func TestRunnerRetriesFailedMailWithBackoff(t *testing.T) {
+	now := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
+	mails := &fakeMailStore{runnable: []postgres.MailRecord{{
+		ID:        "mail_retry",
+		To:        "user@example.com",
+		Subject:   "Verify",
+		Body:      "Token",
+		Status:    "queued",
+		Attempts:  1,
+		RunAfter:  now.Add(-time.Minute),
+		CreatedAt: now.Add(-time.Minute),
+	}}}
+	sender := &fakeMailSender{err: errors.New("smtp unavailable")}
+
+	runner := NewRunnerWithMail(&fakeJobStore{}, mails, sender, &fakeCleanupService{}, Config{Now: func() time.Time { return now }, Logger: slog.Default()})
+	summary, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if summary.MailSeen != 1 || summary.MailSent != 0 || summary.MailRetried != 1 || summary.MailFailed != 0 {
+		t.Fatalf("unexpected summary: %#v", summary)
+	}
+	updated := mails.updated[0]
+	if updated.Status != "queued" || updated.Attempts != 2 || updated.LastError != "smtp unavailable" {
+		t.Fatalf("expected retry mail update, got %#v", updated)
+	}
+	if !updated.RunAfter.Equal(now.Add(2 * time.Minute)) {
+		t.Fatalf("expected second-attempt mail backoff, got %s", updated.RunAfter)
+	}
+}
+
+func TestRunnerMarksMailFailedAfterMaxAttempts(t *testing.T) {
+	now := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
+	mails := &fakeMailStore{runnable: []postgres.MailRecord{{
+		ID:        "mail_failed",
+		To:        "user@example.com",
+		Subject:   "Verify",
+		Body:      "Token",
+		Status:    "queued",
+		Attempts:  4,
+		RunAfter:  now.Add(-time.Minute),
+		CreatedAt: now.Add(-time.Minute),
+	}}}
+	sender := &fakeMailSender{err: errors.New("smtp unavailable")}
+
+	runner := NewRunnerWithMail(&fakeJobStore{}, mails, sender, &fakeCleanupService{}, Config{Now: func() time.Time { return now }, MaxAttempts: 5, Logger: slog.Default()})
+	summary, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if summary.MailSeen != 1 || summary.MailSent != 0 || summary.MailRetried != 0 || summary.MailFailed != 1 {
+		t.Fatalf("unexpected summary: %#v", summary)
+	}
+	updated := mails.updated[0]
+	if updated.Status != "failed" || updated.Attempts != 5 || updated.LastError != "smtp unavailable" || !updated.RunAfter.Equal(now) {
+		t.Fatalf("expected failed mail update, got %#v", updated)
+	}
+}
+
 type fakeCleanupService struct {
 	cleanupCalls int
 	err          error
@@ -119,5 +208,38 @@ func (s *fakeJobStore) ListRunnableJobs(_ context.Context, _ int, _ time.Time) (
 
 func (s *fakeJobStore) UpdateJob(_ context.Context, job postgres.JobRecord) error {
 	s.updated = append(s.updated, job)
+	return nil
+}
+
+type fakeMailStore struct {
+	runnable []postgres.MailRecord
+	updated  []postgres.MailRecord
+}
+
+func (s *fakeMailStore) ListRunnableMail(_ context.Context, _ int, _ time.Time) ([]postgres.MailRecord, error) {
+	return append([]postgres.MailRecord(nil), s.runnable...), nil
+}
+
+func (s *fakeMailStore) UpdateMail(_ context.Context, mail postgres.MailRecord) error {
+	s.updated = append(s.updated, mail)
+	return nil
+}
+
+type fakeMailSender struct {
+	err  error
+	sent []sentMail
+}
+
+type sentMail struct {
+	to      string
+	subject string
+	body    string
+}
+
+func (s *fakeMailSender) Send(_ context.Context, to string, subject string, body string) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.sent = append(s.sent, sentMail{to: to, subject: subject, body: body})
 	return nil
 }

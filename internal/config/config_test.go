@@ -31,6 +31,14 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	t.Setenv("PASTEBOX_PUBLIC_URL", "https://pastebox.example.com")
 	t.Setenv("PASTEBOX_GOOGLE_OAUTH_CLIENT_ID", "google-client-id")
 	t.Setenv("PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET", "google-client-secret")
+	t.Setenv("PASTEBOX_MAILER_PROVIDER", "smtp")
+	t.Setenv("PASTEBOX_SMTP_HOST", "smtp.example.com")
+	t.Setenv("PASTEBOX_SMTP_PORT", "587")
+	t.Setenv("PASTEBOX_SMTP_USERNAME", "smtp-user")
+	t.Setenv("PASTEBOX_SMTP_PASSWORD", "smtp-secret")
+	t.Setenv("PASTEBOX_SMTP_FROM_EMAIL", "noreply@pastebox.example.com")
+	t.Setenv("PASTEBOX_SMTP_FROM_NAME", "PasteBox Mail")
+	t.Setenv("PASTEBOX_SMTP_TLS_MODE", "tls")
 
 	cfg := FromEnv()
 
@@ -51,5 +59,11 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	}
 	if cfg.GoogleOAuth.RedirectURL != "https://pastebox.example.com/api/v1/auth/google/callback" {
 		t.Fatalf("expected default Google OAuth redirect URL from public URL, got %q", cfg.GoogleOAuth.RedirectURL)
+	}
+	if cfg.MailerProvider != "smtp" || cfg.SMTP.Host != "smtp.example.com" || cfg.SMTP.Port != 587 {
+		t.Fatalf("expected SMTP settings from env, got provider=%q smtp=%#v", cfg.MailerProvider, cfg.SMTP)
+	}
+	if cfg.SMTP.Username != "smtp-user" || cfg.SMTP.Password != "smtp-secret" || cfg.SMTP.FromEmail != "noreply@pastebox.example.com" || cfg.SMTP.FromName != "PasteBox Mail" || cfg.SMTP.TLSMode != "tls" {
+		t.Fatalf("unexpected SMTP config: %#v", cfg.SMTP)
 	}
 }
