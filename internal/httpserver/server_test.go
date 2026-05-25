@@ -137,6 +137,7 @@ func TestMetricsEndpointExposesReadinessHTTPAndOperationalGauges(t *testing.T) {
 		`pastebox_http_requests_total{method="GET",path="/api/v1/health",status="200"} 1`,
 		`pastebox_operational_metrics_available 1`,
 		`pastebox_queue_depth{kind="scan",status="pending"} 0`,
+		`pastebox_mail_failed_depth 0`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("expected metrics body to contain %q, got:\n%s", expected, body)

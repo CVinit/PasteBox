@@ -2,8 +2,10 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -244,6 +246,20 @@ func TestOperationalStateStoresRoundTripBillingSupportJobsAndMail(t *testing.T) 
 	if _, ok := mailRecordByID(runnableMail, mailID); !ok {
 		t.Fatalf("expected runnable mail, got %#v", runnableMail)
 	}
+	queuedItems, err := mailStore.MailQueueItems(ctx, "queued", 10)
+	if err != nil {
+		t.Fatalf("list queued mail queue items: %v", err)
+	}
+	if len(queuedItems) != 1 || queuedItems[0].ID != mailID {
+		t.Fatalf("expected queued mail queue item without body content, got %#v", queuedItems)
+	}
+	queuedItemJSON, err := json.Marshal(queuedItems[0])
+	if err != nil {
+		t.Fatalf("marshal queued mail queue item: %v", err)
+	}
+	if strings.Contains(string(queuedItemJSON), "Token") || strings.Contains(string(queuedItemJSON), "body") {
+		t.Fatalf("mail queue item must not expose mail body content, got %s", queuedItemJSON)
+	}
 	sentAt := now.Add(2 * time.Minute)
 	mail.Status = "sent"
 	mail.Attempts = 1
@@ -258,6 +274,22 @@ func TestOperationalStateStoresRoundTripBillingSupportJobsAndMail(t *testing.T) 
 	}
 	if sentMail.Status != "sent" || sentMail.SentAt == nil || !sentMail.SentAt.Equal(sentAt) || !sentMail.RunAfter.Equal(sentAt) {
 		t.Fatalf("unexpected sent mail: %#v", sentMail)
+	}
+	failedAt := now.Add(3 * time.Minute)
+	mail.Status = "failed"
+	mail.Attempts = 5
+	mail.LastError = "smtp unavailable"
+	mail.RunAfter = failedAt
+	mail.SentAt = nil
+	if err := mailStore.UpdateMail(ctx, mail); err != nil {
+		t.Fatalf("mark mail failed: %v", err)
+	}
+	failedItems, err := mailStore.MailQueueItems(ctx, "failed", 10)
+	if err != nil {
+		t.Fatalf("list failed mail queue items: %v", err)
+	}
+	if len(failedItems) != 1 || failedItems[0].ID != mailID || failedItems[0].LastError != "smtp unavailable" || failedItems[0].Attempts != 5 {
+		t.Fatalf("expected failed mail queue item, got %#v", failedItems)
 	}
 	if _, err := mailStore.MailByID(ctx, "mail_operational_state_missing"); !errors.Is(err, ErrMailNotFound) {
 		t.Fatalf("expected missing mail error, got %v", err)

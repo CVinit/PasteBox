@@ -43,4 +43,5 @@ type QueueStore interface {
 type MailStore interface {
 	QueueMail(ctx context.Context, mail Mail) error
 	QueuedMails(ctx context.Context, limit int) ([]Mail, error)
+	MailQueueItems(ctx context.Context, status string, limit int) ([]MailQueueItem, error)
 }

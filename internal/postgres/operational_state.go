@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -565,6 +566,51 @@ LIMIT $1
 	return mails, nil
 }
 
+func (s *MailStore) MailQueueItems(ctx context.Context, status string, limit int) ([]app.MailQueueItem, error) {
+	records, err := s.listMailByStatus(ctx, status, limit)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]app.MailQueueItem, 0, len(records))
+	for _, record := range records {
+		items = append(items, mailQueueItemFromRecord(record))
+	}
+	return items, nil
+}
+
+func (s *MailStore) listMailByStatus(ctx context.Context, status string, limit int) ([]MailRecord, error) {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		status = "queued"
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+SELECT id, recipient, subject, body, status, attempts, last_error, run_after, created_at, sent_at
+FROM mails
+WHERE status = $2
+ORDER BY run_after ASC, created_at ASC, id ASC
+LIMIT $1
+`, limit, status)
+	if err != nil {
+		return nil, fmt.Errorf("query mail queue items: %w", err)
+	}
+	defer rows.Close()
+	mails := []MailRecord{}
+	for rows.Next() {
+		mail, err := scanMail(rows)
+		if err != nil {
+			return nil, err
+		}
+		mails = append(mails, mail)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read mail queue items: %w", err)
+	}
+	return mails, nil
+}
+
 func (s *MailStore) ListRunnableMail(ctx context.Context, limit int, now time.Time) ([]MailRecord, error) {
 	if limit <= 0 {
 		limit = 100
@@ -784,5 +830,19 @@ func mailFromRecord(record MailRecord) app.Mail {
 		Subject:   record.Subject,
 		Body:      record.Body,
 		CreatedAt: record.CreatedAt,
+	}
+}
+
+func mailQueueItemFromRecord(record MailRecord) app.MailQueueItem {
+	return app.MailQueueItem{
+		ID:        record.ID,
+		To:        record.To,
+		Subject:   record.Subject,
+		Status:    record.Status,
+		Attempts:  record.Attempts,
+		LastError: record.LastError,
+		RunAfter:  record.RunAfter,
+		CreatedAt: record.CreatedAt,
+		SentAt:    record.SentAt,
 	}
 }

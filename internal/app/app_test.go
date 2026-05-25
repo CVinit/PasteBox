@@ -788,6 +788,14 @@ func TestStoreBackedOperationalStateSurvivesServiceRestart(t *testing.T) {
 	if len(mails) == 0 {
 		t.Fatalf("expected auth and billing emails to be queued in operational store")
 	}
+	queuedMails, ok := queues["queuedMails"].([]MailQueueItem)
+	if !ok || len(queuedMails) == 0 {
+		t.Fatalf("expected queued mails in admin queue response, got %#v", queues["queuedMails"])
+	}
+	failedMails, ok := queues["failedMails"].([]MailQueueItem)
+	if !ok || len(failedMails) != 0 {
+		t.Fatalf("expected failed mails to default to an empty array, got %#v", queues["failedMails"])
+	}
 
 	if _, err := restarted.AdminRetryScan(admin.ID, attachment.ID); err != nil {
 		t.Fatalf("retry store-backed scan: %v", err)
@@ -2031,6 +2039,31 @@ func (s *memoryOperationalStores) QueuedMails(_ context.Context, limit int) ([]M
 	out := make([]Mail, 0, len(s.mails))
 	for _, mail := range s.mails {
 		out = append(out, mail)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (s *memoryOperationalStores) MailQueueItems(_ context.Context, status string, limit int) ([]MailQueueItem, error) {
+	status = strings.ToLower(strings.TrimSpace(status))
+	if status == "" {
+		status = "queued"
+	}
+	if status != "queued" {
+		return []MailQueueItem{}, nil
+	}
+	out := make([]MailQueueItem, 0, len(s.mails))
+	for _, mail := range s.mails {
+		out = append(out, MailQueueItem{
+			ID:        mail.ID,
+			To:        mail.To,
+			Subject:   mail.Subject,
+			Status:    "queued",
+			RunAfter:  mail.CreatedAt,
+			CreatedAt: mail.CreatedAt,
+		})
 		if limit > 0 && len(out) >= limit {
 			break
 		}

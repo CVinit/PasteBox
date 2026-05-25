@@ -171,7 +171,21 @@ export type AdminQueues = {
   scanJobs: QueueItem[];
   scanFailures: QueueItem[];
   failedJobs: QueueItem[];
+  queuedMails: MailQueueItem[];
+  failedMails: MailQueueItem[];
   reports: Report[];
+};
+
+export type MailQueueItem = {
+  id: string;
+  to: string;
+  subject: string;
+  status: string;
+  attempts: number;
+  lastError?: string;
+  runAfter: string;
+  createdAt: string;
+  sentAt?: string;
 };
 
 export type QueueItem = {

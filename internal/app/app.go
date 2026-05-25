@@ -465,6 +465,18 @@ type Mail struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+type MailQueueItem struct {
+	ID        string     `json:"id"`
+	To        string     `json:"to"`
+	Subject   string     `json:"subject"`
+	Status    string     `json:"status"`
+	Attempts  int        `json:"attempts"`
+	LastError string     `json:"lastError,omitempty"`
+	RunAfter  time.Time  `json:"runAfter"`
+	CreatedAt time.Time  `json:"createdAt"`
+	SentAt    *time.Time `json:"sentAt,omitempty"`
+}
+
 type OperationalMetrics struct {
 	UserCount          int
 	ActivePastes       int
@@ -475,6 +487,7 @@ type OperationalMetrics struct {
 	ScanFailureDepth   int
 	FailedJobDepth     int
 	MailQueueDepth     int
+	MailFailedDepth    int
 	WebhookEvents      int
 	OrdersByStatus     map[string]int
 }
@@ -2235,6 +2248,10 @@ func (s *Service) operationalMetricsLocked(ctx context.Context) (OperationalMetr
 	for _, order := range s.ordersByID {
 		ordersByStatus[order.Status]++
 	}
+	failedMails, err := s.mailQueueItemsLocked(ctx, "failed", 1000)
+	if err != nil {
+		return OperationalMetrics{}, err
+	}
 	return OperationalMetrics{
 		UserCount:          len(users),
 		ActivePastes:       activePastes,
@@ -2245,6 +2262,7 @@ func (s *Service) operationalMetricsLocked(ctx context.Context) (OperationalMetr
 		ScanFailureDepth:   len(s.scanFailures),
 		FailedJobDepth:     len(s.failedJobs),
 		MailQueueDepth:     len(s.mails),
+		MailFailedDepth:    len(failedMails),
 		WebhookEvents:      len(s.webhookEvents),
 		OrdersByStatus:     ordersByStatus,
 	}, nil
@@ -2622,7 +2640,16 @@ func (s *Service) AdminQueues(actorID string) (map[string]any, error) {
 	if err := s.requireAdminLocked(actorID); err != nil {
 		return nil, err
 	}
-	if err := s.refreshQueueCachesLocked(context.Background()); err != nil {
+	ctx := context.Background()
+	if err := s.refreshQueueCachesLocked(ctx); err != nil {
+		return nil, err
+	}
+	queuedMails, err := s.mailQueueItemsLocked(ctx, "queued", 100)
+	if err != nil {
+		return nil, err
+	}
+	failedMails, err := s.mailQueueItemsLocked(ctx, "failed", 100)
+	if err != nil {
 		return nil, err
 	}
 	cleanupFailures := s.cleanupFailures
@@ -2649,7 +2676,16 @@ func (s *Service) AdminQueues(actorID string) (map[string]any, error) {
 	if reports == nil {
 		reports = []*Report{}
 	}
-	return map[string]any{"cleanupJobs": cleanupJobs, "cleanupFailures": cleanupFailures, "scanJobs": scanJobs, "scanFailures": scanFailures, "failedJobs": failedJobs, "reports": reports}, nil
+	return map[string]any{
+		"cleanupJobs":     cleanupJobs,
+		"cleanupFailures": cleanupFailures,
+		"scanJobs":        scanJobs,
+		"scanFailures":    scanFailures,
+		"failedJobs":      failedJobs,
+		"queuedMails":     queuedMails,
+		"failedMails":     failedMails,
+		"reports":         reports,
+	}, nil
 }
 
 func (s *Service) RunCleanup(actorID string) (map[string]int, error) {
@@ -3389,6 +3425,37 @@ func (s *Service) refreshMailCacheLocked(ctx context.Context) error {
 		s.cacheMailLocked(mail)
 	}
 	return nil
+}
+
+func (s *Service) mailQueueItemsLocked(ctx context.Context, status string, limit int) ([]MailQueueItem, error) {
+	status = strings.ToLower(strings.TrimSpace(status))
+	if status == "" {
+		status = "queued"
+	}
+	if s.ops.Mails != nil {
+		return s.ops.Mails.MailQueueItems(ctx, status, limit)
+	}
+	if status != "queued" {
+		return []MailQueueItem{}, nil
+	}
+	items := make([]MailQueueItem, 0, len(s.mails))
+	for _, mail := range s.mails {
+		if mail == nil {
+			continue
+		}
+		items = append(items, MailQueueItem{
+			ID:        mail.ID,
+			To:        mail.To,
+			Subject:   mail.Subject,
+			Status:    "queued",
+			RunAfter:  mail.CreatedAt,
+			CreatedAt: mail.CreatedAt,
+		})
+		if limit > 0 && len(items) >= limit {
+			break
+		}
+	}
+	return items, nil
 }
 
 func (s *Service) createMailLocked(mail *Mail) error {

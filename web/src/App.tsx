@@ -2414,6 +2414,25 @@ function App() {
                   <strong>Failed jobs</strong>
                   <span>{adminData.queues?.failedJobs.length ?? 0}</span>
                 </article>
+                <article className="list-card">
+                  <strong>Queued mails</strong>
+                  <span>{adminData.queues?.queuedMails.length ?? 0}</span>
+                </article>
+                <article className="list-card">
+                  <strong>Failed mails</strong>
+                  <span>{adminData.queues?.failedMails.length ?? 0}</span>
+                </article>
+                {(adminData.queues?.failedMails ?? []).slice(0, 5).map((mail) => (
+                  <article className="list-card" key={mail.id}>
+                    <div>
+                      <strong>{mail.subject}</strong>
+                      <span>
+                        {mail.to} · {mail.status} · {mail.attempts} attempts
+                      </span>
+                      {mail.lastError ? <span>{mail.lastError}</span> : null}
+                    </div>
+                  </article>
+                ))}
                 {(adminData.queues?.reports ?? []).slice(0, 5).map((report) => (
                   <article className="list-card" key={report.id}>
                     <div>
