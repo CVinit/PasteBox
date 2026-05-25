@@ -111,6 +111,16 @@ groups:
           description: Queued outbound mail has remained non-empty for 15 minutes.
           runbook: docs/production-deployment-runbook.md#metrics-and-alerting
 
+      - alert: PasteBoxMailFailures
+        expr: pastebox_mail_failed_depth > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: PasteBox has failed outbound mail
+          description: Outbound mail exhausted delivery retries and requires admin queue triage.
+          runbook: docs/production-deployment-runbook.md#worker-supervision
+
       - alert: PasteBoxOpenReportsBacklog
         expr: pastebox_reports_open > 0
         for: 24h

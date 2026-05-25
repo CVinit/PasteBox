@@ -260,6 +260,7 @@ The committed baseline alert rules cover these launch gates:
 - `PasteBoxFailedWorkerJobs` for failed durable worker jobs.
 - `PasteBoxScannerBacklog` for scan queue lag.
 - `PasteBoxMailBacklog` for mail delivery backlog.
+- `PasteBoxMailFailures` for outbound mail that exhausted delivery retries.
 - `PasteBoxOpenReportsBacklog` for unresolved abuse/support report load.
 - `PasteBoxHostDiskPressure`, `PasteBoxHostMemoryPressure`, and
   `PasteBoxHostCpuPressure` for VPS resource pressure.
@@ -284,8 +285,11 @@ and currently processes pending `cleanup`, `scan`, and `billing_reconcile` jobs
 through the same production service wiring as the API. Scan jobs use the
 configured ClamAV scanner and update attachment scan state to `clean`,
 `scan_failed`, or `malicious`. The same worker also drains queued mail through
-the configured SMTP sender and preserves retry/failure state in PostgreSQL. Use
-the bounded one-shot mode for deployment checks or maintenance:
+the configured SMTP sender and preserves retry/failure state in PostgreSQL.
+`PasteBoxMailFailures` should be triaged from the admin Queues panel by checking
+recipient, subject, attempts, last error, and SMTP/provider status before
+restarting the worker or changing mail credentials. Use the bounded one-shot
+mode for deployment checks or maintenance:
 
 ```sh
 docker compose --env-file deploy/production.env -f compose.production.yaml run --rm worker --once
