@@ -481,6 +481,42 @@ func TestSessionCookieSecureFollowsProductionRequestScheme(t *testing.T) {
 	}
 }
 
+func TestProductionAuthResponsesDoNotExposeDevTokens(t *testing.T) {
+	cfg := config.FromEnv()
+	cfg.AppEnv = "production"
+	cfg.BootstrapAdminEmail = ""
+	cfg.BootstrapAdminPassword = ""
+	cfg.DevAuthTokens = true
+	cfg.MetricsToken = "production-auth-metrics-token"
+	service := app.New(cfg)
+	if _, err := service.SeedAdmin("prod-auth-admin@example.com", "password123"); err != nil {
+		t.Fatalf("seed admin: %v", err)
+	}
+	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), service)
+	initialMailDepth := mailQueueDepthMetric(t, handler, cfg.MetricsToken)
+
+	client := newHTTPTestClient(t, handler)
+	register := client.json(http.MethodPost, "/api/v1/auth/register", `{"email":"prod-auth-user@example.com","password":"password123","displayName":"Prod Auth"}`)
+	assertStatus(t, register, http.StatusCreated)
+	assertNoDevTokenFields(t, register)
+
+	startVerify := client.json(http.MethodPost, "/api/v1/auth/email-verification/start", "")
+	assertStatus(t, startVerify, http.StatusOK)
+	assertNoDevTokenFields(t, startVerify)
+
+	startMagic := client.json(http.MethodPost, "/api/v1/auth/magic/start", `{"email":"prod-auth-user@example.com"}`)
+	assertStatus(t, startMagic, http.StatusOK)
+	assertNoDevTokenFields(t, startMagic)
+
+	passwordReset := client.json(http.MethodPost, "/api/v1/auth/password-reset/start", `{"email":"prod-auth-admin@example.com"}`)
+	assertStatus(t, passwordReset, http.StatusOK)
+	assertNoDevTokenFields(t, passwordReset)
+
+	if got := mailQueueDepthMetric(t, handler, cfg.MetricsToken); got < initialMailDepth+5 {
+		t.Fatalf("expected production auth flows to queue delivery emails, depth before=%d after=%d", initialMailDepth, got)
+	}
+}
+
 func TestCSRFTokenProtectsUnsafeBrowserRoutes(t *testing.T) {
 	cfg := config.FromEnv()
 	cfg.BootstrapAdminEmail = ""
@@ -1246,6 +1282,39 @@ func decodeResponse(t *testing.T, res *httptest.ResponseRecorder, target any) {
 	if err := json.Unmarshal(res.Body.Bytes(), target); err != nil {
 		t.Fatalf("decode response body %q: %v", res.Body.String(), err)
 	}
+}
+
+func assertNoDevTokenFields(t *testing.T, res *httptest.ResponseRecorder) {
+	t.Helper()
+	var body map[string]json.RawMessage
+	decodeResponse(t, res, &body)
+	for _, key := range []string{"devEmailVerificationToken", "devToken"} {
+		if _, ok := body[key]; ok {
+			t.Fatalf("production response must not expose %s: %s", key, res.Body.String())
+		}
+	}
+}
+
+func mailQueueDepthMetric(t *testing.T, handler http.Handler, token string) int {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	assertStatus(t, res, http.StatusOK)
+	for _, line := range strings.Split(res.Body.String(), "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) != 2 || fields[0] != "pastebox_mail_queue_depth" {
+			continue
+		}
+		value, err := strconv.Atoi(fields[1])
+		if err != nil {
+			t.Fatalf("parse mail queue metric %q: %v", line, err)
+		}
+		return value
+	}
+	t.Fatalf("expected pastebox_mail_queue_depth metric in:\n%s", res.Body.String())
+	return 0
 }
 
 func sessionCookieFromResponse(t *testing.T, res *httptest.ResponseRecorder) *http.Cookie {
