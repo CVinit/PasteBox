@@ -88,12 +88,13 @@ The production preflight fails if `PASTEBOX_IMAGE` is mutable, if
 `PASTEBOX_PUBLIC_URL` is not HTTPS, if `PASTEBOX_CSRF_SECRET` is missing or
 left at the development default, if `PASTEBOX_METRICS_TOKEN` is missing or too
 short, if `PASTEBOX_CORS_ALLOWED_ORIGINS` is missing, wildcarded, local, HTTP,
-or does not include the exact `PASTEBOX_PUBLIC_URL` origin, if Google OAuth
-client settings are missing, if SMTP is not configured for TLS delivery, if
-`PASTEBOX_S3_ENDPOINT` points to a local or HTTP object store, or if
-`PASTEBOX_RESTIC_REPOSITORY` is not an off-host `s3:https://` repository. Use
-managed S3-compatible storage for attachment objects and a separate off-host
-S3-compatible restic repository for backups.
+or does not include the exact `PASTEBOX_PUBLIC_URL` origin, if production rate
+limits are disabled or non-positive, if Google OAuth client settings are
+missing, if SMTP is not configured for TLS delivery, if `PASTEBOX_S3_ENDPOINT`
+points to a local or HTTP object store, or if `PASTEBOX_RESTIC_REPOSITORY` is
+not an off-host `s3:https://` repository. Use managed S3-compatible storage for
+attachment objects and a separate off-host S3-compatible restic repository for
+backups.
 `PASTEBOX_WAL_ARCHIVE_TIMEOUT_SECONDS` and
 `PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS` must both be positive and no more than
 `900`; `PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS` must also be positive and no more
@@ -127,6 +128,15 @@ headers as the edge defense layer, but do not rely on Caddy as the only source
 of secure headers. API CORS is credentialed only for exact origins listed in
 `PASTEBOX_CORS_ALLOWED_ORIGINS`; do not use wildcard origins with browser
 cookies.
+
+Production HTTP rate limits are enabled by default through
+`PASTEBOX_RATE_LIMIT_ENABLED=true`. The process-local fixed-window limiter
+covers auth, browser write, upload, download, and provider webhook surfaces by
+IP, and by user ID when a valid session cookie is present. Keep all
+`PASTEBOX_RATE_LIMIT_*` limits positive for production. The current single-VPS
+Compose baseline runs one API replica; if multiple API replicas are introduced,
+replace the process-local buckets with Redis-backed counters before scaling
+traffic horizontally.
 
 To validate the committed template without creating a real secret file:
 

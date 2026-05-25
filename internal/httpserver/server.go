@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"math/big"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -57,6 +58,7 @@ type Server struct {
 	logger       *slog.Logger
 	app          *app.Service
 	readiness    ReadinessChecker
+	rateLimiter  *rateLimiter
 	metricsMu    sync.Mutex
 	httpRequests map[httpMetricKey]int64
 }
@@ -65,6 +67,23 @@ type httpMetricKey struct {
 	Method string
 	Path   string
 	Status int
+}
+
+type rateLimiter struct {
+	mu          sync.Mutex
+	buckets     map[string]rateLimitBucket
+	lastCleanup time.Time
+}
+
+type rateLimitBucket struct {
+	WindowStart time.Time
+	Count       int
+}
+
+type rateLimitRule struct {
+	Category string
+	Limit    int
+	Window   time.Duration
 }
 
 type ReadinessChecker func(ctx context.Context) []ReadinessComponent
@@ -108,6 +127,7 @@ func NewWithServiceAndReadiness(cfg config.Config, logger *slog.Logger, service 
 		logger:       logger,
 		app:          service,
 		readiness:    readiness,
+		rateLimiter:  newRateLimiter(),
 		httpRequests: map[httpMetricKey]int64{},
 	}
 	return server.routes()
@@ -121,6 +141,7 @@ func (s *Server) routes() http.Handler {
 	r.Use(s.secureHeaders)
 	r.Use(s.cors)
 	r.Use(s.logRequests)
+	r.Use(s.rateLimit)
 
 	r.Get("/healthz", s.healthz)
 	r.Get("/readyz", s.readyz)
@@ -1455,6 +1476,143 @@ func (s *Server) recordHTTPRequest(r *http.Request, status int) {
 	s.metricsMu.Lock()
 	defer s.metricsMu.Unlock()
 	s.httpRequests[httpMetricKey{Method: r.Method, Path: routePath, Status: status}]++
+}
+
+func newRateLimiter() *rateLimiter {
+	return &rateLimiter{buckets: map[string]rateLimitBucket{}}
+}
+
+func (s *Server) rateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rule, ok := s.rateLimitRule(r)
+		if !ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		keys := []string{rule.Category + ":ip:" + clientIP(r)}
+		if userID := s.rateLimitUserID(r); userID != "" {
+			keys = append(keys, rule.Category+":user:"+userID)
+		}
+		if allowed, retryAfter := s.rateLimiter.allow(keys, rule.Limit, rule.Window, time.Now().UTC()); !allowed {
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate_limited", "message": "too many requests"})
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) rateLimitRule(r *http.Request) (rateLimitRule, bool) {
+	cfg := s.cfg.RateLimit
+	if !cfg.Enabled || cfg.WindowSeconds <= 0 || !strings.HasPrefix(r.URL.Path, "/api/v1/") {
+		return rateLimitRule{}, false
+	}
+	switch r.Method {
+	case http.MethodHead, http.MethodOptions:
+		return rateLimitRule{}, false
+	}
+
+	window := time.Duration(cfg.WindowSeconds) * time.Second
+	path := r.URL.Path
+	switch {
+	case strings.HasPrefix(path, "/api/v1/billing/webhooks/"):
+		return rateLimitRule{Category: "webhook", Limit: cfg.WebhookLimit, Window: window}, cfg.WebhookLimit > 0
+	case strings.HasPrefix(path, "/api/v1/auth/"):
+		return rateLimitRule{Category: "auth", Limit: cfg.AuthLimit, Window: window}, cfg.AuthLimit > 0
+	case r.Method == http.MethodGet && strings.HasSuffix(path, "/download"):
+		return rateLimitRule{Category: "download", Limit: cfg.DownloadLimit, Window: window}, cfg.DownloadLimit > 0
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/api/v1/pastes/") && strings.HasSuffix(path, "/attachments"):
+		return rateLimitRule{Category: "upload", Limit: cfg.UploadLimit, Window: window}, cfg.UploadLimit > 0
+	case requiresCSRF(r):
+		return rateLimitRule{Category: "write", Limit: cfg.WriteLimit, Window: window}, cfg.WriteLimit > 0
+	default:
+		return rateLimitRule{}, false
+	}
+}
+
+func (s *Server) rateLimitUserID(r *http.Request) string {
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+		return ""
+	}
+	user, err := s.app.UserForSession(cookie.Value)
+	if err != nil {
+		return ""
+	}
+	return user.ID
+}
+
+func (rl *rateLimiter) allow(keys []string, limit int, window time.Duration, now time.Time) (bool, int) {
+	if limit <= 0 || window <= 0 || len(keys) == 0 {
+		return true, 0
+	}
+
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	rl.pruneLocked(now, window)
+
+	retryAfter := 0
+	for _, key := range keys {
+		bucket, ok := rl.buckets[key]
+		if !ok || !bucket.WindowStart.Add(window).After(now) {
+			continue
+		}
+		if bucket.Count >= limit {
+			retryAfter = max(retryAfter, retryAfterSeconds(bucket.WindowStart.Add(window).Sub(now)))
+		}
+	}
+	if retryAfter > 0 {
+		return false, retryAfter
+	}
+
+	for _, key := range keys {
+		bucket, ok := rl.buckets[key]
+		if !ok || !bucket.WindowStart.Add(window).After(now) {
+			bucket = rateLimitBucket{WindowStart: now}
+		}
+		bucket.Count++
+		rl.buckets[key] = bucket
+	}
+	return true, 0
+}
+
+func (rl *rateLimiter) pruneLocked(now time.Time, window time.Duration) {
+	if !rl.lastCleanup.IsZero() && now.Sub(rl.lastCleanup) < time.Minute {
+		return
+	}
+	for key, bucket := range rl.buckets {
+		if !bucket.WindowStart.Add(window).After(now) {
+			delete(rl.buckets, key)
+		}
+	}
+	rl.lastCleanup = now
+}
+
+func retryAfterSeconds(remaining time.Duration) int {
+	if remaining <= 0 {
+		return 1
+	}
+	seconds := int(remaining / time.Second)
+	if remaining%time.Second != 0 {
+		seconds++
+	}
+	if seconds < 1 {
+		return 1
+	}
+	return seconds
+}
+
+func clientIP(r *http.Request) string {
+	remoteAddr := strings.TrimSpace(r.RemoteAddr)
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil && strings.TrimSpace(host) != "" {
+		return host
+	}
+	if remoteAddr == "" {
+		return "unknown"
+	}
+	return remoteAddr
 }
 
 func (s *Server) csrfProtection(next http.Handler) http.Handler {

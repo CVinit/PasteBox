@@ -212,6 +212,8 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
 - Browser API CORS is credentialed only for exact origins in
   `PASTEBOX_CORS_ALLOWED_ORIGINS`. Production preflight must reject wildcard,
   local, HTTP, path/query/fragment, and missing-public-origin allowlist entries.
+- Production rate limits must stay enabled with positive limits for auth,
+  browser write, upload, download, and provider webhook buckets.
 - API errors use `{"error": "<code>", "message": "<human message>"}`.
 - `GET /api/v1/plans` returns `plans` and `prices`; `GET
   /api/v1/billing/prices` returns the same catalog plus provider-enabled flags
@@ -291,6 +293,79 @@ Initialize empty response collections before encoding:
 out := []PasteView{}
 writeJSON(w, http.StatusOK, map[string]any{"pastes": out})
 ```
+
+## Scenario: Production HTTP Rate Limits
+
+### 1. Scope / Trigger
+
+- Trigger: Any backend change that adds, removes, or changes browser auth,
+  browser write, upload, download, provider webhook, or production preflight
+  behavior.
+
+### 2. Signatures
+
+- Config: `config.RateLimitConfig`
+- Middleware: `(*httpserver.Server).rateLimit(next http.Handler) http.Handler`
+- Preflight: `pastebox preflight production`
+
+### 3. Contracts
+
+- Environment keys: `PASTEBOX_RATE_LIMIT_ENABLED`,
+  `PASTEBOX_RATE_LIMIT_WINDOW_SECONDS`, `PASTEBOX_RATE_LIMIT_AUTH`,
+  `PASTEBOX_RATE_LIMIT_WRITE`, `PASTEBOX_RATE_LIMIT_UPLOAD`,
+  `PASTEBOX_RATE_LIMIT_DOWNLOAD`, and `PASTEBOX_RATE_LIMIT_WEBHOOK`.
+- Production preflight must reject disabled rate limits and all non-positive
+  windows or limits.
+- HTTP rate-limit responses must use status `429`, JSON
+  `{"error":"rate_limited","message":"too many requests"}`, and a
+  `Retry-After` header.
+- Buckets must cover IP addresses, and must also cover authenticated user IDs
+  when a valid session cookie is present.
+- The single-VPS baseline may use process-local buckets while the API runs as a
+  single replica. Multiple API replicas require Redis-backed or otherwise
+  shared counters before horizontal traffic scaling.
+
+### 4. Validation & Error Matrix
+
+- `PASTEBOX_RATE_LIMIT_ENABLED=false` in production preflight ->
+  `PASTEBOX_RATE_LIMIT_ENABLED must be true in production`
+- `PASTEBOX_RATE_LIMIT_WINDOW_SECONDS <= 0` ->
+  `PASTEBOX_RATE_LIMIT_WINDOW_SECONDS must be positive`
+- Any per-surface limit `<= 0` -> `<ENV_KEY> must be positive`
+- Exceeded HTTP bucket -> `429 rate_limited`
+
+### 5. Good/Base/Bad Cases
+
+- Good: The second auth, browser write, upload, download, or webhook request in
+  a one-request test window returns `429` with `Retry-After`.
+- Base: Health, readiness, static frontend routes, CORS preflight, and ordinary
+  safe reads are not blocked by write-surface limits.
+- Bad: Disabling `PASTEBOX_RATE_LIMIT_ENABLED` in production preflight passes,
+  or a multi-replica deployment uses per-process counters and allows each
+  replica to reset the effective limit.
+
+### 6. Tests Required
+
+- Config tests must parse every `PASTEBOX_RATE_LIMIT_*` env key.
+- CLI preflight tests must reject disabled and non-positive production rate
+  limits.
+- Handler tests must assert endpoint-specific `429 rate_limited` behavior and
+  `Retry-After` for auth, write, upload, download, and webhook routes.
+- Handler tests must assert rate limiting can be disabled for local/dev test
+  configurations.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+Only rate-limit login failures inside the auth service and leave uploads,
+downloads, browser writes, and payment webhooks without HTTP-layer buckets.
+
+#### Correct
+
+Classify HTTP routes explicitly in middleware, apply endpoint-specific buckets,
+return the standard `rate_limited` JSON contract, and make production preflight
+fail if the baseline is disabled or invalid.
 
 ## Scenario: Single-Image Docker Deployment
 

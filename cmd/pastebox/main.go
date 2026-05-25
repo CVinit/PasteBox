@@ -317,6 +317,13 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		"PASTEBOX_CSRF_SECRET",
 		"PASTEBOX_METRICS_TOKEN",
 		"PASTEBOX_CORS_ALLOWED_ORIGINS",
+		"PASTEBOX_RATE_LIMIT_ENABLED",
+		"PASTEBOX_RATE_LIMIT_WINDOW_SECONDS",
+		"PASTEBOX_RATE_LIMIT_AUTH",
+		"PASTEBOX_RATE_LIMIT_WRITE",
+		"PASTEBOX_RATE_LIMIT_UPLOAD",
+		"PASTEBOX_RATE_LIMIT_DOWNLOAD",
+		"PASTEBOX_RATE_LIMIT_WEBHOOK",
 		"PASTEBOX_DOMAIN",
 		"PASTEBOX_ADMIN_EMAIL",
 		"PASTEBOX_POSTGRES_PASSWORD",
@@ -388,6 +395,10 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	if err := validateCORSOrigins(cfg); err != nil {
+		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
+		return 1
+	}
+	if err := validateRateLimitConfig(cfg); err != nil {
 		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
 		return 1
 	}
@@ -499,6 +510,28 @@ func validateCORSOrigins(cfg config.Config) error {
 	}
 	if !hasPublicOrigin {
 		return fmt.Errorf("PASTEBOX_CORS_ALLOWED_ORIGINS must include PASTEBOX_PUBLIC_URL origin %q", publicOrigin)
+	}
+	return nil
+}
+
+func validateRateLimitConfig(cfg config.Config) error {
+	if !cfg.RateLimit.Enabled {
+		return fmt.Errorf("PASTEBOX_RATE_LIMIT_ENABLED must be true in production")
+	}
+	if cfg.RateLimit.WindowSeconds <= 0 {
+		return fmt.Errorf("PASTEBOX_RATE_LIMIT_WINDOW_SECONDS must be positive")
+	}
+	limits := map[string]int{
+		"PASTEBOX_RATE_LIMIT_AUTH":     cfg.RateLimit.AuthLimit,
+		"PASTEBOX_RATE_LIMIT_WRITE":    cfg.RateLimit.WriteLimit,
+		"PASTEBOX_RATE_LIMIT_UPLOAD":   cfg.RateLimit.UploadLimit,
+		"PASTEBOX_RATE_LIMIT_DOWNLOAD": cfg.RateLimit.DownloadLimit,
+		"PASTEBOX_RATE_LIMIT_WEBHOOK":  cfg.RateLimit.WebhookLimit,
+	}
+	for key, value := range limits {
+		if value <= 0 {
+			return fmt.Errorf("%s must be positive", key)
+		}
 	}
 	return nil
 }

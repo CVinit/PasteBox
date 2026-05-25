@@ -84,6 +84,13 @@ func TestProductionPreflightRequiresExplicitProductionEnvironment(t *testing.T) 
 		"PASTEBOX_CSRF_SECRET",
 		"PASTEBOX_METRICS_TOKEN",
 		"PASTEBOX_CORS_ALLOWED_ORIGINS",
+		"PASTEBOX_RATE_LIMIT_ENABLED",
+		"PASTEBOX_RATE_LIMIT_WINDOW_SECONDS",
+		"PASTEBOX_RATE_LIMIT_AUTH",
+		"PASTEBOX_RATE_LIMIT_WRITE",
+		"PASTEBOX_RATE_LIMIT_UPLOAD",
+		"PASTEBOX_RATE_LIMIT_DOWNLOAD",
+		"PASTEBOX_RATE_LIMIT_WEBHOOK",
 		"PASTEBOX_DOMAIN",
 		"PASTEBOX_ADMIN_EMAIL",
 		"PASTEBOX_POSTGRES_PASSWORD",
@@ -330,6 +337,59 @@ func TestProductionPreflightRejectsUnsafeCORSOrigins(t *testing.T) {
 	}
 }
 
+func TestProductionPreflightRejectsDisabledOrInvalidRateLimits(t *testing.T) {
+	tests := []struct {
+		name     string
+		key      string
+		value    string
+		expected string
+	}{
+		{
+			name:     "disabled",
+			key:      "PASTEBOX_RATE_LIMIT_ENABLED",
+			value:    "false",
+			expected: "PASTEBOX_RATE_LIMIT_ENABLED must be true",
+		},
+		{
+			name:     "window",
+			key:      "PASTEBOX_RATE_LIMIT_WINDOW_SECONDS",
+			value:    "0",
+			expected: "PASTEBOX_RATE_LIMIT_WINDOW_SECONDS must be positive",
+		},
+		{
+			name:     "auth",
+			key:      "PASTEBOX_RATE_LIMIT_AUTH",
+			value:    "0",
+			expected: "PASTEBOX_RATE_LIMIT_AUTH must be positive",
+		},
+		{
+			name:     "write",
+			key:      "PASTEBOX_RATE_LIMIT_WRITE",
+			value:    "-1",
+			expected: "PASTEBOX_RATE_LIMIT_WRITE must be positive",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setValidProductionEnv(t)
+			t.Setenv(tt.key, tt.value)
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run([]string{"preflight", "production"}, &stdout, &stderr)
+			if code != 1 {
+				t.Fatalf("expected invalid rate limit config to fail, got %d", code)
+			}
+			if !strings.Contains(stderr.String(), tt.expected) {
+				t.Fatalf("expected rate limit validation error containing %q, got %q", tt.expected, stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("expected empty stdout, got %q", stdout.String())
+			}
+		})
+	}
+}
+
 func TestProductionPreflightRejectsGoogleOAuthRedirectHostMismatch(t *testing.T) {
 	setValidProductionEnv(t)
 	t.Setenv("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL", "https://auth.example.com/api/v1/auth/google/callback")
@@ -500,6 +560,13 @@ func setValidProductionEnv(t *testing.T) {
 	t.Setenv("PASTEBOX_CSRF_SECRET", "csrf-secret-32-bytes-minimum-prod")
 	t.Setenv("PASTEBOX_METRICS_TOKEN", "metrics-token-32-bytes-minimum-prod")
 	t.Setenv("PASTEBOX_CORS_ALLOWED_ORIGINS", "https://pastebox.example.com")
+	t.Setenv("PASTEBOX_RATE_LIMIT_ENABLED", "true")
+	t.Setenv("PASTEBOX_RATE_LIMIT_WINDOW_SECONDS", "60")
+	t.Setenv("PASTEBOX_RATE_LIMIT_AUTH", "60")
+	t.Setenv("PASTEBOX_RATE_LIMIT_WRITE", "300")
+	t.Setenv("PASTEBOX_RATE_LIMIT_UPLOAD", "120")
+	t.Setenv("PASTEBOX_RATE_LIMIT_DOWNLOAD", "600")
+	t.Setenv("PASTEBOX_RATE_LIMIT_WEBHOOK", "300")
 	t.Setenv("PASTEBOX_DOMAIN", "pastebox.example.com")
 	t.Setenv("PASTEBOX_ADMIN_EMAIL", "admin@example.com")
 	t.Setenv("PASTEBOX_POSTGRES_PASSWORD", "db-secret")

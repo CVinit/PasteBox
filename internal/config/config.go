@@ -16,6 +16,7 @@ type Config struct {
 	CSRFSecret         string
 	MetricsToken       string
 	CORSAllowedOrigins []string
+	RateLimit          RateLimitConfig
 
 	DatabaseURL string
 	RedisAddr   string
@@ -80,6 +81,16 @@ type EpusdtConfig struct {
 	SecretKey string
 }
 
+type RateLimitConfig struct {
+	Enabled       bool
+	WindowSeconds int
+	AuthLimit     int
+	WriteLimit    int
+	UploadLimit   int
+	DownloadLimit int
+	WebhookLimit  int
+}
+
 func FromEnv() Config {
 	publicURL := envString("PASTEBOX_PUBLIC_URL", "http://localhost:5173")
 	return Config{
@@ -91,6 +102,15 @@ func FromEnv() Config {
 		CSRFSecret:         envString("PASTEBOX_CSRF_SECRET", "development-csrf-secret"),
 		MetricsToken:       envString("PASTEBOX_METRICS_TOKEN", ""),
 		CORSAllowedOrigins: envCSV("PASTEBOX_CORS_ALLOWED_ORIGINS", originFromURL(publicURL)),
+		RateLimit: RateLimitConfig{
+			Enabled:       envBool("PASTEBOX_RATE_LIMIT_ENABLED", true),
+			WindowSeconds: envInt("PASTEBOX_RATE_LIMIT_WINDOW_SECONDS", 60),
+			AuthLimit:     envInt("PASTEBOX_RATE_LIMIT_AUTH", 60),
+			WriteLimit:    envInt("PASTEBOX_RATE_LIMIT_WRITE", 300),
+			UploadLimit:   envInt("PASTEBOX_RATE_LIMIT_UPLOAD", 120),
+			DownloadLimit: envInt("PASTEBOX_RATE_LIMIT_DOWNLOAD", 600),
+			WebhookLimit:  envInt("PASTEBOX_RATE_LIMIT_WEBHOOK", 300),
+		},
 
 		DatabaseURL: envString("PASTEBOX_DATABASE_URL", "postgres://pastebox:pastebox@localhost:5432/pastebox?sslmode=disable"),
 		RedisAddr:   envString("PASTEBOX_REDIS_ADDR", "localhost:6379"),

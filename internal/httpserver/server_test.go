@@ -239,6 +239,119 @@ func TestCORSAllowlistControlsCredentialedAPIOrigins(t *testing.T) {
 	}
 }
 
+func TestRateLimitAppliesEndpointSpecificBuckets(t *testing.T) {
+	tests := []struct {
+		name       string
+		configure  func(*config.Config)
+		newRequest func() *http.Request
+	}{
+		{
+			name: "auth",
+			configure: func(cfg *config.Config) {
+				cfg.RateLimit.AuthLimit = 1
+			},
+			newRequest: func() *http.Request {
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"email":"nobody@example.com","password":"wrong"}`))
+				req.Header.Set("Content-Type", "application/json")
+				return req
+			},
+		},
+		{
+			name: "write",
+			configure: func(cfg *config.Config) {
+				cfg.RateLimit.WriteLimit = 1
+			},
+			newRequest: func() *http.Request {
+				req := httptest.NewRequest(http.MethodPatch, "/api/v1/me", strings.NewReader(`{"displayName":"New Name"}`))
+				req.Header.Set("Content-Type", "application/json")
+				return req
+			},
+		},
+		{
+			name: "upload",
+			configure: func(cfg *config.Config) {
+				cfg.RateLimit.UploadLimit = 1
+			},
+			newRequest: func() *http.Request {
+				var body bytes.Buffer
+				writer := multipart.NewWriter(&body)
+				part, err := writer.CreateFormFile("file", "test.txt")
+				if err != nil {
+					t.Fatalf("create multipart field: %v", err)
+				}
+				if _, err := part.Write([]byte("hello")); err != nil {
+					t.Fatalf("write multipart field: %v", err)
+				}
+				if err := writer.Close(); err != nil {
+					t.Fatalf("close multipart writer: %v", err)
+				}
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/pastes/paste-id/attachments", &body)
+				req.Header.Set("Content-Type", writer.FormDataContentType())
+				return req
+			},
+		},
+		{
+			name: "download",
+			configure: func(cfg *config.Config) {
+				cfg.RateLimit.DownloadLimit = 1
+			},
+			newRequest: func() *http.Request {
+				return httptest.NewRequest(http.MethodGet, "/api/v1/attachments/att-id/download", nil)
+			},
+		},
+		{
+			name: "webhook",
+			configure: func(cfg *config.Config) {
+				cfg.RateLimit.WebhookLimit = 1
+			},
+			newRequest: func() *http.Request {
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/billing/webhooks/stripe", strings.NewReader(`{}`))
+				req.Header.Set("Content-Type", "application/json")
+				return req
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := rateLimitTestConfig()
+			tt.configure(&cfg)
+			handler := New(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)))
+
+			first := tt.newRequest()
+			first.RemoteAddr = "203.0.113.10:1234"
+			firstRes := httptest.NewRecorder()
+			handler.ServeHTTP(firstRes, first)
+			if firstRes.Code == http.StatusTooManyRequests {
+				t.Fatalf("first request should reach downstream handler, got %d: %s", firstRes.Code, firstRes.Body.String())
+			}
+
+			second := tt.newRequest()
+			second.RemoteAddr = "203.0.113.10:1234"
+			secondRes := httptest.NewRecorder()
+			handler.ServeHTTP(secondRes, second)
+			assertRateLimited(t, secondRes)
+		})
+	}
+}
+
+func TestRateLimitCanBeDisabledForLocalDevelopment(t *testing.T) {
+	cfg := rateLimitTestConfig()
+	cfg.RateLimit.Enabled = false
+	cfg.RateLimit.AuthLimit = 1
+	handler := New(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)))
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"email":"nobody@example.com","password":"wrong"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "203.0.113.20:1234"
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		if res.Code == http.StatusTooManyRequests {
+			t.Fatalf("rate limit should be disabled, got %d: %s", res.Code, res.Body.String())
+		}
+	}
+}
+
 func TestStaticFallbackServesAssetsAndFrontendRoutes(t *testing.T) {
 	handler := New(config.FromEnv(), slog.New(slog.NewTextHandler(testWriter{t: t}, nil)))
 
@@ -962,6 +1075,33 @@ type httpTestClient struct {
 func newHTTPTestClient(t *testing.T, handler http.Handler) *httpTestClient {
 	t.Helper()
 	return &httpTestClient{t: t, handler: handler, cookies: map[string]*http.Cookie{}}
+}
+
+func rateLimitTestConfig() config.Config {
+	cfg := config.FromEnv()
+	cfg.RateLimit = config.RateLimitConfig{
+		Enabled:       true,
+		WindowSeconds: 60,
+		AuthLimit:     1000,
+		WriteLimit:    1000,
+		UploadLimit:   1000,
+		DownloadLimit: 1000,
+		WebhookLimit:  1000,
+	}
+	return cfg
+}
+
+func assertRateLimited(t *testing.T, res *httptest.ResponseRecorder) {
+	t.Helper()
+	assertStatus(t, res, http.StatusTooManyRequests)
+	if got := res.Header().Get("Retry-After"); got == "" {
+		t.Fatalf("expected Retry-After header on rate limited response")
+	}
+	var body map[string]string
+	decodeResponse(t, res, &body)
+	if body["error"] != "rate_limited" || body["message"] == "" {
+		t.Fatalf("expected rate_limited error body, got %#v", body)
+	}
 }
 
 func (c *httpTestClient) json(method string, path string, body string) *httptest.ResponseRecorder {

@@ -33,6 +33,13 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	t.Setenv("PASTEBOX_LOG_LEVEL", "DEBUG")
 	t.Setenv("PASTEBOX_PUBLIC_URL", "https://pastebox.example.com")
 	t.Setenv("PASTEBOX_CORS_ALLOWED_ORIGINS", "https://pastebox.example.com, https://admin.pastebox.example.com, https://pastebox.example.com")
+	t.Setenv("PASTEBOX_RATE_LIMIT_ENABLED", "true")
+	t.Setenv("PASTEBOX_RATE_LIMIT_WINDOW_SECONDS", "120")
+	t.Setenv("PASTEBOX_RATE_LIMIT_AUTH", "10")
+	t.Setenv("PASTEBOX_RATE_LIMIT_WRITE", "20")
+	t.Setenv("PASTEBOX_RATE_LIMIT_UPLOAD", "30")
+	t.Setenv("PASTEBOX_RATE_LIMIT_DOWNLOAD", "40")
+	t.Setenv("PASTEBOX_RATE_LIMIT_WEBHOOK", "50")
 	t.Setenv("PASTEBOX_CSRF_SECRET", "test-csrf-secret")
 	t.Setenv("PASTEBOX_METRICS_TOKEN", "metrics-token")
 	t.Setenv("PASTEBOX_GOOGLE_OAUTH_CLIENT_ID", "google-client-id")
@@ -81,6 +88,9 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	}
 	if len(cfg.CORSAllowedOrigins) != 2 || cfg.CORSAllowedOrigins[0] != "https://pastebox.example.com" || cfg.CORSAllowedOrigins[1] != "https://admin.pastebox.example.com" {
 		t.Fatalf("expected parsed CORS origins from env, got %#v", cfg.CORSAllowedOrigins)
+	}
+	if !cfg.RateLimit.Enabled || cfg.RateLimit.WindowSeconds != 120 || cfg.RateLimit.AuthLimit != 10 || cfg.RateLimit.WriteLimit != 20 || cfg.RateLimit.UploadLimit != 30 || cfg.RateLimit.DownloadLimit != 40 || cfg.RateLimit.WebhookLimit != 50 {
+		t.Fatalf("expected parsed rate limits from env, got %#v", cfg.RateLimit)
 	}
 	if cfg.MailerProvider != "smtp" || cfg.SMTP.Host != "smtp.example.com" || cfg.SMTP.Port != 587 {
 		t.Fatalf("expected SMTP settings from env, got provider=%q smtp=%#v", cfg.MailerProvider, cfg.SMTP)
