@@ -142,10 +142,17 @@ func productionReadinessChecker(cfg config.Config, pool *pgxpool.Pool, objects o
 				return tcpReadiness(checkCtx, net.JoinHostPort(cfg.SMTP.Host, strconv.Itoa(cfg.SMTP.Port)))
 			}))
 		} else {
-			components = append(components, httpserver.ReadinessComponent{Name: "mail", Status: "skipped", Message: "smtp provider is not configured"})
+			components = append(components, mailReadinessNotConfigured(cfg))
 		}
 		return components
 	}
+}
+
+func mailReadinessNotConfigured(cfg config.Config) httpserver.ReadinessComponent {
+	if cfg.AppEnv == "production" {
+		return httpserver.ReadinessComponent{Name: "mail", Status: "fail", Message: "smtp provider is required in production"}
+	}
+	return httpserver.ReadinessComponent{Name: "mail", Status: "skipped", Message: "smtp provider is not configured"}
 }
 
 func readinessCheck(ctx context.Context, name string, check func(context.Context) error) httpserver.ReadinessComponent {

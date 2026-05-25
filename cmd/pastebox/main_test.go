@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"pastebox/internal/config"
 )
 
 func TestAdminCreateCommandEmitsBootstrapEnvWithoutPassword(t *testing.T) {
@@ -42,6 +44,20 @@ func TestAdminCreateCommandRequiresEmailAndPassword(t *testing.T) {
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+}
+
+func TestMailReadinessRequiresSMTPInProduction(t *testing.T) {
+	component := mailReadinessNotConfigured(config.Config{AppEnv: "production"})
+	if component.Name != "mail" || component.Status != "fail" || !strings.Contains(component.Message, "required in production") {
+		t.Fatalf("expected production mail readiness failure, got %#v", component)
+	}
+}
+
+func TestMailReadinessCanSkipSMTPOutsideProduction(t *testing.T) {
+	component := mailReadinessNotConfigured(config.Config{AppEnv: "development"})
+	if component.Name != "mail" || component.Status != "skipped" || !strings.Contains(component.Message, "not configured") {
+		t.Fatalf("expected development mail readiness skip, got %#v", component)
 	}
 }
 
