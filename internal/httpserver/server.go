@@ -1452,10 +1452,18 @@ func epusdtEventType(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "success", "succeeded", "paid", "completed", "1":
 		return "epusdt.payment.succeeded"
-	case "expired", "timeout", "canceled", "cancelled", "failed":
-		return "payment.failed"
+	case "expired", "timeout":
+		return "epusdt.payment.expired"
+	case "canceled", "cancelled":
+		return "epusdt.payment.canceled"
+	case "failed":
+		return "epusdt.payment.failed"
 	default:
-		return "epusdt." + strings.ToLower(strings.TrimSpace(status))
+		normalized := strings.ToLower(strings.TrimSpace(status))
+		if normalized == "" {
+			return ""
+		}
+		return "epusdt." + normalized
 	}
 }
 

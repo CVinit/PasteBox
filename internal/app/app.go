@@ -1522,16 +1522,39 @@ func (s *Service) ProcessBillingWebhook(input BillingWebhookInput) (WebhookEvent
 			return WebhookEvent{}, nil, E(http.StatusInternalServerError, "webhook_event_missing", "webhook event was not recorded")
 		}
 		return event, &order, nil
-	case "payment.failed", "invoice.payment_failed", "subscription.deleted", "subscription.canceled", "refund.created":
-		if orderID != "" {
-			if order, err := s.orderByIDLocked(orderID); err != nil && !isAppStatus(err, http.StatusNotFound) {
-				return WebhookEvent{}, nil, err
-			} else if order != nil && order.Status == "pending" {
-				order.Status = "needs_review"
-				if err := s.updateOrderLocked(order); err != nil {
-					return WebhookEvent{}, nil, err
-				}
-			}
+	case "payment.failed", "invoice.payment_failed", "epusdt.payment.failed":
+		if err := s.applyOrderLifecycleStatusLocked(orderID, "failed", false); err != nil {
+			return WebhookEvent{}, nil, err
+		}
+		event, err := s.recordWebhookEventLocked(provider, eventType, orderID, idempotencyKey, metadata)
+		if err != nil {
+			return WebhookEvent{}, nil, err
+		}
+		order, _ := s.orderByIDLocked(orderID)
+		return event, order, nil
+	case "subscription.deleted", "subscription.canceled", "customer.subscription.deleted", "epusdt.payment.canceled":
+		if err := s.applyOrderLifecycleStatusLocked(orderID, "canceled", true); err != nil {
+			return WebhookEvent{}, nil, err
+		}
+		event, err := s.recordWebhookEventLocked(provider, eventType, orderID, idempotencyKey, metadata)
+		if err != nil {
+			return WebhookEvent{}, nil, err
+		}
+		order, _ := s.orderByIDLocked(orderID)
+		return event, order, nil
+	case "refund.created", "charge.refunded":
+		if err := s.applyOrderLifecycleStatusLocked(orderID, "refunded", true); err != nil {
+			return WebhookEvent{}, nil, err
+		}
+		event, err := s.recordWebhookEventLocked(provider, eventType, orderID, idempotencyKey, metadata)
+		if err != nil {
+			return WebhookEvent{}, nil, err
+		}
+		order, _ := s.orderByIDLocked(orderID)
+		return event, order, nil
+	case "payment.expired", "checkout.session.expired", "epusdt.payment.expired":
+		if err := s.applyOrderLifecycleStatusLocked(orderID, "expired", false); err != nil {
+			return WebhookEvent{}, nil, err
 		}
 		event, err := s.recordWebhookEventLocked(provider, eventType, orderID, idempotencyKey, metadata)
 		if err != nil {
@@ -1547,6 +1570,51 @@ func (s *Service) ProcessBillingWebhook(input BillingWebhookInput) (WebhookEvent
 		order, _ := s.orderByIDLocked(orderID)
 		return event, order, nil
 	}
+}
+
+func (s *Service) applyOrderLifecycleStatusLocked(orderID string, status string, revokePlan bool) error {
+	if strings.TrimSpace(orderID) == "" {
+		return nil
+	}
+	order, err := s.orderByIDLocked(orderID)
+	if err != nil {
+		if isAppStatus(err, http.StatusNotFound) {
+			return nil
+		}
+		return err
+	}
+	if order.Status == status {
+		return nil
+	}
+	previousStatus := order.Status
+	if previousStatus == "paid" && !revokePlan {
+		return nil
+	}
+	planRevoked := false
+	if revokePlan && previousStatus == "paid" {
+		user, err := s.userByIDLocked(order.UserID)
+		if err != nil {
+			return err
+		}
+		if user.PlanID == order.PlanID {
+			user.PlanID = "free"
+			user.PlanExpiresAt = nil
+			if err := s.updateUserLocked(user); err != nil {
+				return err
+			}
+			planRevoked = true
+		}
+	}
+	order.Status = status
+	if err := s.updateOrderLocked(order); err != nil {
+		return err
+	}
+	return s.auditLocked("webhook:"+order.Provider, "billing.order_"+status, order.ID, map[string]any{
+		"planId":         order.PlanID,
+		"provider":       order.Provider,
+		"previousStatus": previousStatus,
+		"planRevoked":    planRevoked,
+	})
 }
 
 func (s *Service) ReplayWebhookEvent(actorID string, eventID string) (WebhookEvent, error) {

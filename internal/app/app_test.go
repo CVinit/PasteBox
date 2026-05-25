@@ -669,7 +669,7 @@ func TestStoreBackedOperationalStateSurvivesServiceRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list store-backed orders after restart: %v", err)
 	}
-	if len(orders) != 1 || orders[0].ID != order.ID || orders[0].Status != "needs_review" {
+	if len(orders) != 1 || orders[0].ID != order.ID || orders[0].Status != "failed" {
 		t.Fatalf("expected order status to survive restart, got %#v", orders)
 	}
 	events, err := restarted.AdminWebhookEvents(admin.ID)
@@ -1000,6 +1000,119 @@ func TestBillingWebhookReplayAndReportResolution(t *testing.T) {
 	}
 	assertAuditAction(t, logs, "admin.webhook_replay")
 	assertAuditAction(t, logs, "admin.report_status")
+}
+
+func TestBillingWebhookLifecycleStatuses(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	admin := seedAdminTestUser(t, svc, "admin-lifecycle@example.com")
+	owner := registerTestUser(t, svc, "billing-lifecycle@example.com")
+
+	failedOrder, err := svc.CreateOrder(owner.User.ID, "stripe", "plus", "monthly")
+	if err != nil {
+		t.Fatalf("create failed order: %v", err)
+	}
+	if _, failed, err := svc.ProcessBillingWebhook(BillingWebhookInput{
+		Provider:       "stripe",
+		EventType:      "payment.failed",
+		OrderID:        failedOrder.ID,
+		IdempotencyKey: "stripe-failed-lifecycle",
+	}); err != nil {
+		t.Fatalf("process failed webhook: %v", err)
+	} else if failed == nil || failed.Status != "failed" {
+		t.Fatalf("expected failed webhook to mark pending order failed, got %#v", failed)
+	}
+	requireOrderStatus(t, svc, owner.User.ID, failedOrder.ID, "failed")
+
+	refundOrder, err := svc.CreateOrder(owner.User.ID, "stripe", "plus", "monthly")
+	if err != nil {
+		t.Fatalf("create refund order: %v", err)
+	}
+	if _, paid, err := svc.ProcessBillingWebhook(BillingWebhookInput{
+		Provider:       "stripe",
+		EventType:      "checkout.session.completed",
+		OrderID:        refundOrder.ID,
+		TxID:           "tx-refund-paid",
+		IdempotencyKey: "stripe-paid-before-refund",
+	}); err != nil {
+		t.Fatalf("process paid webhook before refund: %v", err)
+	} else if paid == nil || paid.Status != "paid" {
+		t.Fatalf("expected paid order before refund, got %#v", paid)
+	}
+	if user, err := svc.UserForSession(owner.SessionID); err != nil {
+		t.Fatalf("load paid user: %v", err)
+	} else if user.PlanID != "plus" || user.PlanExpiresAt == nil {
+		t.Fatalf("expected paid order to activate plan, got %#v", user)
+	}
+	if _, refunded, err := svc.ProcessBillingWebhook(BillingWebhookInput{
+		Provider:       "stripe",
+		EventType:      "refund.created",
+		OrderID:        refundOrder.ID,
+		IdempotencyKey: "stripe-refund-lifecycle",
+	}); err != nil {
+		t.Fatalf("process refund webhook: %v", err)
+	} else if refunded == nil || refunded.Status != "refunded" {
+		t.Fatalf("expected refund webhook to mark order refunded, got %#v", refunded)
+	}
+	if user, err := svc.UserForSession(owner.SessionID); err != nil {
+		t.Fatalf("load refunded user: %v", err)
+	} else if user.PlanID != "free" || user.PlanExpiresAt != nil {
+		t.Fatalf("expected refund to revoke active plan, got %#v", user)
+	}
+
+	canceledOrder, err := svc.CreateOrder(owner.User.ID, "stripe", "plus", "monthly")
+	if err != nil {
+		t.Fatalf("create canceled order: %v", err)
+	}
+	if _, _, err := svc.ProcessBillingWebhook(BillingWebhookInput{
+		Provider:       "stripe",
+		EventType:      "checkout.session.completed",
+		OrderID:        canceledOrder.ID,
+		TxID:           "tx-cancel-paid",
+		IdempotencyKey: "stripe-paid-before-cancel",
+	}); err != nil {
+		t.Fatalf("process paid webhook before cancel: %v", err)
+	}
+	if _, canceled, err := svc.ProcessBillingWebhook(BillingWebhookInput{
+		Provider:       "stripe",
+		EventType:      "subscription.canceled",
+		OrderID:        canceledOrder.ID,
+		IdempotencyKey: "stripe-canceled-lifecycle",
+	}); err != nil {
+		t.Fatalf("process canceled webhook: %v", err)
+	} else if canceled == nil || canceled.Status != "canceled" {
+		t.Fatalf("expected cancel webhook to mark order canceled, got %#v", canceled)
+	}
+	if user, err := svc.UserForSession(owner.SessionID); err != nil {
+		t.Fatalf("load canceled user: %v", err)
+	} else if user.PlanID != "free" || user.PlanExpiresAt != nil {
+		t.Fatalf("expected cancel to revoke active plan, got %#v", user)
+	}
+
+	expiredOrder, err := svc.CreateOrder(owner.User.ID, "epusdt", "plus", "monthly")
+	if err != nil {
+		t.Fatalf("create expired order: %v", err)
+	}
+	if _, expired, err := svc.ProcessBillingWebhook(BillingWebhookInput{
+		Provider:       "epusdt",
+		EventType:      "epusdt.payment.expired",
+		OrderID:        expiredOrder.ID,
+		IdempotencyKey: "epusdt-expired-lifecycle",
+	}); err != nil {
+		t.Fatalf("process expired webhook: %v", err)
+	} else if expired == nil || expired.Status != "expired" {
+		t.Fatalf("expected expired webhook to mark order expired, got %#v", expired)
+	}
+	requireOrderStatus(t, svc, owner.User.ID, expiredOrder.ID, "expired")
+
+	logs, err := svc.AdminAuditLogs(admin.ID)
+	if err != nil {
+		t.Fatalf("audit logs: %v", err)
+	}
+	assertAuditAction(t, logs, "billing.order_failed")
+	assertAuditAction(t, logs, "billing.order_refunded")
+	assertAuditAction(t, logs, "billing.order_canceled")
+	assertAuditAction(t, logs, "billing.order_expired")
 }
 
 func TestAccountDeletionRevokesSharesAndSessions(t *testing.T) {
@@ -1685,6 +1798,24 @@ func assertAuditAction(t *testing.T, logs []AuditLog, action string) {
 		}
 	}
 	t.Fatalf("expected audit action %q in %#v", action, logs)
+}
+
+func requireOrderStatus(t *testing.T, svc *Service, userID string, orderID string, status string) Order {
+	t.Helper()
+	orders, err := svc.ListOrders(userID)
+	if err != nil {
+		t.Fatalf("list orders: %v", err)
+	}
+	for _, order := range orders {
+		if order.ID == orderID {
+			if order.Status != status {
+				t.Fatalf("expected order %s status %q, got %#v", orderID, status, order)
+			}
+			return order
+		}
+	}
+	t.Fatalf("expected order %s in %#v", orderID, orders)
+	return Order{}
 }
 
 func hasWebhookEvent(events []WebhookEvent, idempotencyKey string) bool {

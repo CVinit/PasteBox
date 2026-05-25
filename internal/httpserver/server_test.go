@@ -699,6 +699,21 @@ func TestBillingWebhookRequiresProviderSignatures(t *testing.T) {
 	if replayBody.WebhookEvent.IdempotencyKey != "evt_sig_1" || replayBody.Order == nil || replayBody.Order.Status != "paid" {
 		t.Fatalf("expected idempotent signed webhook replay, got %#v", replayBody)
 	}
+
+	refundRaw := stripeWebhookBody(t, "evt_sig_refund_1", "charge.refunded", order.ID, "pi_sig_1")
+	refundReq := httptest.NewRequest(http.MethodPost, "/api/v1/billing/webhooks/stripe", strings.NewReader(refundRaw))
+	refundReq.Header.Set("Content-Type", "application/json")
+	refundReq.Header.Set("Stripe-Signature", stripeSignatureHeader(refundRaw, cfg.Stripe.WebhookSecret, time.Now()))
+	refund := user.do(refundReq)
+	assertStatus(t, refund, http.StatusOK)
+	var refundBody struct {
+		WebhookEvent app.WebhookEvent `json:"webhookEvent"`
+		Order        *app.Order       `json:"order"`
+	}
+	decodeResponse(t, refund, &refundBody)
+	if refundBody.WebhookEvent.IdempotencyKey != "evt_sig_refund_1" || refundBody.Order == nil || refundBody.Order.Status != "refunded" {
+		t.Fatalf("expected signed Stripe refund to mark order refunded, got %#v", refundBody)
+	}
 }
 
 func TestEpusdtWebhookSignatureAndPlainOKResponse(t *testing.T) {
@@ -738,13 +753,34 @@ func TestEpusdtWebhookSignatureAndPlainOKResponse(t *testing.T) {
 		t.Fatalf("expected plain ok response, got %q", res.Body.String())
 	}
 
-	orders, err := service.ListOrders(order.UserID)
+	paidOrder := requireServiceOrderStatus(t, service, order.UserID, order.ID, "paid")
+	if paidOrder.TxID != "tx_epusdt_1" {
+		t.Fatalf("expected signed epusdt webhook to store tx id, got %#v", paidOrder)
+	}
+
+	expiredRes := user.json(http.MethodPost, "/api/v1/billing/orders", `{"provider":"epusdt","planId":"plus","period":"monthly"}`)
+	assertStatus(t, expiredRes, http.StatusCreated)
+	var expiredOrder app.Order
+	decodeResponse(t, expiredRes, &expiredOrder)
+	expiredPayload := map[string]any{
+		"pid":           cfg.Epusdt.PID,
+		"order_id":      expiredOrder.ID,
+		"trade_id":      "trade_epusdt_expired_1",
+		"status":        "expired",
+		"amount":        json.Number("19.00"),
+		"actual_amount": json.Number("0"),
+	}
+	expiredPayload["signature"] = epusdtSignature(expiredPayload, cfg.Epusdt.SecretKey)
+	expiredRaw, err := json.Marshal(expiredPayload)
 	if err != nil {
-		t.Fatalf("list orders: %v", err)
+		t.Fatalf("marshal expired epusdt payload: %v", err)
 	}
-	if len(orders) != 1 || orders[0].Status != "paid" || orders[0].TxID != "tx_epusdt_1" {
-		t.Fatalf("expected signed epusdt webhook to mark order paid, got %#v", orders)
+	expiredCallback := user.json(http.MethodPost, "/api/v1/billing/webhooks/epusdt", string(expiredRaw))
+	assertStatus(t, expiredCallback, http.StatusOK)
+	if strings.TrimSpace(expiredCallback.Body.String()) != "ok" {
+		t.Fatalf("expected plain ok response for expired callback, got %q", expiredCallback.Body.String())
 	}
+	requireServiceOrderStatus(t, service, expiredOrder.UserID, expiredOrder.ID, "expired")
 }
 
 type httpTestClient struct {
@@ -897,6 +933,24 @@ func cookieFromResponse(t *testing.T, res *httptest.ResponseRecorder, name strin
 	}
 	t.Fatalf("expected %s cookie in response headers: %v", name, res.Result().Header.Values("Set-Cookie"))
 	return nil
+}
+
+func requireServiceOrderStatus(t *testing.T, service *app.Service, userID string, orderID string, status string) app.Order {
+	t.Helper()
+	orders, err := service.ListOrders(userID)
+	if err != nil {
+		t.Fatalf("list orders: %v", err)
+	}
+	for _, order := range orders {
+		if order.ID == orderID {
+			if order.Status != status {
+				t.Fatalf("expected order %s status %q, got %#v", orderID, status, order)
+			}
+			return order
+		}
+	}
+	t.Fatalf("expected order %s in %#v", orderID, orders)
+	return app.Order{}
 }
 
 func stripeWebhookBody(t *testing.T, eventID string, eventType string, orderID string, txID string) string {

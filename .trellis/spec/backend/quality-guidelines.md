@@ -394,6 +394,20 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/pastebox ./cmd/pastebox
   verifier keeps non-empty fields except `signature`, sorts by ASCII key order,
   joins as `key=value&...`, appends the secret, and compares lowercase MD5.
 - Valid Epusdt callbacks return plain text `ok`, not JSON.
+- Signed lifecycle events preserve explicit order states: successful payment
+  events mark orders `paid`; failed payment events mark pending orders
+  `failed`; expiry events mark pending orders `expired`; cancel events mark
+  orders `canceled`; refund events mark orders `refunded`.
+- Failed and expired events must not downgrade an already `paid` order.
+  Canceled or refunded paid orders revoke the active user plan only when the
+  user's current plan still matches the order plan; pending canceled/refunded
+  orders must not revoke unrelated active plans.
+- Epusdt status values must map distinctly: `success`, `succeeded`, `paid`,
+  `completed`, and `1` -> `epusdt.payment.succeeded`; `expired` and `timeout`
+  -> `epusdt.payment.expired`; `canceled` and `cancelled` ->
+  `epusdt.payment.canceled`; `failed` -> `epusdt.payment.failed`.
+- Every actual lifecycle transition writes a `billing.order_<status>` audit log
+  with `planId`, `provider`, `previousStatus`, and `planRevoked` metadata.
 - Browser and admin UI clients must not post synthetic provider webhooks.
   Support operations use admin manual payment controls and webhook replay
   endpoints instead.
@@ -408,17 +422,32 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/pastebox ./cmd/pastebox
 - Bad JSON body after signature validation -> `400 invalid_json`.
 - Duplicate signed provider event idempotency key -> return the existing
   webhook event and order without double-activating the plan.
+- Signed Stripe `charge.refunded` or `refund.created` for a paid order ->
+  order `refunded` and active matching plan revoked.
+- Signed Stripe subscription cancel/deletion or Epusdt canceled callback for a
+  paid order -> order `canceled` and active matching plan revoked.
+- Signed failed or expired callback for a pending order -> order `failed` or
+  `expired`; same callback for an already paid order records the webhook event
+  but leaves the order `paid`.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: A signed Stripe `checkout.session.completed` event marks the matching
   order paid once, and duplicate delivery returns the existing webhook event.
+- Good: A signed Stripe refund/cancel callback moves a paid order to
+  `refunded` or `canceled`, revokes the matching active plan, and writes an
+  audit log for the transition.
 - Good: A signed Epusdt `success` callback marks the matching order paid and
   responds with exactly `ok`.
+- Good: A signed Epusdt `expired` callback marks a pending order `expired` and
+  still responds with exactly `ok`.
 - Base: Unsigned provider callbacks bypass CSRF but fail at provider signature
   validation.
 - Bad: Posting old development JSON such as `eventType`, `orderId`, and
   `idempotencyKey` directly to the provider webhook route from the frontend.
+- Bad: Collapsing Epusdt `expired`, `canceled`, and `failed` into generic
+  `payment.failed`, because it loses lifecycle state and breaks operator
+  reconciliation.
 
 ### 6. Tests Required
 
@@ -428,8 +457,13 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/pastebox ./cmd/pastebox
   `invalid_webhook_signature`.
 - HTTP tests assert signed Stripe callbacks are idempotent and activate an
   order once.
+- HTTP tests assert signed Stripe refund callbacks mark paid orders refunded.
 - HTTP tests assert signed Epusdt callbacks return plain `ok` and persist the
   paid order state.
+- HTTP tests assert signed Epusdt expired callbacks return plain `ok` and
+  persist `expired`.
+- Domain tests assert Stripe failed, refunded, canceled, and Epusdt expired
+  lifecycle transitions, including paid-order plan revocation and audit logs.
 - CLI preflight tests assert production env includes Stripe and Epusdt callback
   credentials.
 - Frontend typecheck/build must pass after removing or changing any webhook
@@ -454,6 +488,24 @@ client.processBillingWebhook("stripe", map[string]string{
 // manual payment controls or replay already-recorded webhook events.
 req.Header.Set("Stripe-Signature", signedHeader)
 handler.ServeHTTP(res, req)
+```
+
+#### Wrong
+
+```go
+case "expired", "timeout", "canceled", "cancelled", "failed":
+    return "payment.failed"
+```
+
+#### Correct
+
+```go
+case "expired", "timeout":
+    return "epusdt.payment.expired"
+case "canceled", "cancelled":
+    return "epusdt.payment.canceled"
+case "failed":
+    return "epusdt.payment.failed"
 ```
 
 ---
