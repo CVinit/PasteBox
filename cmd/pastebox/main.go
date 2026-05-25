@@ -68,7 +68,7 @@ func runAPI(stdout io.Writer) int {
 
 	startupCtx, startupCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer startupCancel()
-	service, pool, err := newProductionService(startupCtx, cfg)
+	service, pool, objects, err := newProductionService(startupCtx, cfg)
 	if err != nil {
 		logger.Error("service setup failed", "error", err)
 		return 1
@@ -77,7 +77,7 @@ func runAPI(stdout io.Writer) int {
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpserver.NewWithService(cfg, logger, service),
+		Handler:           httpserver.NewWithServiceAndReadiness(cfg, logger, service, productionReadinessChecker(cfg, pool, objects)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -113,15 +113,71 @@ func runAPI(stdout io.Writer) int {
 	return 0
 }
 
-func newProductionService(ctx context.Context, cfg config.Config) (*app.Service, *pgxpool.Pool, error) {
+type objectHealthChecker interface {
+	Health(ctx context.Context) error
+}
+
+func productionReadinessChecker(cfg config.Config, pool *pgxpool.Pool, objects objectHealthChecker) httpserver.ReadinessChecker {
+	return func(ctx context.Context) []httpserver.ReadinessComponent {
+		components := []httpserver.ReadinessComponent{
+			readinessCheck(ctx, "database", func(checkCtx context.Context) error {
+				return pool.Ping(checkCtx)
+			}),
+			readinessCheck(ctx, "object_storage", func(checkCtx context.Context) error {
+				if objects == nil {
+					return errors.New("object storage health check is not configured")
+				}
+				return objects.Health(checkCtx)
+			}),
+			readinessCheck(ctx, "redis", func(checkCtx context.Context) error {
+				return tcpReadiness(checkCtx, cfg.RedisAddr)
+			}),
+			readinessCheck(ctx, "worker_queue", func(checkCtx context.Context) error {
+				_, err := postgres.NewJobStore(pool).ListRunnableJobs(checkCtx, 1, time.Now().UTC())
+				return err
+			}),
+		}
+		if strings.EqualFold(strings.TrimSpace(cfg.MailerProvider), "smtp") {
+			components = append(components, readinessCheck(ctx, "mail", func(checkCtx context.Context) error {
+				return tcpReadiness(checkCtx, net.JoinHostPort(cfg.SMTP.Host, strconv.Itoa(cfg.SMTP.Port)))
+			}))
+		} else {
+			components = append(components, httpserver.ReadinessComponent{Name: "mail", Status: "skipped", Message: "smtp provider is not configured"})
+		}
+		return components
+	}
+}
+
+func readinessCheck(ctx context.Context, name string, check func(context.Context) error) httpserver.ReadinessComponent {
+	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := check(checkCtx); err != nil {
+		return httpserver.ReadinessComponent{Name: name, Status: "fail", Message: err.Error()}
+	}
+	return httpserver.ReadinessComponent{Name: name, Status: "ok"}
+}
+
+func tcpReadiness(ctx context.Context, address string) error {
+	if strings.TrimSpace(address) == "" {
+		return errors.New("address is not configured")
+	}
+	dialer := net.Dialer{Timeout: 2 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
+func newProductionService(ctx context.Context, cfg config.Config) (*app.Service, *pgxpool.Pool, objectHealthChecker, error) {
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
-		return nil, nil, fmt.Errorf("postgres pool setup: %w", err)
+		return nil, nil, nil, fmt.Errorf("postgres pool setup: %w", err)
 	}
 	objects, err := objectstore.NewS3Store(cfg.S3)
 	if err != nil {
 		pool.Close()
-		return nil, nil, fmt.Errorf("object store setup: %w", err)
+		return nil, nil, nil, fmt.Errorf("object store setup: %w", err)
 	}
 	service, err := app.NewWithStorage(ctx, cfg, app.Stores{
 		Auth: app.AuthStores{
@@ -149,9 +205,9 @@ func newProductionService(ctx context.Context, cfg config.Config) (*app.Service,
 	})
 	if err != nil {
 		pool.Close()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return service, pool, nil
+	return service, pool, objects, nil
 }
 
 func runAdmin(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -527,7 +583,7 @@ func runWorker(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	startupCtx, startupCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer startupCancel()
-	service, pool, err := newProductionService(startupCtx, cfg)
+	service, pool, _, err := newProductionService(startupCtx, cfg)
 	if err != nil {
 		logger.Error("worker service setup failed", "error", err)
 		return 1

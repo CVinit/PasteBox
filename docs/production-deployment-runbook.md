@@ -134,13 +134,7 @@ curl -fsS https://pastebox.example.com/api/v1/ready
 Expected responses:
 
 ```json
-{"status":"ready"}
-```
-
-and:
-
-```json
-{"app":"PasteBox","env":"production","status":"ready"}
+{"app":"PasteBox","env":"production","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"mail","status":"ok"}]}
 ```
 
 ## Worker Supervision

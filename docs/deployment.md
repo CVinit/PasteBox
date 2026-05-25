@@ -128,7 +128,7 @@ Expected response:
 and:
 
 ```json
-{"status":"ready"}
+{"app":"PasteBox","env":"production","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"mail","status":"ok"}]}
 ```
 
 and:
@@ -140,7 +140,7 @@ and:
 and:
 
 ```json
-{"app":"PasteBox","env":"production","status":"ready"}
+{"app":"PasteBox","env":"production","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"mail","status":"ok"}]}
 ```
 
 ## TLS and Reverse Proxy

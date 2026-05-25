@@ -52,9 +52,25 @@ var (
 var staticFS embed.FS
 
 type Server struct {
-	cfg    config.Config
-	logger *slog.Logger
-	app    *app.Service
+	cfg       config.Config
+	logger    *slog.Logger
+	app       *app.Service
+	readiness ReadinessChecker
+}
+
+type ReadinessChecker func(ctx context.Context) []ReadinessComponent
+
+type ReadinessComponent struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+}
+
+type ReadinessReport struct {
+	App        string               `json:"app"`
+	Env        string               `json:"env"`
+	Status     string               `json:"status"`
+	Components []ReadinessComponent `json:"components"`
 }
 
 func New(cfg config.Config, logger *slog.Logger) http.Handler {
@@ -62,17 +78,27 @@ func New(cfg config.Config, logger *slog.Logger) http.Handler {
 }
 
 func NewWithService(cfg config.Config, logger *slog.Logger, service *app.Service) http.Handler {
+	return NewWithServiceAndReadiness(cfg, logger, service, nil)
+}
+
+func NewWithServiceAndReadiness(cfg config.Config, logger *slog.Logger, service *app.Service, readiness ReadinessChecker) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if service == nil {
 		service = app.New(cfg)
 	}
+	if readiness == nil {
+		readiness = func(context.Context) []ReadinessComponent {
+			return []ReadinessComponent{{Name: "application", Status: "ok"}}
+		}
+	}
 
 	server := &Server{
-		cfg:    cfg,
-		logger: logger,
-		app:    service,
+		cfg:       cfg,
+		logger:    logger,
+		app:       service,
+		readiness: readiness,
 	}
 	return server.routes()
 }
@@ -181,10 +207,8 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (s *Server) readyz(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{
-		"status": "ready",
-	})
+func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
+	s.writeReadiness(w, r)
 }
 
 func (s *Server) apiHealth(w http.ResponseWriter, _ *http.Request) {
@@ -195,12 +219,24 @@ func (s *Server) apiHealth(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (s *Server) apiReady(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{
-		"app":    s.cfg.AppName,
-		"env":    s.cfg.AppEnv,
-		"status": "ready",
-	})
+func (s *Server) apiReady(w http.ResponseWriter, r *http.Request) {
+	s.writeReadiness(w, r)
+}
+
+func (s *Server) writeReadiness(w http.ResponseWriter, r *http.Request) {
+	components := s.readiness(r.Context())
+	status := "ready"
+	for _, component := range components {
+		if component.Status != "ok" && component.Status != "skipped" {
+			status = "not_ready"
+			break
+		}
+	}
+	code := http.StatusOK
+	if status != "ready" {
+		code = http.StatusServiceUnavailable
+	}
+	writeJSON(w, code, ReadinessReport{App: s.cfg.AppName, Env: s.cfg.AppEnv, Status: status, Components: components})
 }
 
 func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {

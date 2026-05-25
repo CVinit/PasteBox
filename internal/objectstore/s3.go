@@ -96,6 +96,13 @@ func (s *S3Store) DeleteObject(ctx context.Context, key string) error {
 	return nil
 }
 
+func (s *S3Store) Health(ctx context.Context) error {
+	if _, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(s.bucket)}); err != nil {
+		return fmt.Errorf("s3 head bucket %q: %w", s.bucket, err)
+	}
+	return nil
+}
+
 func isS3NotFound(err error) bool {
 	var noSuchKey *s3types.NoSuchKey
 	if errors.As(err, &noSuchKey) {

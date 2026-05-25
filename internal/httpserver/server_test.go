@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/hmac"
 	"crypto/md5"
@@ -57,19 +58,35 @@ func TestReadinessEndpoints(t *testing.T) {
 	readyz := httptest.NewRecorder()
 	handler.ServeHTTP(readyz, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	assertStatus(t, readyz, http.StatusOK)
-	var rootBody map[string]string
+	var rootBody ReadinessReport
 	decodeResponse(t, readyz, &rootBody)
-	if rootBody["status"] != "ready" {
+	if rootBody.Status != "ready" || len(rootBody.Components) == 0 {
 		t.Fatalf("expected root readiness status, got %#v", rootBody)
 	}
 
 	apiReady := httptest.NewRecorder()
 	handler.ServeHTTP(apiReady, httptest.NewRequest(http.MethodGet, "/api/v1/ready", nil))
 	assertStatus(t, apiReady, http.StatusOK)
-	var apiBody map[string]string
+	var apiBody ReadinessReport
 	decodeResponse(t, apiReady, &apiBody)
-	if apiBody["app"] != "PasteBox" || apiBody["env"] != "production" || apiBody["status"] != "ready" {
+	if apiBody.App != "PasteBox" || apiBody.Env != "production" || apiBody.Status != "ready" {
 		t.Fatalf("unexpected api readiness body: %#v", apiBody)
+	}
+}
+
+func TestReadinessEndpointReturnsUnavailableForFailedDependency(t *testing.T) {
+	cfg := config.FromEnv()
+	handler := NewWithServiceAndReadiness(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), app.New(cfg), func(context.Context) []ReadinessComponent {
+		return []ReadinessComponent{{Name: "database", Status: "fail", Message: "down"}}
+	})
+
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	assertStatus(t, res, http.StatusServiceUnavailable)
+	var body ReadinessReport
+	decodeResponse(t, res, &body)
+	if body.Status != "not_ready" || len(body.Components) != 1 || body.Components[0].Name != "database" {
+		t.Fatalf("unexpected failed readiness body: %#v", body)
 	}
 }
 

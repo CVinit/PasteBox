@@ -363,6 +363,78 @@ COPY --from=web-builder /src/web/dist/ ./internal/httpserver/static/
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/pastebox ./cmd/pastebox
 ```
 
+## Scenario: Production Readiness Checks
+
+### 1. Scope / Trigger
+
+- Trigger: Any change to `/readyz`, `/api/v1/ready`, production service wiring,
+  object storage setup, Redis config, SMTP config, or worker queue wiring.
+
+### 2. Signatures
+
+- Root readiness: `GET /readyz`
+- API readiness: `GET /api/v1/ready`
+- Handler factory:
+  `httpserver.NewWithServiceAndReadiness(cfg, logger, service, checker)`
+- Production entrypoint: `pastebox api`
+
+### 3. Contracts
+
+- Readiness responses use
+  `{app, env, status, components:[{name,status,message?}]}`.
+- `status = ready` returns HTTP 200 only when every component is `ok` or
+  `skipped`.
+- Any component status other than `ok` or `skipped` returns HTTP 503 with
+  `status = not_ready`.
+- Production API startup injects dependency checks for PostgreSQL, S3/object
+  storage, Redis TCP reachability, worker job-table access, and SMTP TCP
+  reachability when SMTP is configured.
+- Development/test handlers that do not inject a checker use a default
+  in-process `application: ok` component so local tests do not require external
+  services.
+
+### 4. Validation & Error Matrix
+
+- Dependency check succeeds -> component `ok`.
+- SMTP provider is not `smtp` -> mail component `skipped`.
+- Dependency check fails or times out -> component `fail`, HTTP 503.
+- S3 bucket cannot be checked -> object storage component `fail`, HTTP 503.
+
+### 5. Good/Base/Bad Cases
+
+- Good: Production `/readyz` proves database, object storage, Redis, SMTP, and
+  worker queue access before Compose marks API healthy.
+- Base: Unit tests can inject a failing checker and assert 503 without opening
+  real sockets.
+- Bad: A static `{"status":"ready"}` response while PostgreSQL or object
+  storage is unreachable.
+
+### 6. Tests Required
+
+- Handler tests assert ready and failed readiness response shapes and status
+  codes.
+- Command/package tests compile the production readiness checker with the real
+  PostgreSQL pool and S3 health interface.
+- Run full `make test` after changing readiness contracts because deployment
+  docs and Compose health checks consume them.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+```
+
+#### Correct
+
+```go
+writeJSON(w, statusCode, ReadinessReport{
+    Status: componentsStatus(components),
+    Components: components,
+})
+```
+
 ## Scenario: Provider Billing Webhooks
 
 ### 1. Scope / Trigger
