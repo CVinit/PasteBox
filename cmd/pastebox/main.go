@@ -350,10 +350,14 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		"PASTEBOX_SMTP_FROM_EMAIL",
 		"PASTEBOX_SMTP_TLS_MODE",
 		"PASTEBOX_STRIPE_ENABLED",
+		"PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE",
 		"PASTEBOX_STRIPE_WEBHOOK_SECRET",
 		"PASTEBOX_EPUSDT_ENABLED",
 		"PASTEBOX_EPUSDT_PID",
 		"PASTEBOX_EPUSDT_SECRET_KEY",
+		"PASTEBOX_EPUSDT_CHECKOUT_URL_TEMPLATE",
+		"PASTEBOX_EPUSDT_ADDRESS",
+		"PASTEBOX_EPUSDT_CHAIN",
 		"PASTEBOX_BOOTSTRAP_ADMIN_EMAIL",
 		"PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD",
 		"PASTEBOX_RESTIC_REPOSITORY",
@@ -652,6 +656,9 @@ func validateBillingConfig(cfg config.Config) error {
 	if !strings.HasPrefix(strings.TrimSpace(cfg.Stripe.WebhookSecret), "whsec_") {
 		return fmt.Errorf("PASTEBOX_STRIPE_WEBHOOK_SECRET must be a Stripe webhook signing secret")
 	}
+	if err := validatePaymentURLTemplate(cfg.Stripe.CheckoutURLTemplate, "PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE"); err != nil {
+		return err
+	}
 	if !cfg.EpusdtEnabled {
 		return fmt.Errorf("PASTEBOX_EPUSDT_ENABLED must be true for first production launch")
 	}
@@ -660,6 +667,46 @@ func validateBillingConfig(cfg config.Config) error {
 	}
 	if strings.TrimSpace(cfg.Epusdt.SecretKey) == "" {
 		return fmt.Errorf("PASTEBOX_EPUSDT_SECRET_KEY is required")
+	}
+	if err := validatePaymentURLTemplate(cfg.Epusdt.CheckoutURLTemplate, "PASTEBOX_EPUSDT_CHECKOUT_URL_TEMPLATE"); err != nil {
+		return err
+	}
+	if strings.TrimSpace(cfg.Epusdt.Address) == "" {
+		return fmt.Errorf("PASTEBOX_EPUSDT_ADDRESS is required")
+	}
+	if strings.TrimSpace(cfg.Epusdt.Chain) == "" {
+		return fmt.Errorf("PASTEBOX_EPUSDT_CHAIN is required")
+	}
+	return nil
+}
+
+func validatePaymentURLTemplate(template string, envKey string) error {
+	rendered := strings.NewReplacer(
+		"{order_id}", "ord_preflight",
+		"{orderId}", "ord_preflight",
+		"{plan_id}", "plus",
+		"{planId}", "plus",
+		"{period}", "monthly",
+		"{price_id}", "price_plus_monthly",
+		"{priceId}", "price_plus_monthly",
+		"{amount_cents}", "900",
+		"{amountCents}", "900",
+		"{currency}", "USD",
+		"{provider}", "stripe",
+		"{success_url}", "https%3A%2F%2Fpastebox.example.com%2F%3Fview%3Dbilling",
+		"{successUrl}", "https%3A%2F%2Fpastebox.example.com%2F%3Fview%3Dbilling",
+		"{cancel_url}", "https%3A%2F%2Fpastebox.example.com%2F%3Fview%3Dbilling%26status%3Dcancelled",
+		"{cancelUrl}", "https%3A%2F%2Fpastebox.example.com%2F%3Fview%3Dbilling%26status%3Dcancelled",
+	).Replace(strings.TrimSpace(template))
+	endpoint, err := url.Parse(rendered)
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
+		return fmt.Errorf("%s must be a valid https payment checkout URL template, got %q", envKey, template)
+	}
+	if endpoint.Scheme != "https" {
+		return fmt.Errorf("%s must use https:// payment checkout URLs, got %q", envKey, template)
+	}
+	if isLocalHost(endpoint.Hostname()) {
+		return fmt.Errorf("%s must point to the production payment checkout service, got local host %q", envKey, endpoint.Hostname())
 	}
 	return nil
 }

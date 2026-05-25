@@ -75,12 +75,16 @@ type SMTPConfig struct {
 }
 
 type StripeConfig struct {
-	WebhookSecret string
+	WebhookSecret       string
+	CheckoutURLTemplate string
 }
 
 type EpusdtConfig struct {
-	PID       string
-	SecretKey string
+	PID                 string
+	SecretKey           string
+	CheckoutURLTemplate string
+	Address             string
+	Chain               string
 }
 
 type RateLimitConfig struct {
@@ -154,11 +158,15 @@ func FromEnv() Config {
 		StripeEnabled: envBool("PASTEBOX_STRIPE_ENABLED", false),
 		EpusdtEnabled: envBool("PASTEBOX_EPUSDT_ENABLED", false),
 		Stripe: StripeConfig{
-			WebhookSecret: envString("PASTEBOX_STRIPE_WEBHOOK_SECRET", ""),
+			WebhookSecret:       envString("PASTEBOX_STRIPE_WEBHOOK_SECRET", ""),
+			CheckoutURLTemplate: envString("PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE", ""),
 		},
 		Epusdt: EpusdtConfig{
-			PID:       envString("PASTEBOX_EPUSDT_PID", ""),
-			SecretKey: envString("PASTEBOX_EPUSDT_SECRET_KEY", ""),
+			PID:                 envString("PASTEBOX_EPUSDT_PID", ""),
+			SecretKey:           envString("PASTEBOX_EPUSDT_SECRET_KEY", ""),
+			CheckoutURLTemplate: envString("PASTEBOX_EPUSDT_CHECKOUT_URL_TEMPLATE", ""),
+			Address:             envString("PASTEBOX_EPUSDT_ADDRESS", ""),
+			Chain:               envString("PASTEBOX_EPUSDT_CHAIN", "USDT-TRC20"),
 		},
 
 		BootstrapAdminEmail:    envString("PASTEBOX_BOOTSTRAP_ADMIN_EMAIL", ""),

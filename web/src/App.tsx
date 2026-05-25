@@ -60,6 +60,7 @@ import {
 import "./styles.css";
 
 type View = "inbox" | "shared" | "billing" | "settings" | "admin";
+type PaymentProvider = "stripe" | "epusdt";
 
 type Draft = {
   title: string;
@@ -528,10 +529,19 @@ const copy: Record<Locale, Record<string, string>> = {
     anonymous: "anonymous",
     expires: "expires",
     stripeUsdtPayments: "Stripe and USDT payment lifecycle",
+    billingSupport: "Billing support",
+    billingSupportBody:
+      "Refunds, duplicate charges, stuck Epusdt payments, and manual review requests are handled through the refund policy and support intake.",
+    refundPolicy: "Refund Policy",
+    support: "Support",
     storage: "Storage",
     file: "File",
     retention: "Retention",
     traffic: "Traffic",
+    activePastes: "active pastes",
+    unavailable: "Unavailable",
+    openCheckout: "Open checkout",
+    paymentAddress: "address",
     webhook: "Webhook",
     accountActive: "Account active",
     deletionScheduled: "Deletion scheduled",
@@ -656,10 +666,19 @@ const copy: Record<Locale, Record<string, string>> = {
     anonymous: "匿名访问",
     expires: "过期",
     stripeUsdtPayments: "Stripe 和 USDT 支付状态",
+    billingSupport: "支付支持",
+    billingSupportBody:
+      "退款、重复扣款、卡住的 Epusdt 支付和人工审核请求会通过退款政策和支持入口处理。",
+    refundPolicy: "退款政策",
+    support: "支持",
     storage: "存储",
     file: "文件",
     retention: "有效期",
     traffic: "流量",
+    activePastes: "条有效 paste",
+    unavailable: "不可购买",
+    openCheckout: "打开支付页",
+    paymentAddress: "收款地址",
     webhook: "Webhook",
     accountActive: "账号正常",
     deletionScheduled: "已计划删除",
@@ -812,6 +831,20 @@ function orderStatusDetail(status: string, locale: Locale): OrderStatusDetail {
         : "Provider returned this status.",
   };
   return { ...detail, tone: orderStatusTone(normalized) };
+}
+
+function paymentProviderOptions(price: Price): Array<{
+  provider: PaymentProvider;
+  label: string;
+}> {
+  const options: Array<{ provider: PaymentProvider; label: string }> = [];
+  if (price.stripeEnabled) {
+    options.push({ provider: "stripe", label: "Stripe" });
+  }
+  if (price.epusdtEnabled) {
+    options.push({ provider: "epusdt", label: "Epusdt" });
+  }
+  return options;
 }
 
 function App() {
@@ -1293,7 +1326,11 @@ function App() {
     }
   }
 
-  async function makeOrder(planId: string, period: string, provider: string) {
+  async function makeOrder(
+    planId: string,
+    period: string,
+    provider: PaymentProvider,
+  ) {
     const order = await run(
       () => client.createOrder({ provider, planId, period }),
       "Order created",
@@ -1873,12 +1910,11 @@ function App() {
             <section className="notice-card">
               <LifeBuoy size={18} aria-hidden="true" />
               <div>
-                <strong>Billing support</strong>
+                <strong>{t("billingSupport")}</strong>
                 <span>
-                  Refunds, duplicate charges, stuck Epusdt payments, and manual
-                  review requests are handled through{" "}
-                  <a href="/legal/refund">Refund Policy</a> and{" "}
-                  <a href="/support">Support</a>.
+                  {t("billingSupportBody")}{" "}
+                  <a href="/legal/refund">{t("refundPolicy")}</a>{" "}
+                  <a href="/support">{t("support")}</a>.
                 </span>
               </div>
             </section>
@@ -1887,43 +1923,51 @@ function App() {
                 <article className="plan-card" key={plan.id}>
                   <strong>{plan.name}</strong>
                   <span>
-                    {plan.activePasteLimit.toLocaleString()} active pastes
+                    {plan.activePasteLimit.toLocaleString()} {t("activePastes")}
                   </span>
                   <dl>
                     <div>
-                      <dt>Storage</dt>
+                      <dt>{t("storage")}</dt>
                       <dd>{formatBytes(plan.activeStorageBytes)}</dd>
                     </div>
                     <div>
-                      <dt>File</dt>
+                      <dt>{t("file")}</dt>
                       <dd>{formatBytes(plan.singleFileBytes)}</dd>
                     </div>
                     <div>
-                      <dt>Retention</dt>
+                      <dt>{t("retention")}</dt>
                       <dd>{formatDuration(plan.maxRetentionSeconds)}</dd>
                     </div>
                     <div>
-                      <dt>Traffic</dt>
+                      <dt>{t("traffic")}</dt>
                       <dd>{formatBytes(plan.dailyShareDownloadBytes)}</dd>
                     </div>
                   </dl>
                   <div className="price-list">
-                    {(pricesByPlan.get(plan.id) ?? []).map((price) => (
-                      <button
-                        type="button"
-                        key={price.id}
-                        onClick={() =>
-                          void makeOrder(
-                            plan.id,
-                            price.period,
-                            price.stripeEnabled ? "stripe" : "epusdt",
-                          )
-                        }
-                      >
-                        {price.period} · {(price.amountCents / 100).toFixed(2)}{" "}
-                        {price.currency}
-                      </button>
-                    ))}
+                    {(pricesByPlan.get(plan.id) ?? []).flatMap((price) => {
+                      const providers = paymentProviderOptions(price);
+                      if (providers.length === 0) {
+                        return [
+                          <button type="button" key={price.id} disabled>
+                            {t("unavailable")} · {price.period} ·{" "}
+                            {(price.amountCents / 100).toFixed(2)}{" "}
+                            {price.currency}
+                          </button>,
+                        ];
+                      }
+                      return providers.map((option) => (
+                        <button
+                          type="button"
+                          key={`${price.id}-${option.provider}`}
+                          onClick={() =>
+                            void makeOrder(plan.id, price.period, option.provider)
+                          }
+                        >
+                          {option.label} · {price.period} ·{" "}
+                          {(price.amountCents / 100).toFixed(2)} {price.currency}
+                        </button>
+                      ));
+                    })}
                   </div>
                 </article>
               ))}
@@ -1941,6 +1985,25 @@ function App() {
                     <span className="order-status-note">
                       {status.description}
                     </span>
+                    {order.status === "pending" ? (
+                      <div className="order-payment-info">
+                        {order.checkoutUrl ? (
+                          <a
+                            href={order.checkoutUrl}
+                            rel="noreferrer"
+                            target="_blank"
+                          >
+                            {t("openCheckout")}
+                          </a>
+                        ) : null}
+                        {order.address ? (
+                          <span>
+                            {order.chain || "USDT"} {t("paymentAddress")}:{" "}
+                            <code>{order.address}</code>
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                   <span className={`order-status order-status--${status.tone}`}>
                     {status.label}

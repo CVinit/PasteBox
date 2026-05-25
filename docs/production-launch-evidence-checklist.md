@@ -77,10 +77,14 @@ commit real secrets, raw provider payloads, private object keys, or user data.
 - [ ] Google OAuth login completed against the production OAuth application and
   authorized redirect URI.
 - [ ] Google OAuth state mismatch failed without creating a session.
+- [ ] Stripe order creation returned a production checkout URL, not a
+  development `/dev/checkout` URL.
 - [ ] Stripe signed webhook replay succeeded and duplicate replay was
   idempotent.
 - [ ] Stripe refund or cancellation test-mode webhook reached the expected
   lifecycle state.
+- [ ] Epusdt order creation returned the configured production checkout URL,
+  chain, and receiving address, not the development test address.
 - [ ] Epusdt signed success callback activated the matching order.
 - [ ] Epusdt expired or canceled callback reached the expected lifecycle state.
 - [ ] ClamAV scan marked a known clean file `clean`.

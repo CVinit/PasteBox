@@ -27,8 +27,13 @@ mode `600`.
   API requests are only allowed for exact listed origins.
 - SMTP credentials.
 - Stripe webhook signing secret (`PASTEBOX_STRIPE_WEBHOOK_SECRET`) and API keys.
+  `PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE` is not itself a secret, but it must
+  point to the production Stripe checkout/session creation surface and must not
+  embed API keys or bearer tokens.
 - Epusdt merchant id (`PASTEBOX_EPUSDT_PID`) and callback secret
-  (`PASTEBOX_EPUSDT_SECRET_KEY`).
+  (`PASTEBOX_EPUSDT_SECRET_KEY`). `PASTEBOX_EPUSDT_ADDRESS` is public payment
+  routing data, but it must be verified against the operator-owned Epusdt
+  merchant account before launch.
 - Google OAuth client secret once Phase 4 enables production OAuth.
 
 ## Handling Rules

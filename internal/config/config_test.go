@@ -56,8 +56,12 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	t.Setenv("PASTEBOX_SMTP_TLS_MODE", "tls")
 	t.Setenv("PASTEBOX_STRIPE_ENABLED", "true")
 	t.Setenv("PASTEBOX_STRIPE_WEBHOOK_SECRET", "whsec_test")
+	t.Setenv("PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE", "https://checkout.stripe.test/session?order_id={order_id}")
 	t.Setenv("PASTEBOX_EPUSDT_PID", "1000")
 	t.Setenv("PASTEBOX_EPUSDT_SECRET_KEY", "epusdt-secret")
+	t.Setenv("PASTEBOX_EPUSDT_CHECKOUT_URL_TEMPLATE", "https://epusdt.test/pay?order_id={order_id}")
+	t.Setenv("PASTEBOX_EPUSDT_ADDRESS", "TREALUSDTADDRESS")
+	t.Setenv("PASTEBOX_EPUSDT_CHAIN", "USDT-TRC20")
 
 	cfg := FromEnv()
 
@@ -103,10 +107,10 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	if cfg.SMTP.Username != "smtp-user" || cfg.SMTP.Password != "smtp-secret" || cfg.SMTP.FromEmail != "noreply@pastebox.example.com" || cfg.SMTP.FromName != "PasteBox Mail" || cfg.SMTP.TLSMode != "tls" {
 		t.Fatalf("unexpected SMTP config: %#v", cfg.SMTP)
 	}
-	if !cfg.StripeEnabled || cfg.Stripe.WebhookSecret != "whsec_test" {
+	if !cfg.StripeEnabled || cfg.Stripe.WebhookSecret != "whsec_test" || cfg.Stripe.CheckoutURLTemplate != "https://checkout.stripe.test/session?order_id={order_id}" {
 		t.Fatalf("expected Stripe settings from env, got enabled=%v stripe=%#v", cfg.StripeEnabled, cfg.Stripe)
 	}
-	if cfg.Epusdt.PID != "1000" || cfg.Epusdt.SecretKey != "epusdt-secret" {
+	if cfg.Epusdt.PID != "1000" || cfg.Epusdt.SecretKey != "epusdt-secret" || cfg.Epusdt.CheckoutURLTemplate != "https://epusdt.test/pay?order_id={order_id}" || cfg.Epusdt.Address != "TREALUSDTADDRESS" || cfg.Epusdt.Chain != "USDT-TRC20" {
 		t.Fatalf("expected Epusdt settings from env, got %#v", cfg.Epusdt)
 	}
 }

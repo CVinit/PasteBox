@@ -115,6 +115,15 @@ func TestProductionPreflightRequiresExplicitProductionEnvironment(t *testing.T) 
 		"PASTEBOX_SMTP_PASSWORD",
 		"PASTEBOX_SMTP_FROM_EMAIL",
 		"PASTEBOX_SMTP_TLS_MODE",
+		"PASTEBOX_STRIPE_ENABLED",
+		"PASTEBOX_STRIPE_WEBHOOK_SECRET",
+		"PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE",
+		"PASTEBOX_EPUSDT_ENABLED",
+		"PASTEBOX_EPUSDT_PID",
+		"PASTEBOX_EPUSDT_SECRET_KEY",
+		"PASTEBOX_EPUSDT_CHECKOUT_URL_TEMPLATE",
+		"PASTEBOX_EPUSDT_ADDRESS",
+		"PASTEBOX_EPUSDT_CHAIN",
 		"PASTEBOX_BOOTSTRAP_ADMIN_EMAIL",
 		"PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD",
 		"PASTEBOX_RESTIC_REPOSITORY",
@@ -553,6 +562,47 @@ func TestProductionPreflightRejectsLocalResticRepository(t *testing.T) {
 	}
 }
 
+func TestProductionPreflightRejectsInvalidPaymentCheckoutTemplates(t *testing.T) {
+	tests := []struct {
+		name     string
+		key      string
+		value    string
+		expected string
+	}{
+		{
+			name:     "stripe http",
+			key:      "PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE",
+			value:    "http://checkout.stripe.example.com/session?order_id={order_id}",
+			expected: "PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE must use https:// payment checkout URLs",
+		},
+		{
+			name:     "epusdt invalid",
+			key:      "PASTEBOX_EPUSDT_CHECKOUT_URL_TEMPLATE",
+			value:    "not-a-url",
+			expected: "PASTEBOX_EPUSDT_CHECKOUT_URL_TEMPLATE must be a valid https payment checkout URL template",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setValidProductionEnv(t)
+			t.Setenv(tt.key, tt.value)
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run([]string{"preflight", "production"}, &stdout, &stderr)
+			if code != 1 {
+				t.Fatalf("expected invalid checkout template to fail, got %d", code)
+			}
+			if !strings.Contains(stderr.String(), tt.expected) {
+				t.Fatalf("expected checkout template validation error containing %q, got %q", tt.expected, stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("expected empty stdout, got %q", stdout.String())
+			}
+		})
+	}
+}
+
 func TestProductionPreflightRejectsWALArchiveRPOAboveFifteenMinutes(t *testing.T) {
 	setValidProductionEnv(t)
 	t.Setenv("PASTEBOX_WAL_ARCHIVE_TIMEOUT_SECONDS", "901")
@@ -649,9 +699,13 @@ func setValidProductionEnv(t *testing.T) {
 	t.Setenv("PASTEBOX_SMTP_TLS_MODE", "starttls")
 	t.Setenv("PASTEBOX_STRIPE_ENABLED", "true")
 	t.Setenv("PASTEBOX_STRIPE_WEBHOOK_SECRET", "whsec_test_production_webhook_secret")
+	t.Setenv("PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE", "https://checkout.stripe.example.com/session?order_id={order_id}&success_url={success_url}&cancel_url={cancel_url}")
 	t.Setenv("PASTEBOX_EPUSDT_ENABLED", "true")
 	t.Setenv("PASTEBOX_EPUSDT_PID", "1000")
 	t.Setenv("PASTEBOX_EPUSDT_SECRET_KEY", "epusdt-secret")
+	t.Setenv("PASTEBOX_EPUSDT_CHECKOUT_URL_TEMPLATE", "https://epusdt.example.com/pay?order_id={order_id}&amount_cents={amount_cents}&currency={currency}")
+	t.Setenv("PASTEBOX_EPUSDT_ADDRESS", "TREALUSDTADDRESS")
+	t.Setenv("PASTEBOX_EPUSDT_CHAIN", "USDT-TRC20")
 	t.Setenv("PASTEBOX_BOOTSTRAP_ADMIN_EMAIL", "admin@example.com")
 	t.Setenv("PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD", "change-me")
 	t.Setenv("PASTEBOX_RESTIC_REPOSITORY", "s3:https://objects.example.com/pastebox-backups")

@@ -1286,6 +1286,92 @@ func TestBillingWebhookLifecycleStatuses(t *testing.T) {
 	assertAuditAction(t, logs, "billing.order_expired")
 }
 
+func TestProductionOrdersRequireConfiguredPaymentDetails(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	cfg := config.FromEnv()
+	cfg.AppEnv = "production"
+	cfg.PublicURL = "https://pastebox.example.com"
+	cfg.BootstrapAdminEmail = ""
+	cfg.BootstrapAdminPassword = ""
+	cfg.StripeEnabled = true
+	cfg.EpusdtEnabled = true
+	svc := New(cfg)
+	svc.now = func() time.Time { return now }
+	owner := registerTestUser(t, svc, "billing-production-missing@example.com")
+
+	if _, err := svc.CreateOrder(owner.User.ID, "stripe", "plus", "monthly"); !hasAppCode(err, "payment_provider_not_configured") {
+		t.Fatalf("expected missing Stripe checkout configuration to fail closed, got %v", err)
+	}
+	if _, err := svc.CreateOrder(owner.User.ID, "epusdt", "plus", "monthly"); !hasAppCode(err, "payment_provider_not_configured") {
+		t.Fatalf("expected missing Epusdt checkout configuration to fail closed, got %v", err)
+	}
+}
+
+func TestProductionOrdersRejectLocalCheckoutTemplates(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	cfg := config.FromEnv()
+	cfg.AppEnv = "production"
+	cfg.PublicURL = "https://pastebox.example.com"
+	cfg.BootstrapAdminEmail = ""
+	cfg.BootstrapAdminPassword = ""
+	cfg.StripeEnabled = true
+	cfg.Stripe.CheckoutURLTemplate = "https://localhost/stripe/checkout?order_id={order_id}"
+	cfg.EpusdtEnabled = true
+	cfg.Epusdt.CheckoutURLTemplate = "https://127.0.0.1/epusdt/pay?order_id={order_id}"
+	cfg.Epusdt.Address = "TREALUSDTADDRESS"
+	cfg.Epusdt.Chain = "USDT-TRC20"
+	svc := New(cfg)
+	svc.now = func() time.Time { return now }
+	owner := registerTestUser(t, svc, "billing-production-local-checkout@example.com")
+
+	if _, err := svc.CreateOrder(owner.User.ID, "stripe", "plus", "monthly"); !hasAppCode(err, "payment_provider_not_configured") {
+		t.Fatalf("expected local Stripe checkout URL to fail closed, got %v", err)
+	}
+	if _, err := svc.CreateOrder(owner.User.ID, "epusdt", "plus", "monthly"); !hasAppCode(err, "payment_provider_not_configured") {
+		t.Fatalf("expected local Epusdt checkout URL to fail closed, got %v", err)
+	}
+}
+
+func TestProductionOrdersUseConfiguredProviderPaymentDetails(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	cfg := config.FromEnv()
+	cfg.AppEnv = "production"
+	cfg.PublicURL = "https://pastebox.example.com"
+	cfg.BootstrapAdminEmail = ""
+	cfg.BootstrapAdminPassword = ""
+	cfg.StripeEnabled = true
+	cfg.Stripe.CheckoutURLTemplate = "https://checkout.stripe.example.com/session?client_reference_id={order_id}&price={price_id}&success_url={success_url}&cancel_url={cancel_url}"
+	cfg.EpusdtEnabled = true
+	cfg.Epusdt.CheckoutURLTemplate = "https://epusdt.example.com/pay/{order_id}?amount_cents={amount_cents}&currency={currency}"
+	cfg.Epusdt.Address = "TREALUSDTADDRESS"
+	cfg.Epusdt.Chain = "USDT-TRC20"
+	svc := New(cfg)
+	svc.now = func() time.Time { return now }
+	owner := registerTestUser(t, svc, "billing-production-configured@example.com")
+
+	stripeOrder, err := svc.CreateOrder(owner.User.ID, "stripe", "plus", "monthly")
+	if err != nil {
+		t.Fatalf("create configured Stripe order: %v", err)
+	}
+	if !strings.Contains(stripeOrder.CheckoutURL, "https://checkout.stripe.example.com/session") || !strings.Contains(stripeOrder.CheckoutURL, stripeOrder.ID) || strings.Contains(stripeOrder.CheckoutURL, "/dev/checkout/") {
+		t.Fatalf("expected configured Stripe checkout URL, got %#v", stripeOrder)
+	}
+	if stripeOrder.Address != "" || stripeOrder.Chain != "" {
+		t.Fatalf("Stripe order should not expose Epusdt payment address fields, got %#v", stripeOrder)
+	}
+
+	epusdtOrder, err := svc.CreateOrder(owner.User.ID, "epusdt", "pro", "yearly")
+	if err != nil {
+		t.Fatalf("create configured Epusdt order: %v", err)
+	}
+	if !strings.Contains(epusdtOrder.CheckoutURL, "https://epusdt.example.com/pay/"+epusdtOrder.ID) || strings.Contains(epusdtOrder.CheckoutURL, "/dev/checkout/") {
+		t.Fatalf("expected configured Epusdt checkout URL, got %#v", epusdtOrder)
+	}
+	if epusdtOrder.Address != "TREALUSDTADDRESS" || epusdtOrder.Chain != "USDT-TRC20" {
+		t.Fatalf("expected configured Epusdt payment address fields, got %#v", epusdtOrder)
+	}
+}
+
 func TestBillingReconciliationExpiresStalePendingOrders(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	svc := newTestService(t, &now)

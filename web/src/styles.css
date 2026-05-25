@@ -547,6 +547,23 @@ code {
   color: #52645e;
 }
 
+.order-payment-info {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+  color: #40564f;
+}
+
+.order-payment-info a {
+  color: #0f5f59;
+  font-weight: 800;
+}
+
+.order-payment-info code {
+  color: #152421;
+  font-size: 12px;
+}
+
 .notice-card {
   display: flex;
   gap: 12px;

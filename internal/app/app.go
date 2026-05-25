@@ -15,6 +15,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -1562,8 +1563,13 @@ func (s *Service) CreateOrder(userID string, provider string, planID string, per
 	}
 	now := s.now().UTC()
 	expiresAt := now.Add(30 * time.Minute)
+	orderID := s.newID("ord")
+	checkoutURL, address, chain, err := s.paymentDetailsForOrderLocked(provider, orderID, planID, period, price)
+	if err != nil {
+		return Order{}, err
+	}
 	order := &Order{
-		ID:          s.newID("ord"),
+		ID:          orderID,
 		UserID:      userID,
 		Provider:    provider,
 		PlanID:      planID,
@@ -1571,9 +1577,9 @@ func (s *Service) CreateOrder(userID string, provider string, planID string, per
 		AmountCents: price.AmountCents,
 		Currency:    price.Currency,
 		Status:      "pending",
-		CheckoutURL: fmt.Sprintf("%s/dev/checkout/%s", strings.TrimRight(s.cfg.PublicURL, "/"), planID),
-		Address:     "TDEVPASTEBOXUSDTTRC20",
-		Chain:       "USDT-TRC20",
+		CheckoutURL: checkoutURL,
+		Address:     address,
+		Chain:       chain,
 		CreatedAt:   now,
 		ExpiresAt:   &expiresAt,
 	}
@@ -1584,6 +1590,91 @@ func (s *Service) CreateOrder(userID string, provider string, planID string, per
 		return Order{}, err
 	}
 	return *order, nil
+}
+
+func (s *Service) paymentDetailsForOrderLocked(provider string, orderID string, planID string, period string, price plans.Price) (string, string, string, error) {
+	switch provider {
+	case "stripe":
+		if s.cfg.AppEnv == "production" && !s.cfg.StripeEnabled {
+			return "", "", "", E(http.StatusServiceUnavailable, "payment_provider_not_configured", "Stripe is not enabled")
+		}
+		checkoutURL, err := s.renderPaymentURLLocked(s.cfg.Stripe.CheckoutURLTemplate, provider, orderID, planID, period, price)
+		if err != nil {
+			return "", "", "", err
+		}
+		if checkoutURL == "" {
+			if s.cfg.AppEnv == "production" {
+				return "", "", "", E(http.StatusServiceUnavailable, "payment_provider_not_configured", "Stripe checkout URL template is not configured")
+			}
+			checkoutURL = fmt.Sprintf("%s/dev/checkout/%s?orderId=%s", strings.TrimRight(s.cfg.PublicURL, "/"), planID, url.QueryEscape(orderID))
+		}
+		return checkoutURL, "", "", nil
+	case "epusdt":
+		if s.cfg.AppEnv == "production" && !s.cfg.EpusdtEnabled {
+			return "", "", "", E(http.StatusServiceUnavailable, "payment_provider_not_configured", "Epusdt is not enabled")
+		}
+		checkoutURL, err := s.renderPaymentURLLocked(s.cfg.Epusdt.CheckoutURLTemplate, provider, orderID, planID, period, price)
+		if err != nil {
+			return "", "", "", err
+		}
+		address := strings.TrimSpace(s.cfg.Epusdt.Address)
+		chain := strings.TrimSpace(s.cfg.Epusdt.Chain)
+		if chain == "" {
+			chain = "USDT-TRC20"
+		}
+		if checkoutURL == "" || address == "" {
+			if s.cfg.AppEnv == "production" {
+				return "", "", "", E(http.StatusServiceUnavailable, "payment_provider_not_configured", "Epusdt checkout URL and payment address are not configured")
+			}
+			if checkoutURL == "" {
+				checkoutURL = fmt.Sprintf("%s/dev/checkout/%s?orderId=%s", strings.TrimRight(s.cfg.PublicURL, "/"), planID, url.QueryEscape(orderID))
+			}
+			if address == "" {
+				address = "TDEVPASTEBOXUSDTTRC20"
+			}
+		}
+		return checkoutURL, address, chain, nil
+	default:
+		return "", "", "", E(http.StatusBadRequest, "invalid_provider", "provider must be stripe or epusdt")
+	}
+}
+
+func (s *Service) renderPaymentURLLocked(template string, provider string, orderID string, planID string, period string, price plans.Price) (string, error) {
+	template = strings.TrimSpace(template)
+	if template == "" {
+		return "", nil
+	}
+	successURL := strings.TrimRight(s.cfg.PublicURL, "/") + "/?view=billing&orderId=" + url.QueryEscape(orderID)
+	cancelURL := strings.TrimRight(s.cfg.PublicURL, "/") + "/?view=billing&orderId=" + url.QueryEscape(orderID) + "&status=cancelled"
+	replacer := strings.NewReplacer(
+		"{order_id}", url.QueryEscape(orderID),
+		"{orderId}", url.QueryEscape(orderID),
+		"{plan_id}", url.QueryEscape(planID),
+		"{planId}", url.QueryEscape(planID),
+		"{period}", url.QueryEscape(period),
+		"{price_id}", url.QueryEscape(price.ID),
+		"{priceId}", url.QueryEscape(price.ID),
+		"{amount_cents}", url.QueryEscape(fmt.Sprintf("%d", price.AmountCents)),
+		"{amountCents}", url.QueryEscape(fmt.Sprintf("%d", price.AmountCents)),
+		"{currency}", url.QueryEscape(price.Currency),
+		"{provider}", url.QueryEscape(provider),
+		"{success_url}", url.QueryEscape(successURL),
+		"{successUrl}", url.QueryEscape(successURL),
+		"{cancel_url}", url.QueryEscape(cancelURL),
+		"{cancelUrl}", url.QueryEscape(cancelURL),
+	)
+	rendered := replacer.Replace(template)
+	parsed, err := url.Parse(rendered)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", E(http.StatusServiceUnavailable, "payment_provider_not_configured", "payment checkout URL template rendered an invalid URL")
+	}
+	if s.cfg.AppEnv == "production" && parsed.Scheme != "https" {
+		return "", E(http.StatusServiceUnavailable, "payment_provider_not_configured", "production payment checkout URL must use https")
+	}
+	if s.cfg.AppEnv == "production" && isLocalHost(parsed.Hostname()) {
+		return "", E(http.StatusServiceUnavailable, "payment_provider_not_configured", "production payment checkout URL must not point to a local host")
+	}
+	return rendered, nil
 }
 
 func (s *Service) MarkOrderPaid(actorID string, orderID string, txID string, reason string) (Order, error) {
@@ -4012,6 +4103,16 @@ func (s *Service) webhookEventByIDLocked(eventID string) (*WebhookEvent, error) 
 
 func normalizeProvider(provider string) string {
 	return strings.ToLower(strings.TrimSpace(provider))
+}
+
+func isLocalHost(host string) bool {
+	normalized := strings.ToLower(strings.Trim(host, "[]"))
+	switch normalized {
+	case "", "localhost", "host.docker.internal", "minio":
+		return true
+	}
+	ip := net.ParseIP(normalized)
+	return ip != nil && ip.IsLoopback()
 }
 
 func oauthIdentityKey(provider string, subject string) string {

@@ -114,11 +114,16 @@ than `900` so the local PostgreSQL topology can support the 15-minute RPO
 target.
 
 The first production launch also requires billing to be enabled with real
-provider callback credentials: `PASTEBOX_STRIPE_ENABLED=true`,
-`PASTEBOX_STRIPE_WEBHOOK_SECRET=whsec_...`, `PASTEBOX_EPUSDT_ENABLED=true`,
-`PASTEBOX_EPUSDT_PID`, and `PASTEBOX_EPUSDT_SECRET_KEY`. Provider webhook routes
+provider callback and checkout settings: `PASTEBOX_STRIPE_ENABLED=true`,
+`PASTEBOX_STRIPE_WEBHOOK_SECRET=whsec_...`,
+`PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE=https://...`,
+`PASTEBOX_EPUSDT_ENABLED=true`, `PASTEBOX_EPUSDT_PID`,
+`PASTEBOX_EPUSDT_SECRET_KEY`, `PASTEBOX_EPUSDT_CHECKOUT_URL_TEMPLATE=https://...`,
+`PASTEBOX_EPUSDT_ADDRESS`, and `PASTEBOX_EPUSDT_CHAIN`. Provider webhook routes
 are excluded from browser CSRF but reject unsigned or incorrectly signed
-callbacks.
+callbacks. Production order creation fails closed instead of returning
+development checkout URLs or test USDT addresses when these checkout settings
+are missing or invalid.
 
 The Google OAuth app must include this authorized redirect URI:
 
