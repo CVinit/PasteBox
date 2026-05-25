@@ -4240,19 +4240,20 @@ func (s *Service) authTokenResponse(token string, message string) map[string]str
 	return response
 }
 
-func (s *Service) authLinkBody(action string, tokenParam string, token string, ttl time.Duration) string {
-	link := s.publicURLWithToken(tokenParam, token)
+func (s *Service) authLinkBody(action string, routePath string, token string, ttl time.Duration) string {
+	link := s.publicURLWithToken(routePath, token)
 	return fmt.Sprintf("%s:\n\n%s\n\nThis link expires in %s.", action, link, authTokenTTL(ttl))
 }
 
-func (s *Service) publicURLWithToken(tokenParam string, token string) string {
+func (s *Service) publicURLWithToken(routePath string, token string) string {
 	base := strings.TrimRight(s.cfg.PublicURL, "/")
 	if base == "" {
 		base = "http://localhost:5173"
 	}
+	routePath = "/" + strings.Trim(strings.TrimSpace(routePath), "/")
 	values := url.Values{}
-	values.Set(tokenParam, token)
-	return base + "/?" + values.Encode()
+	values.Set("token", token)
+	return base + routePath + "?" + values.Encode()
 }
 
 func authTokenTTL(ttl time.Duration) string {

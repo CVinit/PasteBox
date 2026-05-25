@@ -201,6 +201,33 @@ func TestEmailVerificationRequiredBeforePasswordLoginAndWrites(t *testing.T) {
 	}
 }
 
+func TestAuthEmailsUseRouteScopedTokenLinks(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	svc.cfg.PublicURL = "https://pastebox.example.com/"
+	result, err := svc.Register(context.Background(), RegisterInput{
+		Email:       "links@example.com",
+		Password:    "password123",
+		DisplayName: "Links",
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := svc.StartMagicLink(context.Background(), result.User.Email); err != nil {
+		t.Fatalf("start magic link: %v", err)
+	}
+	if _, err := svc.FinishEmailVerification(result.DevEmailVerificationToken); err != nil {
+		t.Fatalf("finish verification: %v", err)
+	}
+	if _, err := svc.StartPasswordReset(context.Background(), result.User.Email); err != nil {
+		t.Fatalf("start password reset: %v", err)
+	}
+
+	assertQueuedAuthMailLink(t, svc, "Verify your PasteBox email", "https://pastebox.example.com/email-verification?token=")
+	assertQueuedAuthMailLink(t, svc, "Your PasteBox magic link", "https://pastebox.example.com/magic?token=")
+	assertQueuedAuthMailLink(t, svc, "Reset your PasteBox password", "https://pastebox.example.com/password-reset?token=")
+}
+
 func TestSeedAdminCreatesAndUpdatesBootstrapAdmin(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	stores := newMemoryAuthStores()
@@ -2063,6 +2090,25 @@ func registerTestUser(t *testing.T, svc *Service, email string) AuthResult {
 		result.User = verified
 	}
 	return result
+}
+
+func assertQueuedAuthMailLink(t *testing.T, svc *Service, subject string, linkPrefix string) {
+	t.Helper()
+	for _, mail := range svc.mails {
+		if mail.Subject != subject {
+			continue
+		}
+		if !strings.Contains(mail.Body, linkPrefix) {
+			t.Fatalf("expected %q mail to contain link prefix %q, got body %q", subject, linkPrefix, mail.Body)
+		}
+		if strings.Contains(mail.Body, "/?verificationToken=") ||
+			strings.Contains(mail.Body, "/?magicToken=") ||
+			strings.Contains(mail.Body, "/?resetToken=") {
+			t.Fatalf("expected %q mail to avoid legacy root token links, got body %q", subject, mail.Body)
+		}
+		return
+	}
+	t.Fatalf("expected queued mail subject %q, got %#v", subject, svc.mails)
 }
 
 func seedAdminTestUser(t *testing.T, svc *Service, email string) UserView {

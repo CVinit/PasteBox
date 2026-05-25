@@ -247,6 +247,26 @@ button {
   gap: 10px;
 }
 
+.auth-link-callout {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid #9bcfbe;
+  border-radius: 8px;
+  color: #215448;
+  background: #edf8f4;
+  font-weight: 700;
+}
+
+.manual-token-row > span {
+  color: #66756f;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .magic-row input:first-child:last-child {
   grid-column: 1 / -1;
 }

@@ -114,6 +114,13 @@ type PublicPageSection = {
   items?: string[];
 };
 
+type AuthLinkKind = "email-verification" | "magic" | "password-reset";
+
+type AuthLink = {
+  kind: AuthLinkKind;
+  token: string;
+};
+
 const defaultDraft: Draft = {
   title: "",
   text: "",
@@ -145,6 +152,37 @@ const shareTokenFromPath =
   typeof window !== "undefined" && window.location.pathname.startsWith("/s/")
     ? decodeURIComponent(window.location.pathname.slice(3))
     : "";
+
+function authLinkFromLocation(): AuthLink | null {
+  if (typeof window === "undefined") return null;
+  const token = new URLSearchParams(window.location.search)
+    .get("token")
+    ?.trim();
+  if (!token) return null;
+  const path = window.location.pathname.replace(/\/+$/, "") || "/";
+  switch (path) {
+    case "/email-verification":
+      return { kind: "email-verification", token };
+    case "/magic":
+      return { kind: "magic", token };
+    case "/password-reset":
+      return { kind: "password-reset", token };
+    default:
+      return null;
+  }
+}
+
+function clearAuthLinkTokenFromLocation() {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  url.searchParams.delete("token");
+  const search = url.searchParams.toString();
+  window.history.replaceState(
+    null,
+    "",
+    `${url.pathname}${search ? `?${search}` : ""}${url.hash}`,
+  );
+}
 
 const browserLocale: Locale =
   typeof navigator !== "undefined" &&
@@ -485,8 +523,9 @@ const copy: Record<Locale, Record<string, string>> = {
     verificationToken: "verification token",
     verify: "Verify",
     magicLink: "Magic link",
-    devToken: "dev token",
+    magicToken: "magic link token",
     useToken: "Use token",
+    manualTokenFallback: "Manual token fallback",
     reset: "Reset",
     resetToken: "reset token",
     updatePassword: "Update password",
@@ -579,8 +618,12 @@ const copy: Record<Locale, Record<string, string>> = {
     signedInWithGoogle: "Signed in with Google",
     verificationIssued: "Verification issued",
     emailVerified: "Email verified",
+    emailVerifiedLogin: "Email verified. Sign in to continue.",
+    emailVerifiedDifferentAccount:
+      "Email verified for another account. Sign out before switching.",
     magicLinkIssued: "Magic link issued",
     signedInMagic: "Signed in with magic link",
+    passwordResetLinkReady: "Enter a new password to finish resetting your account.",
     signedOut: "Signed out",
     allSessionsSignedOut: "All sessions signed out",
     passwordResetIssued: "Password reset issued",
@@ -622,8 +665,9 @@ const copy: Record<Locale, Record<string, string>> = {
     verificationToken: "邮箱验证码",
     verify: "验证",
     magicLink: "魔法链接",
-    devToken: "开发令牌",
+    magicToken: "魔法链接令牌",
     useToken: "使用令牌",
+    manualTokenFallback: "手动令牌备用入口",
     reset: "重置",
     resetToken: "重置令牌",
     updatePassword: "更新密码",
@@ -716,8 +760,11 @@ const copy: Record<Locale, Record<string, string>> = {
     signedInWithGoogle: "已通过 Google 登录",
     verificationIssued: "验证令牌已发送",
     emailVerified: "邮箱已验证",
+    emailVerifiedLogin: "邮箱已验证，请登录后继续。",
+    emailVerifiedDifferentAccount: "另一个账号的邮箱已验证，切换前请先退出当前账号。",
     magicLinkIssued: "魔法链接已签发",
     signedInMagic: "已通过魔法链接登录",
+    passwordResetLinkReady: "请输入新密码以完成账号密码重置。",
     signedOut: "已退出",
     allSessionsSignedOut: "所有会话已退出",
     passwordResetIssued: "密码重置已签发",
@@ -881,15 +928,19 @@ function App() {
     paste: Paste;
     share: Share;
   } | null>(null);
+  const [authLink, setAuthLink] = useState<AuthLink | null>(() =>
+    authLinkFromLocation(),
+  );
+  const [passwordResetLinkActive, setPasswordResetLinkActive] = useState(false);
   const [verificationToken, setVerificationToken] = useState("");
   const [reportDraft, setReportDraft] = useState({
     target: "",
     reason: "",
   });
   const [auth, setAuth] = useState({
-    email: "demo@pastebox.test",
-    password: "password123",
-    displayName: "Demo User",
+    email: "",
+    password: "",
+    displayName: "",
   });
   const [magicToken, setMagicToken] = useState("");
   const [resetToken, setResetToken] = useState("");
@@ -1040,6 +1091,51 @@ function App() {
   }, [filter, publicPage, query, user]);
 
   useEffect(() => {
+    if (!authLink || publicPage) return;
+
+    const link = authLink;
+    setAuthLink(null);
+    clearAuthLinkTokenFromLocation();
+
+    if (link.kind === "password-reset") {
+      setResetToken(link.token);
+      setPasswordResetLinkActive(true);
+      setMessage(t("passwordResetLinkReady"));
+      return;
+    }
+
+    async function completeAuthLink() {
+      if (link.kind === "email-verification") {
+        const updated = await run(
+          () => client.finishEmailVerification(link.token),
+          t("emailVerified"),
+        );
+        if (updated) {
+          await applyVerifiedEmail(updated);
+        }
+        return;
+      }
+
+      const result = await run(
+        () => client.finishMagic(link.token),
+        t("signedInMagic"),
+      );
+      if (result) {
+        setUser(result.user);
+        setMagicToken("");
+        setVerificationToken("");
+        setProfileDraft({
+          displayName: result.user.displayName,
+          language: result.user.language || "en",
+        });
+        await refreshAuthed();
+      }
+    }
+
+    void completeAuthLink();
+  }, [authLink, loadCore, publicPage, refreshAuthed, t, user]);
+
+  useEffect(() => {
     if (!selectedPaste) {
       setEditDraft({ id: "", title: "", text: "", tags: "" });
       return;
@@ -1069,6 +1165,26 @@ function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function applyVerifiedEmail(updated: User) {
+    setAuth((current) => ({ ...current, email: updated.email }));
+    setVerificationToken("");
+    if (!user) {
+      setMessage(t("emailVerifiedLogin"));
+      await loadCore();
+      return;
+    }
+    if (updated.id !== user.id) {
+      setMessage(t("emailVerifiedDifferentAccount"));
+      return;
+    }
+    setUser(updated);
+    setProfileDraft({
+      displayName: updated.displayName,
+      language: updated.language || "en",
+    });
+    await refreshAuthed();
   }
 
   async function register() {
@@ -1120,9 +1236,7 @@ function App() {
       "Email verified",
     );
     if (updated) {
-      setUser(updated);
-      setVerificationToken("");
-      await refreshAuthed();
+      await applyVerifiedEmail(updated);
     }
   }
 
@@ -1179,7 +1293,10 @@ function App() {
       () => client.finishPasswordReset(resetToken, auth.password),
       "Password updated",
     );
-    if (result) setResetToken("");
+    if (result) {
+      setResetToken("");
+      setPasswordResetLinkActive(false);
+    }
   }
 
   async function submitReport(target = reportDraft.target) {
@@ -1526,64 +1643,70 @@ function App() {
             <div className="button-row">
               <button type="button" onClick={login} disabled={busy}>
                 <KeyRound size={16} aria-hidden="true" />
-                Login
+                {t("login")}
               </button>
               <button type="button" onClick={register} disabled={busy}>
                 <Sparkles size={16} aria-hidden="true" />
-                Register
+                {t("register")}
               </button>
               <button type="button" onClick={googleOAuth} disabled={busy}>
                 <ShieldCheck size={16} aria-hidden="true" />
-                Google
+                {t("google")}
               </button>
             </div>
-            <div className="magic-row">
-              <input
-                value={verificationToken}
-                onChange={(event) => setVerificationToken(event.target.value)}
-                placeholder="verification token"
-              />
-              <button
-                type="button"
-                onClick={finishVerification}
-                disabled={busy || !verificationToken}
-              >
+            {passwordResetLinkActive ? (
+              <div className="auth-link-callout">
                 <MailCheck size={16} aria-hidden="true" />
-                Verify
-              </button>
-            </div>
+                <span>{t("passwordResetLinkReady")}</span>
+              </div>
+            ) : null}
             <div className="magic-row">
               <button type="button" onClick={startMagic} disabled={busy}>
-                Magic link
+                {t("magicLink")}
               </button>
               <input
                 value={magicToken}
                 onChange={(event) => setMagicToken(event.target.value)}
-                placeholder="dev token"
+                placeholder={t("magicToken")}
               />
               <button
                 type="button"
                 onClick={finishMagic}
                 disabled={busy || !magicToken}
               >
-                Use token
+                {t("useToken")}
               </button>
             </div>
             <div className="magic-row">
               <button type="button" onClick={passwordReset} disabled={busy}>
-                Reset
+                {t("reset")}
               </button>
               <input
                 value={resetToken}
                 onChange={(event) => setResetToken(event.target.value)}
-                placeholder="reset token"
+                placeholder={t("resetToken")}
               />
               <button
                 type="button"
                 onClick={finishPasswordReset}
                 disabled={busy || !resetToken}
               >
-                Update password
+                {t("updatePassword")}
+              </button>
+            </div>
+            <div className="magic-row manual-token-row">
+              <span>{t("manualTokenFallback")}</span>
+              <input
+                value={verificationToken}
+                onChange={(event) => setVerificationToken(event.target.value)}
+                placeholder={t("verificationToken")}
+              />
+              <button
+                type="button"
+                onClick={finishVerification}
+                disabled={busy || !verificationToken}
+              >
+                {t("verify")}
               </button>
             </div>
           </div>
