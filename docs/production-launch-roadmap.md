@@ -249,3 +249,6 @@ Exit gate:
 - Deployment rollback and non-reversible migration restore procedures are
   rehearsed before public beta.
 - The final public beta deployment uses pinned image tags or digests.
+- `docs/production-launch-evidence-checklist.md` is completed for the release
+  candidate with provider smoke tests, backup/PITR evidence, rollback evidence,
+  monitoring evidence, and legal/support readiness.

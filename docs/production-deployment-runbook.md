@@ -4,11 +4,13 @@ This runbook implements Phase 0A of the production launch roadmap: a single US
 VPS running Docker Compose with an API container, worker container, PostgreSQL,
 Redis, HTTPS reverse proxy, and off-host backup flow.
 
-The stack is still gated by later roadmap phases. `pastebox migrate up` applies
-the PostgreSQL schema foundation, and the worker can process mail, scan, and
-billing reconciliation jobs. WAL/PITR maintenance services are present, but
-operators must still execute and record restore drill evidence, PITR drill
-duration, and compliance work before real user data or paid traffic is allowed.
+The stack is still gated by operator-owned launch evidence. `pastebox migrate
+up` applies the PostgreSQL schema foundation, and the worker can process
+cleanup, scan, billing reconciliation, and queued mail jobs. WAL/PITR
+maintenance services are present, but operators must still execute and record
+provider smoke tests, restore drill evidence, PITR drill duration, rollback
+rehearsal, and compliance/support readiness before real user data or paid
+traffic is allowed.
 
 ## Files
 
@@ -31,6 +33,8 @@ duration, and compliance work before real user data or paid traffic is allowed.
 - `docs/production-secrets.md`: secret handling checklist.
 - `docs/production-support-operations-runbook.md`: legal, support, refund,
   abuse, data-rights, retention, and subprocessor workflows.
+- `docs/production-launch-evidence-checklist.md`: release-candidate evidence
+  checklist for accepting public beta traffic.
 
 ## Fresh VPS Provisioning
 
@@ -233,17 +237,19 @@ evidence before public beta traffic is accepted.
 
 The `worker` service runs `pastebox worker` under Docker Compose with
 `restart: unless-stopped`. The worker polls the PostgreSQL-backed `jobs` table
-and currently processes pending `cleanup` and `scan` jobs through the same
-production service wiring as the API. Scan jobs use the configured ClamAV
-scanner and update attachment scan state to `clean`, `scan_failed`, or
-`malicious`. Use the bounded one-shot mode for deployment checks or maintenance:
+and currently processes pending `cleanup`, `scan`, and `billing_reconcile` jobs
+through the same production service wiring as the API. Scan jobs use the
+configured ClamAV scanner and update attachment scan state to `clean`,
+`scan_failed`, or `malicious`. The same worker also drains queued mail through
+the configured SMTP sender and preserves retry/failure state in PostgreSQL. Use
+the bounded one-shot mode for deployment checks or maintenance:
 
 ```sh
 docker compose --env-file deploy/production.env -f compose.production.yaml run --rm worker --once
 ```
 
-Future phases will attach deletion retry, notification retry, export, and
-billing reconciliation jobs to this same durable worker runtime.
+Future worker extensions should use the same durable `jobs` table or `mails`
+queue pattern so retry state survives process restarts.
 
 ## HTTPS And Certificate Renewal
 
@@ -353,4 +359,6 @@ been rehearsed for a reversible migration.
 The public beta launch gate additionally requires
 `docs/production-support-operations-runbook.md` to match the deployed public
 legal/support pages, configured subprocessors, data-retention behavior, and
-support/admin audit workflows.
+support/admin audit workflows. Complete
+`docs/production-launch-evidence-checklist.md` for each release candidate before
+accepting public beta traffic.

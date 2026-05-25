@@ -97,7 +97,9 @@ with `compose.production.yaml`, `deploy/production.env.example`, HTTPS reverse
 proxy config, backup jobs, production preflight, readiness checks, and rollback
 runbook. It is the production deployment foundation; public beta still requires
 operator-owned evidence for live provider credentials, restore/PITR drills,
-rollback rehearsal, monitoring/alerts, and support/compliance workflows.
+rollback rehearsal, monitoring/alerts, and support/compliance workflows. Track
+that release-candidate evidence in
+[docs/production-launch-evidence-checklist.md](docs/production-launch-evidence-checklist.md).
 
 ## Deployment Readiness
 
@@ -110,7 +112,8 @@ For real public beta traffic, use `compose.production.yaml` and
 readiness is gated by external/operator evidence: pinned image deployment,
 production secrets, managed object storage, real SMTP/OAuth/billing/scanner
 credentials, provider smoke tests, restore/PITR drill results, rollback
-rehearsal, monitoring/alerting, and legal/support workflow readiness.
+rehearsal, monitoring/alerting, and legal/support workflow readiness. Use the
+production launch evidence checklist before accepting public beta traffic.
 
 ## Verification
 
