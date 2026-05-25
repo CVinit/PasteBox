@@ -1119,6 +1119,33 @@ func TestEpusdtWebhookSignatureAndPlainOKResponse(t *testing.T) {
 		t.Fatalf("expected signed epusdt webhook to store tx id, got %#v", paidOrder)
 	}
 
+	canceledPayload := map[string]any{
+		"pid":           cfg.Epusdt.PID,
+		"order_id":      order.ID,
+		"trade_id":      "trade_epusdt_canceled_1",
+		"status":        "canceled",
+		"amount":        json.Number("19.00"),
+		"actual_amount": json.Number("0"),
+	}
+	canceledPayload["signature"] = epusdtSignature(canceledPayload, cfg.Epusdt.SecretKey)
+	canceledRaw, err := json.Marshal(canceledPayload)
+	if err != nil {
+		t.Fatalf("marshal canceled epusdt payload: %v", err)
+	}
+	canceledCallback := user.json(http.MethodPost, "/api/v1/billing/webhooks/epusdt", string(canceledRaw))
+	assertStatus(t, canceledCallback, http.StatusOK)
+	if strings.TrimSpace(canceledCallback.Body.String()) != "ok" {
+		t.Fatalf("expected plain ok response for canceled callback, got %q", canceledCallback.Body.String())
+	}
+	requireServiceOrderStatus(t, service, order.UserID, order.ID, "canceled")
+	me := user.json(http.MethodGet, "/api/v1/me", "")
+	assertStatus(t, me, http.StatusOK)
+	var currentUser app.UserView
+	decodeResponse(t, me, &currentUser)
+	if currentUser.PlanID != "free" || currentUser.PlanExpiresAt != nil {
+		t.Fatalf("expected signed epusdt cancellation to revoke matching plan, got %#v", currentUser)
+	}
+
 	expiredRes := user.json(http.MethodPost, "/api/v1/billing/orders", `{"provider":"epusdt","planId":"plus","period":"monthly"}`)
 	assertStatus(t, expiredRes, http.StatusCreated)
 	var expiredOrder app.Order
