@@ -1,23 +1,137 @@
+name: pastebox-demo
+
+x-pastebox-env: &pastebox-env
+  PASTEBOX_APP_ENV: ${PASTEBOX_APP_ENV:-development}
+  PASTEBOX_APP_NAME: PasteBox
+  PASTEBOX_HTTP_ADDR: :8080
+  PASTEBOX_PUBLIC_URL: ${PASTEBOX_PUBLIC_URL:-http://localhost:8080}
+  PASTEBOX_CSRF_SECRET: ${PASTEBOX_CSRF_SECRET:-development-csrf-secret}
+  PASTEBOX_METRICS_TOKEN: ${PASTEBOX_METRICS_TOKEN:-demo-metrics-token-change-me}
+  PASTEBOX_CORS_ALLOWED_ORIGINS: ${PASTEBOX_CORS_ALLOWED_ORIGINS:-http://localhost:8080}
+  PASTEBOX_RATE_LIMIT_ENABLED: ${PASTEBOX_RATE_LIMIT_ENABLED:-true}
+  PASTEBOX_RATE_LIMIT_WINDOW_SECONDS: ${PASTEBOX_RATE_LIMIT_WINDOW_SECONDS:-60}
+  PASTEBOX_RATE_LIMIT_AUTH: ${PASTEBOX_RATE_LIMIT_AUTH:-60}
+  PASTEBOX_RATE_LIMIT_WRITE: ${PASTEBOX_RATE_LIMIT_WRITE:-300}
+  PASTEBOX_RATE_LIMIT_UPLOAD: ${PASTEBOX_RATE_LIMIT_UPLOAD:-120}
+  PASTEBOX_RATE_LIMIT_DOWNLOAD: ${PASTEBOX_RATE_LIMIT_DOWNLOAD:-600}
+  PASTEBOX_RATE_LIMIT_WEBHOOK: ${PASTEBOX_RATE_LIMIT_WEBHOOK:-300}
+  PASTEBOX_DATABASE_URL: postgres://pastebox:${PASTEBOX_POSTGRES_PASSWORD:-pastebox-demo-password}@postgres:5432/pastebox?sslmode=disable
+  PASTEBOX_REDIS_ADDR: redis:6379
+  PASTEBOX_S3_ENDPOINT: http://minio:9000
+  PASTEBOX_S3_BUCKET: ${PASTEBOX_S3_BUCKET:-pastebox}
+  PASTEBOX_S3_REGION: ${PASTEBOX_S3_REGION:-us-east-1}
+  PASTEBOX_S3_ACCESS_KEY: ${PASTEBOX_S3_ACCESS_KEY:-pastebox}
+  PASTEBOX_S3_SECRET_KEY: ${PASTEBOX_S3_SECRET_KEY:-pastebox-secret}
+  PASTEBOX_S3_USE_PATH_STYLE: "true"
+  PASTEBOX_SCANNER_PROVIDER: ${PASTEBOX_SCANNER_PROVIDER:-heuristic}
+  PASTEBOX_CLAMAV_ADDR: ${PASTEBOX_CLAMAV_ADDR:-clamav:3310}
+  PASTEBOX_CLAMAV_TIMEOUT_SECONDS: ${PASTEBOX_CLAMAV_TIMEOUT_SECONDS:-30}
+  PASTEBOX_MAILER_PROVIDER: ${PASTEBOX_MAILER_PROVIDER:-log}
+  PASTEBOX_STRIPE_ENABLED: ${PASTEBOX_STRIPE_ENABLED:-false}
+  PASTEBOX_STRIPE_WEBHOOK_SECRET: ${PASTEBOX_STRIPE_WEBHOOK_SECRET:-}
+  PASTEBOX_EPUSDT_ENABLED: ${PASTEBOX_EPUSDT_ENABLED:-false}
+  PASTEBOX_EPUSDT_PID: ${PASTEBOX_EPUSDT_PID:-}
+  PASTEBOX_EPUSDT_SECRET_KEY: ${PASTEBOX_EPUSDT_SECRET_KEY:-}
+  PASTEBOX_BOOTSTRAP_ADMIN_EMAIL: ${PASTEBOX_BOOTSTRAP_ADMIN_EMAIL:-admin@example.com}
+  PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD: ${PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD:-change-me-admin-password}
+
 services:
   pastebox:
     image: ${PASTEBOX_IMAGE:?set PASTEBOX_IMAGE to ghcr.io/cvinit/pastebox:sha-* or a digest}
+    command: ["api"]
     restart: unless-stopped
     ports:
       - "8080:8080"
-    environment:
-      PASTEBOX_APP_ENV: production
-      PASTEBOX_APP_NAME: PasteBox
-      PASTEBOX_HTTP_ADDR: :8080
-      PASTEBOX_PUBLIC_URL: ${PASTEBOX_PUBLIC_URL:?set the public HTTPS URL}
-      PASTEBOX_CSRF_SECRET: ${PASTEBOX_CSRF_SECRET:?set a long random CSRF signing secret}
-      PASTEBOX_MAILER_PROVIDER: log
-      PASTEBOX_STRIPE_ENABLED: "false"
-      PASTEBOX_EPUSDT_ENABLED: "false"
-      PASTEBOX_BOOTSTRAP_ADMIN_EMAIL: ${PASTEBOX_BOOTSTRAP_ADMIN_EMAIL:?set bootstrap admin email}
-      PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD: ${PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD:?set bootstrap admin password}
+    environment: *pastebox-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  worker:
+    image: ${PASTEBOX_IMAGE:?set PASTEBOX_IMAGE to ghcr.io/cvinit/pastebox:sha-* or a digest}
+    command: ["worker"]
+    restart: unless-stopped
+    environment: *pastebox-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  migrate:
+    image: ${PASTEBOX_IMAGE:?set PASTEBOX_IMAGE to ghcr.io/cvinit/pastebox:sha-* or a digest}
+    command: ["migrate", "up"]
+    environment: *pastebox-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: ${PASTEBOX_POSTGRES_IMAGE:-postgres:17-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pastebox
+      POSTGRES_USER: pastebox
+      POSTGRES_PASSWORD: ${PASTEBOX_POSTGRES_PASSWORD:-pastebox-demo-password}
+    volumes:
+      - pastebox-demo-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: ${PASTEBOX_REDIS_IMAGE:-redis:7-alpine}
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes:
+      - pastebox-demo-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: ${PASTEBOX_MINIO_IMAGE:-minio/minio:RELEASE.2025-09-07T16-13-09Z}
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${PASTEBOX_S3_ACCESS_KEY:-pastebox}
+      MINIO_ROOT_PASSWORD: ${PASTEBOX_S3_SECRET_KEY:-pastebox-secret}
+    volumes:
+      - pastebox-demo-minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio-init:
+    image: ${PASTEBOX_MINIO_MC_IMAGE:-minio/mc:RELEASE.2025-08-13T08-35-41Z}
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mc alias set local http://minio:9000 ${PASTEBOX_S3_ACCESS_KEY:-pastebox} ${PASTEBOX_S3_SECRET_KEY:-pastebox-secret}
+        mc mb --ignore-existing local/${PASTEBOX_S3_BUCKET:-pastebox}
+
+volumes:
+  pastebox-demo-postgres:
+  pastebox-demo-redis:
+  pastebox-demo-minio:

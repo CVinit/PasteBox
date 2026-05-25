@@ -6,7 +6,10 @@ This repository contains the first executable single-node MVP. It keeps the prod
 
 ## Stack
 
-- Backend: Go and Chi. The current MVP runs with an in-memory repository and local object abstraction while preserving typed seams for PostgreSQL, Redis/queues, S3-compatible storage, billing, scanning, cleanup, mail, and admin operations.
+- Backend: Go and Chi. The executable runtime uses PostgreSQL for application
+  state, S3-compatible object storage for attachments, Redis-compatible
+  readiness/queue infrastructure, worker processes for background jobs, and
+  provider seams for mail, scanning, OAuth, and billing.
 - Frontend: React, TypeScript, Vite.
 - Local services: Docker Compose with PostgreSQL, Redis, MinIO, ClamAV, and Mailpit.
 
@@ -24,7 +27,9 @@ This repository contains the first executable single-node MVP. It keeps the prod
    make dev
    ```
 
-3. Run the API:
+3. Run the API. This target starts local dependencies, applies PostgreSQL
+   migrations, ensures the MinIO `pastebox` bucket exists, and then starts the
+   Go API:
 
    ```sh
    make api
@@ -51,7 +56,7 @@ The development auth flows return dev tokens in JSON responses for email verific
 
 The project includes a multi-stage `Dockerfile` that builds the React frontend,
 embeds the Vite production assets into the Go binary, and serves the API and UI
-from one container.
+from the API container.
 
 Build locally:
 
@@ -59,13 +64,12 @@ Build locally:
 docker build -t pastebox:local .
 ```
 
-Run locally:
+The API image expects PostgreSQL, Redis, and S3-compatible storage to be
+available. For a local container smoke test, use the demo Compose stack instead
+of running the image alone:
 
 ```sh
-docker run --rm -p 8080:8080 \
-  -e PASTEBOX_APP_ENV=development \
-  -e PASTEBOX_PUBLIC_URL=http://localhost:8080 \
-  pastebox:local
+PASTEBOX_IMAGE=pastebox:local docker compose -f compose.deploy.yaml up -d
 ```
 
 Open `http://localhost:8080`.
@@ -91,20 +95,22 @@ The production launch baseline now lives in
 [docs/production-deployment-runbook.md](docs/production-deployment-runbook.md)
 with `compose.production.yaml`, `deploy/production.env.example`, HTTPS reverse
 proxy config, backup jobs, production preflight, readiness checks, and rollback
-runbook. It is the Phase 0A deployment foundation; later phases still need to
-complete durable PostgreSQL, object storage, workers, mail, OAuth, billing,
-scanning, operations, and compliance before public beta.
+runbook. It is the production deployment foundation; public beta still requires
+operator-owned evidence for live provider credentials, restore/PITR drills,
+rollback rehearsal, monitoring/alerts, and support/compliance workflows.
 
 ## Deployment Readiness
 
-The current MVP can be deployed immediately for demos, internal review, and
-low-risk evaluation. It is not ready for real customer data or paid public SaaS
-operation because the repository and object store are in-memory in this pass.
-The Phase 0A production deployment baseline is present, but production use is
-still gated by the remaining roadmap phases. Persistent PostgreSQL/sqlc,
-S3-compatible storage, real mail, payment webhook verification, scanner
-workers, cleanup workers, restore drills, and monitoring must be implemented
-before public beta.
+The current build can be deployed for demos, internal review, and low-risk
+evaluation with PostgreSQL, Redis, MinIO/S3-compatible storage, migrations, and
+the worker process through `compose.deploy.yaml`.
+
+For real public beta traffic, use `compose.production.yaml` and
+`docs/production-deployment-runbook.md`, not the demo Compose file. Production
+readiness is gated by external/operator evidence: pinned image deployment,
+production secrets, managed object storage, real SMTP/OAuth/billing/scanner
+credentials, provider smoke tests, restore/PITR drill results, rollback
+rehearsal, monitoring/alerting, and legal/support workflow readiness.
 
 ## Verification
 
@@ -122,14 +128,19 @@ make build
 
 ## Current MVP
 
-- `cmd/pastebox`: API binary entrypoint.
-- `internal/app`: in-memory domain service covering auth, users, pastes, attachments, shares, quota, billing/webhooks, admin, scanning, cleanup, reports, export, and deletion.
+- `cmd/pastebox`: API, worker, migration, preflight, and admin CLI entrypoint.
+- `internal/app`: domain service covering auth, users, pastes, attachments,
+  shares, quota, billing/webhooks, admin, scanning, cleanup, reports, export,
+  and deletion through store interfaces.
 - `internal/config`: environment-driven runtime configuration.
 - `internal/httpserver`: Chi router, health endpoint, API routes, and static fallback hook.
 - `internal/plans`: configurable first-version plan limits used by the API and frontend.
+- `internal/postgres`: migrations and PostgreSQL stores for auth, content,
+  operational state, catalog, metrics, audit logs, jobs, and mail queue.
+- `internal/objectstore`: S3-compatible attachment object storage.
 - `web`: React/Vite application shell for the PasteBox product surface.
 - `compose.yaml`: local development dependencies.
 
 ## Product Source
 
-The source product requirements live in `.trellis/tasks/archive/2026-05/05-23-cloudpaste-product-prd/prd.md`. The active implementation task is `.trellis/tasks/05-23-pastebox-mvp-implementation/prd.md`.
+The source product requirements live in `.trellis/tasks/archive/2026-05/05-23-cloudpaste-product-prd/prd.md`. The active production launch task is `.trellis/tasks/05-24-pastebox-production-launch/prd.md`.

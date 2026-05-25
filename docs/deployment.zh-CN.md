@@ -1,23 +1,24 @@
 # PasteBox 中文部署文档
 
-本文说明当前 PasteBox MVP 的可部署范围、GitHub Actions 自动构建镜像流程，以及使用 GHCR 镜像通过 Docker Compose 部署的方法。
+本文说明当前 PasteBox MVP 的演示部署范围、GitHub Actions 自动构建镜像流程，以及使用 GHCR 镜像通过 Docker Compose 部署的方法。
 
 ## 当前可用边界
 
-当前版本可以立即部署用于演示、内部评审、功能走查和低风险试用。容器会在一个进程内同时提供 Go API 和 React/Vite 前端，用户可以通过浏览器完成注册、登录、创建 paste、上传附件、生成分享链接、查看账单桩、使用管理后台和执行清理等 MVP 流程。
+当前版本可以通过演示 Compose 栈部署用于演示、内部评审、功能走查和低风险试用。API 容器提供 Go API 和内置 React/Vite 前端，旁路容器提供 PostgreSQL、Redis、MinIO 兼容对象存储、数据库迁移、bucket 初始化和 PasteBox worker。
 
-当前版本不适合承载真实客户数据、付费公网 SaaS 或长期生产运行，原因如下：
+该演示部署不是公网生产上线栈，原因如下：
 
-- 用户、会话、paste、附件、分享、订单、审计日志和队列状态都保存在内存中，容器重启后会丢失。
-- PostgreSQL、Redis、S3、真实邮件、Stripe、Epusdt、ClamAV 和异步 worker 目前是配置或接口边界，不是生产级真实集成。
-- 开发认证流程会在 JSON 响应中返回邮箱验证、magic link 和密码重置 token，便于演示，但不应暴露给真实公网用户。
-- Billing webhook 是本地桩流程，不包含真实支付平台签名验证。
+- 使用演示默认值、本地 PostgreSQL volume、本地 Redis、本地 MinIO 和 log mail。
+- 默认使用 heuristic 扫描；如需 ClamAV 可通过环境变量启用并确保服务可达。
+- 不包含 HTTPS edge、production preflight、off-host backup、恢复演练、PITR 证据和生产告警。
+- 开发认证流程可在 JSON 响应中返回邮箱验证、magic link 和密码重置 token，便于演示，但不应暴露给真实公网用户。
 
 如果要执行已确认的生产上线 Phase 0A 基线，请使用
 `docs/production-deployment-runbook.md` 和 `compose.production.yaml`，不要使用本
-文的单容器演示部署文件。生产基线包含 API/worker、PostgreSQL、Redis、HTTPS
+文的演示部署文件。生产基线包含 API/worker、PostgreSQL、Redis、HTTPS
 反向代理、production preflight、readiness 检查、备份任务和回滚 gate；但在
-后续 roadmap 阶段完成前，仍不能承载真实公网用户或付费业务。
+承载真实公网用户或付费业务前，仍必须完成生产密钥、托管对象存储、真实
+SMTP/OAuth/支付/扫描凭据、备份恢复演练、回滚演练、监控告警和支持合规工作流验证。
 
 ## 镜像构建与发布
 
@@ -64,18 +65,18 @@ mkdir -p /opt/pastebox
 cd /opt/pastebox
 ```
 
-可以复制仓库中的演示部署模板：
+可以复制仓库中的演示部署模板。该模板会启动 API、worker、PostgreSQL、
+Redis、MinIO、迁移任务和 bucket 初始化任务：
 
 ```sh
 cp compose.deploy.yaml compose.yaml
 ```
 
-在 `compose.yaml` 同目录创建 `.env`，或先导出这些变量。镜像必须使用 GitHub Actions 产出的不可变 `sha-*` 标签，或 registry digest：
+在 `compose.yaml` 同目录创建 `.env`，或先导出这些变量。镜像必须使用 GitHub Actions 产出的不可变 `sha-*` 标签、registry digest，或本地构建的 `pastebox:local`：
 
 ```sh
 PASTEBOX_IMAGE=ghcr.io/cvinit/pastebox:sha-<commit>
-PASTEBOX_PUBLIC_URL=https://pastebox.example.com
-PASTEBOX_CSRF_SECRET=<long-random-secret>
+PASTEBOX_PUBLIC_URL=http://localhost:8080
 PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=admin@example.com
 PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=<long-random-password>
 ```
@@ -87,6 +88,10 @@ docker compose pull
 docker compose up -d
 docker compose logs -f pastebox
 ```
+
+如果通过自己的 HTTPS 反向代理做演示，把 `PASTEBOX_PUBLIC_URL` 设置为
+`https://pastebox.example.com`，并把 `X-Forwarded-Proto: https` 转发给
+`pastebox` 服务。
 
 本机验证：
 
@@ -106,19 +111,19 @@ curl -fsS http://127.0.0.1:8080/api/v1/ready
 以及：
 
 ```json
-{"app":"PasteBox","env":"production","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"mail","status":"ok"}]}
+{"app":"PasteBox","env":"development","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"mail","status":"skipped","message":"smtp provider is not configured"}]}
 ```
 
 以及：
 
 ```json
-{"app":"PasteBox","env":"production","status":"ok"}
+{"app":"PasteBox","env":"development","status":"ok"}
 ```
 
 以及：
 
 ```json
-{"app":"PasteBox","env":"production","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"mail","status":"ok"}]}
+{"app":"PasteBox","env":"development","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"mail","status":"skipped","message":"smtp provider is not configured"}]}
 ```
 
 浏览器打开：
@@ -166,14 +171,14 @@ PASTEBOX_PUBLIC_URL: http://localhost:8080
 
 ## 管理员账号
 
-当前内存版会在进程启动时根据以下环境变量创建管理员账号：
+演示部署会在进程启动时根据以下环境变量创建或更新管理员账号：
 
 ```sh
 PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=admin@example.com
 PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=<long-random-password>
 ```
 
-因为数据保存在内存中，容器每次重启后都会重新初始化数据和管理员账号。
+管理员账号保存在 PostgreSQL 中，演示栈正常重启后会保留。
 
 ## 升级
 
@@ -188,7 +193,7 @@ docker compose up -d pastebox
 docker compose logs -f pastebox
 ```
 
-注意：当前 MVP 重启会清空所有应用数据。升级前如果需要保留演示数据，请先在 UI 中导出。
+演示栈的数据保存在 Docker volumes 中。删除 volumes 前请先备份或从 UI 导出需要保留的数据。
 
 ## 故障排查
 
@@ -215,17 +220,18 @@ curl -v http://127.0.0.1:8080/healthz
 
 - `docker pull` 返回权限错误：GHCR package 可能是私有，需要 `docker login ghcr.io`，或在 GitHub Packages 中公开该 package。
 - 浏览器登录后立即丢失登录态：确认访问协议和代理头是否一致。HTTPS 反向代理必须传递 `X-Forwarded-Proto: https`；HTTP 测试环境会自动使用非 `Secure` cookie。
-- 重启后数据消失：这是当前内存 MVP 的已知边界，不是持久化部署形态。
-- 支付、邮件、病毒扫描没有真实外部效果：当前是 stub，不是生产集成。
+- `readyz` 显示 object storage 失败：确认 `minio-init` 已成功创建 bucket，或重新执行 `docker compose run --rm minio-init`。
+- `readyz` 显示 database 失败：确认 `migrate` 任务成功完成，或查看 `docker compose logs migrate postgres`。
+- 支付、邮件、病毒扫描没有真实外部效果：演示默认使用 log mail、禁用支付渠道、heuristic 扫描；生产前必须配置真实提供商并验证。
 
 ## 进入真实生产前必须补齐
 
-在承载真实用户或付费业务前，至少需要完成并重新验证：
+在承载真实用户或付费业务前，必须改用生产 runbook 并验证：
 
-- PostgreSQL/sqlc 持久化和迁移。
-- S3 兼容对象存储适配器和私有 bucket 下载链路。
-- Redis-backed 会话、限流和队列。
-- 真实邮件发送，且移除响应中的开发 token。
-- 在已签名 webhook 验证和幂等订单激活路径之外，补齐 Stripe/Epusdt 订阅和订单对账生命周期。
-- ClamAV worker、清理 worker、失败重试和监控告警。
-- 备份、恢复、日志、指标、错误追踪和滥用处置 runbook。
+- 固定镜像 tag/digest、production preflight 和迁移 gate。
+- 托管 S3 兼容附件存储和 off-host backup 存储。
+- 真实 SMTP、Google OAuth、Stripe、Epusdt 和扫描服务凭据。
+- 邮件、OAuth、支付 webhook、Epusdt callback 和扫描的 provider smoke test。
+- 备份完整性、逻辑恢复演练、PITR 恢复演练和回滚演练证据。
+- 指标、日志、告警、证书续期检查和滥用/支持工作流。
+- 密钥处理、法律/支持页面、数据保留矩阵和操作 runbook 与实际 provider 配置一致。

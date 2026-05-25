@@ -1,32 +1,28 @@
 # PasteBox Deployment
 
-This document describes the deployable container path for the current PasteBox
-MVP and the operational boundary that was verified in this repository.
+This document describes the deployable demo container path for the current
+PasteBox MVP and the operational boundary that was verified in this repository.
 
 ## Current Readiness
 
-The current build is immediately deployable as a single-container executable
-MVP for demos, internal review, and low-risk evaluation. It serves the Go API and
-the React/Vite frontend from the same container image.
+The current build is deployable for demos, internal review, and low-risk
+evaluation through the demo Compose stack. The API container serves both the Go
+API and the embedded React/Vite frontend, while sibling containers provide
+PostgreSQL, Redis, MinIO-compatible object storage, migrations, bucket
+initialization, and the PasteBox worker.
 
-It is not production-ready for a paid public SaaS yet. The current domain
-service uses an in-memory repository and local in-process object abstraction.
-That means users, sessions, pastes, attachments, shares, orders, audit logs, and
-queue state are lost on process restart. PostgreSQL, Redis, S3, mail, Stripe,
-Epusdt, ClamAV, and worker queues are modeled as typed seams/stubs but are not
-live production integrations in this pass.
-
-Use this deployment path when you need a runnable MVP. Do not use it for real
-customer data until persistent adapters, migrations, real object storage,
-payment webhooks, mail delivery, scanner workers, backups, and operational
-monitoring are implemented.
+Use this deployment path when you need a runnable MVP with durable demo state.
+Do not use it as the public production launch stack: it uses demo defaults,
+local MinIO, log mail, heuristic scanning by default, no TLS edge container, no
+off-host backup flow, no production preflight, and no restore/PITR launch-gate
+evidence.
 
 For the confirmed production-launch baseline, use
 `docs/production-deployment-runbook.md` and `compose.production.yaml` instead of
-this demo deployment file. The production baseline adds API/worker services,
-PostgreSQL, Redis, HTTPS reverse proxy, production preflight, readiness checks,
-backup jobs, and rollback gates, but it is still blocked from public beta until
-the remaining production roadmap phases are complete.
+this demo deployment file. The production baseline adds HTTPS reverse proxy,
+managed object-storage expectations, production preflight, readiness checks,
+backup jobs, PITR/restore drills, rollback gates, and support/compliance
+evidence.
 
 ## GitHub Actions Image Build
 
@@ -61,13 +57,12 @@ Build the same image locally:
 docker build -t pastebox:local .
 ```
 
-Run it:
+Do not run the image by itself: `pastebox api` now expects PostgreSQL,
+Redis-compatible infrastructure, and an S3-compatible bucket. For a local
+container smoke test, start the demo Compose stack instead:
 
 ```sh
-docker run --rm -p 8080:8080 \
-  -e PASTEBOX_APP_ENV=development \
-  -e PASTEBOX_PUBLIC_URL=http://localhost:8080 \
-  pastebox:local
+PASTEBOX_IMAGE=pastebox:local docker compose -f compose.deploy.yaml up -d
 ```
 
 Open:
@@ -81,7 +76,7 @@ when the browser reaches the app over plain HTTP. For HTTPS deployments behind a
 reverse proxy, forward the original scheme with `X-Forwarded-Proto: https` so
 session cookies are marked `Secure`.
 
-## Docker Compose With GHCR Image
+## Demo Docker Compose With GHCR Image
 
 After the GitHub Actions workflow publishes the image, copy the demo deployment
 Compose file:
@@ -92,12 +87,12 @@ cp compose.deploy.yaml compose.yaml
 
 Create a `.env` file next to `compose.yaml` or export these variables before
 starting. Use the immutable `sha-*` image tag from the workflow run, or a
-registry digest:
+registry digest. The demo file supplies local PostgreSQL, Redis, MinIO, a
+migration job, a bucket-initialization job, and a worker:
 
 ```sh
 PASTEBOX_IMAGE=ghcr.io/cvinit/pastebox:sha-<commit>
-PASTEBOX_PUBLIC_URL=https://pastebox.example.com
-PASTEBOX_CSRF_SECRET=<long-random-secret>
+PASTEBOX_PUBLIC_URL=http://localhost:8080
 PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=admin@example.com
 PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=<long-random-password>
 ```
@@ -109,6 +104,10 @@ docker compose pull
 docker compose up -d
 docker compose logs -f pastebox
 ```
+
+For HTTPS demos behind your own reverse proxy, set
+`PASTEBOX_PUBLIC_URL=https://pastebox.example.com` and forward
+`X-Forwarded-Proto: https` to the `pastebox` service.
 
 Check health:
 
@@ -128,19 +127,19 @@ Expected response:
 and:
 
 ```json
-{"app":"PasteBox","env":"production","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"mail","status":"ok"}]}
+{"app":"PasteBox","env":"development","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"mail","status":"skipped","message":"smtp provider is not configured"}]}
 ```
 
 and:
 
 ```json
-{"app":"PasteBox","env":"production","status":"ok"}
+{"app":"PasteBox","env":"development","status":"ok"}
 ```
 
 and:
 
 ```json
-{"app":"PasteBox","env":"production","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"mail","status":"ok"}]}
+{"app":"PasteBox","env":"development","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"mail","status":"skipped","message":"smtp provider is not configured"}]}
 ```
 
 ## TLS and Reverse Proxy
@@ -169,20 +168,22 @@ server {
 }
 ```
 
-The current API stores all state in memory, so do not run more than one PasteBox
-container behind a load balancer until a shared persistent repository is added.
+The demo Compose file is single-node. Do not run more than one PasteBox API
+container behind a load balancer from this file; use the production runbook and
+shared production services before horizontal scaling.
 
 ## Admin Bootstrap
 
-For this in-memory MVP, the bootstrap admin is created at process startup from:
+For demo deployments, the bootstrap admin is created or updated at process
+startup from:
 
 ```sh
 PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=admin@example.com
 PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=<long-random-password>
 ```
 
-Change the password before exposing the service. Because data is in memory, the
-same bootstrap admin is recreated after every restart.
+Change the password before exposing the service. The admin account is stored in
+PostgreSQL and survives restarts in the demo stack.
 
 ## Upgrade Flow
 
@@ -196,19 +197,21 @@ docker compose up -d pastebox
 docker compose logs -f pastebox
 ```
 
-Because this MVP is in-memory, every restart clears application state. Export
-anything you need from the UI before restarting.
+The demo stack stores state in Docker volumes for PostgreSQL, Redis, and MinIO.
+Back up or export anything you need before deleting those volumes.
 
 ## Required Work Before Real Production
 
-Before accepting real users or payments, implement and verify:
+Before accepting real users or payments, use the production runbook and verify:
 
-- PostgreSQL/sqlc persistence and migrations for all core entities.
-- Durable object storage through S3-compatible storage.
-- Redis-backed sessions, rate limits, and queues where appropriate.
-- Real mail delivery for verification, magic links, reset, and billing notices.
-- Complete Stripe and Epusdt subscription/order reconciliation beyond the
-  signed webhook validation and idempotent order activation path.
-- Real ClamAV scanning workers and cleanup workers.
-- Backups, restore runbooks, metrics, logs, alerts, and abuse monitoring.
-- Secret management and removal of development-token responses from auth flows.
+- Pinned production image or digest, production preflight, and migration gate.
+- Managed S3-compatible attachment storage and off-host backup storage.
+- Real SMTP, Google OAuth, Stripe, Epusdt, and scanner credentials.
+- Provider smoke tests for mail, OAuth, billing webhooks, Epusdt callbacks, and
+  scanning.
+- Backup integrity, logical restore drill, PITR restore drill, and rollback
+  rehearsal evidence.
+- Metrics, logs, alerts, certificate renewal checks, and abuse/support
+  workflows.
+- Secret handling, legal/support pages, data-retention matrix, and operator
+  runbooks matching the deployed provider configuration.

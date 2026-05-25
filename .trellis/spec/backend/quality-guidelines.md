@@ -379,7 +379,7 @@ fail if the baseline is disabled or invalid.
 
 - Local image build: `docker build -t pastebox:local .`
 - Published image: `ghcr.io/cvinit/pastebox:<tag>`
-- Container command: `/usr/local/bin/pastebox`
+- Container command: `/usr/local/bin/pastebox api|worker|migrate up`
 - Health endpoint: `GET /healthz`
 - Static frontend fallback: non-API paths should serve embedded Vite assets or
   fall back to `/index.html`.
@@ -397,8 +397,13 @@ fail if the baseline is disabled or invalid.
   `/assets/missing.js`, must return `404` rather than `index.html`.
 - The GitHub Actions workflow publishes to GHCR on `main`, version tags, and
   manual dispatch; pull requests build without pushing.
-- Deployment docs must state the current persistence boundary when the app still
-  uses the in-memory repository.
+- The API image must not be documented as a standalone runnable service. Runtime
+  startup requires PostgreSQL, Redis-compatible readiness/queue infrastructure,
+  and an S3-compatible bucket.
+- Demo Compose must run migrations and initialize the object bucket before
+  starting API and worker containers.
+- Production Compose remains separate from demo Compose and must keep production
+  preflight, HTTPS, backup, restore, and rollback gates.
 
 ### 4. Validation & Error Matrix
 
@@ -407,17 +412,24 @@ fail if the baseline is disabled or invalid.
   or CSS asset requests.
 - `/api/...` unknown route -> JSON `404 not_found`, never frontend HTML.
 - Docker build fails -> do not report image deployment readiness.
-- In-memory repository used for real production data -> deployment docs must
-  identify it as not production-ready.
+- API container started without migrated PostgreSQL schema -> startup or
+  readiness failure.
+- API container started without the configured S3 bucket -> object storage
+  readiness failure.
+- Demo Compose used for real production data -> deployment docs must identify it
+  as demo-only and direct operators to the production runbook.
 
 ### 5. Good/Base/Bad Cases
 
-- Good: `docker build -t pastebox:local .` succeeds and the resulting container
-  serves both `/api/v1/health` and frontend routes.
-- Base: `go run ./cmd/pastebox` still serves the lightweight embedded fallback
-  page when Vite assets have not been copied into `internal/httpserver/static`.
+- Good: `PASTEBOX_IMAGE=pastebox:local docker compose -f compose.deploy.yaml up
+  -d` starts PostgreSQL, Redis, MinIO, migration, bucket init, API, and worker
+  services.
+- Base: `go run ./cmd/pastebox` uses the default local PostgreSQL, Redis, and
+  MinIO settings after `make dev` and `make db-migrate`.
 - Bad: Build the Vite app after `go build`; the generated files are not embedded
   in the binary.
+- Bad: Document `docker run pastebox:local` as a complete runtime; it omits
+  required database and object-storage dependencies.
 
 ### 6. Tests Required
 
@@ -426,6 +438,9 @@ fail if the baseline is disabled or invalid.
 - Handler tests must assert missing asset-like paths return `404` and do not
   return index HTML.
 - Run `make test` after static-serving changes.
+- Run `docker compose -f compose.deploy.yaml config` after demo Compose changes.
+- Run `docker compose -f compose.production.yaml config` after production
+  Compose changes.
 - Run `docker build -t pastebox:local .` after Dockerfile or workflow changes
   whenever the local Docker daemon is available.
 

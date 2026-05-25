@@ -3,13 +3,19 @@ SHELL := /bin/sh
 GO_ENV := env GOCACHE=$(CURDIR)/.cache/go-build GOPATH=$(CURDIR)/.cache/gopath
 NPM := npm --prefix web --cache $(CURDIR)/.cache/npm
 
-.PHONY: help dev api web db-up db-status db-migrate db-reset test test-api test-web build build-api build-web fmt clean
+ifneq (,$(wildcard .env))
+include .env
+export
+endif
+
+.PHONY: help dev api web db-up object-bucket db-status db-migrate db-reset test test-api test-web build build-api build-web fmt clean
 
 help:
 	@printf '%s\n' 'PasteBox commands:'
 	@printf '%s\n' '  make dev        Start local dependencies with Docker Compose'
 	@printf '%s\n' '  make api        Run the Go API'
 	@printf '%s\n' '  make web        Run the Vite dev server'
+	@printf '%s\n' '  make object-bucket Ensure the local MinIO pastebox bucket exists'
 	@printf '%s\n' '  make db-migrate Apply local PostgreSQL migrations'
 	@printf '%s\n' '  make db-reset   Reset local PostgreSQL schema and rerun migrations'
 	@printf '%s\n' '  make test       Run backend and frontend checks'
@@ -17,8 +23,10 @@ help:
 
 dev:
 	docker compose up -d postgres redis minio clamav mailpit
+	docker compose run --rm minio-init
 
-api:
+api: dev
+	$(MAKE) db-migrate
 	$(GO_ENV) go run ./cmd/pastebox
 
 web:
@@ -26,6 +34,10 @@ web:
 
 db-up:
 	docker compose up -d postgres
+
+object-bucket:
+	docker compose up -d minio
+	docker compose run --rm minio-init
 
 db-status: db-up
 	$(GO_ENV) go run ./cmd/pastebox migrate status
