@@ -167,6 +167,18 @@ func TestServiceWithPostgresStoresPreservesLaunchStateAcrossRestart(t *testing.T
 	if got := exportAfterRestart["pastes"].([]app.PasteView); len(got) != 1 || got[0].ID != created.ID {
 		t.Fatalf("expected export to include paste after restart, got %#v", exportAfterRestart["pastes"])
 	}
+	if got := exportAfterRestart["orders"].([]app.Order); len(got) != 1 || got[0].ID != order.ID || got[0].Status != "paid" {
+		t.Fatalf("expected export to include paid order after restart, got %#v", exportAfterRestart["orders"])
+	}
+	if got := exportAfterRestart["reports"].([]app.Report); len(got) != 1 || got[0].UserID != auth.User.ID || got[0].Target != "share:"+share.Token {
+		t.Fatalf("expected export to include report after restart, got %#v", exportAfterRestart["reports"])
+	}
+	if got := exportAfterRestart["webhookEvents"].([]app.WebhookEvent); !containsWebhookEventForTarget(got, order.ID, "payment.succeeded") {
+		t.Fatalf("expected export to include order webhook event after restart, got %#v", exportAfterRestart["webhookEvents"])
+	}
+	if got := exportAfterRestart["auditLogs"].([]app.AuditLog); !containsAuditTargetAction(got, order.ID, "billing.order_paid") {
+		t.Fatalf("expected export to include scoped billing audit log after restart, got %#v", exportAfterRestart["auditLogs"])
+	}
 	queuesAfterRestart, err := restarted.AdminQueues(admin.ID)
 	if err != nil {
 		t.Fatalf("admin queues after restart: %v", err)
@@ -261,6 +273,24 @@ func cleanupServiceIntegrationRows(ctx context.Context, t *testing.T, pool *pgxp
 func containsAuditAction(logs []app.AuditLog, action string) bool {
 	for _, log := range logs {
 		if log.Action == action {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAuditTargetAction(logs []app.AuditLog, target string, action string) bool {
+	for _, log := range logs {
+		if log.Target == target && log.Action == action {
+			return true
+		}
+	}
+	return false
+}
+
+func containsWebhookEventForTarget(events []app.WebhookEvent, targetID string, eventType string) bool {
+	for _, event := range events {
+		if event.TargetID == targetID && event.EventType == eventType {
 			return true
 		}
 	}
