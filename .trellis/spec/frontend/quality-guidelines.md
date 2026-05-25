@@ -46,13 +46,15 @@ TypeScript strict, and build with Vite.
 ### 1. Scope / Trigger
 
 - Trigger: Any frontend change that touches `Order.status`, billing order
-  cards, admin order cards, or payment lifecycle wording.
+  cards, admin order cards, admin billing reconciliation controls, or payment
+  lifecycle wording.
 
 ### 2. Signatures
 
 - Type: `Order.status` in `web/src/api.ts`
 - User UI: billing order cards in `web/src/App.tsx`
 - Admin UI: admin orders section in `web/src/App.tsx`
+- Admin API client: `client.adminReconcileBilling()`
 
 ### 3. Contracts
 
@@ -66,6 +68,8 @@ TypeScript strict, and build with Vite.
   of the screen is localized.
 - Unknown provider status strings must render safely with a neutral badge
   instead of crashing or hiding the order.
+- Admin reconciliation controls must call the typed API client and refresh
+  admin plus authenticated billing data after completion.
 
 ### 4. Validation & Error Matrix
 

@@ -440,6 +440,10 @@ export const client = {
       method: "POST",
       body: JSON.stringify({ txId }),
     }),
+  adminReconcileBilling: () =>
+    api<Record<string, number>>("/admin/billing/reconcile", {
+      method: "POST",
+    }),
   adminWebhookEvents: () =>
     api<{ webhookEvents: WebhookEvent[] }>("/admin/webhook-events"),
   adminReplayWebhookEvent: (id: string) =>

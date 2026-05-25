@@ -568,6 +568,19 @@ func TestAdminHTTPContractsWriteAuditLogs(t *testing.T) {
 		t.Fatalf("expected plus plan, got %#v", updatedUser)
 	}
 
+	orderRes := owner.json(http.MethodPost, "/api/v1/billing/orders", `{"provider":"epusdt","planId":"plus","period":"monthly"}`)
+	assertStatus(t, orderRes, http.StatusCreated)
+	var order app.Order
+	decodeResponse(t, orderRes, &order)
+
+	reconcile := admin.json(http.MethodPost, "/api/v1/admin/billing/reconcile", "")
+	assertStatus(t, reconcile, http.StatusOK)
+	var reconcileBody map[string]int
+	decodeResponse(t, reconcile, &reconcileBody)
+	if reconcileBody["checkedOrders"] == 0 || reconcileBody["pendingOrders"] == 0 {
+		t.Fatalf("expected billing reconciliation counts, got %#v", reconcileBody)
+	}
+
 	retryScan := admin.json(http.MethodPost, "/api/v1/admin/attachments/"+attachment.ID+"/retry-scan", "")
 	assertStatus(t, retryScan, http.StatusOK)
 	var retriedAttachment app.AttachmentView

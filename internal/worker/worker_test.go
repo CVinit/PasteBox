@@ -40,6 +40,35 @@ func TestRunnerCompletesCleanupJob(t *testing.T) {
 	}
 }
 
+func TestRunnerCompletesBillingReconcileJob(t *testing.T) {
+	now := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
+	jobs := &fakeJobStore{runnable: []postgres.JobRecord{{
+		ID:        "job_billing_reconcile",
+		Kind:      "billing_reconcile",
+		Status:    "pending",
+		RunAfter:  now.Add(-time.Minute),
+		CreatedAt: now.Add(-time.Minute),
+		UpdatedAt: now.Add(-time.Minute),
+	}}}
+	service := &fakeCleanupService{}
+
+	runner := NewRunner(jobs, service, Config{Now: func() time.Time { return now }, Logger: slog.Default()})
+	summary, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if summary.Seen != 1 || summary.Completed != 1 || summary.Retried != 0 || summary.Failed != 0 {
+		t.Fatalf("unexpected summary: %#v", summary)
+	}
+	if service.billingCalls != 1 {
+		t.Fatalf("expected billing reconcile call, got %d", service.billingCalls)
+	}
+	updated := jobs.updated[0]
+	if updated.Status != "completed" || updated.Attempts != 1 || updated.LastError != "" {
+		t.Fatalf("expected completed billing reconcile job update, got %#v", updated)
+	}
+}
+
 func TestRunnerRetriesFailedJobWithBackoff(t *testing.T) {
 	now := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
 	jobs := &fakeJobStore{runnable: []postgres.JobRecord{{
@@ -243,6 +272,7 @@ func TestRunnerMarksMailFailedAfterMaxAttempts(t *testing.T) {
 
 type fakeCleanupService struct {
 	cleanupCalls        int
+	billingCalls        int
 	scanCalls           int
 	scannedAttachmentID string
 	err                 error
@@ -255,6 +285,14 @@ func (s *fakeCleanupService) RunCleanup(_ string) (map[string]int, error) {
 		return nil, s.err
 	}
 	return map[string]int{"expired": 1}, nil
+}
+
+func (s *fakeCleanupService) RunBillingReconciliation(_ string) (map[string]int, error) {
+	s.billingCalls++
+	if s.err != nil {
+		return nil, s.err
+	}
+	return map[string]int{"expiredOrders": 1}, nil
 }
 
 func (s *fakeCleanupService) RunAttachmentScan(_ app.Scanner, attachmentID string) error {

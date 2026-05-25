@@ -510,6 +510,79 @@ case "failed":
 
 ---
 
+## Scenario: Billing Reconciliation
+
+### 1. Scope / Trigger
+
+- Trigger: Any change that touches pending order expiry, stuck provider
+  payments, admin billing correction controls, or worker billing jobs.
+
+### 2. Signatures
+
+- Service: `app.Service.RunBillingReconciliation(actorID string)`
+- API: `POST /api/v1/admin/billing/reconcile`
+- Worker job kind: `billing_reconcile`
+
+### 3. Contracts
+
+- Reconciliation checks all cached/persisted orders and returns stable numeric
+  counts: `checkedOrders`, `pendingOrders`, and `expiredOrders`.
+- Pending orders with `expiresAt <= now` move to `expired`.
+- Paid, failed, canceled, refunded, and non-expired pending orders must not be
+  changed by reconciliation.
+- Admin-triggered reconciliation requires an admin session. Worker-triggered
+  reconciliation passes an empty actor and audits as `system:billing_reconcile`.
+- Every order expired by reconciliation writes `billing.order_expired` audit
+  metadata with `source = billing_reconcile`, `previousStatus`, `provider`,
+  `planId`, and `planRevoked = false`.
+
+### 4. Validation & Error Matrix
+
+- Non-admin API caller -> `403 admin_required`.
+- No stale pending orders -> `200` with `expiredOrders = 0`.
+- Stale pending order -> `200`, order status `expired`, count incremented.
+- Unsupported worker job kind -> normal worker retry/failure policy; do not
+  silently treat it as reconciliation.
+
+### 5. Good/Base/Bad Cases
+
+- Good: A stuck Epusdt order whose checkout window elapsed is expired by the
+  admin reconcile endpoint or worker job.
+- Base: A fresh pending order is counted as pending but remains pending.
+- Bad: Expire paid orders only because their original checkout `expiresAt` is
+  in the past.
+
+### 6. Tests Required
+
+- Domain tests assert stale pending orders expire, fresh pending orders remain
+  pending, paid orders remain paid, non-admin callers are rejected, and audit
+  logs are written.
+- HTTP tests assert the admin reconciliation route returns numeric counts.
+- Worker tests assert `billing_reconcile` jobs call the service and complete
+  through the same retry/completion path as cleanup and scan jobs.
+- Run full `make test` after changing reconciliation because it spans service,
+  HTTP, worker, and frontend admin controls.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+if order.ExpiresAt != nil && !order.ExpiresAt.After(now) {
+    order.Status = "expired"
+}
+```
+
+#### Correct
+
+```go
+if order.Status == "pending" && order.ExpiresAt != nil && !order.ExpiresAt.After(now) {
+    expireOrderWithAudit(order)
+}
+```
+
+---
+
 ## Testing Requirements
 
 - Run `make test` before reporting completion.

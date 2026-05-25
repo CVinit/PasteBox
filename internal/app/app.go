@@ -1583,6 +1583,13 @@ func (s *Service) applyOrderLifecycleStatusLocked(orderID string, status string,
 		}
 		return err
 	}
+	return s.applyLoadedOrderLifecycleStatusLocked("webhook:"+order.Provider, order, status, revokePlan, nil)
+}
+
+func (s *Service) applyLoadedOrderLifecycleStatusLocked(actorID string, order *Order, status string, revokePlan bool, metadata map[string]any) error {
+	if order == nil {
+		return nil
+	}
 	if order.Status == status {
 		return nil
 	}
@@ -1609,12 +1616,12 @@ func (s *Service) applyOrderLifecycleStatusLocked(orderID string, status string,
 	if err := s.updateOrderLocked(order); err != nil {
 		return err
 	}
-	return s.auditLocked("webhook:"+order.Provider, "billing.order_"+status, order.ID, map[string]any{
-		"planId":         order.PlanID,
-		"provider":       order.Provider,
-		"previousStatus": previousStatus,
-		"planRevoked":    planRevoked,
-	})
+	auditMetadata := cloneMetadata(metadata)
+	auditMetadata["planId"] = order.PlanID
+	auditMetadata["provider"] = order.Provider
+	auditMetadata["previousStatus"] = previousStatus
+	auditMetadata["planRevoked"] = planRevoked
+	return s.auditLocked(actorID, "billing.order_"+status, order.ID, auditMetadata)
 }
 
 func (s *Service) ReplayWebhookEvent(actorID string, eventID string) (WebhookEvent, error) {
@@ -1730,6 +1737,38 @@ func (s *Service) ListOrders(userID string) ([]Order, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out, nil
+}
+
+func (s *Service) RunBillingReconciliation(actorID string) (map[string]int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	actorID = strings.TrimSpace(actorID)
+	if actorID != "" {
+		if err := s.requireAdminLocked(actorID); err != nil {
+			return nil, err
+		}
+	}
+	actor := actorID
+	if actor == "" {
+		actor = "system:billing_reconcile"
+	}
+	now := s.now().UTC()
+	result := map[string]int{"checkedOrders": 0, "pendingOrders": 0, "expiredOrders": 0}
+	for _, order := range s.ordersByID {
+		result["checkedOrders"]++
+		if order.Status != "pending" {
+			continue
+		}
+		result["pendingOrders"]++
+		if order.ExpiresAt == nil || order.ExpiresAt.After(now) {
+			continue
+		}
+		if err := s.applyLoadedOrderLifecycleStatusLocked(actor, order, "expired", false, map[string]any{"source": "billing_reconcile"}); err != nil {
+			return nil, err
+		}
+		result["expiredOrders"]++
+	}
+	return result, nil
 }
 
 func (s *Service) ExportUser(userID string) (map[string]any, error) {

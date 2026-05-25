@@ -638,9 +638,9 @@ content, err := objectStore.Get(ctx, attachment.ObjectKey)
 - Deleting a paste schedules a `kind = 'cleanup'`, `status = 'pending'` job.
   Admin queue responses expose pending cleanup jobs separately from historical
   cleanup failures.
-- `pastebox worker` processes pending cleanup jobs and writes `completed`,
-  retryable `pending`, or terminal `failed` status back to the same `jobs`
-  table.
+- `pastebox worker` processes pending cleanup, scan, and billing reconciliation
+  jobs and writes `completed`, retryable `pending`, or terminal `failed` status
+  back to the same `jobs` table.
 - Mails are the durable retry boundary for SMTP delivery. `ListQueuedMail`
   returns only `status = 'queued'` rows in oldest-first order. Worker delivery
   uses `ListRunnableMail`, which returns queued rows with `run_after <= now`
@@ -689,8 +689,8 @@ content, err := objectStore.Get(ctx, attachment.ObjectKey)
 - Runtime switch tests must prove delete-paste cleanup jobs are durable across
   restart and admin queues distinguish `cleanupJobs`, `cleanupFailures`,
   `scanFailures`, and `failedJobs`.
-- Worker tests must prove cleanup job completion, retry/backoff, and terminal
-  failure for unsupported job kinds.
+- Worker tests must prove cleanup, scan, and billing reconciliation job
+  completion, retry/backoff, and terminal failure for unsupported job kinds.
 - Run full `make test` after changing operational repositories or runtime
   wiring.
 

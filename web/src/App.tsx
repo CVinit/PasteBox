@@ -204,6 +204,7 @@ const copy: Record<Locale, Record<string, string>> = {
     reportReason: "report reason",
     auditQueuesCleanup: "Audit, queues, cleanup",
     runCleanup: "Run cleanup",
+    runBillingReconcile: "Run billing reconcile",
     users: "Users",
     attachments: "Attachments",
     orders: "Orders",
@@ -242,6 +243,7 @@ const copy: Record<Locale, Record<string, string>> = {
     accountDeleted: "Account deleted",
     profileUpdated: "Profile updated",
     cleanupCompleted: "Cleanup completed",
+    billingReconciled: "Billing reconciliation completed",
     scanRetried: "Scan retried",
     attachmentFrozen: "Attachment frozen",
     attachmentReleased: "Attachment released",
@@ -323,6 +325,7 @@ const copy: Record<Locale, Record<string, string>> = {
     reportReason: "举报原因",
     auditQueuesCleanup: "审计、队列、清理",
     runCleanup: "运行清理",
+    runBillingReconcile: "运行支付对账",
     users: "用户",
     attachments: "附件",
     orders: "订单",
@@ -361,6 +364,7 @@ const copy: Record<Locale, Record<string, string>> = {
     accountDeleted: "账号已删除",
     profileUpdated: "资料已更新",
     cleanupCompleted: "清理完成",
+    billingReconciled: "支付对账已完成",
     scanRetried: "扫描已重试",
     attachmentFrozen: "附件已冻结",
     attachmentReleased: "附件已解冻",
@@ -958,6 +962,12 @@ function App() {
 
   async function runCleanup() {
     await run(() => client.runCleanup(), "Cleanup completed");
+    await refreshAuthed();
+    await refreshAdmin();
+  }
+
+  async function runBillingReconciliation() {
+    await run(() => client.adminReconcileBilling(), t("billingReconciled"));
     await refreshAuthed();
     await refreshAdmin();
   }
@@ -1619,6 +1629,9 @@ function App() {
             </div>
             <button type="button" onClick={runCleanup}>
               Run cleanup
+            </button>
+            <button type="button" onClick={runBillingReconciliation}>
+              {t("runBillingReconcile")}
             </button>
             <div className="admin-grid">
               <section>

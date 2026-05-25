@@ -166,6 +166,7 @@ func (s *Server) routes() http.Handler {
 			r.Get("/audit-logs", s.adminAuditLogs)
 			r.Get("/queues", s.adminQueues)
 			r.Post("/reports/{reportID}/status", s.adminResolveReport)
+			r.Post("/billing/reconcile", s.adminRunBillingReconciliation)
 			r.Post("/cleanup/run", s.adminRunCleanup)
 			r.Post("/orders/{orderID}/mark-paid", s.adminMarkOrderPaid)
 		})
@@ -1077,6 +1078,18 @@ func (s *Server) adminRunCleanup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := s.app.RunCleanup(user.ID)
+	if s.handleErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) adminRunBillingReconciliation(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	result, err := s.app.RunBillingReconciliation(user.ID)
 	if s.handleErr(w, err) {
 		return
 	}

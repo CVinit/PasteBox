@@ -13,6 +13,7 @@ import (
 
 type Service interface {
 	RunCleanup(actorID string) (map[string]int, error)
+	RunBillingReconciliation(actorID string) (map[string]int, error)
 	RunAttachmentScan(scanner app.Scanner, attachmentID string) error
 }
 
@@ -169,6 +170,9 @@ func (r *Runner) handleJob(ctx context.Context, job postgres.JobRecord) error {
 		return err
 	}
 	switch job.Kind {
+	case "billing_reconcile":
+		_, err := r.service.RunBillingReconciliation("")
+		return err
 	case "cleanup":
 		_, err := r.service.RunCleanup("")
 		return err

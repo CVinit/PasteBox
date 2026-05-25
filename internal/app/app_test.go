@@ -1115,6 +1115,57 @@ func TestBillingWebhookLifecycleStatuses(t *testing.T) {
 	assertAuditAction(t, logs, "billing.order_expired")
 }
 
+func TestBillingReconciliationExpiresStalePendingOrders(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	admin := seedAdminTestUser(t, svc, "admin-reconcile@example.com")
+	owner := registerTestUser(t, svc, "billing-reconcile@example.com")
+
+	staleOrder, err := svc.CreateOrder(owner.User.ID, "epusdt", "plus", "monthly")
+	if err != nil {
+		t.Fatalf("create stale order: %v", err)
+	}
+	paidOrder, err := svc.CreateOrder(owner.User.ID, "stripe", "plus", "monthly")
+	if err != nil {
+		t.Fatalf("create paid order: %v", err)
+	}
+	if _, _, err := svc.ProcessBillingWebhook(BillingWebhookInput{
+		Provider:       "stripe",
+		EventType:      "checkout.session.completed",
+		OrderID:        paidOrder.ID,
+		TxID:           "tx-reconcile-paid",
+		IdempotencyKey: "stripe-paid-before-reconcile",
+	}); err != nil {
+		t.Fatalf("mark paid before reconcile: %v", err)
+	}
+
+	now = now.Add(31 * time.Minute)
+	freshOrder, err := svc.CreateOrder(owner.User.ID, "epusdt", "plus", "monthly")
+	if err != nil {
+		t.Fatalf("create fresh order: %v", err)
+	}
+	if _, err := svc.RunBillingReconciliation(owner.User.ID); !hasAppCode(err, "admin_required") {
+		t.Fatalf("expected non-admin reconcile to be rejected, got %v", err)
+	}
+
+	result, err := svc.RunBillingReconciliation(admin.ID)
+	if err != nil {
+		t.Fatalf("run billing reconciliation: %v", err)
+	}
+	if result["checkedOrders"] != 3 || result["pendingOrders"] != 2 || result["expiredOrders"] != 1 {
+		t.Fatalf("unexpected reconciliation result: %#v", result)
+	}
+	requireOrderStatus(t, svc, owner.User.ID, staleOrder.ID, "expired")
+	requireOrderStatus(t, svc, owner.User.ID, freshOrder.ID, "pending")
+	requireOrderStatus(t, svc, owner.User.ID, paidOrder.ID, "paid")
+
+	logs, err := svc.AdminAuditLogs(admin.ID)
+	if err != nil {
+		t.Fatalf("audit logs: %v", err)
+	}
+	assertAuditAction(t, logs, "billing.order_expired")
+}
+
 func TestAccountDeletionRevokesSharesAndSessions(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	svc := newTestService(t, &now)

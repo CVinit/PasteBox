@@ -173,6 +173,9 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
   be one of `clean`, `scan_failed`, or `malicious`; invalid scanner verdicts are
   treated as scan failures and leave the job retryable through the worker retry
   policy.
+- The worker currently handles `kind = 'billing_reconcile'` jobs by calling
+  `Service.RunBillingReconciliation("")`, allowing stale pending billing orders
+  to expire through the same retry/completion path as cleanup and scan jobs.
 - Development may use `PASTEBOX_SCANNER_PROVIDER=heuristic`; production
   preflight must require `PASTEBOX_SCANNER_PROVIDER=clamav`,
   `PASTEBOX_CLAMAV_ADDR` as a valid `host:port`, and a positive
