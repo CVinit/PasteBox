@@ -1231,10 +1231,17 @@ func TestBillingReconciliationExpiresStalePendingOrders(t *testing.T) {
 func TestAccountDeletionRevokesSharesAndSessions(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	svc := newTestService(t, &now)
+	admin := seedAdminTestUser(t, svc, "delete-admin@example.com")
 	auth := registerTestUser(t, svc, "delete@example.com")
 	paste := createTestPaste(t, svc, auth.User.ID, PasteInput{Text: "delete me", ExpiresInSeconds: 3600})
 	share := createTestShare(t, svc, auth.User.ID, paste.ID, ShareInput{ExpiresInSeconds: 3600})
 
+	if _, err := svc.RequestAccountDeletion(auth.User.ID); err != nil {
+		t.Fatalf("request account deletion: %v", err)
+	}
+	if _, err := svc.CancelAccountDeletion(auth.User.ID); err != nil {
+		t.Fatalf("cancel account deletion: %v", err)
+	}
 	if err := svc.ExecuteAccountDeletion(auth.User.ID); err != nil {
 		t.Fatalf("execute account deletion: %v", err)
 	}
@@ -1247,6 +1254,13 @@ func TestAccountDeletionRevokesSharesAndSessions(t *testing.T) {
 	if _, err := svc.GetPaste(auth.User.ID, paste.ID); !hasAppStatus(err, http.StatusUnauthorized) {
 		t.Fatalf("expected deleted account owner read to be blocked, got %v", err)
 	}
+	logs, err := svc.AdminAuditLogs(admin.ID)
+	if err != nil {
+		t.Fatalf("audit logs: %v", err)
+	}
+	assertAuditAction(t, logs, "account.deletion_requested")
+	assertAuditAction(t, logs, "account.deletion_canceled")
+	assertAuditAction(t, logs, "account.deleted")
 }
 
 func newTestService(t *testing.T, now *time.Time) *Service {

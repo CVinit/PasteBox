@@ -196,8 +196,18 @@ func TestServiceWithPostgresStoresPreservesLaunchStateAcrossRestart(t *testing.T
 	if !containsAuditAction(auditAfterRestart, "billing.order_paid") {
 		t.Fatalf("expected billing audit log after restart, got %#v", auditAfterRestart)
 	}
+	if !containsAuditAction(auditAfterRestart, "account.deletion_requested") {
+		t.Fatalf("expected deletion request audit log after restart, got %#v", auditAfterRestart)
+	}
 	if err := restarted.ExecuteAccountDeletion(auth.User.ID); err != nil {
 		t.Fatalf("execute account deletion after restart: %v", err)
+	}
+	auditAfterDeletion, err := restarted.AdminAuditLogs(admin.ID)
+	if err != nil {
+		t.Fatalf("audit logs after deletion: %v", err)
+	}
+	if !containsAuditAction(auditAfterDeletion, "account.deleted") {
+		t.Fatalf("expected account deleted audit log after deletion, got %#v", auditAfterDeletion)
 	}
 
 	deletedRestart := newPostgresBackedService(t, ctx, pool, cfg)

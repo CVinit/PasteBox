@@ -498,6 +498,11 @@ postgres:
 - Read by ID: `UserByID(ctx context.Context, id string) (app.User, error)`
 - Read by email: `UserByEmail(ctx context.Context, email string) (app.User, error)`
 - Update: `UpdateUser(ctx context.Context, user app.User) error`
+- Account deletion request:
+  `app.Service.RequestAccountDeletion(userID string) (app.UserView, error)`
+- Account deletion cancel:
+  `app.Service.CancelAccountDeletion(userID string) (app.UserView, error)`
+- Account deletion execute: `app.Service.ExecuteAccountDeletion(userID string) error`
 - Errors: `postgres.ErrUserNotFound`, `postgres.ErrUserEmailExists`
 
 ### 3. Contracts
@@ -515,6 +520,15 @@ postgres:
 - Runtime auth must not use PostgreSQL users while sessions, auth tokens, and
   login-failure records are still only in memory, because a restart would
   otherwise preserve users but lose the surrounding auth lifecycle state.
+- Account deletion lifecycle changes must be auditable:
+  `account.deletion_requested` after scheduling deletion,
+  `account.deletion_canceled` after canceling a pending deletion, and
+  `account.deleted` after user state, owned active pastes, shares, and sessions
+  have been updated. These audit logs use the account user ID as both actor and
+  target so data-rights operations remain exportable and visible to admins.
+- `account.deletion_requested` metadata includes `scheduledAt`.
+  `account.deleted` metadata includes `pasteCount` and `shareCount` for the
+  number of active owned resources moved or revoked during execution.
 
 ### 4. Validation & Error Matrix
 
@@ -522,17 +536,24 @@ postgres:
 - Missing row on `UserByID` / `UserByEmail` -> `ErrUserNotFound`.
 - `UpdateUser` affects zero rows -> `ErrUserNotFound`.
 - Other PostgreSQL failures -> wrapped repository error with operation context.
+- Account deletion audit write failure -> return the audit error; do not report
+  deletion lifecycle completion without an audit trail.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: Registering a user through a future PostgreSQL-backed auth path creates
   the user, email verification token, login failure state, and session in one
   coherent durable flow.
+- Good: Requesting, canceling, and executing account deletion leaves
+  `account.deletion_requested`, `account.deletion_canceled`, and
+  `account.deleted` audit logs tied to the account user.
 - Base: Introduce `UserStore` with live integration tests while keeping runtime
   auth in memory until the dependent repositories are ready.
 - Bad: Persist users to PostgreSQL but keep sessions and auth tokens only in
   memory in production mode; users survive restart while login/session recovery
   behavior silently changes.
+- Bad: Mark a user deleted and revoke sessions without writing
+  `account.deleted`; support cannot prove when the data-rights action ran.
 
 ### 6. Tests Required
 
@@ -543,6 +564,10 @@ postgres:
   login, email verification, magic link, password reset, session lookup,
   logout, logout-all, account deletion, and admin bootstrap survive process
   restart with PostgreSQL-backed repositories.
+- App tests assert account deletion request, cancel, and execute paths write
+  the three account deletion audit actions.
+- PostgreSQL-backed service integration tests assert deletion request and
+  execution audit logs survive restart with durable audit storage.
 - Run full `make test` after changing user repository or auth runtime wiring.
 
 ### 7. Wrong vs Correct

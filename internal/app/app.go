@@ -878,6 +878,9 @@ func (s *Service) RequestAccountDeletion(userID string) (UserView, error) {
 	if err := s.updateUserLocked(user); err != nil {
 		return UserView{}, err
 	}
+	if err := s.auditLocked(user.ID, "account.deletion_requested", user.ID, map[string]any{"scheduledAt": scheduled}); err != nil {
+		return UserView{}, err
+	}
 	if err := s.mail(user.Email, "PasteBox account deletion requested", "Your account is scheduled for deletion in 7 days."); err != nil {
 		return UserView{}, err
 	}
@@ -895,6 +898,9 @@ func (s *Service) CancelAccountDeletion(userID string) (UserView, error) {
 	user.DeleteRequestedAt = nil
 	user.DeleteScheduledAt = nil
 	if err := s.updateUserLocked(user); err != nil {
+		return UserView{}, err
+	}
+	if err := s.auditLocked(user.ID, "account.deletion_canceled", user.ID, nil); err != nil {
 		return UserView{}, err
 	}
 	return viewUser(user), nil
@@ -916,6 +922,7 @@ func (s *Service) ExecuteAccountDeletion(userID string) error {
 	if err := s.updateUserLocked(user); err != nil {
 		return err
 	}
+	pasteCount := 0
 	for _, paste := range s.pastesByID {
 		if paste.UserID == user.ID && paste.Status == "active" {
 			paste.Status = "pending_delete"
@@ -923,17 +930,26 @@ func (s *Service) ExecuteAccountDeletion(userID string) error {
 			if err := s.updatePasteLocked(paste); err != nil {
 				return err
 			}
+			pasteCount++
 		}
 	}
+	shareCount := 0
 	for _, share := range s.sharesByID {
 		if share.UserID == user.ID && share.RevokedAt == nil {
 			share.RevokedAt = &now
 			if err := s.updateShareLocked(share); err != nil {
 				return err
 			}
+			shareCount++
 		}
 	}
-	return s.revokeUserSessionsLocked(user.ID)
+	if err := s.revokeUserSessionsLocked(user.ID); err != nil {
+		return err
+	}
+	return s.auditLocked(user.ID, "account.deleted", user.ID, map[string]any{
+		"pasteCount": pasteCount,
+		"shareCount": shareCount,
+	})
 }
 
 func (s *Service) CreatePaste(userID string, input PasteInput) (PasteView, error) {
