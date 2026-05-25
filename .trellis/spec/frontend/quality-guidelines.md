@@ -41,6 +41,75 @@ TypeScript strict, and build with Vite.
 
 ---
 
+## Scenario: Billing Order Status Presentation
+
+### 1. Scope / Trigger
+
+- Trigger: Any frontend change that touches `Order.status`, billing order
+  cards, admin order cards, or payment lifecycle wording.
+
+### 2. Signatures
+
+- Type: `Order.status` in `web/src/api.ts`
+- User UI: billing order cards in `web/src/App.tsx`
+- Admin UI: admin orders section in `web/src/App.tsx`
+
+### 3. Contracts
+
+- Known statuses are `pending`, `paid`, `failed`, `expired`, `canceled`,
+  `refunded`, and `needs_review`; the API type may still accept provider
+  extension strings.
+- Billing and admin order cards must not display raw status text alone. They
+  must show a stable label, a short lifecycle description, and a visual badge
+  tone.
+- Status copy must be available for English and Chinese locales when the rest
+  of the screen is localized.
+- Unknown provider status strings must render safely with a neutral badge
+  instead of crashing or hiding the order.
+
+### 4. Validation & Error Matrix
+
+- Known status -> localized label and expected badge tone.
+- Unknown non-empty status -> raw status label, neutral provider-status
+  description.
+- Empty status -> neutral `Unknown` label.
+
+### 5. Good/Base/Bad Cases
+
+- Good: A refunded order shows a refunded badge and revocation-oriented
+  description in both user billing and admin orders.
+- Base: A paid order still shows as active/paid and the admin mark-paid button
+  remains disabled.
+- Bad: Rendering `{order.status}` as the only user-facing state, because
+  provider failure, expiry, cancel, and refund states are easy to miss.
+
+### 6. Tests Required
+
+- Run `make test-web` after changing status presentation.
+- Run full `make test` when backend lifecycle statuses or API fields changed in
+  the same slice.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+<strong>
+  {order.planId} · {order.status}
+</strong>
+```
+
+#### Correct
+
+```tsx
+const status = orderStatusDetail(order.status, locale);
+<span className={`order-status order-status--${status.tone}`}>
+  {status.label}
+</span>
+```
+
+---
+
 ## Code Review Checklist
 
 - Does the UI still present a functional PasteBox workspace as the first

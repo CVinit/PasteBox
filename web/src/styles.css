@@ -499,6 +499,54 @@ code {
   font-size: 13px;
 }
 
+.list-card .order-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  min-width: 92px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.list-card .order-status--pending {
+  border-color: #d6c783;
+  color: #6d4f00;
+  background: #fff7df;
+}
+
+.list-card .order-status--success {
+  border-color: #a4d4bd;
+  color: #0d6b4c;
+  background: #e8f7ef;
+}
+
+.list-card .order-status--warning {
+  border-color: #e6bd72;
+  color: #8a4b0f;
+  background: #fff0d8;
+}
+
+.list-card .order-status--danger {
+  border-color: #efb2aa;
+  color: #9f1d14;
+  background: #fff0ee;
+}
+
+.list-card .order-status--neutral {
+  border-color: #cfdad5;
+  color: #40564f;
+  background: #f4f7f5;
+}
+
+.list-card .order-status-note {
+  color: #52645e;
+}
+
 .admin-grid section {
   min-width: 0;
 }

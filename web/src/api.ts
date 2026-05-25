@@ -29,6 +29,16 @@ export type Price = {
   epusdtEnabled?: boolean;
 };
 
+export type OrderStatus =
+  | "pending"
+  | "paid"
+  | "failed"
+  | "expired"
+  | "canceled"
+  | "refunded"
+  | "needs_review"
+  | (string & {});
+
 export type User = {
   id: string;
   email: string;
@@ -116,7 +126,7 @@ export type Order = {
   period: string;
   amountCents: number;
   currency: string;
-  status: string;
+  status: OrderStatus;
   checkoutUrl?: string;
   address?: string;
   chain?: string;

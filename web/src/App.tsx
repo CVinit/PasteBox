@@ -85,6 +85,14 @@ type AdminData = {
 
 type Locale = "en" | "zh";
 
+type OrderStatusTone = "pending" | "success" | "warning" | "danger" | "neutral";
+
+type OrderStatusDetail = {
+  label: string;
+  description: string;
+  tone: OrderStatusTone;
+};
+
 const defaultDraft: Draft = {
   title: "",
   text: "",
@@ -179,7 +187,7 @@ const copy: Record<Locale, Record<string, string>> = {
     loginRequired: "login required",
     anonymous: "anonymous",
     expires: "expires",
-    stripeUsdtStubs: "Stripe and USDT order stubs",
+    stripeUsdtPayments: "Stripe and USDT payment lifecycle",
     storage: "Storage",
     file: "File",
     retention: "Retention",
@@ -298,7 +306,7 @@ const copy: Record<Locale, Record<string, string>> = {
     loginRequired: "需要登录",
     anonymous: "匿名访问",
     expires: "过期",
-    stripeUsdtStubs: "Stripe 和 USDT 订单桩",
+    stripeUsdtPayments: "Stripe 和 USDT 支付状态",
     storage: "存储",
     file: "文件",
     retention: "有效期",
@@ -373,6 +381,76 @@ function copyFor(language?: string) {
   return (key: string) => copy[locale][key] ?? copy.en[key] ?? key;
 }
 
+const orderStatusText: Record<
+  Locale,
+  Record<string, Omit<OrderStatusDetail, "tone">>
+> = {
+  en: {
+    pending: {
+      label: "Pending",
+      description: "Waiting for provider confirmation.",
+    },
+    paid: { label: "Paid", description: "Membership is active." },
+    failed: {
+      label: "Failed",
+      description: "Provider reported a payment failure.",
+    },
+    expired: {
+      label: "Expired",
+      description: "The payment window expired before confirmation.",
+    },
+    canceled: {
+      label: "Canceled",
+      description: "The provider order or subscription was canceled.",
+    },
+    refunded: {
+      label: "Refunded",
+      description: "Payment was refunded and matching access was revoked.",
+    },
+    needs_review: {
+      label: "Needs review",
+      description: "Support review is required before activation.",
+    },
+  },
+  zh: {
+    pending: { label: "待支付", description: "等待支付渠道确认。" },
+    paid: { label: "已支付", description: "会员权益已生效。" },
+    failed: { label: "支付失败", description: "支付渠道返回失败状态。" },
+    expired: { label: "已过期", description: "支付窗口已过期，未确认到账。" },
+    canceled: { label: "已取消", description: "渠道订单或订阅已取消。" },
+    refunded: { label: "已退款", description: "已退款，匹配的会员权益已撤销。" },
+    needs_review: { label: "需审核", description: "需要客服审核后再处理。" },
+  },
+};
+
+function orderStatusTone(status: string): OrderStatusTone {
+  switch (status.toLowerCase()) {
+    case "paid":
+      return "success";
+    case "failed":
+    case "canceled":
+    case "refunded":
+      return "danger";
+    case "expired":
+    case "needs_review":
+      return "warning";
+    case "pending":
+      return "pending";
+    default:
+      return "neutral";
+  }
+}
+
+function orderStatusDetail(status: string, locale: Locale): OrderStatusDetail {
+  const normalized = status.toLowerCase();
+  const detail = orderStatusText[locale][normalized] ?? {
+    label: status || "Unknown",
+    description:
+      locale === "zh" ? "支付渠道返回的状态。" : "Provider returned this status.",
+  };
+  return { ...detail, tone: orderStatusTone(normalized) };
+}
+
 function App() {
   const [user, setUser] = useState<User | null>(null);
   const [catalog, setCatalog] = useState<PlanCatalog | null>(null);
@@ -422,10 +500,11 @@ function App() {
   });
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
-  const t = useMemo(
-    () => copyFor(user?.language ?? browserLocale),
+  const locale = useMemo(
+    () => localeFor(user?.language ?? browserLocale),
     [user?.language],
   );
+  const t = useMemo(() => copyFor(locale), [locale]);
 
   const activePlan = useMemo(() => {
     const planId = user?.planId ?? "free";
@@ -1367,7 +1446,7 @@ function App() {
         ) : null}
 
         {view === "billing" ? (
-          <Panel title="Billing" meta="Stripe and USDT order stubs">
+          <Panel title={t("billing")} meta={t("stripeUsdtPayments")}>
             <div className="plan-grid">
               {(catalog?.plans ?? []).map((plan) => (
                 <article className="plan-card" key={plan.id}>
@@ -1414,17 +1493,26 @@ function App() {
                 </article>
               ))}
             </div>
-            {orders.map((order) => (
-              <article className="list-card" key={order.id}>
-                <strong>
-                  {order.planId} · {order.status}
-                </strong>
-                <span>
-                  {order.provider} · {(order.amountCents / 100).toFixed(2)}{" "}
-                  {order.currency}
-                </span>
-              </article>
-            ))}
+            {orders.map((order) => {
+              const status = orderStatusDetail(order.status, locale);
+              return (
+                <article className="list-card" key={order.id}>
+                  <div>
+                    <strong>{order.planId}</strong>
+                    <span>
+                      {order.provider} · {(order.amountCents / 100).toFixed(2)}{" "}
+                      {order.currency}
+                    </span>
+                    <span className="order-status-note">
+                      {status.description}
+                    </span>
+                  </div>
+                  <span className={`order-status order-status--${status.tone}`}>
+                    {status.label}
+                  </span>
+                </article>
+              );
+            })}
           </Panel>
         ) : null}
 
@@ -1600,26 +1688,36 @@ function App() {
               </section>
               <section>
                 <h3>Orders</h3>
-                {adminData.orders.slice(0, 5).map((order) => (
-                  <article className="list-card" key={order.id}>
-                    <div>
-                      <strong>
-                        {order.planId} · {order.status}
-                      </strong>
-                      <span>
-                        {order.provider} ·{" "}
-                        {(order.amountCents / 100).toFixed(2)} {order.currency}
+                {adminData.orders.slice(0, 5).map((order) => {
+                  const status = orderStatusDetail(order.status, locale);
+                  return (
+                    <article className="list-card" key={order.id}>
+                      <div>
+                        <strong>{order.planId}</strong>
+                        <span>
+                          {order.provider} ·{" "}
+                          {(order.amountCents / 100).toFixed(2)}{" "}
+                          {order.currency}
+                        </span>
+                        <span className="order-status-note">
+                          {status.description}
+                        </span>
+                      </div>
+                      <span
+                        className={`order-status order-status--${status.tone}`}
+                      >
+                        {status.label}
                       </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => void adminMarkOrderPaid(order.id)}
-                      disabled={order.status === "paid"}
-                    >
-                      Paid
-                    </button>
-                  </article>
-                ))}
+                      <button
+                        type="button"
+                        onClick={() => void adminMarkOrderPaid(order.id)}
+                        disabled={order.status === "paid"}
+                      >
+                        {t("paid")}
+                      </button>
+                    </article>
+                  );
+                })}
               </section>
               <section>
                 <h3>Queues</h3>
