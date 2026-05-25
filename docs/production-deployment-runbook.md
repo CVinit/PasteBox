@@ -167,6 +167,18 @@ The command applies embedded SQL migrations and records applied versions in
 `schema_migrations`. Treat any checksum mismatch or failed migration as a hard
 release stop.
 
+## Bootstrap Admin
+
+Set `PASTEBOX_BOOTSTRAP_ADMIN_EMAIL` and `PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD`
+in `deploy/production.env` before the first API start. The API process creates
+or updates that account at startup, marks it verified, grants the `admin` role,
+and replaces the password with the configured value. Startup fails instead of
+silently continuing if the bootstrap email or password is invalid.
+
+After the first successful admin login, rotate the bootstrap password or remove
+the bootstrap variables from the real production environment so routine
+restarts do not keep resetting the administrator password.
+
 ## Start Or Upgrade
 
 ```sh

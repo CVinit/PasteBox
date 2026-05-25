@@ -799,8 +799,8 @@ func runAdminCreate(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	fmt.Fprintf(stdout, "created bootstrap admin %s\n", admin.Email)
-	fmt.Fprintln(stdout, "set these environment variables before starting pastebox:")
+	fmt.Fprintf(stdout, "generated bootstrap admin settings for %s\n", admin.Email)
+	fmt.Fprintln(stdout, "set these environment variables before starting pastebox to create or update the admin account:")
 	fmt.Fprintf(stdout, "PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=%s\n", admin.Email)
 	fmt.Fprintln(stdout, "PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=<the password you provided>")
 	return 0

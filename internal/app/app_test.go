@@ -201,6 +201,65 @@ func TestEmailVerificationRequiredBeforePasswordLoginAndWrites(t *testing.T) {
 	}
 }
 
+func TestSeedAdminCreatesAndUpdatesBootstrapAdmin(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	stores := newMemoryAuthStores()
+	svc := newTestServiceWithAuthStores(t, &now, stores.authStores())
+
+	created, err := svc.SeedAdmin("Admin@Example.COM", "password123")
+	if err != nil {
+		t.Fatalf("seed admin: %v", err)
+	}
+	if created.Email != "admin@example.com" || created.Role != "admin" || !created.EmailVerified {
+		t.Fatalf("expected verified normalized admin, got %#v", created)
+	}
+	if _, err := svc.Login(context.Background(), "admin@example.com", "password123"); err != nil {
+		t.Fatalf("bootstrap admin should login with initial password: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		if _, err := svc.Login(context.Background(), "admin@example.com", "wrong-password"); !hasAppCode(err, "invalid_credentials") {
+			t.Fatalf("expected failed bootstrap login attempt %d to record invalid credentials, got %v", i+1, err)
+		}
+	}
+	if _, err := svc.Login(context.Background(), "admin@example.com", "password123"); !hasAppCode(err, "login_rate_limited") {
+		t.Fatalf("expected bootstrap admin to be rate limited before password reset, got %v", err)
+	}
+
+	updated, err := svc.SeedAdmin("admin@example.com", "newpassword123")
+	if err != nil {
+		t.Fatalf("update admin: %v", err)
+	}
+	if updated.ID != created.ID || updated.Role != "admin" || !updated.EmailVerified {
+		t.Fatalf("expected bootstrap update to preserve admin identity and role, got %#v", updated)
+	}
+	if _, err := svc.Login(context.Background(), "admin@example.com", "password123"); !hasAppCode(err, "invalid_credentials") {
+		t.Fatalf("expected old bootstrap password to be replaced, got %v", err)
+	}
+	if _, err := svc.Login(context.Background(), "admin@example.com", "newpassword123"); err != nil {
+		t.Fatalf("updated bootstrap admin should login with new password: %v", err)
+	}
+
+	restarted := newTestServiceWithAuthStores(t, &now, stores.authStores())
+	login, err := restarted.Login(context.Background(), "admin@example.com", "newpassword123")
+	if err != nil {
+		t.Fatalf("updated bootstrap admin should survive restart: %v", err)
+	}
+	if login.User.ID != created.ID || login.User.Role != "admin" || !login.User.EmailVerified {
+		t.Fatalf("unexpected restarted bootstrap admin: %#v", login.User)
+	}
+}
+
+func TestBootstrapAdminErrorsFailServiceStartup(t *testing.T) {
+	cfg := config.FromEnv()
+	cfg.BootstrapAdminEmail = "admin@example.com"
+	cfg.BootstrapAdminPassword = "short"
+	cfg.DevAuthTokens = true
+
+	if _, err := NewWithStorage(context.Background(), cfg, Stores{}); !hasAppCode(err, "weak_password") {
+		t.Fatalf("expected bootstrap admin error to fail startup, got %v", err)
+	}
+}
+
 func TestStoreBackedAuthStateSurvivesServiceRestart(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	stores := newMemoryAuthStores()

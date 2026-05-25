@@ -153,7 +153,9 @@ func NewWithStorage(ctx context.Context, cfg config.Config, stores Stores) (*Ser
 		return nil, err
 	}
 	if cfg.BootstrapAdminEmail != "" && cfg.BootstrapAdminPassword != "" {
-		_, _ = svc.SeedAdmin(cfg.BootstrapAdminEmail, cfg.BootstrapAdminPassword)
+		if _, err := svc.SeedAdmin(cfg.BootstrapAdminEmail, cfg.BootstrapAdminPassword); err != nil {
+			return nil, fmt.Errorf("bootstrap admin: %w", err)
+		}
 	}
 	return svc, nil
 }
@@ -2628,16 +2630,68 @@ func (s *Service) RunCleanup(actorID string) (map[string]int, error) {
 }
 
 func (s *Service) SeedAdmin(email string, password string) (UserView, error) {
-	result, err := s.Register(context.Background(), RegisterInput{Email: email, Password: password, DisplayName: "PasteBox Admin"})
+	email = normalizeEmail(email)
+	if email == "" || !strings.Contains(email, "@") {
+		return UserView{}, E(http.StatusBadRequest, "invalid_email", "valid email is required")
+	}
+	if len(password) < 8 {
+		return UserView{}, E(http.StatusBadRequest, "weak_password", "password must be at least 8 characters")
+	}
+	passwordHash, err := hashPassword(password)
 	if err != nil {
 		return UserView{}, err
 	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	user := s.usersByID[result.User.ID]
+
+	now := s.now().UTC()
+	user, err := s.userByEmailLocked(email)
+	if err != nil && !isStoreNotFound(err) && !isAppStatus(err, http.StatusNotFound) {
+		return UserView{}, err
+	}
+	if user == nil {
+		user = &User{
+			ID:          s.newID("usr"),
+			Email:       email,
+			DisplayName: "PasteBox Admin",
+			Language:    "en",
+			PlanID:      "free",
+			CreatedAt:   now,
+		}
+	}
+	if strings.TrimSpace(user.DisplayName) == "" {
+		user.DisplayName = "PasteBox Admin"
+	}
+	if strings.TrimSpace(user.Language) == "" {
+		user.Language = "en"
+	}
+	if strings.TrimSpace(user.PlanID) == "" {
+		user.PlanID = "free"
+	}
+	user.PasswordHash = passwordHash
 	user.Role = "admin"
 	user.EmailVerified = true
-	if err := s.updateUserLocked(user); err != nil {
+	user.Frozen = false
+	user.UpdatedAt = now
+	user.DeleteRequestedAt = nil
+	user.DeleteScheduledAt = nil
+	user.DeletedAt = nil
+
+	if user.CreatedAt.IsZero() {
+		user.CreatedAt = now
+	}
+	if _, exists := s.usersByID[user.ID]; !exists {
+		if err := s.createUserLocked(user); err != nil {
+			if errors.Is(err, ErrStoreConflict) {
+				return UserView{}, E(http.StatusConflict, "email_exists", "email is already registered")
+			}
+			return UserView{}, err
+		}
+	} else if err := s.updateUserLocked(user); err != nil {
+		return UserView{}, err
+	}
+	if err := s.deleteLoginFailureLocked(email); err != nil {
 		return UserView{}, err
 	}
 	return s.viewUserLocked(user)

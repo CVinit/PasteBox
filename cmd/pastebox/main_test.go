@@ -15,7 +15,7 @@ func TestAdminCreateCommandEmitsBootstrapEnvWithoutPassword(t *testing.T) {
 		t.Fatalf("expected exit code 0, got %d stderr=%q", code, stderr.String())
 	}
 	output := stdout.String()
-	if !strings.Contains(output, "created bootstrap admin admin@example.com") {
+	if !strings.Contains(output, "generated bootstrap admin settings for admin@example.com") {
 		t.Fatalf("expected normalized admin email in output, got %q", output)
 	}
 	if !strings.Contains(output, "PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=admin@example.com") {

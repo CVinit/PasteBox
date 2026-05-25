@@ -680,6 +680,108 @@ if errors.Is(err, postgres.ErrAuthTokenNotFound) {
 }
 ```
 
+## Scenario: Bootstrap Admin Runtime
+
+### 1. Scope / Trigger
+
+- Trigger: Any change that touches production administrator bootstrap,
+  `PASTEBOX_BOOTSTRAP_ADMIN_*` environment handling, auth runtime startup, or
+  `app.Service.SeedAdmin`.
+
+### 2. Signatures
+
+- Config: `PASTEBOX_BOOTSTRAP_ADMIN_EMAIL`
+- Config: `PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD`
+- Service: `app.Service.SeedAdmin(email string, password string) (app.UserView, error)`
+- Startup: `app.NewWithStorage(ctx, cfg, stores)`
+- CLI helper: `pastebox admin create --email <email> --password <password>`
+
+### 3. Contracts
+
+- Startup calls `SeedAdmin` only when both bootstrap env vars are set.
+- Bootstrap email is normalized before lookup or creation.
+- `SeedAdmin` is create-or-update: it creates the account when missing and
+  updates the existing account with the same normalized email when present.
+- Bootstrap always marks the account email verified, grants `role = admin`,
+  unfreezes the account, clears pending deletion fields, replaces the password
+  hash with the configured password, and clears login-failure state for that
+  email.
+- Startup must fail if bootstrap validation or persistence fails; it must not
+  silently continue with no usable administrator.
+- `pastebox admin create` is only a bootstrap env helper. It must not claim to
+  have written the production database unless it actually starts a production
+  store-backed service.
+
+### 4. Validation & Error Matrix
+
+- Invalid bootstrap email -> `400 invalid_email` and startup fails.
+- Bootstrap password shorter than eight characters -> `400 weak_password` and
+  startup fails.
+- Duplicate existing email -> update the existing user instead of returning
+  `email_exists`.
+- Stored login-failure lock for the bootstrap email -> deleted during
+  bootstrap so the configured administrator can log in immediately.
+- Repository create/update/login-failure delete failure -> startup fails with
+  the wrapped store error.
+
+### 5. Good/Base/Bad Cases
+
+- Good: A first production start creates a verified admin, and a later restart
+  with the same email rotates the admin password without changing the user ID.
+- Good: A locked bootstrap admin can log in after password rotation because
+  the login-failure state was cleared.
+- Base: The local helper prints normalized env values and never echoes the raw
+  password.
+- Bad: Calling `Register` from `SeedAdmin`, because an existing user would make
+  bootstrap non-idempotent and startup could fail after a password rotation.
+- Bad: Ignoring `SeedAdmin` errors during startup, because production would
+  appear healthy while no administrator can reach launch-gate workflows.
+
+### 6. Tests Required
+
+- App tests assert `SeedAdmin` creates a normalized verified admin.
+- App tests assert calling `SeedAdmin` again with the same email preserves the
+  user ID, replaces the password, keeps the admin role, clears login failures,
+  and survives a fresh service instance with store-backed auth.
+- App tests assert invalid bootstrap config makes `NewWithStorage` return an
+  error instead of silently continuing.
+- CLI tests assert `pastebox admin create` prints env guidance and does not
+  echo the supplied password.
+- Run full `make test` after changing bootstrap auth behavior.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+_, _ = svc.SeedAdmin(cfg.BootstrapAdminEmail, cfg.BootstrapAdminPassword)
+```
+
+#### Correct
+
+```go
+if _, err := svc.SeedAdmin(cfg.BootstrapAdminEmail, cfg.BootstrapAdminPassword); err != nil {
+    return nil, fmt.Errorf("bootstrap admin: %w", err)
+}
+```
+
+#### Wrong
+
+```go
+result, err := svc.Register(ctx, RegisterInput{Email: email, Password: password})
+```
+
+#### Correct
+
+```go
+user, err := svc.userByEmailLocked(normalizeEmail(email))
+if err == nil {
+    user.PasswordHash = newHash
+    user.Role = "admin"
+    return svc.updateUserLocked(user)
+}
+```
+
 ## Scenario: Content Metadata Repository Boundaries
 
 ### 1. Scope / Trigger
