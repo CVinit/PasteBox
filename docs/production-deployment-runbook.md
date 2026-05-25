@@ -87,11 +87,13 @@ docker compose --env-file deploy/production.env -f compose.production.yaml pull
 The production preflight fails if `PASTEBOX_IMAGE` is mutable, if
 `PASTEBOX_PUBLIC_URL` is not HTTPS, if `PASTEBOX_CSRF_SECRET` is missing or
 left at the development default, if `PASTEBOX_METRICS_TOKEN` is missing or too
-short, if Google OAuth client settings are missing, if SMTP is not configured
-for TLS delivery, if `PASTEBOX_S3_ENDPOINT` points to a local or HTTP object
-store, or if `PASTEBOX_RESTIC_REPOSITORY` is not an off-host `s3:https://`
-repository. Use managed S3-compatible storage for attachment objects and a
-separate off-host S3-compatible restic repository for backups.
+short, if `PASTEBOX_CORS_ALLOWED_ORIGINS` is missing, wildcarded, local, HTTP,
+or does not include the exact `PASTEBOX_PUBLIC_URL` origin, if Google OAuth
+client settings are missing, if SMTP is not configured for TLS delivery, if
+`PASTEBOX_S3_ENDPOINT` points to a local or HTTP object store, or if
+`PASTEBOX_RESTIC_REPOSITORY` is not an off-host `s3:https://` repository. Use
+managed S3-compatible storage for attachment objects and a separate off-host
+S3-compatible restic repository for backups.
 `PASTEBOX_WAL_ARCHIVE_TIMEOUT_SECONDS` and
 `PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS` must both be positive and no more than
 `900`; `PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS` must also be positive and no more
@@ -117,6 +119,14 @@ production sender address, and either `PASTEBOX_SMTP_TLS_MODE=starttls` or
 `PASTEBOX_SMTP_TLS_MODE=tls`. Plain SMTP is rejected in production preflight.
 Scanning must use `PASTEBOX_SCANNER_PROVIDER=clamav` with a reachable
 `PASTEBOX_CLAMAV_ADDR` such as `clamav:3310`.
+
+PasteBox adds app-level browser hardening headers on API and static responses:
+`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`,
+`Permissions-Policy`, and a same-origin Content Security Policy. Keep the Caddy
+headers as the edge defense layer, but do not rely on Caddy as the only source
+of secure headers. API CORS is credentialed only for exact origins listed in
+`PASTEBOX_CORS_ALLOWED_ORIGINS`; do not use wildcard origins with browser
+cookies.
 
 To validate the committed template without creating a real secret file:
 

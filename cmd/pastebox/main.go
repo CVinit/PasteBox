@@ -316,6 +316,7 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		"PASTEBOX_PUBLIC_URL",
 		"PASTEBOX_CSRF_SECRET",
 		"PASTEBOX_METRICS_TOKEN",
+		"PASTEBOX_CORS_ALLOWED_ORIGINS",
 		"PASTEBOX_DOMAIN",
 		"PASTEBOX_ADMIN_EMAIL",
 		"PASTEBOX_POSTGRES_PASSWORD",
@@ -384,6 +385,10 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 	}
 	if len(strings.TrimSpace(cfg.MetricsToken)) < 32 {
 		fmt.Fprintln(stderr, "production preflight failed: PASTEBOX_METRICS_TOKEN must be a production random token at least 32 characters long")
+		return 1
+	}
+	if err := validateCORSOrigins(cfg); err != nil {
+		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
 		return 1
 	}
 	if err := validateGoogleOAuthRedirectURL(cfg.GoogleOAuth.RedirectURL, cfg.PublicURL); err != nil {
@@ -460,6 +465,40 @@ func validateGoogleOAuthRedirectURL(raw string, publicRaw string) error {
 	}
 	if !strings.EqualFold(redirectURL.Hostname(), publicURL.Hostname()) {
 		return fmt.Errorf("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL host must match PASTEBOX_PUBLIC_URL host, got %q", redirectURL.Hostname())
+	}
+	return nil
+}
+
+func validateCORSOrigins(cfg config.Config) error {
+	if len(cfg.CORSAllowedOrigins) == 0 {
+		return fmt.Errorf("PASTEBOX_CORS_ALLOWED_ORIGINS must include the production UI origin")
+	}
+	publicURL, err := url.Parse(strings.TrimSpace(cfg.PublicURL))
+	if err != nil || publicURL.Scheme == "" || publicURL.Host == "" {
+		return fmt.Errorf("PASTEBOX_PUBLIC_URL must be valid before validating CORS origins, got %q", cfg.PublicURL)
+	}
+	publicOrigin := publicURL.Scheme + "://" + publicURL.Host
+	hasPublicOrigin := false
+	for _, origin := range cfg.CORSAllowedOrigins {
+		parsed, err := url.Parse(strings.TrimSpace(origin))
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return fmt.Errorf("PASTEBOX_CORS_ALLOWED_ORIGINS contains invalid origin %q", origin)
+		}
+		if parsed.Scheme != "https" {
+			return fmt.Errorf("PASTEBOX_CORS_ALLOWED_ORIGINS origins must use https:// in production, got %q", origin)
+		}
+		if parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || strings.Contains(origin, "*") {
+			return fmt.Errorf("PASTEBOX_CORS_ALLOWED_ORIGINS entries must be exact origins without paths, queries, fragments, or wildcards, got %q", origin)
+		}
+		if isLocalHost(parsed.Hostname()) {
+			return fmt.Errorf("PASTEBOX_CORS_ALLOWED_ORIGINS must not include local hosts in production, got %q", origin)
+		}
+		if strings.EqualFold(parsed.Scheme+"://"+parsed.Host, publicOrigin) {
+			hasPublicOrigin = true
+		}
+	}
+	if !hasPublicOrigin {
+		return fmt.Errorf("PASTEBOX_CORS_ALLOWED_ORIGINS must include PASTEBOX_PUBLIC_URL origin %q", publicOrigin)
 	}
 	return nil
 }

@@ -118,6 +118,8 @@ func (s *Server) routes() http.Handler {
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
+	r.Use(s.secureHeaders)
+	r.Use(s.cors)
 	r.Use(s.logRequests)
 
 	r.Get("/healthz", s.healthz)
@@ -1394,6 +1396,55 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 			"request_id", middleware.GetReqID(r.Context()),
 		)
 	})
+}
+
+func (s *Server) secureHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		header := w.Header()
+		header.Set("X-Content-Type-Options", "nosniff")
+		header.Set("X-Frame-Options", "DENY")
+		header.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+		header.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) cors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if s.corsOriginAllowed(origin) {
+			header := w.Header()
+			header.Add("Vary", "Origin")
+			header.Set("Access-Control-Allow-Origin", origin)
+			header.Set("Access-Control-Allow-Credentials", "true")
+			header.Set("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token")
+			header.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+			header.Set("Access-Control-Max-Age", "600")
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) corsOriginAllowed(origin string) bool {
+	for _, allowed := range s.cfg.CORSAllowedOrigins {
+		if strings.EqualFold(strings.TrimSpace(allowed), origin) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) recordHTTPRequest(r *http.Request, status int) {

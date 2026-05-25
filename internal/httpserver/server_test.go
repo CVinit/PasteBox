@@ -172,6 +172,73 @@ func TestPlanCatalogEndpoint(t *testing.T) {
 	}
 }
 
+func TestSecurityHeadersApplyToAPIAndStaticResponses(t *testing.T) {
+	handler := New(config.FromEnv(), slog.New(slog.NewTextHandler(testWriter{t: t}, nil)))
+
+	for _, path := range []string{"/api/v1/health", "/legal"} {
+		t.Run(path, func(t *testing.T) {
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, path, nil))
+			assertStatus(t, res, http.StatusOK)
+
+			for header, expected := range map[string]string{
+				"X-Content-Type-Options": "nosniff",
+				"X-Frame-Options":        "DENY",
+				"Referrer-Policy":        "strict-origin-when-cross-origin",
+				"Permissions-Policy":     "camera=(), microphone=(), geolocation=(), payment=()",
+			} {
+				if got := res.Header().Get(header); got != expected {
+					t.Fatalf("expected %s=%q, got %q", header, expected, got)
+				}
+			}
+			csp := res.Header().Get("Content-Security-Policy")
+			for _, expected := range []string{"default-src 'self'", "frame-ancestors 'none'", "object-src 'none'"} {
+				if !strings.Contains(csp, expected) {
+					t.Fatalf("expected CSP to contain %q, got %q", expected, csp)
+				}
+			}
+		})
+	}
+}
+
+func TestCORSAllowlistControlsCredentialedAPIOrigins(t *testing.T) {
+	cfg := config.FromEnv()
+	cfg.CORSAllowedOrigins = []string{"https://pastebox.example.com", "https://admin.pastebox.example.com"}
+	handler := New(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)))
+
+	allowed := httptest.NewRecorder()
+	allowedReq := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	allowedReq.Header.Set("Origin", "https://pastebox.example.com")
+	handler.ServeHTTP(allowed, allowedReq)
+	assertStatus(t, allowed, http.StatusOK)
+	if got := allowed.Header().Get("Access-Control-Allow-Origin"); got != "https://pastebox.example.com" {
+		t.Fatalf("expected allowed origin to be reflected, got %q", got)
+	}
+	if got := allowed.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
+		t.Fatalf("expected credentialed CORS support, got %q", got)
+	}
+
+	disallowed := httptest.NewRecorder()
+	disallowedReq := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	disallowedReq.Header.Set("Origin", "https://evil.example.com")
+	handler.ServeHTTP(disallowed, disallowedReq)
+	assertStatus(t, disallowed, http.StatusOK)
+	if got := disallowed.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("expected disallowed origin to receive no CORS access header, got %q", got)
+	}
+
+	preflight := httptest.NewRecorder()
+	preflightReq := httptest.NewRequest(http.MethodOptions, "/api/v1/pastes", nil)
+	preflightReq.Header.Set("Origin", "https://admin.pastebox.example.com")
+	preflightReq.Header.Set("Access-Control-Request-Method", "POST")
+	preflightReq.Header.Set("Access-Control-Request-Headers", "Content-Type, X-CSRF-Token")
+	handler.ServeHTTP(preflight, preflightReq)
+	assertStatus(t, preflight, http.StatusNoContent)
+	if got := preflight.Header().Get("Access-Control-Allow-Origin"); got != "https://admin.pastebox.example.com" {
+		t.Fatalf("expected preflight origin to be reflected, got %q", got)
+	}
+}
+
 func TestStaticFallbackServesAssetsAndFrontendRoutes(t *testing.T) {
 	handler := New(config.FromEnv(), slog.New(slog.NewTextHandler(testWriter{t: t}, nil)))
 

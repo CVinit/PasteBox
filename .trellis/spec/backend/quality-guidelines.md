@@ -204,6 +204,14 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
   sets the HttpOnly `pastebox_csrf` cookie; unsafe methods must send the token
   in `X-CSRF-Token`. Provider webhook routes are excluded from the browser CSRF
   gate and must be protected by provider-specific signature verification.
+- All API and static responses must set app-level secure browser headers:
+  `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+  `Referrer-Policy: strict-origin-when-cross-origin`, a restrictive
+  `Permissions-Policy`, and a same-origin Content Security Policy. The CSP may
+  allow inline styles while the React UI still uses inline width styles.
+- Browser API CORS is credentialed only for exact origins in
+  `PASTEBOX_CORS_ALLOWED_ORIGINS`. Production preflight must reject wildcard,
+  local, HTTP, path/query/fragment, and missing-public-origin allowlist entries.
 - API errors use `{"error": "<code>", "message": "<human message>"}`.
 - `GET /api/v1/plans` returns `plans` and `prices`; `GET
   /api/v1/billing/prices` returns the same catalog plus provider-enabled flags
@@ -247,6 +255,9 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
   run behind plain HTTP test deployments and HTTPS reverse proxies.
 - Handler tests must cover CSRF token issuance, required `X-CSRF-Token` on
   unsafe browser routes, and webhook-route exclusion from browser CSRF.
+- Handler tests must cover secure response headers on API and static responses,
+  allowed credentialed API CORS, disallowed origins receiving no CORS access
+  header, and allowed preflight returning `204`.
 - Handler tests must assert empty list and nested collection fields serialize as
   JSON arrays (`[]`) rather than `null`, because React call sites use array
   methods such as `.find()` and `.join()`.

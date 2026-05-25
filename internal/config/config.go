@@ -8,13 +8,14 @@ import (
 )
 
 type Config struct {
-	AppName      string
-	AppEnv       string
-	HTTPAddr     string
-	PublicURL    string
-	LogLevel     slog.Level
-	CSRFSecret   string
-	MetricsToken string
+	AppName            string
+	AppEnv             string
+	HTTPAddr           string
+	PublicURL          string
+	LogLevel           slog.Level
+	CSRFSecret         string
+	MetricsToken       string
+	CORSAllowedOrigins []string
 
 	DatabaseURL string
 	RedisAddr   string
@@ -82,13 +83,14 @@ type EpusdtConfig struct {
 func FromEnv() Config {
 	publicURL := envString("PASTEBOX_PUBLIC_URL", "http://localhost:5173")
 	return Config{
-		AppName:      envString("PASTEBOX_APP_NAME", "PasteBox"),
-		AppEnv:       envString("PASTEBOX_APP_ENV", "development"),
-		HTTPAddr:     envString("PASTEBOX_HTTP_ADDR", ":8080"),
-		PublicURL:    publicURL,
-		LogLevel:     envLogLevel("PASTEBOX_LOG_LEVEL", slog.LevelInfo),
-		CSRFSecret:   envString("PASTEBOX_CSRF_SECRET", "development-csrf-secret"),
-		MetricsToken: envString("PASTEBOX_METRICS_TOKEN", ""),
+		AppName:            envString("PASTEBOX_APP_NAME", "PasteBox"),
+		AppEnv:             envString("PASTEBOX_APP_ENV", "development"),
+		HTTPAddr:           envString("PASTEBOX_HTTP_ADDR", ":8080"),
+		PublicURL:          publicURL,
+		LogLevel:           envLogLevel("PASTEBOX_LOG_LEVEL", slog.LevelInfo),
+		CSRFSecret:         envString("PASTEBOX_CSRF_SECRET", "development-csrf-secret"),
+		MetricsToken:       envString("PASTEBOX_METRICS_TOKEN", ""),
+		CORSAllowedOrigins: envCSV("PASTEBOX_CORS_ALLOWED_ORIGINS", originFromURL(publicURL)),
 
 		DatabaseURL: envString("PASTEBOX_DATABASE_URL", "postgres://pastebox:pastebox@localhost:5432/pastebox?sslmode=disable"),
 		RedisAddr:   envString("PASTEBOX_REDIS_ADDR", "localhost:6379"),
@@ -176,6 +178,43 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func envCSV(key string, fallback string) []string {
+	value := os.Getenv(key)
+	if value == "" {
+		value = fallback
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	seen := map[string]struct{}{}
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+func originFromURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	scheme, rest, ok := strings.Cut(trimmed, "://")
+	if !ok || scheme == "" || rest == "" {
+		return trimmed
+	}
+	if slash := strings.Index(rest, "/"); slash >= 0 {
+		rest = rest[:slash]
+	}
+	return scheme + "://" + rest
 }
 
 func envLogLevel(key string, fallback slog.Level) slog.Level {

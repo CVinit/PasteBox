@@ -19,6 +19,9 @@ mode `600`.
 - Bootstrap admin password.
 - CSRF signing secret.
 - Metrics bearer token (`PASTEBOX_METRICS_TOKEN`).
+- Browser API allowlist (`PASTEBOX_CORS_ALLOWED_ORIGINS`) is not secret, but it
+  must be reviewed with production domain changes because credentialed browser
+  API requests are only allowed for exact listed origins.
 - SMTP credentials.
 - Stripe webhook signing secret (`PASTEBOX_STRIPE_WEBHOOK_SECRET`) and API keys.
 - Epusdt merchant id (`PASTEBOX_EPUSDT_PID`) and callback secret

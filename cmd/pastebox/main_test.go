@@ -83,6 +83,7 @@ func TestProductionPreflightRequiresExplicitProductionEnvironment(t *testing.T) 
 		"PASTEBOX_PUBLIC_URL",
 		"PASTEBOX_CSRF_SECRET",
 		"PASTEBOX_METRICS_TOKEN",
+		"PASTEBOX_CORS_ALLOWED_ORIGINS",
 		"PASTEBOX_DOMAIN",
 		"PASTEBOX_ADMIN_EMAIL",
 		"PASTEBOX_POSTGRES_PASSWORD",
@@ -276,6 +277,59 @@ func TestProductionPreflightRejectsShortMetricsToken(t *testing.T) {
 	}
 }
 
+func TestProductionPreflightRejectsUnsafeCORSOrigins(t *testing.T) {
+	tests := []struct {
+		name     string
+		origins  string
+		expected string
+	}{
+		{
+			name:     "wildcard",
+			origins:  "*",
+			expected: "invalid origin",
+		},
+		{
+			name:     "http",
+			origins:  "http://pastebox.example.com",
+			expected: "must use https://",
+		},
+		{
+			name:     "local",
+			origins:  "https://localhost:5173",
+			expected: "must not include local hosts",
+		},
+		{
+			name:     "missing public origin",
+			origins:  "https://admin.pastebox.example.com",
+			expected: "must include PASTEBOX_PUBLIC_URL origin",
+		},
+		{
+			name:     "path",
+			origins:  "https://pastebox.example.com/app",
+			expected: "exact origins",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setValidProductionEnv(t)
+			t.Setenv("PASTEBOX_CORS_ALLOWED_ORIGINS", tt.origins)
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run([]string{"preflight", "production"}, &stdout, &stderr)
+			if code != 1 {
+				t.Fatalf("expected unsafe CORS origin to fail, got %d", code)
+			}
+			if !strings.Contains(stderr.String(), tt.expected) {
+				t.Fatalf("expected CORS validation error containing %q, got %q", tt.expected, stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("expected empty stdout, got %q", stdout.String())
+			}
+		})
+	}
+}
+
 func TestProductionPreflightRejectsGoogleOAuthRedirectHostMismatch(t *testing.T) {
 	setValidProductionEnv(t)
 	t.Setenv("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL", "https://auth.example.com/api/v1/auth/google/callback")
@@ -445,6 +499,7 @@ func setValidProductionEnv(t *testing.T) {
 	t.Setenv("PASTEBOX_PUBLIC_URL", "https://pastebox.example.com")
 	t.Setenv("PASTEBOX_CSRF_SECRET", "csrf-secret-32-bytes-minimum-prod")
 	t.Setenv("PASTEBOX_METRICS_TOKEN", "metrics-token-32-bytes-minimum-prod")
+	t.Setenv("PASTEBOX_CORS_ALLOWED_ORIGINS", "https://pastebox.example.com")
 	t.Setenv("PASTEBOX_DOMAIN", "pastebox.example.com")
 	t.Setenv("PASTEBOX_ADMIN_EMAIL", "admin@example.com")
 	t.Setenv("PASTEBOX_POSTGRES_PASSWORD", "db-secret")

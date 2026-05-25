@@ -32,6 +32,7 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	t.Setenv("PASTEBOX_EPUSDT_ENABLED", "true")
 	t.Setenv("PASTEBOX_LOG_LEVEL", "DEBUG")
 	t.Setenv("PASTEBOX_PUBLIC_URL", "https://pastebox.example.com")
+	t.Setenv("PASTEBOX_CORS_ALLOWED_ORIGINS", "https://pastebox.example.com, https://admin.pastebox.example.com, https://pastebox.example.com")
 	t.Setenv("PASTEBOX_CSRF_SECRET", "test-csrf-secret")
 	t.Setenv("PASTEBOX_METRICS_TOKEN", "metrics-token")
 	t.Setenv("PASTEBOX_GOOGLE_OAUTH_CLIENT_ID", "google-client-id")
@@ -78,6 +79,9 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	if cfg.GoogleOAuth.RedirectURL != "https://pastebox.example.com/api/v1/auth/google/callback" {
 		t.Fatalf("expected default Google OAuth redirect URL from public URL, got %q", cfg.GoogleOAuth.RedirectURL)
 	}
+	if len(cfg.CORSAllowedOrigins) != 2 || cfg.CORSAllowedOrigins[0] != "https://pastebox.example.com" || cfg.CORSAllowedOrigins[1] != "https://admin.pastebox.example.com" {
+		t.Fatalf("expected parsed CORS origins from env, got %#v", cfg.CORSAllowedOrigins)
+	}
 	if cfg.MailerProvider != "smtp" || cfg.SMTP.Host != "smtp.example.com" || cfg.SMTP.Port != 587 {
 		t.Fatalf("expected SMTP settings from env, got provider=%q smtp=%#v", cfg.MailerProvider, cfg.SMTP)
 	}
@@ -89,5 +93,16 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	}
 	if cfg.Epusdt.PID != "1000" || cfg.Epusdt.SecretKey != "epusdt-secret" {
 		t.Fatalf("expected Epusdt settings from env, got %#v", cfg.Epusdt)
+	}
+}
+
+func TestFromEnvDefaultsCORSOriginsToPublicOrigin(t *testing.T) {
+	t.Setenv("PASTEBOX_PUBLIC_URL", "https://pastebox.example.com/app")
+	t.Setenv("PASTEBOX_CORS_ALLOWED_ORIGINS", "")
+
+	cfg := FromEnv()
+
+	if len(cfg.CORSAllowedOrigins) != 1 || cfg.CORSAllowedOrigins[0] != "https://pastebox.example.com" {
+		t.Fatalf("expected CORS default to use public origin only, got %#v", cfg.CORSAllowedOrigins)
 	}
 }
