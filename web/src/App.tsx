@@ -11,15 +11,19 @@ import {
   Clock3,
   CreditCard,
   Download,
+  FileText,
   FileUp,
   Filter,
   KeyRound,
+  LifeBuoy,
   Link2,
   LockKeyhole,
   LogOut,
   MailCheck,
+  Megaphone,
   Pin,
   RotateCcw,
+  Scale,
   Search,
   Send,
   ShieldCheck,
@@ -93,6 +97,21 @@ type OrderStatusDetail = {
   tone: OrderStatusTone;
 };
 
+type PublicPage = {
+  path: string;
+  title: string;
+  eyebrow: string;
+  summary: string;
+  updated: string;
+  sections: PublicPageSection[];
+};
+
+type PublicPageSection = {
+  heading: string;
+  body: string[];
+  items?: string[];
+};
+
 const defaultDraft: Draft = {
   title: "",
   text: "",
@@ -130,6 +149,326 @@ const browserLocale: Locale =
   navigator.language.toLowerCase().startsWith("zh")
     ? "zh"
     : "en";
+
+const publicPages: PublicPage[] = [
+  {
+    path: "/legal",
+    eyebrow: "Legal center",
+    title: "PasteBox Legal And Support Hub",
+    summary:
+      "Public entry point for PasteBox terms, privacy, refunds, abuse handling, account rights, subprocessors, and status updates.",
+    updated: "2026-05-26",
+    sections: [
+      {
+        heading: "How to use this hub",
+        body: [
+          "Use these pages to understand the rules for public beta use, how PasteBox handles uploaded content, and how to contact support for account, billing, privacy, or abuse requests.",
+        ],
+        items: [
+          "Terms and Privacy explain the baseline service contract and data handling.",
+          "Refund, Abuse/DMCA, Account Deletion, and Data Export explain user request paths.",
+          "Data Retention and Subprocessors describe the production architecture commitments.",
+        ],
+      },
+    ],
+  },
+  {
+    path: "/legal/terms",
+    eyebrow: "Terms",
+    title: "Terms Of Service",
+    summary:
+      "The baseline service rules for using PasteBox during public beta with free and paid plans.",
+    updated: "2026-05-26",
+    sections: [
+      {
+        heading: "Service scope",
+        body: [
+          "PasteBox provides private paste, temporary file transfer, sharing, billing, export, and account-management features. You are responsible for the content you upload and share.",
+          "Paid plan access depends on successful provider confirmation through Stripe or Epusdt. PasteBox may suspend or revoke access for abuse, payment failure, security risk, or policy violations.",
+        ],
+      },
+      {
+        heading: "User responsibilities",
+        body: [
+          "Do not upload or share illegal, abusive, malicious, infringing, or harmful content. Do not attempt to bypass scan gates, quota limits, authentication, billing, rate limits, or administrative controls.",
+        ],
+        items: [
+          "Keep account credentials secure.",
+          "Use share links only for content you have the right to distribute.",
+          "Report abuse or payment issues through the support and abuse paths listed in this hub.",
+        ],
+      },
+      {
+        heading: "Operational changes",
+        body: [
+          "During beta, PasteBox may change plan limits, provider integrations, retention rules, or safety gates when needed for security, reliability, compliance, or product operation.",
+        ],
+      },
+    ],
+  },
+  {
+    path: "/legal/privacy",
+    eyebrow: "Privacy",
+    title: "Privacy Policy",
+    summary:
+      "How PasteBox handles account data, uploaded content metadata, billing records, support requests, and operational logs.",
+    updated: "2026-05-26",
+    sections: [
+      {
+        heading: "Data collected",
+        body: [
+          "PasteBox stores account profile data, authentication state, paste metadata, attachment metadata, private object keys, share settings, quota usage, orders, webhook events, audit logs, reports, support records, and export/deletion request state.",
+          "Attachment bytes are stored in private S3-compatible object storage. PostgreSQL stores metadata and lifecycle state. Redis-compatible services are not the source of truth.",
+        ],
+      },
+      {
+        heading: "How data is used",
+        body: [
+          "Data is used to operate the service, enforce quotas and scan policy, process billing, deliver account and security emails, respond to support and abuse requests, generate exports, delete accounts, and investigate security or abuse events.",
+        ],
+      },
+      {
+        heading: "Request paths",
+        body: [
+          "Use the in-app export and deletion controls in Settings for normal account requests. Use the Support page for GDPR/data-subject requests, DPA requests, billing disputes, and privacy escalations.",
+        ],
+      },
+    ],
+  },
+  {
+    path: "/legal/refund",
+    eyebrow: "Billing",
+    title: "Refund Policy",
+    summary:
+      "How refund and payment-support requests are handled for Stripe and Epusdt payments.",
+    updated: "2026-05-26",
+    sections: [
+      {
+        heading: "Eligible requests",
+        body: [
+          "Refund requests are reviewed for duplicate charges, provider processing errors, accidental purchases, service unavailability, and plan-access disputes. Refund approval depends on provider evidence, account history, and whether paid benefits were consumed.",
+        ],
+      },
+      {
+        heading: "Provider handling",
+        body: [
+          "Stripe refunds and cancellations are reconciled through signed provider webhooks. Epusdt fixed-duration orders are reviewed against transaction evidence, order expiry, and any manual correction audit trail.",
+        ],
+      },
+      {
+        heading: "How to request help",
+        body: [
+          "Open the Support page and include your account email, order ID, payment provider, payment time, and a concise description. Do not send card numbers, private keys, seed phrases, or raw secrets.",
+        ],
+      },
+    ],
+  },
+  {
+    path: "/legal/abuse",
+    eyebrow: "Abuse and DMCA",
+    title: "Abuse And DMCA Policy",
+    summary:
+      "How PasteBox receives and triages abuse, malware, copyright, and takedown reports.",
+    updated: "2026-05-26",
+    sections: [
+      {
+        heading: "Reportable content",
+        body: [
+          "Reports may cover malware, phishing, illegal content, harassment, copyright infringement, exposed secrets, spam, or share links that violate PasteBox terms.",
+        ],
+      },
+      {
+        heading: "Triage actions",
+        body: [
+          "PasteBox may revoke share links, freeze attachments, block malicious files, preserve audit evidence, request more information, or suspend accounts. Known malicious files are blocked globally for owner downloads, public access, previews, exports, and future shares.",
+        ],
+      },
+      {
+        heading: "Required report details",
+        body: [
+          "Use the in-app report form or Support page. Include the PasteBox URL or target ID, reason, evidence, contact email, and whether the request is urgent. DMCA notices should identify the copyrighted work and the allegedly infringing content.",
+        ],
+      },
+    ],
+  },
+  {
+    path: "/legal/cookies",
+    eyebrow: "Cookies",
+    title: "Cookie Notice",
+    summary:
+      "PasteBox uses essential cookies for authentication, CSRF protection, and OAuth state.",
+    updated: "2026-05-26",
+    sections: [
+      {
+        heading: "Current cookie use",
+        body: [
+          "PasteBox currently uses essential cookies only: the session cookie, CSRF double-submit cookie, and Google OAuth state cookie. These cookies are required for secure browser operation.",
+        ],
+      },
+      {
+        heading: "Non-essential cookies",
+        body: [
+          "PasteBox does not currently use non-essential analytics or advertising cookies. If non-essential cookies are added later, the product must add a consent control before enabling them.",
+        ],
+      },
+    ],
+  },
+  {
+    path: "/status",
+    eyebrow: "Status",
+    title: "Status And Announcements",
+    summary:
+      "Public status baseline for public beta launch readiness and incident communication.",
+    updated: "2026-05-26",
+    sections: [
+      {
+        heading: "Current beta gate",
+        body: [
+          "PasteBox is still gated by the production launch roadmap. Public beta requires durable persistence, object storage, auth/email/OAuth, scan policy, billing readiness, operations evidence, and legal/support surfaces to pass their launch gates.",
+        ],
+      },
+      {
+        heading: "Incident updates",
+        body: [
+          "During production operation, this page is the public entry point for availability notices, maintenance windows, degraded provider status, and post-incident summaries.",
+        ],
+      },
+    ],
+  },
+  {
+    path: "/support",
+    eyebrow: "Support",
+    title: "Support Contact",
+    summary:
+      "How users request help for accounts, billing, abuse, data rights, and operational issues.",
+    updated: "2026-05-26",
+    sections: [
+      {
+        heading: "Support intake",
+        body: [
+          "Use the in-app report form for abuse tied to a paste, share, or attachment. For account, billing, privacy, DPA, or data-subject requests, contact support with your account email and the relevant target ID.",
+        ],
+        items: [
+          "Billing and refunds: include order ID, provider, amount, and timestamp.",
+          "Abuse/DMCA: include target URL or ID, evidence, and requested action.",
+          "GDPR/data-subject or DPA: include account email, request type, and verification contact.",
+        ],
+      },
+      {
+        heading: "Response records",
+        body: [
+          "Support/admin actions must be tracked through reports, audit logs, order records, and account lifecycle records so requests can be reviewed without direct database access.",
+        ],
+      },
+    ],
+  },
+  {
+    path: "/legal/account-deletion",
+    eyebrow: "Account rights",
+    title: "Account Deletion Instructions",
+    summary:
+      "How users request, cancel, and execute account deletion in PasteBox.",
+    updated: "2026-05-26",
+    sections: [
+      {
+        heading: "In-app deletion path",
+        body: [
+          "Sign in, open Settings, select Delete request, and review the scheduled deletion state. You can cancel the request before execution or execute deletion when the account is eligible.",
+        ],
+      },
+      {
+        heading: "Support deletion path",
+        body: [
+          "If you cannot access the account, contact Support with the account email and verification details. Support will verify ownership before acting on deletion requests.",
+        ],
+      },
+    ],
+  },
+  {
+    path: "/legal/data-export",
+    eyebrow: "Account rights",
+    title: "Data Export Instructions",
+    summary:
+      "How users export account, paste, share, order, and audit-visible data.",
+    updated: "2026-05-26",
+    sections: [
+      {
+        heading: "In-app export path",
+        body: [
+          "Sign in, open Settings, and select Export. The browser downloads a JSON export for the current account through the authenticated `/api/v1/me/export` endpoint.",
+        ],
+      },
+      {
+        heading: "Support export path",
+        body: [
+          "For data-subject requests that require additional review, use Support and include the account email, jurisdiction or request type, and verification contact.",
+        ],
+      },
+    ],
+  },
+  {
+    path: "/legal/data-retention",
+    eyebrow: "Retention",
+    title: "Data Retention Matrix",
+    summary:
+      "Retention commitments aligned with the production architecture and public beta launch target.",
+    updated: "2026-05-26",
+    sections: [
+      {
+        heading: "Runtime data",
+        body: [
+          "Pastes, attachments, shares, orders, reports, jobs, mails, and audit logs are retained according to account state, paste expiry, cleanup jobs, billing obligations, abuse evidence needs, and backup retention.",
+        ],
+        items: [
+          "Backups: 30-day retention with daily logical backups plus WAL/PITR evidence.",
+          "Expired/deleted content: removed by cleanup jobs and object lifecycle cleanup.",
+          "Audit and billing records: retained as needed for security, disputes, abuse, and compliance.",
+        ],
+      },
+    ],
+  },
+  {
+    path: "/legal/subprocessors",
+    eyebrow: "Subprocessors",
+    title: "Subprocessors",
+    summary:
+      "Provider categories used by the confirmed single-VPS public beta architecture.",
+    updated: "2026-05-26",
+    sections: [
+      {
+        heading: "Provider categories",
+        body: [
+          "The launch architecture uses a US single-region VPS/cloud host, managed S3-compatible object storage, existing SMTP/enterprise email, Stripe, Epusdt, Google OAuth, and off-host S3-compatible backup storage.",
+        ],
+      },
+      {
+        heading: "Change handling",
+        body: [
+          "Subprocessor changes must update this page, the data-retention matrix when relevant, and the production runbooks before the new provider is used for public beta data.",
+        ],
+      },
+    ],
+  },
+];
+
+const publicLinks = [
+  { href: "/legal/terms", label: "Terms" },
+  { href: "/legal/privacy", label: "Privacy" },
+  { href: "/legal/refund", label: "Refund" },
+  { href: "/legal/abuse", label: "Abuse/DMCA" },
+  { href: "/legal/cookies", label: "Cookies" },
+  { href: "/status", label: "Status" },
+  { href: "/support", label: "Support" },
+  { href: "/legal/account-deletion", label: "Deletion" },
+  { href: "/legal/data-export", label: "Export" },
+  { href: "/legal/data-retention", label: "Retention" },
+  { href: "/legal/subprocessors", label: "Subprocessors" },
+];
+
+function publicPageForPath(pathname: string): PublicPage | null {
+  const normalized = pathname.replace(/\/+$/, "") || "/";
+  return publicPages.find((page) => page.path === normalized) ?? null;
+}
 
 const copy: Record<Locale, Record<string, string>> = {
   en: {
@@ -509,6 +848,13 @@ function App() {
     [user?.language],
   );
   const t = useMemo(() => copyFor(locale), [locale]);
+  const publicPage = useMemo(
+    () =>
+      typeof window !== "undefined"
+        ? publicPageForPath(window.location.pathname)
+        : null,
+    [],
+  );
 
   const activePlan = useMemo(() => {
     const planId = user?.planId ?? "free";
@@ -613,12 +959,14 @@ function App() {
   }, [user?.role]);
 
   useEffect(() => {
+    if (publicPage) return;
     void loadCore();
-  }, [loadCore]);
+  }, [loadCore, publicPage]);
 
   useEffect(() => {
+    if (publicPage) return;
     if (user) void refreshAuthed();
-  }, [filter, query]);
+  }, [filter, publicPage, query, user]);
 
   useEffect(() => {
     if (!selectedPaste) {
@@ -1018,6 +1366,10 @@ function App() {
     await refreshAdmin();
   }
 
+  if (publicPage) {
+    return <PublicPageScreen page={publicPage} />;
+  }
+
   if (!user && publicShareToken) {
     return (
       <PublicShareScreen
@@ -1140,6 +1492,7 @@ function App() {
             </div>
           </div>
           {message ? <p className="status-line">{message}</p> : null}
+          <PublicFooter />
         </section>
       </main>
     );
@@ -1234,6 +1587,7 @@ function App() {
           <LogOut size={16} aria-hidden="true" />
           Logout all
         </button>
+        <PublicFooter compact />
       </aside>
 
       <section className="workspace">
@@ -1457,6 +1811,18 @@ function App() {
 
         {view === "billing" ? (
           <Panel title={t("billing")} meta={t("stripeUsdtPayments")}>
+            <section className="notice-card">
+              <LifeBuoy size={18} aria-hidden="true" />
+              <div>
+                <strong>Billing support</strong>
+                <span>
+                  Refunds, duplicate charges, stuck Epusdt payments, and manual
+                  review requests are handled through{" "}
+                  <a href="/legal/refund">Refund Policy</a> and{" "}
+                  <a href="/support">Support</a>.
+                </span>
+              </div>
+            </section>
             <div className="plan-grid">
               {(catalog?.plans ?? []).map((plan) => (
                 <article className="plan-card" key={plan.id}>
@@ -1533,6 +1899,19 @@ function App() {
               user.deleteScheduledAt ? "Deletion scheduled" : "Account active"
             }
           >
+            <section className="notice-card">
+              <FileText size={18} aria-hidden="true" />
+              <div>
+                <strong>Account rights</strong>
+                <span>
+                  Review <a href="/legal/data-export">data export</a>,{" "}
+                  <a href="/legal/account-deletion">account deletion</a>,{" "}
+                  <a href="/legal/privacy">privacy</a>, and{" "}
+                  <a href="/support">support intake</a> before submitting
+                  sensitive requests.
+                </span>
+              </div>
+            </section>
             <div className="form-grid">
               <input
                 value={profileDraft.displayName}
@@ -2006,8 +2385,110 @@ function PublicShareScreen({
           </section>
         ) : null}
         {message ? <p className="status-line">{message}</p> : null}
+        <PublicFooter />
       </section>
     </main>
+  );
+}
+
+function PublicPageScreen({ page }: { page: PublicPage }) {
+  return (
+    <main className="public-page">
+      <header className="public-hero">
+        <div className="brand-mark">
+          <div className="brand-icon">
+            <Scale size={22} aria-hidden="true" />
+          </div>
+          <div>
+            <strong>PasteBox</strong>
+            <span>{page.eyebrow}</span>
+          </div>
+        </div>
+        <div className="public-hero-copy">
+          <span className="eyebrow">{page.eyebrow}</span>
+          <h1>{page.title}</h1>
+          <p>{page.summary}</p>
+        </div>
+        <div className="public-hero-actions">
+          <a className="ghost-button" href="/">
+            <ClipboardCopy size={16} aria-hidden="true" />
+            Open app
+          </a>
+          <a className="ghost-button" href="/support">
+            <LifeBuoy size={16} aria-hidden="true" />
+            Support
+          </a>
+        </div>
+      </header>
+
+      <section className="public-layout">
+        <aside className="public-sidebar" aria-label="Legal navigation">
+          <strong>Launch documents</strong>
+          <nav>
+            <a
+              className={page.path === "/legal" ? "active" : ""}
+              href="/legal"
+            >
+              Legal hub
+            </a>
+            {publicLinks.map((link) => (
+              <a
+                className={page.path === link.href ? "active" : ""}
+                href={link.href}
+                key={link.href}
+              >
+                {link.label}
+              </a>
+            ))}
+          </nav>
+        </aside>
+
+        <article className="public-doc">
+          <div className="public-doc-meta">
+            <Megaphone size={16} aria-hidden="true" />
+            <span>Last updated {page.updated}</span>
+          </div>
+          {page.sections.map((section) => (
+            <section className="public-section" key={section.heading}>
+              <h2>{section.heading}</h2>
+              {section.body.map((paragraph) => (
+                <p key={paragraph}>{paragraph}</p>
+              ))}
+              {section.items ? (
+                <ul>
+                  {section.items.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </section>
+          ))}
+          <footer className="public-doc-footer">
+            <FileText size={16} aria-hidden="true" />
+            <span>
+              This page reflects the confirmed public-beta launch architecture
+              and must be updated when providers, retention, or request
+              workflows change.
+            </span>
+          </footer>
+        </article>
+      </section>
+    </main>
+  );
+}
+
+function PublicFooter({ compact = false }: { compact?: boolean }) {
+  return (
+    <footer className={compact ? "public-footer compact" : "public-footer"}>
+      <a href="/legal">Legal hub</a>
+      <a href="/legal/terms">Terms</a>
+      <a href="/legal/privacy">Privacy</a>
+      <a href="/legal/refund">Refund</a>
+      <a href="/legal/abuse">Abuse/DMCA</a>
+      <a href="/legal/cookies">Cookies</a>
+      <a href="/support">Support</a>
+      <a href="/status">Status</a>
+    </footer>
   );
 }
 

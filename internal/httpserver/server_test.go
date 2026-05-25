@@ -196,11 +196,29 @@ func TestStaticFallbackServesAssetsAndFrontendRoutes(t *testing.T) {
 		t.Fatalf("expected embedded favicon to be served directly, got %q", favicon.Body.String())
 	}
 
-	frontendRoute := httptest.NewRecorder()
-	handler.ServeHTTP(frontendRoute, httptest.NewRequest(http.MethodGet, "/s/dev-token", nil))
-	assertStatus(t, frontendRoute, http.StatusOK)
-	if !strings.Contains(frontendRoute.Body.String(), "PasteBox") {
-		t.Fatalf("expected frontend route fallback to serve index, got %q", frontendRoute.Body.String())
+	for _, path := range []string{
+		"/s/dev-token",
+		"/legal",
+		"/legal/terms",
+		"/legal/privacy",
+		"/legal/refund",
+		"/legal/abuse",
+		"/legal/cookies",
+		"/legal/account-deletion",
+		"/legal/data-export",
+		"/legal/data-retention",
+		"/legal/subprocessors",
+		"/support",
+		"/status",
+	} {
+		t.Run(path, func(t *testing.T) {
+			frontendRoute := httptest.NewRecorder()
+			handler.ServeHTTP(frontendRoute, httptest.NewRequest(http.MethodGet, path, nil))
+			assertStatus(t, frontendRoute, http.StatusOK)
+			if !strings.Contains(frontendRoute.Body.String(), "PasteBox") {
+				t.Fatalf("expected frontend route fallback to serve index, got %q", frontendRoute.Body.String())
+			}
+		})
 	}
 
 	missingAsset := httptest.NewRecorder()

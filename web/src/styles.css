@@ -547,6 +547,38 @@ code {
   color: #52645e;
 }
 
+.notice-card {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px;
+  border: 1px solid #cfe2dc;
+  border-radius: 8px;
+  color: #31433d;
+  background: #f3faf7;
+}
+
+.notice-card svg {
+  flex: 0 0 auto;
+  color: #0f766e;
+}
+
+.notice-card div {
+  display: grid;
+  gap: 4px;
+}
+
+.notice-card span {
+  color: #52645e;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.notice-card a {
+  color: #0f5f59;
+  font-weight: 700;
+}
+
 .admin-grid section {
   min-width: 0;
 }
@@ -682,6 +714,170 @@ code {
   width: min(860px, 100%);
 }
 
+.public-page {
+  min-height: 100vh;
+  padding: 28px;
+  background:
+    radial-gradient(circle at 12% 12%, rgba(15, 118, 110, 0.12), transparent 28%),
+    linear-gradient(145deg, #f5f7f5 0%, #edf5f1 52%, #ffffff 100%);
+}
+
+.public-hero {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr) auto;
+  gap: 22px;
+  align-items: start;
+  max-width: 1180px;
+  margin: 0 auto 24px;
+  padding: 24px;
+  border: 1px solid #d7e2dc;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 20px 50px rgba(31, 64, 57, 0.08);
+}
+
+.public-hero-copy {
+  display: grid;
+  gap: 10px;
+}
+
+.public-hero-copy h1 {
+  max-width: 820px;
+}
+
+.public-hero-copy p {
+  max-width: 720px;
+  color: #40564f;
+  font-size: 17px;
+  line-height: 1.55;
+}
+
+.public-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.public-layout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+.public-sidebar,
+.public-doc {
+  border: 1px solid #d7e2dc;
+  border-radius: 16px;
+  background: #ffffff;
+}
+
+.public-sidebar {
+  position: sticky;
+  top: 20px;
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.public-sidebar nav {
+  display: grid;
+  gap: 6px;
+}
+
+.public-sidebar a,
+.public-footer a {
+  color: #31433d;
+  text-decoration: none;
+}
+
+.public-sidebar a {
+  padding: 9px 10px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.public-sidebar a.active,
+.public-sidebar a:hover {
+  color: #0f766e;
+  background: #e8f3ef;
+}
+
+.public-doc {
+  display: grid;
+  gap: 22px;
+  min-width: 0;
+  padding: 26px;
+}
+
+.public-doc-meta,
+.public-doc-footer {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  color: #66756f;
+  font-size: 13px;
+}
+
+.public-section {
+  display: grid;
+  gap: 10px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid #e3ebe7;
+}
+
+.public-section:last-of-type {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.public-section h2 {
+  font-size: 22px;
+}
+
+.public-section p,
+.public-section li {
+  color: #40564f;
+  line-height: 1.6;
+}
+
+.public-section ul {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 0;
+  padding-left: 22px;
+}
+
+.public-doc-footer {
+  align-items: flex-start;
+  padding: 14px;
+  border-radius: 10px;
+  background: #f5f8f6;
+}
+
+.public-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  padding-top: 16px;
+  border-top: 1px solid #e3ebe7;
+  color: #66756f;
+  font-size: 13px;
+}
+
+.public-footer.compact {
+  margin-top: auto;
+}
+
+.public-footer a {
+  color: #0f5f59;
+  font-weight: 700;
+}
+
 .icon-button.small {
   width: 36px;
   height: 36px;
@@ -745,6 +941,19 @@ code {
   .content-grid {
     grid-template-columns: 1fr;
   }
+
+  .public-hero,
+  .public-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .public-sidebar {
+    position: static;
+  }
+
+  .public-sidebar nav {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 680px) {
@@ -780,5 +989,26 @@ code {
   .share-chip {
     position: static;
     width: max-content;
+  }
+
+  .public-page {
+    padding: 16px;
+  }
+
+  .public-hero,
+  .public-doc {
+    padding: 18px;
+  }
+
+  .public-sidebar nav {
+    grid-template-columns: 1fr;
+  }
+
+  .public-hero-actions {
+    justify-content: stretch;
+  }
+
+  .public-hero-actions .ghost-button {
+    flex: 1 1 160px;
   }
 }

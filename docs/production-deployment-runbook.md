@@ -25,6 +25,8 @@ duration, and compliance work before real user data or paid traffic is allowed.
 - `deploy/backup/restic-backup.sh`: off-host backup push and integrity check.
 - `docs/production-rollback-runbook.md`: image rollback and restore gates.
 - `docs/production-secrets.md`: secret handling checklist.
+- `docs/production-support-operations-runbook.md`: legal, support, refund,
+  abuse, data-rights, retention, and subprocessor workflows.
 
 ## Fresh VPS Provisioning
 
@@ -296,3 +298,8 @@ Phase 0A is complete when a fresh VPS can follow this runbook, Compose uses a
 pinned image tag or digest, readiness checks pass, logical and PITR backups can
 be pushed off-host, PITR drill duration is recorded, and rollback has been
 rehearsed for a reversible migration.
+
+The public beta launch gate additionally requires
+`docs/production-support-operations-runbook.md` to match the deployed public
+legal/support pages, configured subprocessors, data-retention behavior, and
+support/admin audit workflows.
