@@ -435,6 +435,76 @@ writeJSON(w, statusCode, ReadinessReport{
 })
 ```
 
+## Scenario: Backup Restore Drill
+
+### 1. Scope / Trigger
+
+- Trigger: Any change to production backup scripts, restore-drill scripts,
+  Compose maintenance services, backup docs, or rollback runbooks.
+
+### 2. Signatures
+
+- Backup service:
+  `docker compose --profile maintenance run --rm postgres-backup`
+- Off-host push service:
+  `docker compose --profile maintenance run --rm backup-push`
+- Restore drill service:
+  `docker compose --profile maintenance run --rm postgres-restore-drill`
+- Script: `deploy/backup/postgres-restore-drill.sh`
+
+### 3. Contracts
+
+- Restore drill uses the latest `/backups/postgres/pastebox-*.sql.gz` unless
+  `PASTEBOX_RESTORE_SOURCE` is set.
+- The `.sha256` file must exist and pass before restore begins.
+- The drill restores into `PASTEBOX_RESTORE_DRILL_DATABASE`, never directly into
+  the production database.
+- Drill database names are restricted to ASCII letters, digits, `_`, and `-`.
+- The drill checks `schema_migrations`, drops the scratch database by default,
+  and prints `duration_seconds` for RTO evidence.
+- Operators may set `PASTEBOX_KEEP_RESTORE_DRILL_DB=true` only when they intend
+  to inspect the scratch database manually.
+
+### 4. Validation & Error Matrix
+
+- No backup found -> script exits non-zero.
+- Missing checksum -> script exits non-zero.
+- Invalid drill database name -> script exits 2.
+- Restore or schema check fails -> script exits non-zero and leaves evidence in
+  command output.
+
+### 5. Good/Base/Bad Cases
+
+- Good: Restore the latest logical backup into a scratch DB, record duration,
+  and then push backup artifacts off-host.
+- Base: Drill a specific backup by setting `PASTEBOX_RESTORE_SOURCE`.
+- Bad: Restore a production backup over the live database before proving it in a
+  scratch database.
+
+### 6. Tests Required
+
+- Run `sh -n` for all backup shell scripts after editing them.
+- Run full `make test` after Compose/runbook changes because deployment docs and
+  preflight assumptions depend on the maintenance profile.
+- A real launch gate still requires executing the restore drill against a real
+  backup and recording the duration; static tests do not prove RTO.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```sh
+gunzip -c "$backup" | psql "$PGDATABASE"
+```
+
+#### Correct
+
+```sh
+sha256sum -c "$backup.sha256"
+createdb "$PASTEBOX_RESTORE_DRILL_DATABASE"
+gunzip -c "$backup" | psql "$PASTEBOX_RESTORE_DRILL_DATABASE"
+```
+
 ## Scenario: Provider Billing Webhooks
 
 ### 1. Scope / Trigger

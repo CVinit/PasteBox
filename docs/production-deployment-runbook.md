@@ -5,9 +5,10 @@ VPS running Docker Compose with an API container, worker container, PostgreSQL,
 Redis, HTTPS reverse proxy, and off-host backup flow.
 
 The stack is still gated by later roadmap phases. `pastebox migrate up` applies
-the PostgreSQL schema foundation, and the worker can process mail and scan jobs,
-but billing, restore drills, and compliance work still need to be completed
-before real user data or paid traffic is allowed.
+the PostgreSQL schema foundation, and the worker can process mail, scan, and
+billing reconciliation jobs, but a successful restore drill, WAL/PITR or
+equivalent recovery, and compliance work still need to be completed before real
+user data or paid traffic is allowed.
 
 ## Files
 
@@ -15,6 +16,7 @@ before real user data or paid traffic is allowed.
 - `deploy/production.env.example`: production environment template.
 - `deploy/caddy/Caddyfile`: HTTPS reverse proxy and certificate renewal.
 - `deploy/backup/postgres-backup.sh`: logical PostgreSQL backup job.
+- `deploy/backup/postgres-restore-drill.sh`: scratch database restore drill.
 - `deploy/backup/restic-backup.sh`: off-host backup push and integrity check.
 - `docs/production-rollback-runbook.md`: image rollback and restore gates.
 - `docs/production-secrets.md`: secret handling checklist.
@@ -175,6 +177,20 @@ Run a logical PostgreSQL backup and push it off-host:
 docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm postgres-backup
 docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm backup-push
 ```
+
+Run a restore drill against the latest local logical backup:
+
+```sh
+docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm postgres-restore-drill
+```
+
+To drill a specific backup file, set `PASTEBOX_RESTORE_SOURCE` to the path under
+the backup volume, for example `/backups/postgres/pastebox-20260525T120000Z.sql.gz`.
+The drill verifies the `.sha256`, restores into
+`PASTEBOX_RESTORE_DRILL_DATABASE` (default `pastebox_restore_drill`), checks the
+`schema_migrations` table, drops the scratch database unless
+`PASTEBOX_KEEP_RESTORE_DRILL_DB=true`, and prints `duration_seconds`. Record
+that duration and the backup path in release notes.
 
 Schedule both commands from the host with cron or a systemd timer at least
 daily. The confirmed launch target requires 30-day retention, off-host backup

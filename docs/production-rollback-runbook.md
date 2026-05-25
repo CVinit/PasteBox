@@ -59,7 +59,15 @@ If rollback requires data restore, stop app traffic first:
 docker compose --env-file deploy/production.env -f compose.production.yaml stop api worker
 ```
 
-Restore from the approved backup snapshot according to the Phase 7 restore
-runbook, then restart app services and verify readiness. Until Phase 7 adds and
+Restore from the approved backup snapshot only after the same backup class has
+passed the scratch restore drill:
+
+```sh
+PASTEBOX_RESTORE_SOURCE=/backups/postgres/pastebox-YYYYMMDDTHHMMSSZ.sql.gz \
+docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm postgres-restore-drill
+```
+
+Then restore into the production database during the approved maintenance
+window, restart app services, and verify readiness. Until Phase 7 adds and
 tests PITR/WAL restore, non-reversible migrations are not allowed for public
 beta.

@@ -155,6 +155,25 @@ services:
         condition: service_healthy
     entrypoint: ["/bin/sh", "/usr/local/bin/pastebox-postgres-backup.sh"]
 
+  postgres-restore-drill:
+    image: ${PASTEBOX_POSTGRES_IMAGE:-postgres:17-alpine}
+    profiles: ["maintenance"]
+    environment:
+      PGHOST: postgres
+      PGDATABASE: postgres
+      PGUSER: ${PASTEBOX_POSTGRES_USER:-pastebox}
+      PGPASSWORD: ${PASTEBOX_POSTGRES_PASSWORD:?set PASTEBOX_POSTGRES_PASSWORD}
+      PASTEBOX_RESTORE_SOURCE: ${PASTEBOX_RESTORE_SOURCE:-}
+      PASTEBOX_RESTORE_DRILL_DATABASE: ${PASTEBOX_RESTORE_DRILL_DATABASE:-pastebox_restore_drill}
+      PASTEBOX_KEEP_RESTORE_DRILL_DB: ${PASTEBOX_KEEP_RESTORE_DRILL_DB:-false}
+    volumes:
+      - pastebox-backups:/backups
+      - ./deploy/backup/postgres-restore-drill.sh:/usr/local/bin/pastebox-postgres-restore-drill.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/usr/local/bin/pastebox-postgres-restore-drill.sh"]
+
   backup-push:
     image: ${PASTEBOX_RESTIC_IMAGE:-restic/restic:0.18.1}
     profiles: ["maintenance"]
