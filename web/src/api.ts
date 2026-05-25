@@ -48,6 +48,7 @@ export type User = {
   emailVerified: boolean;
   planId: string;
   planExpiresAt?: string;
+  oauthProviders: string[];
   frozen: boolean;
   createdAt: string;
   deleteRequestedAt?: string;
@@ -346,6 +347,10 @@ export const client = {
     api<User>("/me", {
       method: "PATCH",
       body: JSON.stringify(body),
+    }),
+  unlinkOAuth: (provider: string) =>
+    api<User>(`/me/oauth/${encodeURIComponent(provider)}`, {
+      method: "DELETE",
     }),
   quota: () => api<Quota>("/quota"),
   pastes: (params: URLSearchParams) =>

@@ -181,10 +181,11 @@ func newProductionService(ctx context.Context, cfg config.Config) (*app.Service,
 	}
 	service, err := app.NewWithStorage(ctx, cfg, app.Stores{
 		Auth: app.AuthStores{
-			Users:         postgres.NewUserStore(pool),
-			Sessions:      postgres.NewSessionStore(pool),
-			Tokens:        postgres.NewAuthTokenStore(pool),
-			LoginFailures: postgres.NewLoginFailureStore(pool),
+			Users:           postgres.NewUserStore(pool),
+			Sessions:        postgres.NewSessionStore(pool),
+			Tokens:          postgres.NewAuthTokenStore(pool),
+			LoginFailures:   postgres.NewLoginFailureStore(pool),
+			OAuthIdentities: postgres.NewOAuthIdentityStore(pool),
 		},
 		Content: app.ContentStores{
 			Pastes:      postgres.NewPasteStore(pool),

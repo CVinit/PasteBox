@@ -233,10 +233,11 @@ func newPostgresBackedService(t *testing.T, ctx context.Context, pool *pgxpool.P
 	t.Helper()
 	svc, err := app.NewWithStorage(ctx, cfg, app.Stores{
 		Auth: app.AuthStores{
-			Users:         NewUserStore(pool),
-			Sessions:      NewSessionStore(pool),
-			Tokens:        NewAuthTokenStore(pool),
-			LoginFailures: NewLoginFailureStore(pool),
+			Users:           NewUserStore(pool),
+			Sessions:        NewSessionStore(pool),
+			Tokens:          NewAuthTokenStore(pool),
+			LoginFailures:   NewLoginFailureStore(pool),
+			OAuthIdentities: NewOAuthIdentityStore(pool),
 		},
 		Content: app.ContentStores{
 			Pastes:      NewPasteStore(pool),
@@ -274,6 +275,7 @@ func cleanupServiceIntegrationRows(ctx context.Context, t *testing.T, pool *pgxp
 		`DELETE FROM shares WHERE user_id IN (SELECT id FROM users WHERE email = ANY($1::text[]))`,
 		`DELETE FROM attachments WHERE user_id IN (SELECT id FROM users WHERE email = ANY($1::text[]))`,
 		`DELETE FROM pastes WHERE user_id IN (SELECT id FROM users WHERE email = ANY($1::text[]))`,
+		`DELETE FROM oauth_identities WHERE user_id IN (SELECT id FROM users WHERE email = ANY($1::text[]))`,
 		`DELETE FROM auth_tokens WHERE user_id IN (SELECT id FROM users WHERE email = ANY($1::text[]))`,
 		`DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE email = ANY($1::text[]))`,
 		`DELETE FROM login_failures WHERE email = ANY($1::text[])`,

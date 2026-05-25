@@ -14,9 +14,11 @@ import (
 )
 
 var (
-	ErrSessionNotFound      = errors.Join(errors.New("postgres session not found"), app.ErrStoreNotFound)
-	ErrAuthTokenNotFound    = errors.Join(errors.New("postgres auth token not found"), app.ErrStoreNotFound)
-	ErrLoginFailureNotFound = errors.Join(errors.New("postgres login failure not found"), app.ErrStoreNotFound)
+	ErrSessionNotFound       = errors.Join(errors.New("postgres session not found"), app.ErrStoreNotFound)
+	ErrAuthTokenNotFound     = errors.Join(errors.New("postgres auth token not found"), app.ErrStoreNotFound)
+	ErrLoginFailureNotFound  = errors.Join(errors.New("postgres login failure not found"), app.ErrStoreNotFound)
+	ErrOAuthIdentityNotFound = errors.Join(errors.New("postgres oauth identity not found"), app.ErrStoreNotFound)
+	ErrOAuthIdentityConflict = errors.Join(errors.New("postgres oauth identity conflict"), app.ErrStoreConflict)
 )
 
 type SessionStore struct {
@@ -184,4 +186,102 @@ func (s *LoginFailureStore) DeleteLoginFailure(ctx context.Context, email string
 		return fmt.Errorf("delete login failure: %w", err)
 	}
 	return nil
+}
+
+type OAuthIdentityStore struct {
+	pool *pgxpool.Pool
+}
+
+func NewOAuthIdentityStore(pool *pgxpool.Pool) *OAuthIdentityStore {
+	return &OAuthIdentityStore{pool: pool}
+}
+
+func (s *OAuthIdentityStore) LinkOAuthIdentity(ctx context.Context, identity app.OAuthIdentity) error {
+	if _, err := s.pool.Exec(ctx, `
+INSERT INTO oauth_identities (user_id, provider, subject, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5)
+`, identity.UserID, identity.Provider, identity.Subject, identity.CreatedAt, identity.UpdatedAt); err != nil {
+		if isUniqueViolation(err, "") {
+			return ErrOAuthIdentityConflict
+		}
+		return fmt.Errorf("link oauth identity: %w", err)
+	}
+	return nil
+}
+
+func (s *OAuthIdentityStore) OAuthIdentityByProviderSubject(ctx context.Context, provider string, subject string) (app.OAuthIdentity, error) {
+	return s.queryOAuthIdentity(ctx, `
+SELECT user_id, provider, subject, created_at, updated_at
+FROM oauth_identities
+WHERE provider = $1 AND subject = $2
+`, provider, subject)
+}
+
+func (s *OAuthIdentityStore) OAuthIdentitiesByUser(ctx context.Context, userID string) ([]app.OAuthIdentity, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT user_id, provider, subject, created_at, updated_at
+FROM oauth_identities
+WHERE user_id = $1
+ORDER BY provider ASC
+`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("query oauth identities: %w", err)
+	}
+	defer rows.Close()
+
+	identities := []app.OAuthIdentity{}
+	for rows.Next() {
+		identity, err := scanOAuthIdentity(rows)
+		if err != nil {
+			return nil, err
+		}
+		identities = append(identities, identity)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read oauth identities: %w", err)
+	}
+	return identities, nil
+}
+
+func (s *OAuthIdentityStore) DeleteOAuthIdentity(ctx context.Context, userID string, provider string) error {
+	tag, err := s.pool.Exec(ctx, `
+DELETE FROM oauth_identities
+WHERE user_id = $1 AND provider = $2
+`, userID, provider)
+	if err != nil {
+		return fmt.Errorf("delete oauth identity: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrOAuthIdentityNotFound
+	}
+	return nil
+}
+
+func (s *OAuthIdentityStore) queryOAuthIdentity(ctx context.Context, sql string, args ...any) (app.OAuthIdentity, error) {
+	identity, err := scanOAuthIdentity(s.pool.QueryRow(ctx, sql, args...))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return app.OAuthIdentity{}, ErrOAuthIdentityNotFound
+		}
+		return app.OAuthIdentity{}, err
+	}
+	return identity, nil
+}
+
+type oauthIdentityRow interface {
+	Scan(dest ...any) error
+}
+
+func scanOAuthIdentity(row oauthIdentityRow) (app.OAuthIdentity, error) {
+	var identity app.OAuthIdentity
+	if err := row.Scan(
+		&identity.UserID,
+		&identity.Provider,
+		&identity.Subject,
+		&identity.CreatedAt,
+		&identity.UpdatedAt,
+	); err != nil {
+		return app.OAuthIdentity{}, fmt.Errorf("scan oauth identity: %w", err)
+	}
+	return identity, nil
 }

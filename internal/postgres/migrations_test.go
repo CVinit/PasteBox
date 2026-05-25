@@ -72,3 +72,29 @@ func TestLoadMigrationsAreStrictlyOrdered(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadMigrationsIncludesOAuthIdentities(t *testing.T) {
+	migrations, err := LoadMigrations()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	var migration Migration
+	for _, item := range migrations {
+		if item.Version == 3 {
+			migration = item
+			break
+		}
+	}
+	if migration.Name != "oauth_identities" || migration.Filename != "000003_oauth_identities.sql" {
+		t.Fatalf("expected oauth identity migration, got %#v", migration)
+	}
+	for _, expected := range []string{
+		"CREATE TABLE IF NOT EXISTS oauth_identities",
+		"PRIMARY KEY (provider, subject)",
+		"UNIQUE (user_id, provider)",
+	} {
+		if !strings.Contains(migration.SQL, expected) {
+			t.Fatalf("expected oauth migration to contain %q", expected)
+		}
+	}
+}

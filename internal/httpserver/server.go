@@ -178,6 +178,7 @@ func (s *Server) routes() http.Handler {
 
 		r.Get("/me", s.me)
 		r.Patch("/me", s.updateMe)
+		r.Delete("/me/oauth/{provider}", s.unlinkOAuthIdentity)
 		r.Post("/me/delete-request", s.requestAccountDeletion)
 		r.Post("/me/delete-cancel", s.cancelAccountDeletion)
 		r.Post("/me/delete-now", s.executeAccountDeletion)
@@ -740,6 +741,18 @@ func (s *Server) updateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updated, err := s.app.UpdateProfile(user.ID, req.DisplayName, req.Language)
+	if s.handleErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) unlinkOAuthIdentity(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	updated, err := s.app.UnlinkOAuthIdentity(user.ID, chi.URLParam(r, "provider"))
 	if s.handleErr(w, err) {
 		return
 	}

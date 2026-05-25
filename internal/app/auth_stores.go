@@ -12,14 +12,15 @@ var (
 )
 
 type AuthStores struct {
-	Users         UserStore
-	Sessions      SessionStore
-	Tokens        AuthTokenStore
-	LoginFailures LoginFailureStore
+	Users           UserStore
+	Sessions        SessionStore
+	Tokens          AuthTokenStore
+	LoginFailures   LoginFailureStore
+	OAuthIdentities OAuthIdentityStore
 }
 
 func (s AuthStores) configured() bool {
-	return s.Users != nil || s.Sessions != nil || s.Tokens != nil || s.LoginFailures != nil
+	return s.Users != nil || s.Sessions != nil || s.Tokens != nil || s.LoginFailures != nil || s.OAuthIdentities != nil
 }
 
 type UserStore interface {
@@ -47,4 +48,11 @@ type LoginFailureStore interface {
 	LoginFailure(ctx context.Context, email string) (LoginFailure, error)
 	SaveLoginFailure(ctx context.Context, email string, failure LoginFailure) error
 	DeleteLoginFailure(ctx context.Context, email string) error
+}
+
+type OAuthIdentityStore interface {
+	LinkOAuthIdentity(ctx context.Context, identity OAuthIdentity) error
+	OAuthIdentityByProviderSubject(ctx context.Context, provider string, subject string) (OAuthIdentity, error)
+	OAuthIdentitiesByUser(ctx context.Context, userID string) ([]OAuthIdentity, error)
+	DeleteOAuthIdentity(ctx context.Context, userID string, provider string) error
 }

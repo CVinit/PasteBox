@@ -536,6 +536,10 @@ const copy: Record<Locale, Record<string, string>> = {
     accountActive: "Account active",
     deletionScheduled: "Deletion scheduled",
     saveProfile: "Save profile",
+    linkedAccounts: "Linked accounts",
+    noLinkedAccounts: "No external login providers linked.",
+    unlinkGoogle: "Unlink Google",
+    oauthUnlinked: "OAuth account unlinked",
     export: "Export",
     deleteRequest: "Delete request",
     cancelDelete: "Cancel delete",
@@ -660,6 +664,10 @@ const copy: Record<Locale, Record<string, string>> = {
     accountActive: "账号正常",
     deletionScheduled: "已计划删除",
     saveProfile: "保存资料",
+    linkedAccounts: "关联账号",
+    noLinkedAccounts: "尚未关联外部登录方式。",
+    unlinkGoogle: "解除 Google 关联",
+    oauthUnlinked: "OAuth 账号已解除关联",
     export: "导出",
     deleteRequest: "申请删除",
     cancelDelete: "取消删除",
@@ -881,6 +889,7 @@ function App() {
       catalog?.plans[0]
     );
   }, [catalog, quota, user]);
+  const linkedOAuthProviders = user?.oauthProviders ?? [];
 
   const selectedPaste = useMemo(
     () => pastes.find((paste) => paste.id === selectedPasteId) ?? pastes[0],
@@ -1335,6 +1344,14 @@ function App() {
     const updated = await run(
       () => client.updateMe(profileDraft),
       "Profile updated",
+    );
+    if (updated) setUser(updated);
+  }
+
+  async function unlinkOAuth(provider: string) {
+    const updated = await run(
+      () => client.unlinkOAuth(provider),
+      t("oauthUnlinked"),
     );
     if (updated) setUser(updated);
   }
@@ -1952,6 +1969,30 @@ function App() {
                   <a href="/support">support intake</a> before submitting
                   sensitive requests.
                 </span>
+              </div>
+            </section>
+            <section className="notice-card">
+              <ShieldCheck size={18} aria-hidden="true" />
+              <div>
+                <strong>{t("linkedAccounts")}</strong>
+                {linkedOAuthProviders.length > 0 ? (
+                  <span>
+                    {linkedOAuthProviders.map((provider) =>
+                      provider === "google" ? t("google") : provider,
+                    ).join(", ")}
+                  </span>
+                ) : (
+                  <span>{t("noLinkedAccounts")}</span>
+                )}
+                {linkedOAuthProviders.includes("google") ? (
+                  <button
+                    type="button"
+                    onClick={() => unlinkOAuth("google")}
+                    disabled={busy}
+                  >
+                    {t("unlinkGoogle")}
+                  </button>
+                ) : null}
               </div>
             </section>
             <div className="form-grid">

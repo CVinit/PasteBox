@@ -69,6 +69,7 @@ type Service struct {
 	emailVerifies    map[string]*AuthToken
 	passwordResets   map[string]*AuthToken
 	loginFailures    map[string]*LoginFailure
+	oauthIdentities  map[string]*OAuthIdentity
 	pastesByID       map[string]*Paste
 	attachmentsByID  map[string]*Attachment
 	objects          map[string][]byte
@@ -131,6 +132,7 @@ func NewWithStorage(ctx context.Context, cfg config.Config, stores Stores) (*Ser
 		emailVerifies:    map[string]*AuthToken{},
 		passwordResets:   map[string]*AuthToken{},
 		loginFailures:    map[string]*LoginFailure{},
+		oauthIdentities:  map[string]*OAuthIdentity{},
 		pastesByID:       map[string]*Paste{},
 		attachmentsByID:  map[string]*Attachment{},
 		objects:          map[string][]byte{},
@@ -213,6 +215,7 @@ type UserView struct {
 	EmailVerified     bool       `json:"emailVerified"`
 	PlanID            string     `json:"planId"`
 	PlanExpiresAt     *time.Time `json:"planExpiresAt,omitempty"`
+	OAuthProviders    []string   `json:"oauthProviders"`
 	Frozen            bool       `json:"frozen"`
 	CreatedAt         time.Time  `json:"createdAt"`
 	DeleteRequestedAt *time.Time `json:"deleteRequestedAt,omitempty"`
@@ -239,6 +242,14 @@ type LoginFailure struct {
 	Count       int
 	WindowStart time.Time
 	LockedUntil time.Time
+}
+
+type OAuthIdentity struct {
+	UserID    string
+	Provider  string
+	Subject   string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type AuthResult struct {
@@ -625,12 +636,41 @@ func (s *Service) GoogleOAuth(_ context.Context, email string, displayName strin
 	if email == "" || !strings.Contains(email, "@") {
 		return AuthResult{}, E(http.StatusBadRequest, "invalid_email", "valid email is required")
 	}
-	if strings.TrimSpace(googleSubject) == "" {
+	subject := strings.TrimSpace(googleSubject)
+	if subject == "" {
 		return AuthResult{}, E(http.StatusBadRequest, "missing_oauth_subject", "google subject is required")
 	}
+	const provider = "google"
+
+	if identity, ok, err := s.oauthIdentityByProviderSubjectLocked(provider, subject); err != nil {
+		return AuthResult{}, err
+	} else if ok {
+		user, err := s.activeUserLocked(identity.UserID)
+		if err != nil {
+			return AuthResult{}, err
+		}
+		if strings.TrimSpace(displayName) != "" {
+			user.DisplayName = strings.TrimSpace(displayName)
+			user.EmailVerified = true
+			user.UpdatedAt = s.now().UTC()
+			if err := s.updateUserLocked(user); err != nil {
+				return AuthResult{}, err
+			}
+		}
+		if err := s.auditLocked(user.ID, "auth.google_oauth", user.ID, map[string]any{"provider": provider}); err != nil {
+			return AuthResult{}, err
+		}
+		return s.newSessionLocked(user)
+	}
+
 	if user, err := s.userByEmailLocked(email); err == nil {
 		if user.DeletedAt != nil || user.Frozen {
 			return AuthResult{}, E(http.StatusForbidden, "account_unavailable", "account is unavailable")
+		}
+		if identities, err := s.oauthIdentitiesByUserLocked(user.ID); err != nil {
+			return AuthResult{}, err
+		} else if hasOAuthProvider(identities, provider) {
+			return AuthResult{}, E(http.StatusConflict, "oauth_identity_conflict", "google account is already linked to a different identity")
 		}
 		user.EmailVerified = true
 		if strings.TrimSpace(displayName) != "" {
@@ -638,6 +678,16 @@ func (s *Service) GoogleOAuth(_ context.Context, email string, displayName strin
 		}
 		user.UpdatedAt = s.now().UTC()
 		if err := s.updateUserLocked(user); err != nil {
+			return AuthResult{}, err
+		}
+		now := s.now().UTC()
+		if err := s.createOAuthIdentityLocked(&OAuthIdentity{UserID: user.ID, Provider: provider, Subject: subject, CreatedAt: now, UpdatedAt: now}); err != nil {
+			return AuthResult{}, err
+		}
+		if err := s.auditLocked(user.ID, "auth.oauth_linked", user.ID, map[string]any{"provider": provider}); err != nil {
+			return AuthResult{}, err
+		}
+		if err := s.auditLocked(user.ID, "auth.google_oauth", user.ID, map[string]any{"provider": provider}); err != nil {
 			return AuthResult{}, err
 		}
 		return s.newSessionLocked(user)
@@ -668,7 +718,13 @@ func (s *Service) GoogleOAuth(_ context.Context, email string, displayName strin
 		}
 		return AuthResult{}, err
 	}
-	if err := s.auditLocked(user.ID, "auth.google_oauth", user.ID, map[string]any{"subject": googleSubject}); err != nil {
+	if err := s.createOAuthIdentityLocked(&OAuthIdentity{UserID: user.ID, Provider: provider, Subject: subject, CreatedAt: now, UpdatedAt: now}); err != nil {
+		return AuthResult{}, err
+	}
+	if err := s.auditLocked(user.ID, "auth.oauth_linked", user.ID, map[string]any{"provider": provider}); err != nil {
+		return AuthResult{}, err
+	}
+	if err := s.auditLocked(user.ID, "auth.google_oauth", user.ID, map[string]any{"provider": provider}); err != nil {
 		return AuthResult{}, err
 	}
 	if err := s.mail(user.Email, "Welcome to PasteBox", "Your Google-authenticated PasteBox account is ready."); err != nil {
@@ -712,7 +768,7 @@ func (s *Service) FinishEmailVerification(token string) (UserView, error) {
 	if err := s.updateUserLocked(user); err != nil {
 		return UserView{}, err
 	}
-	return viewUser(user), nil
+	return s.viewUserLocked(user)
 }
 
 func (s *Service) StartMagicLink(_ context.Context, email string) (map[string]string, error) {
@@ -821,7 +877,7 @@ func (s *Service) UserForSession(sessionID string) (UserView, error) {
 	if err != nil {
 		return UserView{}, err
 	}
-	return viewUser(user), nil
+	return s.viewUserLocked(user)
 }
 
 func (s *Service) Logout(sessionID string) {
@@ -860,7 +916,35 @@ func (s *Service) UpdateProfile(userID string, displayName string, language stri
 	if err := s.updateUserLocked(user); err != nil {
 		return UserView{}, err
 	}
-	return viewUser(user), nil
+	return s.viewUserLocked(user)
+}
+
+func (s *Service) UnlinkOAuthIdentity(userID string, provider string) (UserView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	user, err := s.activeUserLocked(userID)
+	if err != nil {
+		return UserView{}, err
+	}
+	provider = normalizeProvider(provider)
+	if provider == "" {
+		return UserView{}, E(http.StatusBadRequest, "invalid_oauth_provider", "oauth provider is required")
+	}
+	identities, err := s.oauthIdentitiesByUserLocked(user.ID)
+	if err != nil {
+		return UserView{}, err
+	}
+	if !hasOAuthProvider(identities, provider) {
+		return UserView{}, E(http.StatusNotFound, "oauth_identity_not_linked", "oauth provider is not linked")
+	}
+	if err := s.deleteOAuthIdentityLocked(user.ID, provider); err != nil {
+		return UserView{}, err
+	}
+	if err := s.auditLocked(user.ID, "auth.oauth_unlinked", user.ID, map[string]any{"provider": provider}); err != nil {
+		return UserView{}, err
+	}
+	return s.viewUserLocked(user)
 }
 
 func (s *Service) RequestAccountDeletion(userID string) (UserView, error) {
@@ -884,7 +968,7 @@ func (s *Service) RequestAccountDeletion(userID string) (UserView, error) {
 	if err := s.mail(user.Email, "PasteBox account deletion requested", "Your account is scheduled for deletion in 7 days."); err != nil {
 		return UserView{}, err
 	}
-	return viewUser(user), nil
+	return s.viewUserLocked(user)
 }
 
 func (s *Service) CancelAccountDeletion(userID string) (UserView, error) {
@@ -903,7 +987,7 @@ func (s *Service) CancelAccountDeletion(userID string) (UserView, error) {
 	if err := s.auditLocked(user.ID, "account.deletion_canceled", user.ID, nil); err != nil {
 		return UserView{}, err
 	}
-	return viewUser(user), nil
+	return s.viewUserLocked(user)
 }
 
 func (s *Service) ExecuteAccountDeletion(userID string) error {
@@ -1859,8 +1943,12 @@ func (s *Service) ExportUser(userID string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	userView, err := s.viewUserLocked(user)
+	if err != nil {
+		return nil, err
+	}
 	return map[string]any{
-		"user":          viewUser(user),
+		"user":          userView,
 		"pastes":        pastes,
 		"shares":        shares,
 		"orders":        orders,
@@ -2081,7 +2169,11 @@ func (s *Service) AdminUsers(actorID string) ([]UserView, error) {
 	}
 	out := make([]UserView, 0, len(users))
 	for _, user := range users {
-		out = append(out, viewUser(&user))
+		view, err := s.viewUserLocked(&user)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, view)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out, nil
@@ -2109,7 +2201,7 @@ func (s *Service) AdminSetUserPlan(actorID string, userID string, planID string,
 	if err := s.auditLocked(actorID, "admin.user_plan_set", userID, map[string]any{"planId": planID}); err != nil {
 		return UserView{}, err
 	}
-	return viewUser(user), nil
+	return s.viewUserLocked(user)
 }
 
 func (s *Service) AdminFreezeUser(actorID string, userID string, frozen bool) (UserView, error) {
@@ -2130,7 +2222,7 @@ func (s *Service) AdminFreezeUser(actorID string, userID string, frozen bool) (U
 	if err := s.auditLocked(actorID, "admin.user_freeze", userID, map[string]any{"frozen": frozen}); err != nil {
 		return UserView{}, err
 	}
-	return viewUser(user), nil
+	return s.viewUserLocked(user)
 }
 
 func (s *Service) AdminPastes(actorID string) ([]PasteView, error) {
@@ -2548,7 +2640,7 @@ func (s *Service) SeedAdmin(email string, password string) (UserView, error) {
 	if err := s.updateUserLocked(user); err != nil {
 		return UserView{}, err
 	}
-	return viewUser(user), nil
+	return s.viewUserLocked(user)
 }
 
 func (s *Service) ListPastesLocked(userID string, opts ListOptions) ([]PasteView, error) {
@@ -3174,6 +3266,37 @@ func (s *Service) createUserLocked(user *User) error {
 	return nil
 }
 
+func (s *Service) createOAuthIdentityLocked(identity *OAuthIdentity) error {
+	identity.Provider = normalizeProvider(identity.Provider)
+	identity.Subject = strings.TrimSpace(identity.Subject)
+	if identity.UserID == "" || identity.Provider == "" || identity.Subject == "" {
+		return E(http.StatusBadRequest, "invalid_oauth_identity", "oauth identity is incomplete")
+	}
+	if identity.CreatedAt.IsZero() {
+		identity.CreatedAt = s.now().UTC()
+	}
+	if identity.UpdatedAt.IsZero() {
+		identity.UpdatedAt = identity.CreatedAt
+	}
+	if s.auth.OAuthIdentities != nil {
+		if err := s.auth.OAuthIdentities.LinkOAuthIdentity(context.Background(), *identity); err != nil {
+			if errors.Is(err, ErrStoreConflict) {
+				return E(http.StatusConflict, "oauth_identity_conflict", "oauth identity is already linked")
+			}
+			return err
+		}
+	}
+	s.cacheOAuthIdentityLocked(*identity)
+	return nil
+}
+
+func (s *Service) cacheOAuthIdentityLocked(identity OAuthIdentity) {
+	identity.Provider = normalizeProvider(identity.Provider)
+	identity.Subject = strings.TrimSpace(identity.Subject)
+	cached := identity
+	s.oauthIdentities[oauthIdentityKey(cached.Provider, cached.Subject)] = &cached
+}
+
 func (s *Service) updateUserLocked(user *User) error {
 	if s.auth.Users != nil {
 		if err := s.auth.Users.UpdateUser(context.Background(), *user); err != nil {
@@ -3218,7 +3341,11 @@ func (s *Service) newSessionLocked(user *User) (AuthResult, error) {
 		}
 	}
 	s.sessionsByID[session.ID] = session
-	return AuthResult{User: viewUser(user), SessionID: session.ID, ExpiresAt: session.ExpiresAt}, nil
+	view, err := s.viewUserLocked(user)
+	if err != nil {
+		return AuthResult{}, err
+	}
+	return AuthResult{User: view, SessionID: session.ID, ExpiresAt: session.ExpiresAt}, nil
 }
 
 func (s *Service) userForSessionLocked(sessionID string) (*User, error) {
@@ -3294,6 +3421,66 @@ func (s *Service) userByEmailLocked(email string) (*User, error) {
 		return nil, E(http.StatusNotFound, "user_not_found", "user not found")
 	}
 	return s.usersByID[userID], nil
+}
+
+func (s *Service) oauthIdentityByProviderSubjectLocked(provider string, subject string) (OAuthIdentity, bool, error) {
+	provider = normalizeProvider(provider)
+	subject = strings.TrimSpace(subject)
+	if s.auth.OAuthIdentities != nil {
+		identity, err := s.auth.OAuthIdentities.OAuthIdentityByProviderSubject(context.Background(), provider, subject)
+		if err != nil {
+			if isStoreNotFound(err) {
+				return OAuthIdentity{}, false, nil
+			}
+			return OAuthIdentity{}, false, err
+		}
+		s.cacheOAuthIdentityLocked(identity)
+		return identity, true, nil
+	}
+	identity := s.oauthIdentities[oauthIdentityKey(provider, subject)]
+	if identity == nil {
+		return OAuthIdentity{}, false, nil
+	}
+	return *identity, true, nil
+}
+
+func (s *Service) oauthIdentitiesByUserLocked(userID string) ([]OAuthIdentity, error) {
+	if s.auth.OAuthIdentities != nil {
+		identities, err := s.auth.OAuthIdentities.OAuthIdentitiesByUser(context.Background(), userID)
+		if err != nil {
+			return nil, err
+		}
+		for _, identity := range identities {
+			s.cacheOAuthIdentityLocked(identity)
+		}
+		return identities, nil
+	}
+	identities := []OAuthIdentity{}
+	for _, identity := range s.oauthIdentities {
+		if identity.UserID == userID {
+			identities = append(identities, *identity)
+		}
+	}
+	sort.Slice(identities, func(i, j int) bool { return identities[i].Provider < identities[j].Provider })
+	return identities, nil
+}
+
+func (s *Service) deleteOAuthIdentityLocked(userID string, provider string) error {
+	provider = normalizeProvider(provider)
+	if s.auth.OAuthIdentities != nil {
+		if err := s.auth.OAuthIdentities.DeleteOAuthIdentity(context.Background(), userID, provider); err != nil {
+			if isStoreNotFound(err) {
+				return E(http.StatusNotFound, "oauth_identity_not_linked", "oauth provider is not linked")
+			}
+			return err
+		}
+	}
+	for key, identity := range s.oauthIdentities {
+		if identity.UserID == userID && identity.Provider == provider {
+			delete(s.oauthIdentities, key)
+		}
+	}
+	return nil
 }
 
 func (s *Service) checkLoginRateLimitLocked(email string) error {
@@ -3773,6 +3960,38 @@ func normalizeProvider(provider string) string {
 	return strings.ToLower(strings.TrimSpace(provider))
 }
 
+func oauthIdentityKey(provider string, subject string) string {
+	return normalizeProvider(provider) + "\x00" + strings.TrimSpace(subject)
+}
+
+func hasOAuthProvider(identities []OAuthIdentity, provider string) bool {
+	provider = normalizeProvider(provider)
+	for _, identity := range identities {
+		if normalizeProvider(identity.Provider) == provider {
+			return true
+		}
+	}
+	return false
+}
+
+func oauthProviderNames(identities []OAuthIdentity) []string {
+	providers := []string{}
+	seen := map[string]struct{}{}
+	for _, identity := range identities {
+		provider := normalizeProvider(identity.Provider)
+		if provider == "" {
+			continue
+		}
+		if _, ok := seen[provider]; ok {
+			continue
+		}
+		seen[provider] = struct{}{}
+		providers = append(providers, provider)
+	}
+	sort.Strings(providers)
+	return providers
+}
+
 func cloneMetadata(metadata map[string]any) map[string]any {
 	out := map[string]any{}
 	for key, value := range metadata {
@@ -3907,6 +4126,16 @@ func (s *Service) newID(prefix string) string {
 	return fmt.Sprintf("%s_%s", prefix, hex.EncodeToString(raw[:]))
 }
 
+func (s *Service) viewUserLocked(user *User) (UserView, error) {
+	identities, err := s.oauthIdentitiesByUserLocked(user.ID)
+	if err != nil {
+		return UserView{}, err
+	}
+	view := viewUser(user)
+	view.OAuthProviders = oauthProviderNames(identities)
+	return view, nil
+}
+
 func viewUser(user *User) UserView {
 	return UserView{
 		ID:                user.ID,
@@ -3917,6 +4146,7 @@ func viewUser(user *User) UserView {
 		EmailVerified:     user.EmailVerified,
 		PlanID:            user.PlanID,
 		PlanExpiresAt:     user.PlanExpiresAt,
+		OAuthProviders:    []string{},
 		Frozen:            user.Frozen,
 		CreatedAt:         user.CreatedAt,
 		DeleteRequestedAt: user.DeleteRequestedAt,

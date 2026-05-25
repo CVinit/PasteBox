@@ -742,6 +742,55 @@ func TestGoogleOAuthCreatesVerifiedAccount(t *testing.T) {
 	}
 }
 
+func TestGoogleOAuthIdentityPersistsAcrossServiceRestart(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	authStores := newMemoryAuthStores()
+	svc := newTestServiceWithAuthStores(t, &now, authStores.authStores())
+	first, err := svc.GoogleOAuth(context.Background(), "google-persist@example.com", "Google Persist", "google-sub-persist")
+	if err != nil {
+		t.Fatalf("google oauth: %v", err)
+	}
+	if got := first.User.OAuthProviders; len(got) != 1 || got[0] != "google" {
+		t.Fatalf("expected linked google provider, got %#v", got)
+	}
+
+	restarted := newTestServiceWithAuthStores(t, &now, authStores.authStores())
+	second, err := restarted.GoogleOAuth(context.Background(), "changed-email@example.com", "Renamed Google", "google-sub-persist")
+	if err != nil {
+		t.Fatalf("google oauth after restart: %v", err)
+	}
+	if second.User.ID != first.User.ID || second.User.Email != first.User.Email {
+		t.Fatalf("expected persisted oauth subject to resolve original user, got %#v", second.User)
+	}
+	if second.User.DisplayName != "Renamed Google" {
+		t.Fatalf("expected linked oauth login to update display name, got %#v", second.User)
+	}
+	if got := second.User.OAuthProviders; len(got) != 1 || got[0] != "google" {
+		t.Fatalf("expected provider list after restart, got %#v", got)
+	}
+
+	if _, err := restarted.GoogleOAuth(context.Background(), first.User.Email, "Different Subject", "google-sub-other"); !hasAppCode(err, "oauth_identity_conflict") {
+		t.Fatalf("expected conflict when linking a second google subject, got %v", err)
+	}
+
+	updated, err := restarted.UnlinkOAuthIdentity(first.User.ID, "google")
+	if err != nil {
+		t.Fatalf("unlink oauth identity: %v", err)
+	}
+	if len(updated.OAuthProviders) != 0 {
+		t.Fatalf("expected no linked providers after unlink, got %#v", updated.OAuthProviders)
+	}
+
+	afterUnlink := newTestServiceWithAuthStores(t, &now, authStores.authStores())
+	third, err := afterUnlink.GoogleOAuth(context.Background(), "new-google@example.com", "New Google", "google-sub-persist")
+	if err != nil {
+		t.Fatalf("google oauth after unlink: %v", err)
+	}
+	if third.User.ID == first.User.ID || third.User.Email != "new-google@example.com" {
+		t.Fatalf("expected unlinked subject to create a new account, got %#v", third.User)
+	}
+}
+
 func TestPasteUpdateCannotBypassSinglePasteQuota(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	svc := newTestService(t, &now)
@@ -2028,6 +2077,7 @@ type memoryAuthStores struct {
 	sessions      map[string]Session
 	tokens        map[string]AuthToken
 	loginFailures map[string]LoginFailure
+	oauthByKey    map[string]OAuthIdentity
 }
 
 func newMemoryAuthStores() *memoryAuthStores {
@@ -2037,15 +2087,17 @@ func newMemoryAuthStores() *memoryAuthStores {
 		sessions:      map[string]Session{},
 		tokens:        map[string]AuthToken{},
 		loginFailures: map[string]LoginFailure{},
+		oauthByKey:    map[string]OAuthIdentity{},
 	}
 }
 
 func (s *memoryAuthStores) authStores() AuthStores {
 	return AuthStores{
-		Users:         s,
-		Sessions:      s,
-		Tokens:        s,
-		LoginFailures: s,
+		Users:           s,
+		Sessions:        s,
+		Tokens:          s,
+		LoginFailures:   s,
+		OAuthIdentities: s,
 	}
 }
 
@@ -2177,4 +2229,48 @@ func (s *memoryAuthStores) SaveLoginFailure(_ context.Context, email string, fai
 func (s *memoryAuthStores) DeleteLoginFailure(_ context.Context, email string) error {
 	delete(s.loginFailures, email)
 	return nil
+}
+
+func (s *memoryAuthStores) LinkOAuthIdentity(_ context.Context, identity OAuthIdentity) error {
+	identity.Provider = normalizeProvider(identity.Provider)
+	identity.Subject = strings.TrimSpace(identity.Subject)
+	if _, ok := s.oauthByKey[oauthIdentityKey(identity.Provider, identity.Subject)]; ok {
+		return ErrStoreConflict
+	}
+	for _, existing := range s.oauthByKey {
+		if existing.UserID == identity.UserID && normalizeProvider(existing.Provider) == identity.Provider {
+			return ErrStoreConflict
+		}
+	}
+	s.oauthByKey[oauthIdentityKey(identity.Provider, identity.Subject)] = identity
+	return nil
+}
+
+func (s *memoryAuthStores) OAuthIdentityByProviderSubject(_ context.Context, provider string, subject string) (OAuthIdentity, error) {
+	identity, ok := s.oauthByKey[oauthIdentityKey(provider, subject)]
+	if !ok {
+		return OAuthIdentity{}, ErrStoreNotFound
+	}
+	return identity, nil
+}
+
+func (s *memoryAuthStores) OAuthIdentitiesByUser(_ context.Context, userID string) ([]OAuthIdentity, error) {
+	identities := []OAuthIdentity{}
+	for _, identity := range s.oauthByKey {
+		if identity.UserID == userID {
+			identities = append(identities, identity)
+		}
+	}
+	return identities, nil
+}
+
+func (s *memoryAuthStores) DeleteOAuthIdentity(_ context.Context, userID string, provider string) error {
+	provider = normalizeProvider(provider)
+	for key, identity := range s.oauthByKey {
+		if identity.UserID == userID && normalizeProvider(identity.Provider) == provider {
+			delete(s.oauthByKey, key)
+			return nil
+		}
+	}
+	return ErrStoreNotFound
 }

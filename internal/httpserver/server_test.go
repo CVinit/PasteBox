@@ -922,6 +922,17 @@ func TestOAuthWebhookReplayAndReportHTTPContracts(t *testing.T) {
 	if !oauthBody.User.EmailVerified || oauthBody.User.DisplayName != "OAuth User" {
 		t.Fatalf("unexpected oauth body: %#v", oauthBody)
 	}
+	if got := oauthBody.User.OAuthProviders; len(got) != 1 || got[0] != "google" {
+		t.Fatalf("expected google oauth provider in user response, got %#v", got)
+	}
+
+	unlink := user.json(http.MethodDelete, "/api/v1/me/oauth/google", "")
+	assertStatus(t, unlink, http.StatusOK)
+	var unlinked app.UserView
+	decodeResponse(t, unlink, &unlinked)
+	if len(unlinked.OAuthProviders) != 0 {
+		t.Fatalf("expected google provider to be unlinked, got %#v", unlinked.OAuthProviders)
+	}
 
 	orderRes := user.json(http.MethodPost, "/api/v1/billing/orders", `{"provider":"stripe","planId":"plus","period":"monthly"}`)
 	assertStatus(t, orderRes, http.StatusCreated)
