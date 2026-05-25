@@ -157,6 +157,8 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - API readiness endpoint: `GET /api/v1/ready`
 - Production Compose file: `compose.production.yaml`
 - Production env template: `deploy/production.env.example`
+- Production monitoring files: `deploy/monitoring/prometheus.yml` and
+  `deploy/monitoring/pastebox-alerts.yml`
 
 ### 3. Contracts
 
@@ -195,6 +197,9 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - `GET /api/v1/ready` returns `app`, `env`, and `status`.
 - Production deployment uses `compose.production.yaml`, a non-committed
   `deploy/production.env`, and a pinned `PASTEBOX_IMAGE` tag or digest.
+- The optional `monitoring` profile runs Prometheus with committed scrape and
+  alert-rule files. It must source the metrics bearer token from the
+  `PASTEBOX_METRICS_TOKEN` Compose secret, not from committed YAML.
 - The committed env template may contain placeholders; the real production env
   file must not be committed.
 
@@ -218,6 +223,9 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
   reports a dirty/checksum mismatch.
 - `pastebox worker --once` cannot list runnable jobs or update job state ->
   exits 1 with a worker-specific error.
+- Production monitoring profile fails to render -> config validation failure.
+- Prometheus scrape or alert-rule config is syntactically invalid -> launch
+  monitoring validation failure.
 - `pastebox worker --help` exits 0 and prints worker usage.
 - Unknown lifecycle subcommand -> exits 2 and prints usage.
 
@@ -225,6 +233,8 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 
 - Good: Adding a new production dependency updates `deploy/production.env.example`,
   `pastebox preflight production`, Compose wiring, runbooks, and tests together.
+- Good: Adding a metrics alert updates `deploy/monitoring/pastebox-alerts.yml`,
+  the deployment runbook, and the metrics spec together.
 - Base: Worker support may start with one job kind, but it must use the durable
   `jobs` table and preserve retry state across process restarts.
 - Bad: Editing an already-applied migration, silently ignoring checksum drift,
@@ -247,6 +257,11 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - `docker compose --env-file deploy/production.env.example -f
   compose.production.yaml config` must render successfully with
   `PASTEBOX_ENV_FILE=./deploy/production.env.example`.
+- `docker compose --env-file deploy/production.env.example -f
+  compose.production.yaml --profile monitoring config` must render
+  successfully with `PASTEBOX_ENV_FILE=./deploy/production.env.example`.
+- Validate Prometheus syntax for `deploy/monitoring/prometheus.yml` and
+  `deploy/monitoring/pastebox-alerts.yml` after alert or scrape changes.
 - Run full `make test` after changing production lifecycle commands or HTTP
   readiness endpoints.
 

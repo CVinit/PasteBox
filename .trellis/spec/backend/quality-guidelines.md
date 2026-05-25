@@ -541,8 +541,8 @@ writeJSON(w, statusCode, ReadinessReport{
 ### 1. Scope / Trigger
 
 - Trigger: Any change to `/metrics`, HTTP request middleware, readiness
-  reporting, admin/operational queue data, production preflight, or monitoring
-  runbooks.
+  reporting, admin/operational queue data, production preflight, production
+  Prometheus files, or monitoring runbooks.
 
 ### 2. Signatures
 
@@ -550,6 +550,9 @@ writeJSON(w, statusCode, ReadinessReport{
 - Config: `PASTEBOX_METRICS_TOKEN`
 - Preflight: `pastebox preflight production`
 - Service: `app.Service.OperationalMetrics()`
+- Compose profile: `monitoring` service `prometheus`
+- Scrape config: `deploy/monitoring/prometheus.yml`
+- Alert rules: `deploy/monitoring/pastebox-alerts.yml`
 
 ### 3. Contracts
 
@@ -566,6 +569,13 @@ writeJSON(w, statusCode, ReadinessReport{
 - Operational gauges are aggregate counts only: active pastes/storage, open
   reports, queue depths, mail backlog, webhook event count, and order counts by
   lifecycle status.
+- The optional production Prometheus profile must scrape `api:8080/metrics`
+  with `authorization.credentials_file = /run/secrets/pastebox_metrics_token`.
+  The secret is sourced from `PASTEBOX_METRICS_TOKEN`; do not write the token
+  into committed YAML.
+- Baseline alert rules must cover scrape availability, overall readiness,
+  component readiness, operational metric loading, failed jobs, scanner backlog,
+  mail backlog, and open abuse/support report backlog.
 
 ### 4. Validation & Error Matrix
 
@@ -575,15 +585,21 @@ writeJSON(w, statusCode, ReadinessReport{
   gauges set to `0`.
 - Operational metric loading fails -> emit `pastebox_operational_metrics_available
   0` without exposing the internal error text.
+- Compose monitoring profile cannot render -> deployment config validation
+  fails.
+- Prometheus config or alert rules are syntactically invalid -> monitoring
+  validation fails before launch.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: Monitoring scrapes `/metrics` over HTTPS with the bearer token and
-  alerts on readiness, failed jobs, queue lag, and mail backlog.
+  alerts on readiness, failed jobs, queue lag, mail backlog, and unresolved
+  support/abuse reports.
 - Base: Development can leave the metrics token empty; `/metrics` remains
   unauthorized until a token is configured.
 - Bad: Exposing `/metrics` publicly without a token or labeling HTTP metrics
-  with raw share tokens, paste IDs, emails, or object keys.
+  with raw share tokens, paste IDs, emails, or object keys. Also bad: putting
+  `PASTEBOX_METRICS_TOKEN` directly into committed Prometheus config.
 
 ### 6. Tests Required
 
@@ -592,6 +608,11 @@ writeJSON(w, statusCode, ReadinessReport{
   HTTP request counters, and operational gauges.
 - Command tests must cover production preflight rejecting missing or short
   metrics tokens.
+- Deployment checks must render `docker compose --profile monitoring config`
+  against `deploy/production.env.example`.
+- Prometheus checks must validate `deploy/monitoring/prometheus.yml` and
+  `deploy/monitoring/pastebox-alerts.yml` with `promtool` or an equivalent
+  syntax checker.
 - Run full `make test` after changing metrics because middleware, preflight,
   and deployment docs consume the same contract.
 
@@ -607,6 +628,20 @@ writeMetric("pastebox_http_requests_total", map[string]string{"path": r.URL.Path
 
 ```go
 writeMetric("pastebox_http_requests_total", map[string]string{"path": chi.RouteContext(r.Context()).RoutePattern()})
+```
+
+#### Wrong
+
+```yaml
+authorization:
+  credentials: "CHANGE_ME_LONG_RANDOM_METRICS_TOKEN"
+```
+
+#### Correct
+
+```yaml
+authorization:
+  credentials_file: /run/secrets/pastebox_metrics_token
 ```
 
 ## Scenario: Backup Restore Drill

@@ -15,6 +15,10 @@ duration, and compliance work before real user data or paid traffic is allowed.
 - `compose.production.yaml`: production Compose stack.
 - `deploy/production.env.example`: production environment template.
 - `deploy/caddy/Caddyfile`: HTTPS reverse proxy and certificate renewal.
+- `deploy/monitoring/prometheus.yml`: optional production Prometheus scrape
+  configuration for the protected PasteBox metrics endpoint.
+- `deploy/monitoring/pastebox-alerts.yml`: baseline production alert rules for
+  readiness, worker queues, mail backlog, and support/abuse report backlog.
 - `deploy/postgres/pg_hba.conf`: PostgreSQL password-auth rules, including
   replication access for PITR base backups from maintenance containers.
 - `deploy/backup/postgres-backup.sh`: logical PostgreSQL backup job.
@@ -48,6 +52,8 @@ duration, and compliance work before real user data or paid traffic is allowed.
    compose.production.yaml
    deploy/production.env.example
    deploy/caddy/Caddyfile
+   deploy/monitoring/prometheus.yml
+   deploy/monitoring/pastebox-alerts.yml
    deploy/postgres/pg_hba.conf
    deploy/backup/postgres-backup.sh
    deploy/backup/postgres-basebackup.sh
@@ -144,6 +150,7 @@ To validate the committed template without creating a real secret file:
 
 ```sh
 PASTEBOX_ENV_FILE=./deploy/production.env.example docker compose --env-file deploy/production.env.example -f compose.production.yaml config
+PASTEBOX_ENV_FILE=./deploy/production.env.example docker compose --env-file deploy/production.env.example -f compose.production.yaml --profile monitoring config
 ```
 
 Run the migration command before traffic switch:
@@ -189,17 +196,38 @@ curl -fsS -H "Authorization: Bearer $PASTEBOX_METRICS_TOKEN" https://pastebox.ex
 ```
 
 Do not put `PASTEBOX_METRICS_TOKEN` in dashboards, public URLs, or shared
-screenshots. Configure the monitoring agent to send the `Authorization` header
-and alert on these baseline series:
+screenshots. The optional in-stack Prometheus profile reads this token as a
+Compose secret from `PASTEBOX_METRICS_TOKEN` and mounts committed scrape and
+alert-rule files:
 
-- `pastebox_readiness_ready == 0` for dependency readiness failures.
-- `pastebox_readiness_component_ready{name=~"database|object_storage|redis|worker_queue|mail"} == 0` for component-specific outages.
-- `pastebox_queue_depth{status="failed"} > 0` for failed worker jobs.
-- `pastebox_queue_depth{kind="scan",status="pending"}` growing for scanner lag.
-- `pastebox_mail_queue_depth` growing for mail delivery backlog.
-- `pastebox_reports_open` growing for unresolved abuse/support load.
-- Absence of fresh logical backup, WAL freshness check, base-backup manifest,
-  restore-drill evidence, and PITR drill evidence in the release notes.
+```sh
+docker compose --env-file deploy/production.env -f compose.production.yaml --profile monitoring up -d prometheus
+docker compose --env-file deploy/production.env -f compose.production.yaml --profile monitoring exec prometheus promtool check config /etc/prometheus/prometheus.yml
+```
+
+Keep Prometheus private to the Compose network or a protected operator network;
+the production Compose file intentionally exposes port `9090` only to sibling
+containers. If you use an external monitoring provider instead, import
+`deploy/monitoring/pastebox-alerts.yml` or equivalent rules and keep the same
+authorization header.
+
+The committed baseline alert rules cover these launch gates:
+
+- `PasteBoxMetricsScrapeDown` for failed `/metrics` scraping.
+- `PasteBoxReadinessDown` for overall dependency readiness failures.
+- `PasteBoxReadinessComponentDown` for database, object storage, Redis, worker
+  queue, or mail readiness failures.
+- `PasteBoxOperationalMetricsUnavailable` when aggregate operational metrics
+  cannot be loaded.
+- `PasteBoxFailedWorkerJobs` for failed durable worker jobs.
+- `PasteBoxScannerBacklog` for scan queue lag.
+- `PasteBoxMailBacklog` for mail delivery backlog.
+- `PasteBoxOpenReportsBacklog` for unresolved abuse/support report load.
+
+Prometheus rules cannot prove backup evidence by themselves. The release notes
+must still record fresh logical backup, WAL freshness check, base-backup
+manifest, restore-drill evidence, PITR drill evidence, and off-host backup push
+evidence before public beta traffic is accepted.
 
 ## Worker Supervision
 
@@ -318,8 +346,9 @@ drill evidence before real traffic.
 
 Phase 0A is complete when a fresh VPS can follow this runbook, Compose uses a
 pinned image tag or digest, readiness checks pass, logical and PITR backups can
-be pushed off-host, PITR drill duration is recorded, and rollback has been
-rehearsed for a reversible migration.
+be pushed off-host, the monitoring profile or external equivalent has the
+baseline alert rules loaded, PITR drill duration is recorded, and rollback has
+been rehearsed for a reversible migration.
 
 The public beta launch gate additionally requires
 `docs/production-support-operations-runbook.md` to match the deployed public

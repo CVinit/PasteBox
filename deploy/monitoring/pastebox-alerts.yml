@@ -1,0 +1,82 @@
+groups:
+  - name: pastebox.production
+    rules:
+      - alert: PasteBoxMetricsScrapeDown
+        expr: up{job="pastebox-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: PasteBox metrics scrape is down
+          description: Prometheus cannot scrape the protected PasteBox /metrics endpoint.
+          runbook: docs/production-deployment-runbook.md#metrics-and-alerting
+
+      - alert: PasteBoxReadinessDown
+        expr: pastebox_readiness_ready == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: PasteBox readiness is failing
+          description: At least one production readiness dependency is failing.
+          runbook: docs/production-deployment-runbook.md#metrics-and-alerting
+
+      - alert: PasteBoxReadinessComponentDown
+        expr: pastebox_readiness_component_ready{name=~"database|object_storage|redis|worker_queue|mail"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: PasteBox readiness component is failing
+          description: "Component {{ $labels.name }} reports status {{ $labels.status }}."
+          runbook: docs/production-deployment-runbook.md#metrics-and-alerting
+
+      - alert: PasteBoxOperationalMetricsUnavailable
+        expr: pastebox_operational_metrics_available == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: PasteBox operational metrics are unavailable
+          description: The API is up, but aggregate operational metrics could not be loaded.
+          runbook: docs/production-deployment-runbook.md#metrics-and-alerting
+
+      - alert: PasteBoxFailedWorkerJobs
+        expr: pastebox_queue_depth{kind="all",status="failed"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: PasteBox has failed worker jobs
+          description: Failed durable jobs require admin queue triage.
+          runbook: docs/production-deployment-runbook.md#worker-supervision
+
+      - alert: PasteBoxScannerBacklog
+        expr: pastebox_queue_depth{kind="scan",status="pending"} > 25
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: PasteBox scanner queue backlog is high
+          description: Pending scan jobs have stayed above the launch threshold for 15 minutes.
+          runbook: docs/production-deployment-runbook.md#worker-supervision
+
+      - alert: PasteBoxMailBacklog
+        expr: pastebox_mail_queue_depth > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: PasteBox mail delivery backlog is not draining
+          description: Queued outbound mail has remained non-empty for 15 minutes.
+          runbook: docs/production-deployment-runbook.md#metrics-and-alerting
+
+      - alert: PasteBoxOpenReportsBacklog
+        expr: pastebox_reports_open > 0
+        for: 24h
+        labels:
+          severity: warning
+        annotations:
+          summary: PasteBox abuse/support reports remain open
+          description: Open report backlog has persisted for 24 hours and needs operator triage.
+          runbook: docs/production-support-operations-runbook.md

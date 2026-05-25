@@ -144,6 +144,32 @@ services:
         max-size: "20m"
         max-file: "5"
 
+  prometheus:
+    image: ${PASTEBOX_PROMETHEUS_IMAGE:-prom/prometheus:v2.55.1}
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=${PASTEBOX_PROMETHEUS_RETENTION:-15d}"
+      - "--web.listen-address=0.0.0.0:9090"
+    expose:
+      - "9090"
+    volumes:
+      - ./deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/monitoring/pastebox-alerts.yml:/etc/prometheus/rules/pastebox-alerts.yml:ro
+      - pastebox-prometheus:/prometheus
+    secrets:
+      - pastebox_metrics_token
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
   preflight:
     image: ${PASTEBOX_IMAGE:?set PASTEBOX_IMAGE to a pinned ghcr.io/cvinit/pastebox:sha-* tag or digest}
     command: ["preflight", "production"]
@@ -273,3 +299,8 @@ volumes:
   pastebox-caddy-data:
   pastebox-caddy-config:
   pastebox-backups:
+  pastebox-prometheus:
+
+secrets:
+  pastebox_metrics_token:
+    environment: PASTEBOX_METRICS_TOKEN
