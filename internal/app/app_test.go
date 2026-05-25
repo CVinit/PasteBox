@@ -961,6 +961,57 @@ func TestAdminOperationsWriteAuditLogsAndExposeQueues(t *testing.T) {
 	}
 }
 
+func TestExportUserIncludesOrdersReportsWebhooksAndScopedAuditLogs(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	admin := seedAdminTestUser(t, svc, "admin-export@example.com")
+	owner := registerTestUser(t, svc, "owner-export@example.com")
+	other := registerTestUser(t, svc, "other-export@example.com")
+	paste := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "export", Text: "data", ExpiresInSeconds: 3600})
+	createTestShare(t, svc, owner.User.ID, paste.ID, ShareInput{ExpiresInSeconds: 3600})
+	order, err := svc.CreateOrder(owner.User.ID, "epusdt", "plus", "monthly")
+	if err != nil {
+		t.Fatalf("create order: %v", err)
+	}
+	if _, err := svc.MarkOrderPaid(admin.ID, order.ID, "tx-export", "SUP-321 verified export payment"); err != nil {
+		t.Fatalf("mark order paid: %v", err)
+	}
+	report, err := svc.Report(owner.User.ID, "paste:"+paste.ID, "privacy export evidence")
+	if err != nil {
+		t.Fatalf("create report: %v", err)
+	}
+	if _, err := svc.AdminResolveReport(admin.ID, report.ID, "resolved"); err != nil {
+		t.Fatalf("resolve report: %v", err)
+	}
+	if _, err := svc.AdminSetUserPlan(admin.ID, other.User.ID, "plus", nil); err != nil {
+		t.Fatalf("create unrelated audit log: %v", err)
+	}
+
+	exported, err := svc.ExportUser(owner.User.ID)
+	if err != nil {
+		t.Fatalf("export user: %v", err)
+	}
+	orders := exported["orders"].([]Order)
+	if len(orders) != 1 || orders[0].ID != order.ID || orders[0].Status != "paid" {
+		t.Fatalf("expected paid order in export, got %#v", orders)
+	}
+	reports := exported["reports"].([]Report)
+	if len(reports) != 1 || reports[0].ID != report.ID || reports[0].Status != "resolved" {
+		t.Fatalf("expected report in export, got %#v", reports)
+	}
+	events := exported["webhookEvents"].([]WebhookEvent)
+	if !hasWebhookEventForTarget(events, order.ID, "payment.succeeded") {
+		t.Fatalf("expected payment webhook event in export, got %#v", events)
+	}
+	logs := exported["auditLogs"].([]AuditLog)
+	if !containsAuditTargetAction(logs, order.ID, "billing.order_paid") || !containsAuditTargetAction(logs, report.ID, "admin.report_status") {
+		t.Fatalf("expected scoped audit logs in export, got %#v", logs)
+	}
+	if containsAuditTargetAction(logs, other.User.ID, "admin.user_plan_set") {
+		t.Fatalf("export leaked unrelated audit log: %#v", logs)
+	}
+}
+
 func TestBillingWebhookReplayAndReportResolution(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	svc := newTestService(t, &now)
@@ -1270,6 +1321,32 @@ func (s *memoryAuditLogStore) AuditLogs(_ context.Context, limit int) ([]AuditLo
 	out := make([]AuditLog, 0, limit)
 	for i := len(s.logs) - 1; i >= 0 && len(out) < limit; i-- {
 		out = append(out, s.logs[i])
+	}
+	return out, nil
+}
+
+func (s *memoryAuditLogStore) AuditLogsForActorOrTargets(ctx context.Context, actorID string, targets []string, limit int) ([]AuditLog, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	targetSet := map[string]struct{}{}
+	for _, target := range targets {
+		targetSet[target] = struct{}{}
+	}
+	logs, err := s.AuditLogs(ctx, len(s.logs))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AuditLog, 0, len(logs))
+	for _, log := range logs {
+		if log.ActorID == actorID {
+			out = append(out, cloneAuditLog(log))
+		} else if _, ok := targetSet[log.Target]; ok {
+			out = append(out, cloneAuditLog(log))
+		}
+		if len(out) >= limit {
+			break
+		}
 	}
 	return out, nil
 }
@@ -1894,6 +1971,24 @@ func requireOrderStatus(t *testing.T, svc *Service, userID string, orderID strin
 func hasWebhookEvent(events []WebhookEvent, idempotencyKey string) bool {
 	for _, event := range events {
 		if event.IdempotencyKey == idempotencyKey {
+			return true
+		}
+	}
+	return false
+}
+
+func hasWebhookEventForTarget(events []WebhookEvent, targetID string, eventType string) bool {
+	for _, event := range events {
+		if event.TargetID == targetID && event.EventType == eventType {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAuditTargetAction(logs []AuditLog, target string, action string) bool {
+	for _, log := range logs {
+		if log.Target == target && log.Action == action {
 			return true
 		}
 	}

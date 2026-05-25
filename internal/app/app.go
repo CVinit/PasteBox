@@ -183,6 +183,7 @@ type CatalogStore interface {
 type AuditLogStore interface {
 	RecordAuditLog(ctx context.Context, log AuditLog) error
 	AuditLogs(ctx context.Context, limit int) ([]AuditLog, error)
+	AuditLogsForActorOrTargets(ctx context.Context, actorID string, targets []string, limit int) ([]AuditLog, error)
 }
 
 type User struct {
@@ -1820,7 +1821,110 @@ func (s *Service) ExportUser(userID string) (map[string]any, error) {
 			shares = append(shares, s.viewShareLocked(share))
 		}
 	}
-	return map[string]any{"user": viewUser(user), "pastes": pastes, "shares": shares, "exportedAt": s.now().UTC()}, nil
+	sort.Slice(shares, func(i, j int) bool { return shares[i].CreatedAt.After(shares[j].CreatedAt) })
+	orders, err := s.ordersByUserLocked(userID)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(orders, func(i, j int) bool { return orders[i].CreatedAt.After(orders[j].CreatedAt) })
+	reports := s.reportsByUserLocked(userID)
+	webhookEvents := s.webhookEventsForOrdersLocked(orders)
+	auditLogs, err := s.auditLogsForExportLocked(userID, pastes, shares, orders, reports, webhookEvents)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"user":          viewUser(user),
+		"pastes":        pastes,
+		"shares":        shares,
+		"orders":        orders,
+		"reports":       reports,
+		"webhookEvents": webhookEvents,
+		"auditLogs":     auditLogs,
+		"exportedAt":    s.now().UTC(),
+	}, nil
+}
+
+func (s *Service) reportsByUserLocked(userID string) []Report {
+	reports := []Report{}
+	for _, report := range s.reports {
+		if report.UserID == userID {
+			reports = append(reports, *report)
+		}
+	}
+	sort.Slice(reports, func(i, j int) bool { return reports[i].CreatedAt.After(reports[j].CreatedAt) })
+	return reports
+}
+
+func (s *Service) webhookEventsForOrdersLocked(orders []Order) []WebhookEvent {
+	orderIDs := map[string]struct{}{}
+	for _, order := range orders {
+		orderIDs[order.ID] = struct{}{}
+	}
+	events := []WebhookEvent{}
+	for _, event := range s.webhookEvents {
+		if _, ok := orderIDs[event.TargetID]; ok {
+			events = append(events, cloneWebhookEvent(*event))
+		}
+	}
+	sort.Slice(events, func(i, j int) bool { return events[i].ReceivedAt.After(events[j].ReceivedAt) })
+	return events
+}
+
+func (s *Service) auditLogsForExportLocked(userID string, pastes []PasteView, shares []ShareView, orders []Order, reports []Report, webhookEvents []WebhookEvent) ([]AuditLog, error) {
+	targets := exportAuditTargets(userID, pastes, shares, orders, reports, webhookEvents)
+	if s.audit != nil {
+		return s.audit.AuditLogsForActorOrTargets(context.Background(), userID, targets, 1000)
+	}
+	targetSet := map[string]struct{}{}
+	for _, target := range targets {
+		targetSet[target] = struct{}{}
+	}
+	logs := []AuditLog{}
+	for _, log := range s.auditLogs {
+		if log.ActorID == userID {
+			logs = append(logs, cloneAuditLog(*log))
+			continue
+		}
+		if _, ok := targetSet[log.Target]; ok {
+			logs = append(logs, cloneAuditLog(*log))
+		}
+	}
+	sort.Slice(logs, func(i, j int) bool { return logs[i].CreatedAt.After(logs[j].CreatedAt) })
+	if len(logs) > 1000 {
+		return logs[:1000], nil
+	}
+	return logs, nil
+}
+
+func exportAuditTargets(userID string, pastes []PasteView, shares []ShareView, orders []Order, reports []Report, webhookEvents []WebhookEvent) []string {
+	targets := map[string]struct{}{userID: {}}
+	for _, paste := range pastes {
+		targets[paste.ID] = struct{}{}
+		for _, attachment := range paste.Attachments {
+			targets[attachment.ID] = struct{}{}
+		}
+	}
+	for _, share := range shares {
+		targets[share.ID] = struct{}{}
+	}
+	for _, order := range orders {
+		targets[order.ID] = struct{}{}
+	}
+	for _, report := range reports {
+		targets[report.ID] = struct{}{}
+	}
+	for _, event := range webhookEvents {
+		targets[event.ID] = struct{}{}
+	}
+	out := make([]string, 0, len(targets))
+	for target := range targets {
+		if strings.TrimSpace(target) != "" {
+			out = append(out, target)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (s *Service) Report(userID string, target string, reason string) (Report, error) {
@@ -3639,6 +3743,16 @@ func cloneMetadata(metadata map[string]any) map[string]any {
 		out[key] = value
 	}
 	return out
+}
+
+func cloneWebhookEvent(event WebhookEvent) WebhookEvent {
+	event.Metadata = cloneMetadata(event.Metadata)
+	return event
+}
+
+func cloneAuditLog(log AuditLog) AuditLog {
+	log.Metadata = cloneMetadata(log.Metadata)
+	return log
 }
 
 func stringFromMetadata(metadata map[string]any, key string) string {

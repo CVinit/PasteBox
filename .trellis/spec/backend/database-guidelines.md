@@ -239,7 +239,10 @@ if err != nil {
 - Audit constructor: `postgres.NewAuditLogStore(pool *pgxpool.Pool)`
 - Audit write: `RecordAuditLog(ctx context.Context, log app.AuditLog) error`
 - Audit read: `AuditLogs(ctx context.Context, limit int) ([]app.AuditLog, error)`
+- Scoped audit read:
+  `AuditLogsForActorOrTargets(ctx context.Context, actorID string, targets []string, limit int) ([]app.AuditLog, error)`
 - Service catalog accessor: `app.Service.PlanCatalog() plans.Catalog`
+- Account export service: `app.Service.ExportUser(userID string) (map[string]any, error)`
 
 ### 3. Contracts
 
@@ -256,6 +259,18 @@ if err != nil {
   as JSONB. Nil metadata is stored and returned as an empty object.
 - Audit listing defaults to a bounded newest-first result when the caller passes
   a non-positive limit.
+- Scoped audit reads are used by account export and must return logs where the
+  exported user is the actor or where the log target is one of the exported
+  user-owned resources. The resource target set includes the user ID, paste IDs,
+  attachment IDs, share IDs, order IDs, report IDs, and webhook event IDs that
+  belong to the export.
+- Account export must include user, pastes, shares, orders, reports, billing
+  webhook events for exported orders, scoped audit logs, and `exportedAt`.
+  Export-scoped collections must be initialized as empty arrays and sorted
+  newest-first where the service exposes ordering.
+- Account export must not leak unrelated users' audit entries just because an
+  admin actor created them. Admin-created entries are exportable only when their
+  `target` is part of the exported user's target set.
 
 ### 4. Validation & Error Matrix
 
@@ -265,6 +280,10 @@ if err != nil {
 - Audit insert failure -> return an error with audit context.
 - Audit metadata cannot be decoded on read -> return an error; do not drop
   metadata.
+- Scoped audit query failure -> account export returns the store error instead
+  of silently omitting audit logs.
+- Empty scoped target list -> return only actor-owned audit logs, bounded by
+  limit.
 
 ### 5. Good/Base/Bad Cases
 
@@ -276,6 +295,11 @@ if err != nil {
   `Service.PlanCatalog()`.
 - Bad: Return `plans.DefaultCatalog()` directly from an HTTP handler or store
   audit metadata as an opaque string outside JSONB.
+- Good: Exporting a paid user includes their orders, billing webhook events,
+  abuse reports, and only audit logs tied to the user or those exported
+  resources.
+- Bad: Export all newest audit logs and filter them in the browser or include
+  unrelated admin actions performed on other users.
 
 ### 6. Tests Required
 
@@ -283,6 +307,8 @@ if err != nil {
   migrated `plans` and `prices` match the launch catalog contract.
 - PostgreSQL audit log integration tests assert JSONB metadata round-trips and
   listing order is newest-first.
+- App export tests assert orders, reports, webhook events, and scoped audit logs
+  are included, and unrelated user audit logs are excluded.
 - Handler tests for `/api/v1/plans` must continue to cover response shape.
 - Run full `make test` after changing catalog, billing price, or audit-log API
   contracts.
@@ -303,6 +329,24 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
     writeJSON(w, http.StatusOK, s.app.PlanCatalog())
 }
+```
+
+#### Wrong
+
+```go
+logs, _ := s.audit.AuditLogs(ctx, 1000)
+export["auditLogs"] = logs
+```
+
+#### Correct
+
+```go
+targets := exportAuditTargets(userID, pastes, shares, orders, reports, events)
+logs, err := s.audit.AuditLogsForActorOrTargets(ctx, userID, targets, 1000)
+if err != nil {
+    return nil, err
+}
+export["auditLogs"] = logs
 ```
 
 ## Scenario: Production PostgreSQL WAL/PITR Maintenance
