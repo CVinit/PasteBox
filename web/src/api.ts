@@ -205,6 +205,11 @@ export type AuthResult = {
   devEmailVerificationToken?: string;
 };
 
+export type SupportContacts = {
+  supportEmail: string;
+  abuseEmail: string;
+};
+
 let csrfToken: string | null = null;
 
 function requiresCsrf(init: RequestInit): boolean {
@@ -288,6 +293,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export const client = {
   plans: () => api<PlanCatalog>("/plans"),
+  supportContacts: () => api<SupportContacts>("/support/contacts"),
   me: () => api<User>("/me"),
   register: (body: { email: string; password: string; displayName: string }) =>
     api<AuthResult>("/auth/register", {
@@ -305,9 +311,12 @@ export const client = {
   logoutAll: () =>
     api<{ status: string }>("/auth/logout-all", { method: "POST" }),
   startEmailVerification: () =>
-    api<{ devToken?: string; message: string }>("/auth/email-verification/start", {
-      method: "POST",
-    }),
+    api<{ devToken?: string; message: string }>(
+      "/auth/email-verification/start",
+      {
+        method: "POST",
+      },
+    ),
   finishEmailVerification: (token: string) =>
     api<User>("/auth/email-verification/finish", {
       method: "POST",

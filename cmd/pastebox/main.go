@@ -314,6 +314,8 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		"PASTEBOX_IMAGE",
 		"PASTEBOX_APP_ENV",
 		"PASTEBOX_PUBLIC_URL",
+		"PASTEBOX_SUPPORT_EMAIL",
+		"PASTEBOX_ABUSE_EMAIL",
 		"PASTEBOX_CSRF_SECRET",
 		"PASTEBOX_METRICS_TOKEN",
 		"PASTEBOX_CORS_ALLOWED_ORIGINS",
@@ -384,6 +386,10 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 	}
 	if !strings.HasPrefix(cfg.PublicURL, "https://") {
 		fmt.Fprintf(stderr, "production preflight failed: PASTEBOX_PUBLIC_URL must use https://, got %q\n", cfg.PublicURL)
+		return 1
+	}
+	if err := validatePublicContactEmails(cfg); err != nil {
+		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
 		return 1
 	}
 	if len(strings.TrimSpace(cfg.CSRFSecret)) < 32 || cfg.CSRFSecret == "development-csrf-secret" {
@@ -532,6 +538,26 @@ func validateRateLimitConfig(cfg config.Config) error {
 		if value <= 0 {
 			return fmt.Errorf("%s must be positive", key)
 		}
+	}
+	return nil
+}
+
+func validatePublicContactEmails(cfg config.Config) error {
+	if err := validatePublicEmail("PASTEBOX_SUPPORT_EMAIL", cfg.SupportEmail); err != nil {
+		return err
+	}
+	return validatePublicEmail("PASTEBOX_ABUSE_EMAIL", cfg.AbuseEmail)
+}
+
+func validatePublicEmail(key string, value string) error {
+	trimmed := strings.TrimSpace(value)
+	address, err := mail.ParseAddress(trimmed)
+	if err != nil || address.Address != trimmed {
+		return fmt.Errorf("%s must be a valid public email address, got %q", key, value)
+	}
+	_, domain, ok := strings.Cut(address.Address, "@")
+	if !ok || isLocalHost(domain) || !strings.Contains(domain, ".") {
+		return fmt.Errorf("%s must use a production email domain, got %q", key, value)
 	}
 	return nil
 }

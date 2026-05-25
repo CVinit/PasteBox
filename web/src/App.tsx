@@ -53,6 +53,7 @@ import {
   type Quota,
   type Report,
   type Share,
+  type SupportContacts,
   type User,
   type WebhookEvent,
 } from "./api";
@@ -761,7 +762,10 @@ const orderStatusText: Record<
     failed: { label: "支付失败", description: "支付渠道返回失败状态。" },
     expired: { label: "已过期", description: "支付窗口已过期，未确认到账。" },
     canceled: { label: "已取消", description: "渠道订单或订阅已取消。" },
-    refunded: { label: "已退款", description: "已退款，匹配的会员权益已撤销。" },
+    refunded: {
+      label: "已退款",
+      description: "已退款，匹配的会员权益已撤销。",
+    },
     needs_review: { label: "需审核", description: "需要客服审核后再处理。" },
   },
 };
@@ -789,7 +793,9 @@ function orderStatusDetail(status: string, locale: Locale): OrderStatusDetail {
   const detail = orderStatusText[locale][normalized] ?? {
     label: status || "Unknown",
     description:
-      locale === "zh" ? "支付渠道返回的状态。" : "Provider returned this status.",
+      locale === "zh"
+        ? "支付渠道返回的状态。"
+        : "Provider returned this status.",
   };
   return { ...detail, tone: orderStatusTone(normalized) };
 }
@@ -843,6 +849,8 @@ function App() {
   });
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [supportContacts, setSupportContacts] =
+    useState<SupportContacts | null>(null);
   const locale = useMemo(
     () => localeFor(user?.language ?? browserLocale),
     [user?.language],
@@ -879,6 +887,14 @@ function App() {
     }
     return grouped;
   }, [catalog]);
+
+  const loadSupportContacts = useCallback(async () => {
+    try {
+      setSupportContacts(await client.supportContacts());
+    } catch {
+      setSupportContacts(null);
+    }
+  }, []);
 
   const loadCore = useCallback(async () => {
     const [planCatalog, meResult] = await Promise.allSettled([
@@ -959,6 +975,10 @@ function App() {
   }, [user?.role]);
 
   useEffect(() => {
+    void loadSupportContacts();
+  }, [loadSupportContacts]);
+
+  useEffect(() => {
     if (publicPage) return;
     void loadCore();
   }, [loadCore, publicPage]);
@@ -1030,7 +1050,9 @@ function App() {
   }
 
   function googleOAuth() {
-    window.location.assign(client.googleOAuthStartPath(window.location.pathname));
+    window.location.assign(
+      client.googleOAuthStartPath(window.location.pathname),
+    );
   }
 
   async function startVerification() {
@@ -1155,7 +1177,7 @@ function App() {
             pinned: false,
             favorite: false,
             expiresInSeconds: draft.expiresInSeconds,
-        }),
+          }),
         "Paste created",
       );
       if (!createdPaste) return;
@@ -1367,7 +1389,7 @@ function App() {
   }
 
   if (publicPage) {
-    return <PublicPageScreen page={publicPage} />;
+    return <PublicPageScreen page={publicPage} contacts={supportContacts} />;
   }
 
   if (!user && publicShareToken) {
@@ -2391,7 +2413,13 @@ function PublicShareScreen({
   );
 }
 
-function PublicPageScreen({ page }: { page: PublicPage }) {
+function PublicPageScreen({
+  page,
+  contacts,
+}: {
+  page: PublicPage;
+  contacts: SupportContacts | null;
+}) {
   return (
     <main className="public-page">
       <header className="public-hero">
@@ -2425,10 +2453,7 @@ function PublicPageScreen({ page }: { page: PublicPage }) {
         <aside className="public-sidebar" aria-label="Legal navigation">
           <strong>Launch documents</strong>
           <nav>
-            <a
-              className={page.path === "/legal" ? "active" : ""}
-              href="/legal"
-            >
+            <a className={page.path === "/legal" ? "active" : ""} href="/legal">
               Legal hub
             </a>
             {publicLinks.map((link) => (
@@ -2448,6 +2473,32 @@ function PublicPageScreen({ page }: { page: PublicPage }) {
             <Megaphone size={16} aria-hidden="true" />
             <span>Last updated {page.updated}</span>
           </div>
+          {page.path === "/support" ? (
+            <section className="support-contact-card">
+              <div>
+                <span>
+                  Account, billing, privacy, DPA, and data-subject requests
+                </span>
+                {contacts?.supportEmail ? (
+                  <a href={`mailto:${contacts.supportEmail}`}>
+                    {contacts.supportEmail}
+                  </a>
+                ) : (
+                  <strong>Support contact is loading</strong>
+                )}
+              </div>
+              <div>
+                <span>Abuse, malware, DMCA, and urgent takedown requests</span>
+                {contacts?.abuseEmail ? (
+                  <a href={`mailto:${contacts.abuseEmail}`}>
+                    {contacts.abuseEmail}
+                  </a>
+                ) : (
+                  <strong>Abuse contact is loading</strong>
+                )}
+              </div>
+            </section>
+          ) : null}
           {page.sections.map((section) => (
             <section className="public-section" key={section.heading}>
               <h2>{section.heading}</h2>
@@ -2500,11 +2551,19 @@ function PasteEditor({
 }: {
   paste?: Paste;
   draft: { id: string; title: string; text: string; tags: string };
-  onDraft: (value: { id: string; title: string; text: string; tags: string }) => void;
+  onDraft: (value: {
+    id: string;
+    title: string;
+    text: string;
+    tags: string;
+  }) => void;
   onSave: () => void;
 }) {
   return (
-    <Panel title="Edit" meta={paste ? paste.title || paste.id : "No paste selected"}>
+    <Panel
+      title="Edit"
+      meta={paste ? paste.title || paste.id : "No paste selected"}
+    >
       <div className="form-grid single">
         <input
           value={draft.title}

@@ -19,6 +19,9 @@ mode `600`.
 - Bootstrap admin password.
 - CSRF signing secret.
 - Metrics bearer token (`PASTEBOX_METRICS_TOKEN`).
+- Public support and abuse inboxes (`PASTEBOX_SUPPORT_EMAIL` and
+  `PASTEBOX_ABUSE_EMAIL`) are not secrets, but they must route to monitored
+  operator inboxes before public beta traffic is accepted.
 - Browser API allowlist (`PASTEBOX_CORS_ALLOWED_ORIGINS`) is not secret, but it
   must be reviewed with production domain changes because credentialed browser
   API requests are only allowed for exact listed origins.

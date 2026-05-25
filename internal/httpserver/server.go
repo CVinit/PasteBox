@@ -101,6 +101,11 @@ type ReadinessReport struct {
 	Components []ReadinessComponent `json:"components"`
 }
 
+type PublicSupportContacts struct {
+	SupportEmail string `json:"supportEmail"`
+	AbuseEmail   string `json:"abuseEmail"`
+}
+
 func New(cfg config.Config, logger *slog.Logger) http.Handler {
 	return NewWithService(cfg, logger, app.New(cfg))
 }
@@ -153,6 +158,7 @@ func (s *Server) routes() http.Handler {
 		r.Get("/ready", s.apiReady)
 		r.Get("/csrf", s.csrf)
 		r.Get("/plans", s.planCatalog)
+		r.Get("/support/contacts", s.supportContacts)
 
 		r.Route("/auth", func(r chi.Router) {
 			r.Post("/register", s.register)
@@ -452,6 +458,13 @@ func writeMetric(b *strings.Builder, name string, labels map[string]string, valu
 
 func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.app.PlanCatalog())
+}
+
+func (s *Server) supportContacts(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, PublicSupportContacts{
+		SupportEmail: s.cfg.SupportEmail,
+		AbuseEmail:   s.cfg.AbuseEmail,
+	})
 }
 
 func (s *Server) csrf(w http.ResponseWriter, r *http.Request) {

@@ -40,6 +40,8 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	t.Setenv("PASTEBOX_RATE_LIMIT_UPLOAD", "30")
 	t.Setenv("PASTEBOX_RATE_LIMIT_DOWNLOAD", "40")
 	t.Setenv("PASTEBOX_RATE_LIMIT_WEBHOOK", "50")
+	t.Setenv("PASTEBOX_SUPPORT_EMAIL", "support@pastebox.example.com")
+	t.Setenv("PASTEBOX_ABUSE_EMAIL", "abuse@pastebox.example.com")
 	t.Setenv("PASTEBOX_CSRF_SECRET", "test-csrf-secret")
 	t.Setenv("PASTEBOX_METRICS_TOKEN", "metrics-token")
 	t.Setenv("PASTEBOX_GOOGLE_OAUTH_CLIENT_ID", "google-client-id")
@@ -79,6 +81,9 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	}
 	if cfg.MetricsToken != "metrics-token" {
 		t.Fatalf("expected metrics token from env, got %q", cfg.MetricsToken)
+	}
+	if cfg.SupportEmail != "support@pastebox.example.com" || cfg.AbuseEmail != "abuse@pastebox.example.com" {
+		t.Fatalf("expected public support contacts from env, got support=%q abuse=%q", cfg.SupportEmail, cfg.AbuseEmail)
 	}
 	if cfg.GoogleOAuth.ClientID != "google-client-id" || cfg.GoogleOAuth.ClientSecret != "google-client-secret" {
 		t.Fatalf("expected Google OAuth credentials from env, got %#v", cfg.GoogleOAuth)

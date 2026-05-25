@@ -172,6 +172,23 @@ func TestPlanCatalogEndpoint(t *testing.T) {
 	}
 }
 
+func TestSupportContactsEndpointReturnsConfiguredPublicIntake(t *testing.T) {
+	cfg := config.FromEnv()
+	cfg.SupportEmail = "support@pastebox.example.com"
+	cfg.AbuseEmail = "abuse@pastebox.example.com"
+	handler := New(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)))
+
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/support/contacts", nil))
+	assertStatus(t, res, http.StatusOK)
+
+	var body PublicSupportContacts
+	decodeResponse(t, res, &body)
+	if body.SupportEmail != cfg.SupportEmail || body.AbuseEmail != cfg.AbuseEmail {
+		t.Fatalf("expected configured support contacts, got %#v", body)
+	}
+}
+
 func TestSecurityHeadersApplyToAPIAndStaticResponses(t *testing.T) {
 	handler := New(config.FromEnv(), slog.New(slog.NewTextHandler(testWriter{t: t}, nil)))
 

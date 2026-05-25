@@ -81,6 +81,8 @@ func TestProductionPreflightRequiresExplicitProductionEnvironment(t *testing.T) 
 		"PASTEBOX_IMAGE",
 		"PASTEBOX_APP_ENV",
 		"PASTEBOX_PUBLIC_URL",
+		"PASTEBOX_SUPPORT_EMAIL",
+		"PASTEBOX_ABUSE_EMAIL",
 		"PASTEBOX_CSRF_SECRET",
 		"PASTEBOX_METRICS_TOKEN",
 		"PASTEBOX_CORS_ALLOWED_ORIGINS",
@@ -281,6 +283,59 @@ func TestProductionPreflightRejectsShortMetricsToken(t *testing.T) {
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+}
+
+func TestProductionPreflightRejectsInvalidPublicContactEmails(t *testing.T) {
+	tests := []struct {
+		name     string
+		key      string
+		value    string
+		expected string
+	}{
+		{
+			name:     "invalid support email",
+			key:      "PASTEBOX_SUPPORT_EMAIL",
+			value:    "support",
+			expected: "PASTEBOX_SUPPORT_EMAIL must be a valid public email address",
+		},
+		{
+			name:     "local support domain",
+			key:      "PASTEBOX_SUPPORT_EMAIL",
+			value:    "support@localhost",
+			expected: "PASTEBOX_SUPPORT_EMAIL must use a production email domain",
+		},
+		{
+			name:     "local abuse domain",
+			key:      "PASTEBOX_ABUSE_EMAIL",
+			value:    "abuse@localhost",
+			expected: "PASTEBOX_ABUSE_EMAIL must use a production email domain",
+		},
+		{
+			name:     "display name not allowed",
+			key:      "PASTEBOX_ABUSE_EMAIL",
+			value:    "PasteBox Abuse <abuse@pastebox.example.com>",
+			expected: "PASTEBOX_ABUSE_EMAIL must be a valid public email address",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setValidProductionEnv(t)
+			t.Setenv(tt.key, tt.value)
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run([]string{"preflight", "production"}, &stdout, &stderr)
+			if code != 1 {
+				t.Fatalf("expected invalid public contact to fail, got %d", code)
+			}
+			if !strings.Contains(stderr.String(), tt.expected) {
+				t.Fatalf("expected public contact validation error containing %q, got %q", tt.expected, stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("expected empty stdout, got %q", stdout.String())
+			}
+		})
 	}
 }
 
@@ -557,6 +612,8 @@ func setValidProductionEnv(t *testing.T) {
 	t.Setenv("PASTEBOX_IMAGE", "ghcr.io/cvinit/pastebox:sha-abc123")
 	t.Setenv("PASTEBOX_APP_ENV", "production")
 	t.Setenv("PASTEBOX_PUBLIC_URL", "https://pastebox.example.com")
+	t.Setenv("PASTEBOX_SUPPORT_EMAIL", "support@pastebox.example.com")
+	t.Setenv("PASTEBOX_ABUSE_EMAIL", "abuse@pastebox.example.com")
 	t.Setenv("PASTEBOX_CSRF_SECRET", "csrf-secret-32-bytes-minimum-prod")
 	t.Setenv("PASTEBOX_METRICS_TOKEN", "metrics-token-32-bytes-minimum-prod")
 	t.Setenv("PASTEBOX_CORS_ALLOWED_ORIGINS", "https://pastebox.example.com")

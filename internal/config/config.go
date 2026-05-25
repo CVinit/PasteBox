@@ -13,6 +13,8 @@ type Config struct {
 	HTTPAddr           string
 	PublicURL          string
 	LogLevel           slog.Level
+	SupportEmail       string
+	AbuseEmail         string
 	CSRFSecret         string
 	MetricsToken       string
 	CORSAllowedOrigins []string
@@ -99,6 +101,8 @@ func FromEnv() Config {
 		HTTPAddr:           envString("PASTEBOX_HTTP_ADDR", ":8080"),
 		PublicURL:          publicURL,
 		LogLevel:           envLogLevel("PASTEBOX_LOG_LEVEL", slog.LevelInfo),
+		SupportEmail:       envString("PASTEBOX_SUPPORT_EMAIL", "support@localhost"),
+		AbuseEmail:         envString("PASTEBOX_ABUSE_EMAIL", "abuse@localhost"),
 		CSRFSecret:         envString("PASTEBOX_CSRF_SECRET", "development-csrf-secret"),
 		MetricsToken:       envString("PASTEBOX_METRICS_TOKEN", ""),
 		CORSAllowedOrigins: envCSV("PASTEBOX_CORS_ALLOWED_ORIGINS", originFromURL(publicURL)),

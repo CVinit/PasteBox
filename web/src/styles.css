@@ -718,7 +718,11 @@ code {
   min-height: 100vh;
   padding: 28px;
   background:
-    radial-gradient(circle at 12% 12%, rgba(15, 118, 110, 0.12), transparent 28%),
+    radial-gradient(
+      circle at 12% 12%,
+      rgba(15, 118, 110, 0.12),
+      transparent 28%
+    ),
     linear-gradient(145deg, #f5f7f5 0%, #edf5f1 52%, #ffffff 100%);
 }
 
@@ -820,6 +824,35 @@ code {
   align-items: center;
   color: #66756f;
   font-size: 13px;
+}
+
+.support-contact-card {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #b9d8cf;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #effaf6 0%, #ffffff 100%);
+}
+
+.support-contact-card div {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.support-contact-card span {
+  color: #52645e;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.support-contact-card a,
+.support-contact-card strong {
+  color: #0f5f59;
+  font-weight: 800;
+  overflow-wrap: anywhere;
 }
 
 .public-section {
@@ -1001,6 +1034,10 @@ code {
   }
 
   .public-sidebar nav {
+    grid-template-columns: 1fr;
+  }
+
+  .support-contact-card {
     grid-template-columns: 1fr;
   }
 

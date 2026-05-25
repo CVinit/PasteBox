@@ -899,6 +899,85 @@ if order.Status == "pending" && order.ExpiresAt != nil && !order.ExpiresAt.After
 
 ---
 
+## Scenario: Public Support Contact Contract
+
+### 1. Scope / Trigger
+
+- Trigger: Any change that touches public support, abuse, DMCA, refund,
+  privacy, DPA, GDPR/data-subject, or status/legal launch surfaces.
+
+### 2. Signatures
+
+- Config: `config.Config.SupportEmail` and `config.Config.AbuseEmail`
+- Env keys: `PASTEBOX_SUPPORT_EMAIL` and `PASTEBOX_ABUSE_EMAIL`
+- Preflight command: `pastebox preflight production`
+- API: `GET /api/v1/support/contacts`
+- Response type: `httpserver.PublicSupportContacts`
+- Frontend type: `web/src/api.ts` `SupportContacts`
+- UI surface: `/support` public page in `web/src/App.tsx`
+
+### 3. Contracts
+
+- `GET /api/v1/support/contacts` is public, safe, and returns
+  `{"supportEmail":"...","abuseEmail":"..."}` from runtime config.
+- `PASTEBOX_SUPPORT_EMAIL` is the monitored intake address for account,
+  billing, privacy, DPA, and GDPR/data-subject requests.
+- `PASTEBOX_ABUSE_EMAIL` is the monitored intake address for abuse, malware,
+  DMCA, and urgent takedown requests.
+- Production preflight must require both env keys to be explicit plain email
+  addresses on production domains.
+- The `/support` page must render both addresses as `mailto:` links using the
+  typed frontend API client, not hard-coded copy.
+- `deploy/production.env.example`, `.env.example`, production runbooks, and the
+  support operations runbook must stay in sync with these env keys.
+
+### 4. Validation & Error Matrix
+
+- Missing contact env key -> production preflight exits `1` and lists the key.
+- `CHANGE_ME` placeholder -> production preflight exits `1`.
+- Invalid email syntax -> production preflight exits `1`.
+- Display-name address such as `Support <support@example.com>` -> production
+  preflight exits `1`; only the plain address is accepted.
+- Local or non-production domain such as `support@localhost` -> production
+  preflight exits `1`.
+- API request succeeds -> `200` with both configured address fields.
+
+### 5. Good/Base/Bad Cases
+
+- Good: `support@pastebox.example.com` and `abuse@pastebox.example.com` pass
+  preflight, are returned by the API, and render on `/support`.
+- Base: Development defaults may use local addresses, but production preflight
+  must reject them.
+- Bad: Legal pages tell users to "contact support" without a reachable address,
+  or the frontend hard-codes a stale support inbox.
+
+### 6. Tests Required
+
+- Config tests assert both env keys parse into `config.Config`.
+- CLI tests assert production preflight passes with real public addresses and
+  rejects invalid, display-name, local, missing, and placeholder values.
+- Handler tests assert `GET /api/v1/support/contacts` returns the configured
+  values.
+- Frontend changes must pass `make test-web`; cross-layer changes must pass
+  full `make test`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+<p>Contact support for billing, privacy, or abuse requests.</p>
+```
+
+#### Correct
+
+```tsx
+const contacts = await client.supportContacts();
+<a href={`mailto:${contacts.supportEmail}`}>{contacts.supportEmail}</a>
+```
+
+---
+
 ## Testing Requirements
 
 - Run `make test` before reporting completion.
