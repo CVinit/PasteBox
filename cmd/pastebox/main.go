@@ -400,6 +400,10 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "production preflight failed: PASTEBOX_PUBLIC_URL must use https://, got %q\n", cfg.PublicURL)
 		return 1
 	}
+	if err := validateProductionDomainConfig(cfg.PublicURL); err != nil {
+		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
+		return 1
+	}
 	if err := validatePublicContactEmails(cfg); err != nil {
 		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
 		return 1
@@ -558,6 +562,27 @@ func validateRateLimitConfig(cfg config.Config) error {
 		if value <= 0 {
 			return fmt.Errorf("%s must be positive", key)
 		}
+	}
+	return nil
+}
+
+func validateProductionDomainConfig(publicRaw string) error {
+	domain := strings.TrimSpace(os.Getenv("PASTEBOX_DOMAIN"))
+	if strings.Contains(domain, "://") || strings.ContainsAny(domain, "/?#") {
+		return fmt.Errorf("PASTEBOX_DOMAIN must be a hostname without scheme, path, query, or fragment, got %q", domain)
+	}
+	if isLocalHost(domain) || !strings.Contains(domain, ".") {
+		return fmt.Errorf("PASTEBOX_DOMAIN must be a production hostname, got %q", domain)
+	}
+	publicURL, err := url.Parse(strings.TrimSpace(publicRaw))
+	if err != nil || publicURL.Hostname() == "" {
+		return fmt.Errorf("PASTEBOX_PUBLIC_URL must be valid before validating PASTEBOX_DOMAIN, got %q", publicRaw)
+	}
+	if !strings.EqualFold(domain, publicURL.Hostname()) {
+		return fmt.Errorf("PASTEBOX_DOMAIN must match PASTEBOX_PUBLIC_URL host %q, got %q", publicURL.Hostname(), domain)
+	}
+	if err := validatePublicEmail("PASTEBOX_ADMIN_EMAIL", os.Getenv("PASTEBOX_ADMIN_EMAIL")); err != nil {
+		return err
 	}
 	return nil
 }

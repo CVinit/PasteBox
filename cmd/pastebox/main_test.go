@@ -275,6 +275,59 @@ func TestProductionPreflightRequiresHTTPSPublicURL(t *testing.T) {
 	}
 }
 
+func TestProductionPreflightRejectsInvalidProductionDomainConfig(t *testing.T) {
+	tests := []struct {
+		name     string
+		key      string
+		value    string
+		expected string
+	}{
+		{
+			name:     "domain with scheme",
+			key:      "PASTEBOX_DOMAIN",
+			value:    "https://pastebox.example.com",
+			expected: "PASTEBOX_DOMAIN must be a hostname",
+		},
+		{
+			name:     "local domain",
+			key:      "PASTEBOX_DOMAIN",
+			value:    "localhost",
+			expected: "PASTEBOX_DOMAIN must be a production hostname",
+		},
+		{
+			name:     "domain mismatch",
+			key:      "PASTEBOX_DOMAIN",
+			value:    "admin.pastebox.example.com",
+			expected: "PASTEBOX_DOMAIN must match PASTEBOX_PUBLIC_URL host",
+		},
+		{
+			name:     "invalid acme email",
+			key:      "PASTEBOX_ADMIN_EMAIL",
+			value:    "PasteBox Admin <admin@pastebox.example.com>",
+			expected: "PASTEBOX_ADMIN_EMAIL must be a valid public email address",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setValidProductionEnv(t)
+			t.Setenv(tt.key, tt.value)
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run([]string{"preflight", "production"}, &stdout, &stderr)
+			if code != 1 {
+				t.Fatalf("expected invalid production domain config to fail, got %d", code)
+			}
+			if !strings.Contains(stderr.String(), tt.expected) {
+				t.Fatalf("expected %q in stderr, got %q", tt.expected, stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("expected empty stdout, got %q", stdout.String())
+			}
+		})
+	}
+}
+
 func TestProductionPreflightRejectsDevelopmentCSRFSecret(t *testing.T) {
 	setValidProductionEnv(t)
 	t.Setenv("PASTEBOX_CSRF_SECRET", "development-csrf-secret")

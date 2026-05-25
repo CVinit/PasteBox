@@ -103,11 +103,12 @@ docker compose --env-file deploy/production.env -f compose.production.yaml pull
 ```
 
 The production preflight fails if `PASTEBOX_IMAGE` is mutable, if
-`PASTEBOX_PUBLIC_URL` is not HTTPS, if `PASTEBOX_CSRF_SECRET` is missing or
-left at the development default, if `PASTEBOX_METRICS_TOKEN` is missing or too
-short, if `PASTEBOX_SUPPORT_EMAIL` or `PASTEBOX_ABUSE_EMAIL` is missing,
-local, or not a plain production email address, if
-`PASTEBOX_CORS_ALLOWED_ORIGINS` is missing, wildcarded, local, HTTP, or does
+`PASTEBOX_PUBLIC_URL` is not HTTPS, if `PASTEBOX_DOMAIN` is not a production
+hostname matching the `PASTEBOX_PUBLIC_URL` host, if `PASTEBOX_ADMIN_EMAIL`,
+`PASTEBOX_SUPPORT_EMAIL`, or `PASTEBOX_ABUSE_EMAIL` is missing, local, or not a
+plain production email address, if `PASTEBOX_CSRF_SECRET` is missing or left at
+the development default, if `PASTEBOX_METRICS_TOKEN` is missing or too short,
+if `PASTEBOX_CORS_ALLOWED_ORIGINS` is missing, wildcarded, local, HTTP, or does
 not include the exact `PASTEBOX_PUBLIC_URL` origin, if production rate limits
 are disabled or non-positive, if Google OAuth client settings are missing, if
 SMTP is not configured for TLS delivery, if the bootstrap admin password is
