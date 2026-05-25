@@ -6,17 +6,22 @@ Redis, HTTPS reverse proxy, and off-host backup flow.
 
 The stack is still gated by later roadmap phases. `pastebox migrate up` applies
 the PostgreSQL schema foundation, and the worker can process mail, scan, and
-billing reconciliation jobs, but a successful restore drill, WAL/PITR or
-equivalent recovery, and compliance work still need to be completed before real
-user data or paid traffic is allowed.
+billing reconciliation jobs. WAL/PITR maintenance services are present, but
+operators must still execute and record restore drill evidence, PITR drill
+duration, and compliance work before real user data or paid traffic is allowed.
 
 ## Files
 
 - `compose.production.yaml`: production Compose stack.
 - `deploy/production.env.example`: production environment template.
 - `deploy/caddy/Caddyfile`: HTTPS reverse proxy and certificate renewal.
+- `deploy/postgres/pg_hba.conf`: PostgreSQL password-auth rules, including
+  replication access for PITR base backups from maintenance containers.
 - `deploy/backup/postgres-backup.sh`: logical PostgreSQL backup job.
+- `deploy/backup/postgres-basebackup.sh`: PITR base backup job.
+- `deploy/backup/postgres-wal-check.sh`: WAL archive freshness check.
 - `deploy/backup/postgres-restore-drill.sh`: scratch database restore drill.
+- `deploy/backup/postgres-pitr-restore-drill.sh`: scratch PITR restore drill.
 - `deploy/backup/restic-backup.sh`: off-host backup push and integrity check.
 - `docs/production-rollback-runbook.md`: image rollback and restore gates.
 - `docs/production-secrets.md`: secret handling checklist.
@@ -41,8 +46,13 @@ user data or paid traffic is allowed.
    compose.production.yaml
    deploy/production.env.example
    deploy/caddy/Caddyfile
+   deploy/postgres/pg_hba.conf
    deploy/backup/postgres-backup.sh
+   deploy/backup/postgres-basebackup.sh
+   deploy/backup/postgres-wal-check.sh
    deploy/backup/restic-backup.sh
+   deploy/backup/postgres-restore-drill.sh
+   deploy/backup/postgres-pitr-restore-drill.sh
    ```
 
 6. Create the real environment file:
@@ -80,6 +90,11 @@ for TLS delivery, if `PASTEBOX_S3_ENDPOINT` points to a local or HTTP object
 store, or if `PASTEBOX_RESTIC_REPOSITORY` is not an off-host `s3:https://`
 repository. Use managed S3-compatible storage for attachment objects and a
 separate off-host S3-compatible restic repository for backups.
+`PASTEBOX_WAL_ARCHIVE_TIMEOUT_SECONDS` and
+`PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS` must both be positive and no more than
+`900`; `PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS` must also be positive and no more
+than `900` so the local PostgreSQL topology can support the 15-minute RPO
+target.
 
 The first production launch also requires billing to be enabled with real
 provider callback credentials: `PASTEBOX_STRIPE_ENABLED=true`,
@@ -159,7 +174,8 @@ and alert on these baseline series:
 - `pastebox_queue_depth{kind="scan",status="pending"}` growing for scanner lag.
 - `pastebox_mail_queue_depth` growing for mail delivery backlog.
 - `pastebox_reports_open` growing for unresolved abuse/support load.
-- Absence of fresh backup and restore-drill evidence in the release notes.
+- Absence of fresh logical backup, WAL freshness check, base-backup manifest,
+  restore-drill evidence, and PITR drill evidence in the release notes.
 
 ## Worker Supervision
 
@@ -193,11 +209,15 @@ docker compose --env-file deploy/production.env -f compose.production.yaml exec 
 
 ## Backups
 
-Run a logical PostgreSQL backup and push it off-host:
+PostgreSQL runs with `archive_mode=on`, `wal_level=replica`, and
+`archive_timeout=$PASTEBOX_WAL_ARCHIVE_TIMEOUT_SECONDS`. Archived WAL segments
+are staged under `/backups/wal` in the shared backup volume and must be pushed
+off-host by `backup-push`.
+
+Run a logical PostgreSQL backup:
 
 ```sh
 docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm postgres-backup
-docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm backup-push
 ```
 
 Run a restore drill against the latest local logical backup:
@@ -214,14 +234,65 @@ The drill verifies the `.sha256`, restores into
 `PASTEBOX_KEEP_RESTORE_DRILL_DB=true`, and prints `duration_seconds`. Record
 that duration and the backup path in release notes.
 
-Schedule both commands from the host with cron or a systemd timer at least
-daily. The confirmed launch target requires 30-day retention, off-host backup
-storage, RPO 15 minutes, and RTO 4 hours. Daily logical backups alone are not
-enough for final launch; Phase 7 must add WAL/PITR or an equivalent
-point-in-time recovery path before public beta.
+Check WAL archive freshness. Schedule this at least every 15 minutes:
+
+```sh
+docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm postgres-wal-check
+```
+
+Create a PITR base backup. Schedule this at least daily:
+
+```sh
+docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm postgres-basebackup
+```
+
+The base-backup job verifies the backup with `pg_verifybackup` against the WAL
+archive, then writes `/backups/basebackups/pastebox-base-*.tar.gz`, `*.sha256`,
+and `*.manifest`. The manifest records the latest archived WAL file, the WAL
+age, `pg_verifybackup=passed`, `rpo_target_seconds=900`, and
+`rto_target_seconds=14400`.
+
+Run a scratch PITR restore drill against the latest local base backup and WAL
+archive:
+
+```sh
+docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm postgres-pitr-drill
+```
+
+To drill a specific base backup or target time, set
+`PASTEBOX_PITR_SOURCE_BASE` and `PASTEBOX_PITR_TARGET_TIME`, for example:
+
+```sh
+PASTEBOX_PITR_SOURCE_BASE=/backups/basebackups/pastebox-base-20260525T120000Z.tar.gz \
+PASTEBOX_PITR_TARGET_TIME="2026-05-25 12:10:00+00" \
+docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm postgres-pitr-drill
+```
+
+The PITR drill verifies the base-backup checksum, runs `pg_verifybackup` against
+the WAL archive, replays `/backups/wal` into an isolated temporary PostgreSQL
+data directory, waits for recovery to promote, checks `schema_migrations`,
+prints `duration_seconds`, and removes the temporary data directory unless
+`PASTEBOX_KEEP_PITR_DRILL_DIR=true`. Tune
+`PASTEBOX_PITR_RECOVERY_WAIT_SECONDS` only when a larger backup needs more local
+replay time; record the base backup path, target time, duration, latest WAL age,
+and whether the run met the 4-hour RTO target.
+
+Push all local backup artifacts off-host after logical backup, WAL check, and
+base backup jobs:
+
+```sh
+docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm backup-push
+```
+
+Schedule logical backups, base backups, and off-host pushes at least daily.
+Schedule WAL freshness checks at least every 15 minutes. The confirmed launch
+target requires 30-day retention, off-host backup storage, RPO 15 minutes, and
+RTO 4 hours; public beta requires successful logical restore and PITR restore
+drill evidence before real traffic.
 
 ## Launch Gate
 
 Phase 0A is complete when a fresh VPS can follow this runbook, Compose uses a
-pinned image tag or digest, readiness checks pass, backups can be pushed
-off-host, and rollback has been rehearsed for a reversible migration.
+pinned image tag or digest, readiness checks pass, logical and PITR backups can
+be pushed off-host, PITR drill duration is recorded, and rollback has been
+rehearsed for a reversible migration.

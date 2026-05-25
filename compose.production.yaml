@@ -45,6 +45,12 @@ services:
         max-size: "20m"
         max-file: "5"
 
+  backup-volume-init:
+    image: ${PASTEBOX_POSTGRES_IMAGE:-postgres:17-alpine}
+    command: ["sh", "-c", "mkdir -p /backups/postgres /backups/basebackups /backups/wal && chown -R postgres:postgres /backups"]
+    volumes:
+      - pastebox-backups:/backups
+
   postgres:
     image: ${PASTEBOX_POSTGRES_IMAGE:-postgres:17-alpine}
     restart: unless-stopped
@@ -54,6 +60,23 @@ services:
       POSTGRES_PASSWORD: ${PASTEBOX_POSTGRES_PASSWORD:?set PASTEBOX_POSTGRES_PASSWORD}
     volumes:
       - pastebox-postgres:/var/lib/postgresql/data
+      - pastebox-backups:/backups
+      - ./deploy/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    depends_on:
+      backup-volume-init:
+        condition: service_completed_successfully
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=replica"
+      - "-c"
+      - "archive_mode=on"
+      - "-c"
+      - "archive_timeout=${PASTEBOX_WAL_ARCHIVE_TIMEOUT_SECONDS:-900}"
+      - "-c"
+      - "archive_command=mkdir -p /backups/wal && test ! -f /backups/wal/%f && cp %p /backups/wal/%f || test -f /backups/wal/%f"
+      - "-c"
+      - "hba_file=/etc/postgresql/pg_hba.conf"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
@@ -155,6 +178,43 @@ services:
         condition: service_healthy
     entrypoint: ["/bin/sh", "/usr/local/bin/pastebox-postgres-backup.sh"]
 
+  postgres-basebackup:
+    image: ${PASTEBOX_POSTGRES_IMAGE:-postgres:17-alpine}
+    profiles: ["maintenance"]
+    environment:
+      PGHOST: postgres
+      PGDATABASE: ${PASTEBOX_POSTGRES_DB:-pastebox}
+      PGUSER: ${PASTEBOX_POSTGRES_USER:-pastebox}
+      PGPASSWORD: ${PASTEBOX_POSTGRES_PASSWORD:?set PASTEBOX_POSTGRES_PASSWORD}
+      PASTEBOX_BACKUP_RETENTION_DAYS: ${PASTEBOX_BACKUP_RETENTION_DAYS:-30}
+      PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS: ${PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS:-900}
+      PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS: ${PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS:-60}
+    volumes:
+      - pastebox-backups:/backups
+      - ./deploy/backup/postgres-basebackup.sh:/usr/local/bin/pastebox-postgres-basebackup.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/usr/local/bin/pastebox-postgres-basebackup.sh"]
+
+  postgres-wal-check:
+    image: ${PASTEBOX_POSTGRES_IMAGE:-postgres:17-alpine}
+    profiles: ["maintenance"]
+    environment:
+      PGHOST: postgres
+      PGDATABASE: ${PASTEBOX_POSTGRES_DB:-pastebox}
+      PGUSER: ${PASTEBOX_POSTGRES_USER:-pastebox}
+      PGPASSWORD: ${PASTEBOX_POSTGRES_PASSWORD:?set PASTEBOX_POSTGRES_PASSWORD}
+      PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS: ${PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS:-900}
+      PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS: ${PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS:-60}
+    volumes:
+      - pastebox-backups:/backups
+      - ./deploy/backup/postgres-wal-check.sh:/usr/local/bin/pastebox-postgres-wal-check.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/usr/local/bin/pastebox-postgres-wal-check.sh"]
+
   postgres-restore-drill:
     image: ${PASTEBOX_POSTGRES_IMAGE:-postgres:17-alpine}
     profiles: ["maintenance"]
@@ -173,6 +233,24 @@ services:
       postgres:
         condition: service_healthy
     entrypoint: ["/bin/sh", "/usr/local/bin/pastebox-postgres-restore-drill.sh"]
+
+  postgres-pitr-drill:
+    image: ${PASTEBOX_POSTGRES_IMAGE:-postgres:17-alpine}
+    profiles: ["maintenance"]
+    environment:
+      PGDATABASE: ${PASTEBOX_POSTGRES_DB:-pastebox}
+      PGUSER: ${PASTEBOX_POSTGRES_USER:-pastebox}
+      PGPASSWORD: ${PASTEBOX_POSTGRES_PASSWORD:?set PASTEBOX_POSTGRES_PASSWORD}
+      PASTEBOX_PITR_SOURCE_BASE: ${PASTEBOX_PITR_SOURCE_BASE:-}
+      PASTEBOX_PITR_TARGET_TIME: ${PASTEBOX_PITR_TARGET_TIME:-}
+      PASTEBOX_PITR_DRILL_DATABASE: ${PASTEBOX_PITR_DRILL_DATABASE:-}
+      PASTEBOX_PITR_DRILL_PORT: ${PASTEBOX_PITR_DRILL_PORT:-55432}
+      PASTEBOX_PITR_RECOVERY_WAIT_SECONDS: ${PASTEBOX_PITR_RECOVERY_WAIT_SECONDS:-300}
+      PASTEBOX_KEEP_PITR_DRILL_DIR: ${PASTEBOX_KEEP_PITR_DRILL_DIR:-false}
+    volumes:
+      - pastebox-backups:/backups
+      - ./deploy/backup/postgres-pitr-restore-drill.sh:/usr/local/bin/pastebox-postgres-pitr-restore-drill.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/pastebox-postgres-pitr-restore-drill.sh"]
 
   backup-push:
     image: ${PASTEBOX_RESTIC_IMAGE:-restic/restic:0.18.1}

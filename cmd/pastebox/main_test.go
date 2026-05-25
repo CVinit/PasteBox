@@ -111,6 +111,9 @@ func TestProductionPreflightRequiresExplicitProductionEnvironment(t *testing.T) 
 		"PASTEBOX_RESTIC_PASSWORD",
 		"PASTEBOX_BACKUP_S3_ACCESS_KEY",
 		"PASTEBOX_BACKUP_S3_SECRET_KEY",
+		"PASTEBOX_WAL_ARCHIVE_TIMEOUT_SECONDS",
+		"PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS",
+		"PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS",
 	}
 	for _, key := range required {
 		t.Setenv(key, "")
@@ -381,6 +384,60 @@ func TestProductionPreflightRejectsLocalResticRepository(t *testing.T) {
 	}
 }
 
+func TestProductionPreflightRejectsWALArchiveRPOAboveFifteenMinutes(t *testing.T) {
+	setValidProductionEnv(t)
+	t.Setenv("PASTEBOX_WAL_ARCHIVE_TIMEOUT_SECONDS", "901")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"preflight", "production"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("expected high WAL archive timeout to fail, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "PASTEBOX_WAL_ARCHIVE_TIMEOUT_SECONDS must be <= 900") {
+		t.Fatalf("expected WAL timeout validation error, got %q", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+}
+
+func TestProductionPreflightRejectsInvalidWALArchiveFreshness(t *testing.T) {
+	setValidProductionEnv(t)
+	t.Setenv("PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS", "not-a-number")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"preflight", "production"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("expected invalid WAL archive max age to fail, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS must be a positive integer") {
+		t.Fatalf("expected WAL max-age validation error, got %q", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+}
+
+func TestProductionPreflightRejectsWALArchiveWaitAboveFifteenMinutes(t *testing.T) {
+	setValidProductionEnv(t)
+	t.Setenv("PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS", "901")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"preflight", "production"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("expected high WAL archive wait to fail, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS must be <= 900") {
+		t.Fatalf("expected WAL wait validation error, got %q", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+}
+
 func setValidProductionEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("PASTEBOX_IMAGE", "ghcr.io/cvinit/pastebox:sha-abc123")
@@ -422,4 +479,7 @@ func setValidProductionEnv(t *testing.T) {
 	t.Setenv("PASTEBOX_RESTIC_PASSWORD", "restic-secret")
 	t.Setenv("PASTEBOX_BACKUP_S3_ACCESS_KEY", "backup-access-key")
 	t.Setenv("PASTEBOX_BACKUP_S3_SECRET_KEY", "backup-secret-key")
+	t.Setenv("PASTEBOX_WAL_ARCHIVE_TIMEOUT_SECONDS", "900")
+	t.Setenv("PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS", "900")
+	t.Setenv("PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS", "60")
 }

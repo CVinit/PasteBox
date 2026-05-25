@@ -9,6 +9,7 @@ baseline. Use it before public traffic and before every production upgrade.
 - Previous known-good image reference.
 - Migration classification: reversible, forward-compatible, or non-reversible.
 - Latest successful off-host backup snapshot ID.
+- Latest PITR base-backup manifest and WAL archive freshness evidence.
 
 ## Reversible Or No-Migration Rollback
 
@@ -47,9 +48,12 @@ baseline. Use it before public traffic and before every production upgrade.
 Do not run a non-reversible production migration unless all of these are true:
 
 - A fresh logical backup and off-host push completed successfully.
-- The backup snapshot ID is recorded in the release notes.
-- A restore drill for the same backup class has already met the RTO 4-hour
-  target.
+- A fresh WAL archive freshness check and PITR base backup completed
+  successfully.
+- The logical backup path, PITR base-backup manifest, latest WAL file, and
+  off-host snapshot ID are recorded in the release notes.
+- Logical restore and PITR restore drills for the same backup class have already
+  met the RTO 4-hour target.
 - The operator has an approved maintenance window and user-facing status
   message.
 
@@ -59,15 +63,24 @@ If rollback requires data restore, stop app traffic first:
 docker compose --env-file deploy/production.env -f compose.production.yaml stop api worker
 ```
 
-Restore from the approved backup snapshot only after the same backup class has
-passed the scratch restore drill:
+For logical rollback, restore from the approved backup snapshot only after the
+same backup class has passed the scratch restore drill:
 
 ```sh
 PASTEBOX_RESTORE_SOURCE=/backups/postgres/pastebox-YYYYMMDDTHHMMSSZ.sql.gz \
 docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm postgres-restore-drill
 ```
 
-Then restore into the production database during the approved maintenance
-window, restart app services, and verify readiness. Until Phase 7 adds and
-tests PITR/WAL restore, non-reversible migrations are not allowed for public
-beta.
+For point-in-time recovery, prove the exact base-backup class and WAL archive in
+an isolated temporary instance first:
+
+```sh
+PASTEBOX_PITR_SOURCE_BASE=/backups/basebackups/pastebox-base-YYYYMMDDTHHMMSSZ.tar.gz \
+PASTEBOX_PITR_TARGET_TIME="YYYY-MM-DD HH:MM:SS+00" \
+docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm postgres-pitr-drill
+```
+
+Only after the drill succeeds, restore into the production database during the
+approved maintenance window, restart app services, and verify readiness. Record
+the drill duration, target time, base backup, latest WAL file, and off-host
+snapshot ID in the incident notes.

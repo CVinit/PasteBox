@@ -305,6 +305,137 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 }
 ```
 
+## Scenario: Production PostgreSQL WAL/PITR Maintenance
+
+### 1. Scope / Trigger
+
+- Trigger: Any change that alters `compose.production.yaml`, production
+  PostgreSQL authentication, WAL archiving, backup scripts, restore drills, or
+  production preflight environment validation.
+
+### 2. Signatures
+
+- Compose service: `postgres`
+- Compose maintenance services: `postgres-wal-check`, `postgres-basebackup`,
+  `postgres-pitr-drill`, `backup-push`
+- Script: `deploy/backup/postgres-wal-check.sh`
+- Script: `deploy/backup/postgres-basebackup.sh`
+- Script: `deploy/backup/postgres-pitr-restore-drill.sh`
+- Config file: `deploy/postgres/pg_hba.conf`
+- Preflight command: `pastebox preflight production`
+- Environment keys:
+  `PASTEBOX_WAL_ARCHIVE_TIMEOUT_SECONDS`,
+  `PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS`,
+  `PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS`,
+  `PASTEBOX_PITR_RECOVERY_WAIT_SECONDS`
+
+### 3. Contracts
+
+- Production PostgreSQL must run with `wal_level=replica`,
+  `archive_mode=on`, and
+  `archive_timeout=$PASTEBOX_WAL_ARCHIVE_TIMEOUT_SECONDS`.
+- The production PostgreSQL container must mount
+  `deploy/postgres/pg_hba.conf` and set `hba_file` to that path so maintenance
+  containers can run password-authenticated `pg_basebackup`.
+- `deploy/postgres/pg_hba.conf` must include both application access and
+  `host replication all samenet scram-sha-256` for Compose-network
+  maintenance containers.
+- WAL archive freshness checks must inspect the newest archived WAL segment in
+  `/backups/wal` and `pg_stat_archiver` recent failures. Do not require the
+  exact filename returned by `pg_switch_wal()` to appear; PostgreSQL can return
+  the next segment while archiving completes the previous segment or a `.backup`
+  marker.
+- Base-backup jobs must run `pg_verifybackup --wal-directory=/backups/wal`
+  before creating the tarball, checksum, and manifest.
+- PITR drills must verify the base-backup checksum, run `pg_verifybackup`, start
+  an isolated PostgreSQL instance, wait until `pg_is_in_recovery()` returns
+  false, then assert `schema_migrations` is readable.
+- WAL timeout, max-age, and wait values must be positive integers and no more
+  than `900` seconds to preserve the confirmed 15-minute RPO target.
+
+### 4. Validation & Error Matrix
+
+- Missing WAL env key in production preflight -> preflight failure.
+- Non-positive or non-integer WAL timeout/max-age/wait -> preflight or script
+  exit `2`.
+- WAL timeout/max-age/wait greater than `900` -> preflight or script exit `2`.
+- Missing replication rule in `pg_hba.conf` -> `pg_basebackup` fails with
+  `no pg_hba.conf entry for replication connection`.
+- Recent `pg_stat_archiver` failure newer than the last successful archive ->
+  WAL check/base-backup failure.
+- No fresh archived WAL segment within the configured wait window -> WAL
+  check/base-backup failure.
+- `pg_verifybackup` failure -> base-backup/PITR drill failure before producing
+  or trusting artifacts.
+- PITR recovery does not promote within
+  `PASTEBOX_PITR_RECOVERY_WAIT_SECONDS` -> PITR drill failure.
+
+### 5. Good/Base/Bad Cases
+
+- Good: An isolated Compose project starts `postgres`, runs
+  `postgres-wal-check`, runs `postgres-basebackup`, and then runs
+  `postgres-pitr-drill`; the drill prints `schema_migrations=<count>` and
+  `in_recovery=f`.
+- Base: `docker compose --profile maintenance config` renders all maintenance
+  services with the committed example env when `PASTEBOX_ENV_FILE` points at
+  `deploy/production.env.example`.
+- Bad: Waiting for `/backups/wal/$(pg_switch_wal)` can fail even while WAL
+  archiving is healthy, because the archived file may be the completed previous
+  segment or a `.backup` marker.
+
+### 6. Tests Required
+
+- Run `sh -n` for every changed backup script.
+- Run `docker compose --profile maintenance -f compose.production.yaml
+  --env-file deploy/production.env.example config` with
+  `PASTEBOX_ENV_FILE=./deploy/production.env.example`.
+- Run `go test ./cmd/pastebox` after changing production preflight env
+  validation.
+- Run full `make test` before committing production backup/preflight changes.
+- For WAL/PITR script changes, run an isolated smoke project that starts
+  production PostgreSQL, seeds a minimal `schema_migrations` table, then runs
+  `postgres-wal-check`, `postgres-basebackup`, and `postgres-pitr-drill`.
+  Clean up the smoke project and volumes afterward.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```sh
+wal_file="$(psql --command="SELECT pg_walfile_name(pg_switch_wal());")"
+test -f "/backups/wal/$wal_file"
+```
+
+#### Correct
+
+```sh
+psql --command="SELECT pg_switch_wal();" >/dev/null
+latest_wal="$(ls -1t /backups/wal | grep -E '^[0-9A-F]{24}$' | head -n 1)"
+psql --command="SELECT last_failed_wal FROM pg_stat_archiver WHERE last_failed_time > last_archived_time;"
+```
+
+#### Wrong
+
+```yaml
+postgres:
+  image: postgres:17-alpine
+  command: ["postgres", "-c", "archive_mode=on"]
+```
+
+#### Correct
+
+```yaml
+postgres:
+  volumes:
+    - ./deploy/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+  command:
+    - "postgres"
+    - "-c"
+    - "archive_mode=on"
+    - "-c"
+    - "hba_file=/etc/postgresql/pg_hba.conf"
+```
+
 ## Scenario: User Repository Boundary
 
 ### 1. Scope / Trigger

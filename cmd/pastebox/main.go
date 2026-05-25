@@ -349,6 +349,9 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		"PASTEBOX_RESTIC_PASSWORD",
 		"PASTEBOX_BACKUP_S3_ACCESS_KEY",
 		"PASTEBOX_BACKUP_S3_SECRET_KEY",
+		"PASTEBOX_WAL_ARCHIVE_TIMEOUT_SECONDS",
+		"PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS",
+		"PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS",
 	} {
 		value := strings.TrimSpace(os.Getenv(key))
 		if value == "" {
@@ -408,6 +411,10 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	if err := validateBillingConfig(cfg); err != nil {
+		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
+		return 1
+	}
+	if err := validateWALArchiveConfig(); err != nil {
 		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
 		return 1
 	}
@@ -556,6 +563,40 @@ func validateBillingConfig(cfg config.Config) error {
 		return fmt.Errorf("PASTEBOX_EPUSDT_SECRET_KEY is required")
 	}
 	return nil
+}
+
+func validateWALArchiveConfig() error {
+	timeout, err := positiveIntEnv("PASTEBOX_WAL_ARCHIVE_TIMEOUT_SECONDS")
+	if err != nil {
+		return err
+	}
+	if timeout > 900 {
+		return fmt.Errorf("PASTEBOX_WAL_ARCHIVE_TIMEOUT_SECONDS must be <= 900 to meet the 15 minute RPO target")
+	}
+	maxAge, err := positiveIntEnv("PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS")
+	if err != nil {
+		return err
+	}
+	if maxAge > 900 {
+		return fmt.Errorf("PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS must be <= 900 to meet the 15 minute RPO target")
+	}
+	wait, err := positiveIntEnv("PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS")
+	if err != nil {
+		return err
+	}
+	if wait > 900 {
+		return fmt.Errorf("PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS must be <= 900 to meet the 15 minute RPO target")
+	}
+	return nil
+}
+
+func positiveIntEnv(key string) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer, got %q", key, raw)
+	}
+	return value, nil
 }
 
 func isLocalHost(host string) bool {
