@@ -226,6 +226,6 @@ curl -v http://127.0.0.1:8080/healthz
 - S3 兼容对象存储适配器和私有 bucket 下载链路。
 - Redis-backed 会话、限流和队列。
 - 真实邮件发送，且移除响应中的开发 token。
-- Stripe/Epusdt webhook 签名验证、幂等账单对账和订阅生命周期处理。
+- 在已签名 webhook 验证和幂等订单激活路径之外，补齐 Stripe/Epusdt 订阅和订单对账生命周期。
 - ClamAV worker、清理 worker、失败重试和监控告警。
 - 备份、恢复、日志、指标、错误追踪和滥用处置 runbook。

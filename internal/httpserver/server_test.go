@@ -3,18 +3,23 @@ package httpserver
 import (
 	"bytes"
 	"crypto"
+	"crypto/hmac"
+	"crypto/md5"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"math/big"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -194,6 +199,7 @@ func TestCSRFTokenProtectsUnsafeBrowserRoutes(t *testing.T) {
 	cfg := config.FromEnv()
 	cfg.BootstrapAdminEmail = ""
 	cfg.BootstrapAdminPassword = ""
+	cfg.Stripe.WebhookSecret = "whsec_test_csrf_exclusion"
 	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), app.New(cfg))
 
 	missing := httptest.NewRecorder()
@@ -229,8 +235,8 @@ func TestCSRFTokenProtectsUnsafeBrowserRoutes(t *testing.T) {
 	assertStatus(t, webhook, http.StatusBadRequest)
 	var webhookBody map[string]string
 	decodeResponse(t, webhook, &webhookBody)
-	if webhookBody["error"] == "csrf_required" {
-		t.Fatalf("provider webhook route must not use browser CSRF gate: %#v", webhookBody)
+	if webhookBody["error"] != "invalid_webhook_signature" {
+		t.Fatalf("provider webhook route must reach signature validation instead of browser CSRF gate: %#v", webhookBody)
 	}
 }
 
@@ -585,6 +591,7 @@ func TestOAuthWebhookReplayAndReportHTTPContracts(t *testing.T) {
 	cfg := config.FromEnv()
 	cfg.BootstrapAdminEmail = ""
 	cfg.BootstrapAdminPassword = ""
+	cfg.Stripe.WebhookSecret = "whsec_test_http_contract"
 	service := app.New(cfg)
 	if _, err := service.SeedAdmin("admin2@example.com", "password123"); err != nil {
 		t.Fatalf("seed admin: %v", err)
@@ -607,14 +614,18 @@ func TestOAuthWebhookReplayAndReportHTTPContracts(t *testing.T) {
 	var order app.Order
 	decodeResponse(t, orderRes, &order)
 
-	webhook := user.json(http.MethodPost, "/api/v1/billing/webhooks/stripe", `{"eventType":"checkout.session.completed","orderId":"`+order.ID+`","txId":"tx-http","idempotencyKey":"stripe-http-1"}`)
+	webhookBodyRaw := stripeWebhookBody(t, "evt_http_1", "checkout.session.completed", order.ID, "tx-http")
+	webhookReq := httptest.NewRequest(http.MethodPost, "/api/v1/billing/webhooks/stripe", strings.NewReader(webhookBodyRaw))
+	webhookReq.Header.Set("Content-Type", "application/json")
+	webhookReq.Header.Set("Stripe-Signature", stripeSignatureHeader(webhookBodyRaw, cfg.Stripe.WebhookSecret, time.Now()))
+	webhook := user.do(webhookReq)
 	assertStatus(t, webhook, http.StatusOK)
 	var webhookBody struct {
 		WebhookEvent app.WebhookEvent `json:"webhookEvent"`
 		Order        *app.Order       `json:"order"`
 	}
 	decodeResponse(t, webhook, &webhookBody)
-	if webhookBody.Order == nil || webhookBody.Order.Status != "paid" || webhookBody.WebhookEvent.IdempotencyKey != "stripe-http-1" {
+	if webhookBody.Order == nil || webhookBody.Order.Status != "paid" || webhookBody.WebhookEvent.IdempotencyKey != "evt_http_1" {
 		t.Fatalf("unexpected webhook body: %#v", webhookBody)
 	}
 
@@ -641,6 +652,98 @@ func TestOAuthWebhookReplayAndReportHTTPContracts(t *testing.T) {
 	decodeResponse(t, resolve, &resolvedReport)
 	if resolvedReport.Status != "resolved" {
 		t.Fatalf("expected resolved report, got %#v", resolvedReport)
+	}
+}
+
+func TestBillingWebhookRequiresProviderSignatures(t *testing.T) {
+	cfg := config.FromEnv()
+	cfg.BootstrapAdminEmail = ""
+	cfg.BootstrapAdminPassword = ""
+	cfg.Stripe.WebhookSecret = "whsec_test_signature"
+	service := app.New(cfg)
+	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), service)
+	user := newHTTPTestClient(t, handler)
+
+	register := user.json(http.MethodPost, "/api/v1/auth/register", `{"email":"stripe-sig@example.com","password":"password123","displayName":"Stripe Sig"}`)
+	assertStatus(t, register, http.StatusCreated)
+	orderRes := user.json(http.MethodPost, "/api/v1/billing/orders", `{"provider":"stripe","planId":"plus","period":"monthly"}`)
+	assertStatus(t, orderRes, http.StatusCreated)
+	var order app.Order
+	decodeResponse(t, orderRes, &order)
+
+	raw := stripeWebhookBody(t, "evt_sig_1", "checkout.session.completed", order.ID, "pi_sig_1")
+	missing := user.json(http.MethodPost, "/api/v1/billing/webhooks/stripe", raw)
+	assertStatus(t, missing, http.StatusBadRequest)
+	var missingBody map[string]string
+	decodeResponse(t, missing, &missingBody)
+	if missingBody["error"] != "invalid_webhook_signature" {
+		t.Fatalf("expected signature error, got %#v", missingBody)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/billing/webhooks/stripe", strings.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Stripe-Signature", stripeSignatureHeader(raw, cfg.Stripe.WebhookSecret, time.Now()))
+	ok := user.do(req)
+	assertStatus(t, ok, http.StatusOK)
+
+	replayReq := httptest.NewRequest(http.MethodPost, "/api/v1/billing/webhooks/stripe", strings.NewReader(raw))
+	replayReq.Header.Set("Content-Type", "application/json")
+	replayReq.Header.Set("Stripe-Signature", stripeSignatureHeader(raw, cfg.Stripe.WebhookSecret, time.Now()))
+	replay := user.do(replayReq)
+	assertStatus(t, replay, http.StatusOK)
+	var replayBody struct {
+		WebhookEvent app.WebhookEvent `json:"webhookEvent"`
+		Order        *app.Order       `json:"order"`
+	}
+	decodeResponse(t, replay, &replayBody)
+	if replayBody.WebhookEvent.IdempotencyKey != "evt_sig_1" || replayBody.Order == nil || replayBody.Order.Status != "paid" {
+		t.Fatalf("expected idempotent signed webhook replay, got %#v", replayBody)
+	}
+}
+
+func TestEpusdtWebhookSignatureAndPlainOKResponse(t *testing.T) {
+	cfg := config.FromEnv()
+	cfg.BootstrapAdminEmail = ""
+	cfg.BootstrapAdminPassword = ""
+	cfg.Epusdt.PID = "1000"
+	cfg.Epusdt.SecretKey = "epusdt-test-secret"
+	service := app.New(cfg)
+	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), service)
+	user := newHTTPTestClient(t, handler)
+
+	register := user.json(http.MethodPost, "/api/v1/auth/register", `{"email":"epusdt-sig@example.com","password":"password123","displayName":"Epusdt Sig"}`)
+	assertStatus(t, register, http.StatusCreated)
+	orderRes := user.json(http.MethodPost, "/api/v1/billing/orders", `{"provider":"epusdt","planId":"plus","period":"monthly"}`)
+	assertStatus(t, orderRes, http.StatusCreated)
+	var order app.Order
+	decodeResponse(t, orderRes, &order)
+
+	payload := map[string]any{
+		"pid":           cfg.Epusdt.PID,
+		"order_id":      order.ID,
+		"trade_id":      "trade_epusdt_1",
+		"txid":          "tx_epusdt_1",
+		"status":        "success",
+		"amount":        json.Number("19.00"),
+		"actual_amount": json.Number("19.0001"),
+	}
+	payload["signature"] = epusdtSignature(payload, cfg.Epusdt.SecretKey)
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal epusdt payload: %v", err)
+	}
+	res := user.json(http.MethodPost, "/api/v1/billing/webhooks/epusdt", string(raw))
+	assertStatus(t, res, http.StatusOK)
+	if strings.TrimSpace(res.Body.String()) != "ok" {
+		t.Fatalf("expected plain ok response, got %q", res.Body.String())
+	}
+
+	orders, err := service.ListOrders(order.UserID)
+	if err != nil {
+		t.Fatalf("list orders: %v", err)
+	}
+	if len(orders) != 1 || orders[0].Status != "paid" || orders[0].TxID != "tx_epusdt_1" {
+		t.Fatalf("expected signed epusdt webhook to mark order paid, got %#v", orders)
 	}
 }
 
@@ -794,6 +897,56 @@ func cookieFromResponse(t *testing.T, res *httptest.ResponseRecorder, name strin
 	}
 	t.Fatalf("expected %s cookie in response headers: %v", name, res.Result().Header.Values("Set-Cookie"))
 	return nil
+}
+
+func stripeWebhookBody(t *testing.T, eventID string, eventType string, orderID string, txID string) string {
+	t.Helper()
+	payload := map[string]any{
+		"id":   eventID,
+		"type": eventType,
+		"data": map[string]any{
+			"object": map[string]any{
+				"id":                  txID,
+				"client_reference_id": orderID,
+				"payment_intent":      txID,
+			},
+		},
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal stripe payload: %v", err)
+	}
+	return string(raw)
+}
+
+func stripeSignatureHeader(raw string, secret string, timestamp time.Time) string {
+	ts := strconv.FormatInt(timestamp.Unix(), 10)
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(ts))
+	_, _ = mac.Write([]byte("."))
+	_, _ = mac.Write([]byte(raw))
+	return "t=" + ts + ",v1=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func epusdtSignature(payload map[string]any, secret string) string {
+	keys := make([]string, 0, len(payload))
+	for key, value := range payload {
+		if key == "signature" {
+			continue
+		}
+		rendered := fmt.Sprint(value)
+		if strings.TrimSpace(rendered) == "" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+fmt.Sprint(payload[key]))
+	}
+	sum := md5.Sum([]byte(strings.Join(parts, "&") + secret))
+	return hex.EncodeToString(sum[:])
 }
 
 func signGoogleTestIDToken(t *testing.T, key *rsa.PrivateKey, keyID string, claims map[string]any) string {

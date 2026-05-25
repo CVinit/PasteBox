@@ -27,6 +27,8 @@ type Config struct {
 	DevAuthTokens  bool
 	StripeEnabled  bool
 	EpusdtEnabled  bool
+	Stripe         StripeConfig
+	Epusdt         EpusdtConfig
 
 	BootstrapAdminEmail    string
 	BootstrapAdminPassword string
@@ -65,6 +67,15 @@ type SMTPConfig struct {
 	FromEmail string
 	FromName  string
 	TLSMode   string
+}
+
+type StripeConfig struct {
+	WebhookSecret string
+}
+
+type EpusdtConfig struct {
+	PID       string
+	SecretKey string
 }
 
 func FromEnv() Config {
@@ -114,6 +125,13 @@ func FromEnv() Config {
 		DevAuthTokens: envBool("PASTEBOX_DEV_AUTH_TOKENS", false),
 		StripeEnabled: envBool("PASTEBOX_STRIPE_ENABLED", false),
 		EpusdtEnabled: envBool("PASTEBOX_EPUSDT_ENABLED", false),
+		Stripe: StripeConfig{
+			WebhookSecret: envString("PASTEBOX_STRIPE_WEBHOOK_SECRET", ""),
+		},
+		Epusdt: EpusdtConfig{
+			PID:       envString("PASTEBOX_EPUSDT_PID", ""),
+			SecretKey: envString("PASTEBOX_EPUSDT_SECRET_KEY", ""),
+		},
 
 		BootstrapAdminEmail:    envString("PASTEBOX_BOOTSTRAP_ADMIN_EMAIL", ""),
 		BootstrapAdminPassword: envString("PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD", ""),

@@ -79,6 +79,13 @@ off-host `s3:https://` repository. Use managed S3-compatible storage for
 attachment objects and a separate off-host S3-compatible restic repository for
 backups.
 
+The first production launch also requires billing to be enabled with real
+provider callback credentials: `PASTEBOX_STRIPE_ENABLED=true`,
+`PASTEBOX_STRIPE_WEBHOOK_SECRET=whsec_...`, `PASTEBOX_EPUSDT_ENABLED=true`,
+`PASTEBOX_EPUSDT_PID`, and `PASTEBOX_EPUSDT_SECRET_KEY`. Provider webhook routes
+are excluded from browser CSRF but reject unsigned or incorrectly signed
+callbacks.
+
 The Google OAuth app must include this authorized redirect URI:
 
 ```text

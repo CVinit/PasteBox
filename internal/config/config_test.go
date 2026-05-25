@@ -43,6 +43,10 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	t.Setenv("PASTEBOX_SMTP_FROM_EMAIL", "noreply@pastebox.example.com")
 	t.Setenv("PASTEBOX_SMTP_FROM_NAME", "PasteBox Mail")
 	t.Setenv("PASTEBOX_SMTP_TLS_MODE", "tls")
+	t.Setenv("PASTEBOX_STRIPE_ENABLED", "true")
+	t.Setenv("PASTEBOX_STRIPE_WEBHOOK_SECRET", "whsec_test")
+	t.Setenv("PASTEBOX_EPUSDT_PID", "1000")
+	t.Setenv("PASTEBOX_EPUSDT_SECRET_KEY", "epusdt-secret")
 
 	cfg := FromEnv()
 
@@ -75,5 +79,11 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	}
 	if cfg.SMTP.Username != "smtp-user" || cfg.SMTP.Password != "smtp-secret" || cfg.SMTP.FromEmail != "noreply@pastebox.example.com" || cfg.SMTP.FromName != "PasteBox Mail" || cfg.SMTP.TLSMode != "tls" {
 		t.Fatalf("unexpected SMTP config: %#v", cfg.SMTP)
+	}
+	if !cfg.StripeEnabled || cfg.Stripe.WebhookSecret != "whsec_test" {
+		t.Fatalf("expected Stripe settings from env, got enabled=%v stripe=%#v", cfg.StripeEnabled, cfg.Stripe)
+	}
+	if cfg.Epusdt.PID != "1000" || cfg.Epusdt.SecretKey != "epusdt-secret" {
+		t.Fatalf("expected Epusdt settings from env, got %#v", cfg.Epusdt)
 	}
 }

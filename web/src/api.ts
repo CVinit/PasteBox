@@ -397,20 +397,6 @@ export const client = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  processBillingWebhook: (provider: string, body: {
-    eventType: string;
-    orderId: string;
-    txId: string;
-    idempotencyKey: string;
-    metadata?: Record<string, unknown>;
-  }) =>
-    api<{ webhookEvent: WebhookEvent; order: Order | null }>(
-      `/billing/webhooks/${encodeURIComponent(provider)}`,
-      {
-        method: "POST",
-        body: JSON.stringify(body),
-      },
-    ),
   report: (body: { target: string; reason: string }) =>
     api<Report>("/reports", {
       method: "POST",

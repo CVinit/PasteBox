@@ -19,8 +19,9 @@ mode `600`.
 - Bootstrap admin password.
 - CSRF signing secret.
 - SMTP credentials.
-- Stripe webhook/signing secrets and API keys once Phase 6 enables Stripe.
-- Epusdt API credentials and callback secrets once Phase 6 enables Epusdt.
+- Stripe webhook signing secret (`PASTEBOX_STRIPE_WEBHOOK_SECRET`) and API keys.
+- Epusdt merchant id (`PASTEBOX_EPUSDT_PID`) and callback secret
+  (`PASTEBOX_EPUSDT_SECRET_KEY`).
 - Google OAuth client secret once Phase 4 enables production OAuth.
 
 ## Handling Rules

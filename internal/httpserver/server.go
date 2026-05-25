@@ -1,15 +1,18 @@
 package httpserver
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/hmac"
+	"crypto/md5"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +22,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -798,25 +802,26 @@ func (s *Server) listOrders(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) billingWebhook(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		EventType      string         `json:"eventType"`
-		OrderID        string         `json:"orderId"`
-		TxID           string         `json:"txId"`
-		IdempotencyKey string         `json:"idempotencyKey"`
-		Metadata       map[string]any `json:"metadata"`
-	}
-	if !s.decode(w, r, &req) {
+	provider := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "provider")))
+	defer r.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 2<<20))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_webhook", "message": "failed to read webhook body"})
 		return
 	}
-	event, order, err := s.app.ProcessBillingWebhook(app.BillingWebhookInput{
-		Provider:       chi.URLParam(r, "provider"),
-		EventType:      req.EventType,
-		OrderID:        req.OrderID,
-		TxID:           req.TxID,
-		IdempotencyKey: req.IdempotencyKey,
-		Metadata:       req.Metadata,
-	})
+
+	input, err := s.verifiedBillingWebhookInput(provider, raw, r.Header)
 	if s.handleErr(w, err) {
+		return
+	}
+	event, order, err := s.app.ProcessBillingWebhook(input)
+	if s.handleErr(w, err) {
+		return
+	}
+	if provider == "epusdt" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"webhookEvent": event, "order": order})
@@ -1272,10 +1277,226 @@ type googleJWK struct {
 	Exponent  string `json:"e"`
 }
 
+type stripeWebhookPayload struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	Data struct {
+		Object map[string]any `json:"object"`
+	} `json:"data"`
+}
+
+type epusdtWebhookPayload struct {
+	PID          string         `json:"pid"`
+	OrderID      string         `json:"order_id"`
+	TradeID      string         `json:"trade_id"`
+	TxID         string         `json:"txid"`
+	Status       string         `json:"status"`
+	Signature    string         `json:"signature"`
+	Raw          map[string]any `json:"-"`
+	Amount       any            `json:"amount,omitempty"`
+	ActualAmount any            `json:"actual_amount,omitempty"`
+}
+
 func (s *Server) googleOAuthConfigured() bool {
 	return strings.TrimSpace(s.cfg.GoogleOAuth.ClientID) != "" &&
 		strings.TrimSpace(s.cfg.GoogleOAuth.ClientSecret) != "" &&
 		strings.TrimSpace(s.cfg.GoogleOAuth.RedirectURL) != ""
+}
+
+func (s *Server) verifiedBillingWebhookInput(provider string, raw []byte, header http.Header) (app.BillingWebhookInput, error) {
+	switch provider {
+	case "stripe":
+		return s.verifiedStripeWebhookInput(raw, header.Get("Stripe-Signature"))
+	case "epusdt":
+		return s.verifiedEpusdtWebhookInput(raw)
+	default:
+		return app.BillingWebhookInput{}, app.E(http.StatusBadRequest, "invalid_provider", "provider must be stripe or epusdt")
+	}
+}
+
+func (s *Server) verifiedStripeWebhookInput(raw []byte, signatureHeader string) (app.BillingWebhookInput, error) {
+	if strings.TrimSpace(s.cfg.Stripe.WebhookSecret) == "" {
+		return app.BillingWebhookInput{}, app.E(http.StatusServiceUnavailable, "webhook_not_configured", "Stripe webhook secret is not configured")
+	}
+	if !validStripeSignature(raw, signatureHeader, s.cfg.Stripe.WebhookSecret, time.Now().UTC()) {
+		return app.BillingWebhookInput{}, app.E(http.StatusBadRequest, "invalid_webhook_signature", "Stripe webhook signature is invalid")
+	}
+	var payload stripeWebhookPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return app.BillingWebhookInput{}, app.E(http.StatusBadRequest, "invalid_json", "request body is invalid")
+	}
+	orderID := stringFromObject(payload.Data.Object, "client_reference_id")
+	if orderID == "" {
+		orderID = stringFromObject(payload.Data.Object, "metadata.orderId")
+	}
+	txID := stringFromObject(payload.Data.Object, "payment_intent")
+	if txID == "" {
+		txID = stringFromObject(payload.Data.Object, "id")
+	}
+	return app.BillingWebhookInput{
+		Provider:       "stripe",
+		EventType:      strings.TrimSpace(payload.Type),
+		OrderID:        orderID,
+		TxID:           txID,
+		IdempotencyKey: firstNonEmpty(payload.ID, stringFromObject(payload.Data.Object, "id")),
+		Metadata: map[string]any{
+			"stripeObject": payload.Data.Object,
+		},
+	}, nil
+}
+
+func (s *Server) verifiedEpusdtWebhookInput(raw []byte) (app.BillingWebhookInput, error) {
+	if strings.TrimSpace(s.cfg.Epusdt.SecretKey) == "" {
+		return app.BillingWebhookInput{}, app.E(http.StatusServiceUnavailable, "webhook_not_configured", "Epusdt webhook secret is not configured")
+	}
+	var payload epusdtWebhookPayload
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload.Raw); err != nil {
+		return app.BillingWebhookInput{}, app.E(http.StatusBadRequest, "invalid_json", "request body is invalid")
+	}
+	payload.PID = stringFromObject(payload.Raw, "pid")
+	payload.OrderID = stringFromObject(payload.Raw, "order_id")
+	payload.TradeID = stringFromObject(payload.Raw, "trade_id")
+	payload.TxID = stringFromObject(payload.Raw, "txid")
+	payload.Status = stringFromObject(payload.Raw, "status")
+	payload.Signature = stringFromObject(payload.Raw, "signature")
+	payload.Amount = payload.Raw["amount"]
+	payload.ActualAmount = payload.Raw["actual_amount"]
+
+	if strings.TrimSpace(s.cfg.Epusdt.PID) != "" && payload.PID != strings.TrimSpace(s.cfg.Epusdt.PID) {
+		return app.BillingWebhookInput{}, app.E(http.StatusBadRequest, "invalid_webhook", "Epusdt merchant id is invalid")
+	}
+	if !validEpusdtSignature(payload.Raw, s.cfg.Epusdt.SecretKey) {
+		return app.BillingWebhookInput{}, app.E(http.StatusBadRequest, "invalid_webhook_signature", "Epusdt webhook signature is invalid")
+	}
+	return app.BillingWebhookInput{
+		Provider:       "epusdt",
+		EventType:      epusdtEventType(payload.Status),
+		OrderID:        payload.OrderID,
+		TxID:           firstNonEmpty(payload.TxID, payload.TradeID),
+		IdempotencyKey: firstNonEmpty(payload.TradeID, payload.TxID, payload.OrderID),
+		Metadata: map[string]any{
+			"amount":       payload.Amount,
+			"actualAmount": payload.ActualAmount,
+			"raw":          payload.Raw,
+		},
+	}, nil
+}
+
+func validStripeSignature(raw []byte, signatureHeader string, secret string, now time.Time) bool {
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return false
+	}
+	values := map[string][]string{}
+	for _, part := range strings.Split(signatureHeader, ",") {
+		key, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if !ok {
+			continue
+		}
+		values[key] = append(values[key], value)
+	}
+	timestamp := ""
+	if ts := values["t"]; len(ts) > 0 {
+		timestamp = ts[0]
+	}
+	if timestamp == "" || len(values["v1"]) == 0 {
+		return false
+	}
+	parsed, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		return false
+	}
+	signedAt := time.Unix(parsed, 0)
+	if now.Sub(signedAt) > 5*time.Minute || signedAt.Sub(now) > 5*time.Minute {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(timestamp))
+	_, _ = mac.Write([]byte("."))
+	_, _ = mac.Write(raw)
+	want := hex.EncodeToString(mac.Sum(nil))
+	for _, candidate := range values["v1"] {
+		if subtle.ConstantTimeCompare([]byte(candidate), []byte(want)) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func validEpusdtSignature(values map[string]any, secret string) bool {
+	signature := stringFromObject(values, "signature")
+	if signature == "" || strings.TrimSpace(secret) == "" {
+		return false
+	}
+	keys := make([]string, 0, len(values))
+	for key, value := range values {
+		if key == "signature" || stringFromAny(value) == "" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+stringFromAny(values[key]))
+	}
+	base := strings.Join(parts, "&") + strings.TrimSpace(secret)
+	sum := md5.Sum([]byte(base))
+	want := hex.EncodeToString(sum[:])
+	return subtle.ConstantTimeCompare([]byte(strings.ToLower(signature)), []byte(want)) == 1
+}
+
+func epusdtEventType(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "success", "succeeded", "paid", "completed", "1":
+		return "epusdt.payment.succeeded"
+	case "expired", "timeout", "canceled", "cancelled", "failed":
+		return "payment.failed"
+	default:
+		return "epusdt." + strings.ToLower(strings.TrimSpace(status))
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func stringFromObject(object map[string]any, key string) string {
+	if object == nil {
+		return ""
+	}
+	if strings.Contains(key, ".") {
+		current := any(object)
+		for _, part := range strings.Split(key, ".") {
+			mapped, ok := current.(map[string]any)
+			if !ok {
+				return ""
+			}
+			current = mapped[part]
+		}
+		return stringFromAny(current)
+	}
+	return stringFromAny(object[key])
+}
+
+func stringFromAny(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(typed)
+	case json.Number:
+		return typed.String()
+	default:
+		return strings.TrimSpace(fmt.Sprint(typed))
+	}
 }
 
 func randomURLToken(bytesN int) (string, error) {

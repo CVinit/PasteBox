@@ -910,24 +910,6 @@ function App() {
     await refreshAdmin();
   }
 
-  async function adminProcessWebhook(order: Order) {
-    await run(
-      () =>
-        client.processBillingWebhook(order.provider, {
-          eventType:
-            order.provider === "epusdt"
-              ? "epusdt.payment.succeeded"
-              : "checkout.session.completed",
-          orderId: order.id,
-          txId: `webhook-${Date.now()}`,
-          idempotencyKey: `dev-webhook-${order.id}-${Date.now()}`,
-        }),
-      "Webhook processed",
-    );
-    await refreshAuthed();
-    await refreshAdmin();
-  }
-
   async function adminReplayWebhook(eventId: string) {
     await run(
       () => client.adminReplayWebhookEvent(eventId),
@@ -1441,15 +1423,6 @@ function App() {
                   {order.provider} · {(order.amountCents / 100).toFixed(2)}{" "}
                   {order.currency}
                 </span>
-                {user.role === "admin" ? (
-                  <button
-                    type="button"
-                    onClick={() => void adminProcessWebhook(order)}
-                    disabled={order.status === "paid"}
-                  >
-                    Webhook
-                  </button>
-                ) : null}
               </article>
             ))}
           </Panel>
@@ -1644,13 +1617,6 @@ function App() {
                       disabled={order.status === "paid"}
                     >
                       Paid
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void adminProcessWebhook(order)}
-                      disabled={order.status === "paid"}
-                    >
-                      Webhook
                     </button>
                   </article>
                 ))}

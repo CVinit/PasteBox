@@ -281,6 +281,11 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		"PASTEBOX_SMTP_PASSWORD",
 		"PASTEBOX_SMTP_FROM_EMAIL",
 		"PASTEBOX_SMTP_TLS_MODE",
+		"PASTEBOX_STRIPE_ENABLED",
+		"PASTEBOX_STRIPE_WEBHOOK_SECRET",
+		"PASTEBOX_EPUSDT_ENABLED",
+		"PASTEBOX_EPUSDT_PID",
+		"PASTEBOX_EPUSDT_SECRET_KEY",
 		"PASTEBOX_BOOTSTRAP_ADMIN_EMAIL",
 		"PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD",
 		"PASTEBOX_RESTIC_REPOSITORY",
@@ -338,6 +343,10 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	if err := validateScannerConfig(cfg); err != nil {
+		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
+		return 1
+	}
+	if err := validateBillingConfig(cfg); err != nil {
 		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
 		return 1
 	}
@@ -464,6 +473,28 @@ func validateScannerConfig(cfg config.Config) error {
 	default:
 		return fmt.Errorf("PASTEBOX_SCANNER_PROVIDER must be clamav in production, got %q", cfg.Scanner.Provider)
 	}
+}
+
+func validateBillingConfig(cfg config.Config) error {
+	if !cfg.StripeEnabled {
+		return fmt.Errorf("PASTEBOX_STRIPE_ENABLED must be true for first production launch")
+	}
+	if strings.TrimSpace(cfg.Stripe.WebhookSecret) == "" {
+		return fmt.Errorf("PASTEBOX_STRIPE_WEBHOOK_SECRET is required")
+	}
+	if !strings.HasPrefix(strings.TrimSpace(cfg.Stripe.WebhookSecret), "whsec_") {
+		return fmt.Errorf("PASTEBOX_STRIPE_WEBHOOK_SECRET must be a Stripe webhook signing secret")
+	}
+	if !cfg.EpusdtEnabled {
+		return fmt.Errorf("PASTEBOX_EPUSDT_ENABLED must be true for first production launch")
+	}
+	if strings.TrimSpace(cfg.Epusdt.PID) == "" {
+		return fmt.Errorf("PASTEBOX_EPUSDT_PID is required")
+	}
+	if strings.TrimSpace(cfg.Epusdt.SecretKey) == "" {
+		return fmt.Errorf("PASTEBOX_EPUSDT_SECRET_KEY is required")
+	}
+	return nil
 }
 
 func isLocalHost(host string) bool {

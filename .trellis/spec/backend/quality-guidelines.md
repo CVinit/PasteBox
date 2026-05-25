@@ -363,6 +363,99 @@ COPY --from=web-builder /src/web/dist/ ./internal/httpserver/static/
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/pastebox ./cmd/pastebox
 ```
 
+## Scenario: Provider Billing Webhooks
+
+### 1. Scope / Trigger
+
+- Trigger: Any change that touches `/api/v1/billing/webhooks/{provider}`,
+  Stripe/Epusdt billing configuration, billing order activation, or frontend
+  billing/admin controls.
+
+### 2. Signatures
+
+- API: `POST /api/v1/billing/webhooks/stripe`
+- API: `POST /api/v1/billing/webhooks/epusdt`
+- Service: `app.Service.ProcessBillingWebhook(input app.BillingWebhookInput)`
+- Config: `PASTEBOX_STRIPE_WEBHOOK_SECRET`,
+  `PASTEBOX_EPUSDT_PID`, `PASTEBOX_EPUSDT_SECRET_KEY`
+- Production preflight: `pastebox preflight production`
+
+### 3. Contracts
+
+- Provider webhook routes are excluded from browser CSRF because they are
+  server-to-server callbacks, not browser state-changing UI requests.
+- Stripe webhooks must be verified against the raw request body and
+  `Stripe-Signature` header using `PASTEBOX_STRIPE_WEBHOOK_SECRET`.
+- Stripe signed events map to `BillingWebhookInput` using the top-level event
+  `id` as the idempotency key, event `type` as the event type, and
+  `data.object.client_reference_id` or `data.object.metadata.orderId` as the
+  PasteBox order id.
+- Epusdt GMPay callbacks are JSON POSTs signed with merchant `secret_key`; the
+  verifier keeps non-empty fields except `signature`, sorts by ASCII key order,
+  joins as `key=value&...`, appends the secret, and compares lowercase MD5.
+- Valid Epusdt callbacks return plain text `ok`, not JSON.
+- Browser and admin UI clients must not post synthetic provider webhooks.
+  Support operations use admin manual payment controls and webhook replay
+  endpoints instead.
+
+### 4. Validation & Error Matrix
+
+- Unknown provider -> `400 invalid_provider`.
+- Missing provider webhook secret -> `503 webhook_not_configured`.
+- Missing or invalid Stripe signature -> `400 invalid_webhook_signature`.
+- Missing or invalid Epusdt signature -> `400 invalid_webhook_signature`.
+- Epusdt `pid` mismatch -> `400 invalid_webhook`.
+- Bad JSON body after signature validation -> `400 invalid_json`.
+- Duplicate signed provider event idempotency key -> return the existing
+  webhook event and order without double-activating the plan.
+
+### 5. Good/Base/Bad Cases
+
+- Good: A signed Stripe `checkout.session.completed` event marks the matching
+  order paid once, and duplicate delivery returns the existing webhook event.
+- Good: A signed Epusdt `success` callback marks the matching order paid and
+  responds with exactly `ok`.
+- Base: Unsigned provider callbacks bypass CSRF but fail at provider signature
+  validation.
+- Bad: Posting old development JSON such as `eventType`, `orderId`, and
+  `idempotencyKey` directly to the provider webhook route from the frontend.
+
+### 6. Tests Required
+
+- HTTP tests assert CSRF exclusion reaches signature validation, not
+  `csrf_required`.
+- HTTP tests assert unsigned Stripe callbacks fail with
+  `invalid_webhook_signature`.
+- HTTP tests assert signed Stripe callbacks are idempotent and activate an
+  order once.
+- HTTP tests assert signed Epusdt callbacks return plain `ok` and persist the
+  paid order state.
+- CLI preflight tests assert production env includes Stripe and Epusdt callback
+  credentials.
+- Frontend typecheck/build must pass after removing or changing any webhook
+  client controls.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+// Browser/admin clients must not fabricate provider webhook payloads.
+client.processBillingWebhook("stripe", map[string]string{
+    "eventType": "checkout.session.completed",
+    "orderId": orderID,
+})
+```
+
+#### Correct
+
+```go
+// Provider route validates raw provider callbacks; support tools use admin
+// manual payment controls or replay already-recorded webhook events.
+req.Header.Set("Stripe-Signature", signedHeader)
+handler.ServeHTTP(res, req)
+```
+
 ---
 
 ## Testing Requirements

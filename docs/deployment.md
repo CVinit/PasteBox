@@ -207,8 +207,8 @@ Before accepting real users or payments, implement and verify:
 - Durable object storage through S3-compatible storage.
 - Redis-backed sessions, rate limits, and queues where appropriate.
 - Real mail delivery for verification, magic links, reset, and billing notices.
-- Real Stripe and Epusdt webhook validation and idempotent subscription/order
-  reconciliation.
+- Complete Stripe and Epusdt subscription/order reconciliation beyond the
+  signed webhook validation and idempotent order activation path.
 - Real ClamAV scanning workers and cleanup workers.
 - Backups, restore runbooks, metrics, logs, alerts, and abuse monitoring.
 - Secret management and removal of development-token responses from auth flows.
