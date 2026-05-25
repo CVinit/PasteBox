@@ -110,11 +110,12 @@ local, or not a plain production email address, if
 `PASTEBOX_CORS_ALLOWED_ORIGINS` is missing, wildcarded, local, HTTP, or does
 not include the exact `PASTEBOX_PUBLIC_URL` origin, if production rate limits
 are disabled or non-positive, if Google OAuth client settings are missing, if
-SMTP is not configured for TLS delivery, if `PASTEBOX_S3_ENDPOINT` points to a
-local or HTTP object store, or if `PASTEBOX_RESTIC_REPOSITORY` is not an
-off-host `s3:https://` repository. Use managed S3-compatible storage for
-attachment objects and a separate off-host S3-compatible restic repository for
-backups.
+SMTP is not configured for TLS delivery, if the bootstrap admin password is
+short or placeholder-like, if `PASTEBOX_S3_ENDPOINT` points to a local or HTTP
+object store, if `PASTEBOX_RESTIC_REPOSITORY` is not an off-host `s3:https://`
+repository, or if backup S3 credentials reuse the attachment object-storage
+credentials. Use managed S3-compatible storage for attachment objects and a
+separate off-host S3-compatible restic repository for backups.
 `PASTEBOX_WAL_ARCHIVE_TIMEOUT_SECONDS` and
 `PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS` must both be positive and no more than
 `900`; `PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS` must also be positive and no more

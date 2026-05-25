@@ -348,6 +348,32 @@ func TestProductionPreflightRejectsInvalidPublicContactEmails(t *testing.T) {
 	}
 }
 
+func TestProductionPreflightRejectsUnsafeBootstrapAdminPassword(t *testing.T) {
+	for _, password := range []string{
+		"short",
+		"change-me-bootstrap-password",
+		"pastebox-admin-secret-123",
+	} {
+		t.Run(password, func(t *testing.T) {
+			setValidProductionEnv(t)
+			t.Setenv("PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD", password)
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run([]string{"preflight", "production"}, &stdout, &stderr)
+			if code != 1 {
+				t.Fatalf("expected unsafe bootstrap password to fail, got %d", code)
+			}
+			if !strings.Contains(stderr.String(), "PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD") {
+				t.Fatalf("expected bootstrap password validation error, got %q", stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("expected empty stdout, got %q", stdout.String())
+			}
+		})
+	}
+}
+
 func TestProductionPreflightRejectsUnsafeCORSOrigins(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -562,6 +588,47 @@ func TestProductionPreflightRejectsLocalResticRepository(t *testing.T) {
 	}
 }
 
+func TestProductionPreflightRejectsSharedObjectAndBackupCredentials(t *testing.T) {
+	tests := []struct {
+		name     string
+		envKey   string
+		value    string
+		expected string
+	}{
+		{
+			name:     "shared access key",
+			envKey:   "PASTEBOX_BACKUP_S3_ACCESS_KEY",
+			value:    "access-key",
+			expected: "PASTEBOX_BACKUP_S3_ACCESS_KEY must be separate from PASTEBOX_S3_ACCESS_KEY",
+		},
+		{
+			name:     "shared secret key",
+			envKey:   "PASTEBOX_BACKUP_S3_SECRET_KEY",
+			value:    "secret-key",
+			expected: "PASTEBOX_BACKUP_S3_SECRET_KEY must be separate from PASTEBOX_S3_SECRET_KEY",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setValidProductionEnv(t)
+			t.Setenv(tt.envKey, tt.value)
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run([]string{"preflight", "production"}, &stdout, &stderr)
+			if code != 1 {
+				t.Fatalf("expected shared credential preflight failure, got %d", code)
+			}
+			if !strings.Contains(stderr.String(), tt.expected) {
+				t.Fatalf("expected %q in stderr, got %q", tt.expected, stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("expected empty stdout, got %q", stdout.String())
+			}
+		})
+	}
+}
+
 func TestProductionPreflightRejectsInvalidPaymentCheckoutTemplates(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -707,7 +774,7 @@ func setValidProductionEnv(t *testing.T) {
 	t.Setenv("PASTEBOX_EPUSDT_ADDRESS", "TREALUSDTADDRESS")
 	t.Setenv("PASTEBOX_EPUSDT_CHAIN", "USDT-TRC20")
 	t.Setenv("PASTEBOX_BOOTSTRAP_ADMIN_EMAIL", "admin@example.com")
-	t.Setenv("PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD", "change-me")
+	t.Setenv("PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD", "bootstrap-random-32-byte-secret")
 	t.Setenv("PASTEBOX_RESTIC_REPOSITORY", "s3:https://objects.example.com/pastebox-backups")
 	t.Setenv("PASTEBOX_RESTIC_PASSWORD", "restic-secret")
 	t.Setenv("PASTEBOX_BACKUP_S3_ACCESS_KEY", "backup-access-key")

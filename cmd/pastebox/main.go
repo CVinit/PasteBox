@@ -397,6 +397,10 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
 		return 1
 	}
+	if err := validateBootstrapAdminConfig(cfg); err != nil {
+		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
+		return 1
+	}
 	if len(strings.TrimSpace(cfg.CSRFSecret)) < 32 || cfg.CSRFSecret == "development-csrf-secret" {
 		fmt.Fprintln(stderr, "production preflight failed: PASTEBOX_CSRF_SECRET must be a production random secret at least 32 characters long")
 		return 1
@@ -430,6 +434,10 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	if err := validateResticRepository(strings.TrimSpace(os.Getenv("PASTEBOX_RESTIC_REPOSITORY"))); err != nil {
+		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
+		return 1
+	}
+	if err := validateBackupCredentialSeparation(); err != nil {
 		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
 		return 1
 	}
@@ -554,6 +562,23 @@ func validatePublicContactEmails(cfg config.Config) error {
 	return validatePublicEmail("PASTEBOX_ABUSE_EMAIL", cfg.AbuseEmail)
 }
 
+func validateBootstrapAdminConfig(cfg config.Config) error {
+	if err := validatePublicEmail("PASTEBOX_BOOTSTRAP_ADMIN_EMAIL", cfg.BootstrapAdminEmail); err != nil {
+		return err
+	}
+	password := strings.TrimSpace(cfg.BootstrapAdminPassword)
+	if len(password) < 16 {
+		return fmt.Errorf("PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD must be a production random password at least 16 characters long")
+	}
+	lowered := strings.ToLower(password)
+	for _, token := range []string{"change", "password", "admin", "pastebox", "example"} {
+		if strings.Contains(lowered, token) {
+			return fmt.Errorf("PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD must not contain placeholder or service-specific words")
+		}
+	}
+	return nil
+}
+
 func validatePublicEmail(key string, value string) error {
 	trimmed := strings.TrimSpace(value)
 	address, err := mail.ParseAddress(trimmed)
@@ -625,6 +650,20 @@ func validateResticRepository(repository string) error {
 		rawEndpoint = rawEndpoint[:len("https://")+slash]
 	}
 	return validateRemoteHTTPSEndpoint(rawEndpoint, "PASTEBOX_RESTIC_REPOSITORY")
+}
+
+func validateBackupCredentialSeparation() error {
+	objectAccessKey := strings.TrimSpace(os.Getenv("PASTEBOX_S3_ACCESS_KEY"))
+	backupAccessKey := strings.TrimSpace(os.Getenv("PASTEBOX_BACKUP_S3_ACCESS_KEY"))
+	if objectAccessKey != "" && backupAccessKey != "" && objectAccessKey == backupAccessKey {
+		return fmt.Errorf("PASTEBOX_BACKUP_S3_ACCESS_KEY must be separate from PASTEBOX_S3_ACCESS_KEY")
+	}
+	objectSecretKey := strings.TrimSpace(os.Getenv("PASTEBOX_S3_SECRET_KEY"))
+	backupSecretKey := strings.TrimSpace(os.Getenv("PASTEBOX_BACKUP_S3_SECRET_KEY"))
+	if objectSecretKey != "" && backupSecretKey != "" && objectSecretKey == backupSecretKey {
+		return fmt.Errorf("PASTEBOX_BACKUP_S3_SECRET_KEY must be separate from PASTEBOX_S3_SECRET_KEY")
+	}
+	return nil
 }
 
 func validateScannerConfig(cfg config.Config) error {
