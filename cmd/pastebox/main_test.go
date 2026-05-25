@@ -275,6 +275,54 @@ func TestProductionPreflightRequiresHTTPSPublicURL(t *testing.T) {
 	}
 }
 
+func TestProductionPreflightRejectsInvalidPublicURLShape(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    string
+		expected string
+	}{
+		{
+			name:     "local host",
+			value:    "https://localhost",
+			expected: "PASTEBOX_PUBLIC_URL must use the production domain",
+		},
+		{
+			name:     "path",
+			value:    "https://pastebox.example.com/app",
+			expected: "PASTEBOX_PUBLIC_URL must be the production origin without a path",
+		},
+		{
+			name:     "query",
+			value:    "https://pastebox.example.com?app=pastebox",
+			expected: "PASTEBOX_PUBLIC_URL must be the production origin without query or fragment",
+		},
+		{
+			name:     "userinfo",
+			value:    "https://user@pastebox.example.com",
+			expected: "PASTEBOX_PUBLIC_URL must not include userinfo",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setValidProductionEnv(t)
+			t.Setenv("PASTEBOX_PUBLIC_URL", tt.value)
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run([]string{"preflight", "production"}, &stdout, &stderr)
+			if code != 1 {
+				t.Fatalf("expected invalid public URL to fail, got %d", code)
+			}
+			if !strings.Contains(stderr.String(), tt.expected) {
+				t.Fatalf("expected %q in stderr, got %q", tt.expected, stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("expected empty stdout, got %q", stdout.String())
+			}
+		})
+	}
+}
+
 func TestProductionPreflightRejectsInvalidProductionDomainConfig(t *testing.T) {
 	tests := []struct {
 		name     string

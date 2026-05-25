@@ -396,8 +396,8 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "production preflight failed: PASTEBOX_APP_ENV must be production, got %q\n", cfg.AppEnv)
 		return 1
 	}
-	if !strings.HasPrefix(cfg.PublicURL, "https://") {
-		fmt.Fprintf(stderr, "production preflight failed: PASTEBOX_PUBLIC_URL must use https://, got %q\n", cfg.PublicURL)
+	if err := validateProductionPublicURL(cfg.PublicURL); err != nil {
+		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
 		return 1
 	}
 	if err := validateProductionDomainConfig(cfg.PublicURL); err != nil {
@@ -484,6 +484,29 @@ func isPinnedImage(image string) bool {
 		return false
 	}
 	return strings.HasPrefix(image[lastColon+1:], "sha-")
+}
+
+func validateProductionPublicURL(raw string) error {
+	publicURL, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || publicURL.Scheme == "" || publicURL.Host == "" {
+		return fmt.Errorf("PASTEBOX_PUBLIC_URL must be a valid https URL, got %q", raw)
+	}
+	if publicURL.Scheme != "https" {
+		return fmt.Errorf("PASTEBOX_PUBLIC_URL must use https://, got %q", raw)
+	}
+	if publicURL.User != nil {
+		return fmt.Errorf("PASTEBOX_PUBLIC_URL must not include userinfo, got %q", raw)
+	}
+	if isLocalHost(publicURL.Hostname()) {
+		return fmt.Errorf("PASTEBOX_PUBLIC_URL must use the production domain, got local host %q", publicURL.Hostname())
+	}
+	if publicURL.Path != "" && publicURL.Path != "/" {
+		return fmt.Errorf("PASTEBOX_PUBLIC_URL must be the production origin without a path, got %q", raw)
+	}
+	if publicURL.RawQuery != "" || publicURL.Fragment != "" {
+		return fmt.Errorf("PASTEBOX_PUBLIC_URL must be the production origin without query or fragment, got %q", raw)
+	}
+	return nil
 }
 
 func validateGoogleOAuthRedirectURL(raw string, publicRaw string) error {
