@@ -905,6 +905,12 @@ func TestAdminOperationsWriteAuditLogsAndExposeQueues(t *testing.T) {
 	if _, err := svc.AdminSetUserPlan(admin.ID, owner.User.ID, "pro", nil); err != nil {
 		t.Fatalf("admin set plan: %v", err)
 	}
+	if _, err := svc.MarkOrderPaid(owner.User.ID, order.ID, "tx-non-admin", "SUP-100 non-admin attempt"); !hasAppCode(err, "admin_required") {
+		t.Fatalf("expected non-admin mark paid to be rejected, got %v", err)
+	}
+	if _, err := svc.MarkOrderPaid(admin.ID, order.ID, "tx-missing-reason", ""); !hasAppCode(err, "manual_reason_required") {
+		t.Fatalf("expected manual payment reason to be required, got %v", err)
+	}
 	if _, err := svc.AdminFreezeUser(admin.ID, owner.User.ID, true); err != nil {
 		t.Fatalf("admin freeze user: %v", err)
 	}
@@ -917,7 +923,8 @@ func TestAdminOperationsWriteAuditLogsAndExposeQueues(t *testing.T) {
 	if _, err := svc.AdminRevokeShare(admin.ID, share.ID); err != nil {
 		t.Fatalf("admin revoke share: %v", err)
 	}
-	if _, err := svc.MarkOrderPaid(admin.ID, order.ID, "tx-test"); err != nil {
+	reason := "SUP-123 verified stuck Epusdt transfer"
+	if _, err := svc.MarkOrderPaid(admin.ID, order.ID, "tx-test", reason); err != nil {
 		t.Fatalf("mark order paid: %v", err)
 	}
 
@@ -931,6 +938,7 @@ func TestAdminOperationsWriteAuditLogsAndExposeQueues(t *testing.T) {
 	assertAuditAction(t, logs, "admin.attachment_freeze")
 	assertAuditAction(t, logs, "admin.share_revoke")
 	assertAuditAction(t, logs, "billing.order_paid")
+	assertBillingPaidAuditReason(t, logs, order.ID, reason)
 
 	queues, err := svc.AdminQueues(admin.ID)
 	if err != nil {
@@ -1849,6 +1857,20 @@ func assertAuditAction(t *testing.T, logs []AuditLog, action string) {
 		}
 	}
 	t.Fatalf("expected audit action %q in %#v", action, logs)
+}
+
+func assertBillingPaidAuditReason(t *testing.T, logs []AuditLog, orderID string, reason string) {
+	t.Helper()
+	for _, log := range logs {
+		if log.Action != "billing.order_paid" || log.Target != orderID {
+			continue
+		}
+		if log.Metadata["reason"] != reason || log.Metadata["manual"] != true {
+			t.Fatalf("expected manual payment reason in audit log, got %#v", log)
+		}
+		return
+	}
+	t.Fatalf("expected billing.order_paid audit log for %s in %#v", orderID, logs)
 }
 
 func requireOrderStatus(t *testing.T, svc *Service, userID string, orderID string, status string) Order {

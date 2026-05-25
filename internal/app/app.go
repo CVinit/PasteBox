@@ -1483,10 +1483,25 @@ func (s *Service) CreateOrder(userID string, provider string, planID string, per
 	return *order, nil
 }
 
-func (s *Service) MarkOrderPaid(actorID string, orderID string, txID string) (Order, error) {
+func (s *Service) MarkOrderPaid(actorID string, orderID string, txID string, reason string) (Order, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.markOrderPaidLocked(actorID, orderID, txID, "manual.payment:"+orderID+":"+strings.TrimSpace(txID), nil)
+	if err := s.requireAdminLocked(actorID); err != nil {
+		return Order{}, err
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return Order{}, E(http.StatusBadRequest, "manual_reason_required", "manual payment corrections require a support reason")
+	}
+	if len(reason) > 500 {
+		return Order{}, E(http.StatusBadRequest, "manual_reason_too_long", "manual payment correction reason must be 500 characters or fewer")
+	}
+	txID = strings.TrimSpace(txID)
+	metadata := map[string]any{
+		"manual": true,
+		"reason": reason,
+	}
+	return s.markOrderPaidLocked(actorID, orderID, txID, "manual.payment:"+orderID+":"+txID, metadata)
 }
 
 func (s *Service) ProcessBillingWebhook(input BillingWebhookInput) (WebhookEvent, *Order, error) {
@@ -1723,7 +1738,13 @@ func (s *Service) markOrderPaidLocked(actorID string, orderID string, txID strin
 	if err := s.updateOrderLocked(order); err != nil {
 		return Order{}, err
 	}
-	if err := s.auditLocked(actorID, "billing.order_paid", order.ID, map[string]any{"planId": order.PlanID, "provider": order.Provider}); err != nil {
+	auditMetadata := cloneMetadata(metadata)
+	auditMetadata["planId"] = order.PlanID
+	auditMetadata["provider"] = order.Provider
+	if order.TxID != "" {
+		auditMetadata["txId"] = order.TxID
+	}
+	if err := s.auditLocked(actorID, "billing.order_paid", order.ID, auditMetadata); err != nil {
 		return Order{}, err
 	}
 	metadata = cloneMetadata(metadata)

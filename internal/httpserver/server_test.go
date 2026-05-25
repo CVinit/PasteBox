@@ -859,12 +859,24 @@ func TestAdminHTTPContractsWriteAuditLogs(t *testing.T) {
 	var order app.Order
 	decodeResponse(t, orderRes, &order)
 
+	missingReason := admin.json(http.MethodPost, "/api/v1/admin/orders/"+order.ID+"/mark-paid", `{"txId":"tx-missing-reason"}`)
+	assertStatus(t, missingReason, http.StatusBadRequest)
+
 	reconcile := admin.json(http.MethodPost, "/api/v1/admin/billing/reconcile", "")
 	assertStatus(t, reconcile, http.StatusOK)
 	var reconcileBody map[string]int
 	decodeResponse(t, reconcile, &reconcileBody)
 	if reconcileBody["checkedOrders"] == 0 || reconcileBody["pendingOrders"] == 0 {
 		t.Fatalf("expected billing reconciliation counts, got %#v", reconcileBody)
+	}
+
+	manualReason := "SUP-789 verified stuck Epusdt payment"
+	markPaid := admin.json(http.MethodPost, "/api/v1/admin/orders/"+order.ID+"/mark-paid", `{"txId":"tx-http-manual","reason":"`+manualReason+`"}`)
+	assertStatus(t, markPaid, http.StatusOK)
+	var paidOrder app.Order
+	decodeResponse(t, markPaid, &paidOrder)
+	if paidOrder.Status != "paid" || paidOrder.TxID != "tx-http-manual" {
+		t.Fatalf("expected manually paid order, got %#v", paidOrder)
 	}
 
 	retryScan := admin.json(http.MethodPost, "/api/v1/admin/attachments/"+attachment.ID+"/retry-scan", "")
@@ -883,6 +895,9 @@ func TestAdminHTTPContractsWriteAuditLogs(t *testing.T) {
 	decodeResponse(t, auditLogs, &auditBody)
 	if !containsAuditAction(auditBody.AuditLogs, "admin.user_plan_set") || !containsAuditAction(auditBody.AuditLogs, "admin.scan_retry") {
 		t.Fatalf("expected admin audit actions, got %#v", auditBody.AuditLogs)
+	}
+	if !containsAuditMetadata(auditBody.AuditLogs, "billing.order_paid", order.ID, "reason", manualReason) {
+		t.Fatalf("expected manual payment reason audit metadata, got %#v", auditBody.AuditLogs)
 	}
 }
 
@@ -1362,6 +1377,15 @@ func googleTestJWK(keyID string, key *rsa.PublicKey) map[string]string {
 func containsAuditAction(logs []app.AuditLog, action string) bool {
 	for _, log := range logs {
 		if log.Action == action {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAuditMetadata(logs []app.AuditLog, action string, target string, key string, value any) bool {
+	for _, log := range logs {
+		if log.Action == action && log.Target == target && log.Metadata[key] == value {
 			return true
 		}
 	}

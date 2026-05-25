@@ -444,10 +444,10 @@ export const client = {
   adminRevokeShare: (id: string) =>
     api<Share>(`/admin/shares/${id}/revoke`, { method: "POST" }),
   adminOrders: () => api<{ orders: Order[] }>("/admin/orders"),
-  adminMarkOrderPaid: (id: string, txId: string) =>
+  adminMarkOrderPaid: (id: string, txId: string, reason: string) =>
     api<Order>(`/admin/orders/${id}/mark-paid`, {
       method: "POST",
-      body: JSON.stringify({ txId }),
+      body: JSON.stringify({ txId, reason }),
     }),
   adminReconcileBilling: () =>
     api<Record<string, number>>("/admin/billing/reconcile", {

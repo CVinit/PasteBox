@@ -107,7 +107,7 @@ func TestServiceWithPostgresStoresPreservesLaunchStateAcrossRestart(t *testing.T
 	if err != nil {
 		t.Fatalf("create order: %v", err)
 	}
-	if _, err := service.MarkOrderPaid(admin.ID, order.ID, "tx-service-persistence"); err != nil {
+	if _, err := service.MarkOrderPaid(admin.ID, order.ID, "tx-service-persistence", "SUP-456 persisted manual payment correction"); err != nil {
 		t.Fatalf("mark order paid: %v", err)
 	}
 	if _, err := service.Report(auth.User.ID, "share:"+share.Token, "abuse"); err != nil {

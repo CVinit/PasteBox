@@ -1013,6 +1013,79 @@ const contacts = await client.supportContacts();
 
 ---
 
+## Scenario: Manual Billing Correction Audit Contract
+
+### 1. Scope / Trigger
+
+- Trigger: Any change that touches admin billing correction controls, manual
+  order state changes, support/refund workflows, or `MarkOrderPaid`.
+
+### 2. Signatures
+
+- Service: `MarkOrderPaid(actorID string, orderID string, txID string, reason string)`
+- API: `POST /api/v1/admin/orders/{orderID}/mark-paid`
+- Request JSON: `{"txId":"<provider-or-manual-reference>","reason":"<support reason>"}`
+- Frontend client: `client.adminMarkOrderPaid(id, txId, reason)`
+
+### 3. Contracts
+
+- Manual payment correction is admin-only at the service boundary, not only in
+  the HTTP router.
+- `reason` is required and must identify the support ticket, refund/payment
+  investigation, or correction rationale.
+- `reason` must be trimmed, non-empty, and no longer than 500 characters.
+- Manual correction audit metadata must include `manual: true`, `reason`,
+  `planId`, `provider`, and `txId` when a transaction reference exists.
+- Webhook-driven payment activation remains provider-driven and must not require
+  the manual `reason` field.
+- Frontend admin order cards must collect the reason before enabling the manual
+  paid action.
+
+### 4. Validation & Error Matrix
+
+- Non-admin actor -> `403 admin_required`.
+- Blank or whitespace-only `reason` -> `400 manual_reason_required`.
+- `reason` longer than 500 characters -> `400 manual_reason_too_long`.
+- Existing paid order with manual replay metadata -> idempotent success with no
+  duplicate plan activation.
+- Provider webhook payment success -> no manual reason required.
+
+### 5. Good/Base/Bad Cases
+
+- Good: Admin marks a stuck Epusdt order paid with reason
+  `SUP-123 verified stuck Epusdt transfer`; audit logs preserve that reason.
+- Base: Stripe webhook marks an order paid using signed provider metadata and
+  does not need an operator reason.
+- Bad: UI generates `manual-<timestamp>` and calls mark-paid without an
+  operator reason, leaving no support trail.
+
+### 6. Tests Required
+
+- Service tests must assert non-admin manual mark-paid fails with
+  `admin_required`.
+- Service and handler tests must assert blank reason fails with
+  `manual_reason_required`.
+- Service or handler tests must assert successful manual correction stores the
+  reason in `billing.order_paid` audit metadata.
+- Frontend changes must pass `make test-web`; cross-layer changes must pass
+  full `make test`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+order, err := svc.MarkOrderPaid(admin.ID, order.ID, "manual-123")
+```
+
+#### Correct
+
+```go
+order, err := svc.MarkOrderPaid(admin.ID, order.ID, "manual-123", "SUP-123 verified stuck payment")
+```
+
+---
+
 ## Testing Requirements
 
 - Run `make test` before reporting completion.

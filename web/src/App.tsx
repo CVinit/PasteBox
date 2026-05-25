@@ -549,6 +549,9 @@ const copy: Record<Locale, Record<string, string>> = {
     attachments: "Attachments",
     orders: "Orders",
     paid: "Paid",
+    manualPaymentReason: "Manual payment reason",
+    manualPaymentReasonPlaceholder: "Support ticket or correction reason",
+    manualPaymentReasonRequired: "Enter a support reason before marking paid",
     queues: "Queues",
     scanFailures: "Scan failures",
     deleteFailures: "Delete failures",
@@ -670,6 +673,9 @@ const copy: Record<Locale, Record<string, string>> = {
     attachments: "附件",
     orders: "订单",
     paid: "标记支付",
+    manualPaymentReason: "人工支付原因",
+    manualPaymentReasonPlaceholder: "客服工单或修正原因",
+    manualPaymentReasonRequired: "标记支付前请输入客服原因",
     queues: "队列",
     scanFailures: "扫描失败",
     deleteFailures: "删除失败",
@@ -812,6 +818,9 @@ function App() {
     null,
   );
   const [adminData, setAdminData] = useState<AdminData>(emptyAdminData);
+  const [adminPaymentReasons, setAdminPaymentReasons] = useState<
+    Record<string, string>
+  >({});
   const [view, setView] = useState<View>("inbox");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
@@ -1362,10 +1371,21 @@ function App() {
   }
 
   async function adminMarkOrderPaid(orderId: string) {
-    await run(
-      () => client.adminMarkOrderPaid(orderId, `manual-${Date.now()}`),
-      "Order marked paid",
+    const reason = (adminPaymentReasons[orderId] ?? "").trim();
+    if (!reason) {
+      setMessage(t("manualPaymentReasonRequired"));
+      return;
+    }
+    const updatedOrder = await run(
+      () => client.adminMarkOrderPaid(orderId, `manual-${Date.now()}`, reason),
+      t("orderMarkedPaid"),
     );
+    if (!updatedOrder) return;
+    setAdminPaymentReasons((previous) => {
+      const next = { ...previous };
+      delete next[orderId];
+      return next;
+    });
     await refreshAdmin();
   }
 
@@ -2122,10 +2142,26 @@ function App() {
                       >
                         {status.label}
                       </span>
+                      <input
+                        aria-label={t("manualPaymentReason")}
+                        disabled={order.status === "paid"}
+                        maxLength={500}
+                        placeholder={t("manualPaymentReasonPlaceholder")}
+                        value={adminPaymentReasons[order.id] ?? ""}
+                        onChange={(event) =>
+                          setAdminPaymentReasons((previous) => ({
+                            ...previous,
+                            [order.id]: event.target.value,
+                          }))
+                        }
+                      />
                       <button
                         type="button"
                         onClick={() => void adminMarkOrderPaid(order.id)}
-                        disabled={order.status === "paid"}
+                        disabled={
+                          order.status === "paid" ||
+                          !(adminPaymentReasons[order.id] ?? "").trim()
+                        }
                       >
                         {t("paid")}
                       </button>

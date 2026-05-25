@@ -1362,12 +1362,13 @@ func (s *Server) adminMarkOrderPaid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		TxID string `json:"txId"`
+		TxID   string `json:"txId"`
+		Reason string `json:"reason"`
 	}
 	if !s.decode(w, r, &req) {
 		return
 	}
-	order, err := s.app.MarkOrderPaid(user.ID, chi.URLParam(r, "orderID"), req.TxID)
+	order, err := s.app.MarkOrderPaid(user.ID, chi.URLParam(r, "orderID"), req.TxID, req.Reason)
 	if s.handleErr(w, err) {
 		return
 	}
