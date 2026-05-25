@@ -196,6 +196,9 @@ func TestServiceWithPostgresStoresPreservesLaunchStateAcrossRestart(t *testing.T
 	if !containsAuditAction(auditAfterRestart, "billing.order_paid") {
 		t.Fatalf("expected billing audit log after restart, got %#v", auditAfterRestart)
 	}
+	if !containsAuditAction(auditAfterRestart, "support.report_created") {
+		t.Fatalf("expected report creation audit log after restart, got %#v", auditAfterRestart)
+	}
 	if !containsAuditAction(auditAfterRestart, "account.deletion_requested") {
 		t.Fatalf("expected deletion request audit log after restart, got %#v", auditAfterRestart)
 	}

@@ -1965,6 +1965,16 @@ func (s *Service) Report(userID string, target string, reason string) (Report, e
 	if err := s.createReportLocked(report); err != nil {
 		return Report{}, err
 	}
+	actorID := userID
+	if actorID == "" {
+		actorID = "anonymous"
+	}
+	if err := s.auditLocked(actorID, "support.report_created", report.ID, map[string]any{
+		"reportedTarget": report.Target,
+		"anonymous":      userID == "",
+	}); err != nil {
+		return Report{}, err
+	}
 	return *report, nil
 }
 

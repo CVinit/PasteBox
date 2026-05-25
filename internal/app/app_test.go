@@ -1061,6 +1061,7 @@ func TestBillingWebhookReplayAndReportResolution(t *testing.T) {
 		t.Fatalf("audit logs: %v", err)
 	}
 	assertAuditAction(t, logs, "admin.webhook_replay")
+	assertAuditAction(t, logs, "support.report_created")
 	assertAuditAction(t, logs, "admin.report_status")
 }
 

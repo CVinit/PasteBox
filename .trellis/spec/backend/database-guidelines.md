@@ -830,6 +830,10 @@ content, err := objectStore.Get(ctx, attachment.ObjectKey)
   at repository level.
 - Reports may be anonymous. Empty `app.Report.UserID` is stored as SQL NULL and
   read back as an empty string.
+- Report intake must write a `support.report_created` audit log after the
+  report row is created. Authenticated reporters use their user ID as actor;
+  anonymous reporters use actor `anonymous`. The audit target is the report ID,
+  and metadata includes `reportedTarget` and `anonymous`.
 - Jobs are the durable retry boundary for workers. `ListRunnableJobs` returns
   pending jobs with `run_after <= now`, ordered by `run_after`, `created_at`,
   and `id`.
@@ -863,6 +867,8 @@ content, err := objectStore.Get(ctx, attachment.ObjectKey)
 - Duplicate webhook idempotency key -> `ErrWebhookEventExists`.
 - Missing webhook event on read/update -> `ErrWebhookEventNotFound`.
 - Missing report on read/update -> `ErrReportNotFound`.
+- Report audit write failure -> return the audit error; do not report support
+  or abuse intake success without an audit trail.
 - Missing job on read/update -> `ErrJobNotFound`.
 - Missing mail on read/update -> `ErrMailNotFound`.
 - Unsupported worker job kind -> job attempt increments; status remains
@@ -875,6 +881,8 @@ content, err := objectStore.Get(ctx, attachment.ObjectKey)
 
 - Good: A paste deletion creates a pending cleanup job; a restarted worker
   consumes it and persists completion or retry state.
+- Good: Creating an abuse report stores the report and writes
+  `support.report_created` before admin triage writes `admin.report_status`.
 - Base: Introduce one worker job kind at a time, using the same durable jobs
   table and retry semantics.
 - Bad: Process provider webhooks only in memory; replay after restart would not
@@ -888,6 +896,8 @@ content, err := objectStore.Get(ctx, attachment.ObjectKey)
   queued mail filtering/update.
 - Runtime switch tests must prove billing order state, webhook idempotency,
   reports, jobs, and mail queues survive process restart.
+- App tests assert report creation writes `support.report_created` and admin
+  triage writes `admin.report_status`.
 - Runtime switch tests must also prove scan queue items are deleted from the
   durable queue when admin retry succeeds.
 - Runtime switch tests must prove delete-paste cleanup jobs are durable across
