@@ -315,6 +315,7 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		"PASTEBOX_APP_ENV",
 		"PASTEBOX_PUBLIC_URL",
 		"PASTEBOX_CSRF_SECRET",
+		"PASTEBOX_METRICS_TOKEN",
 		"PASTEBOX_DOMAIN",
 		"PASTEBOX_ADMIN_EMAIL",
 		"PASTEBOX_POSTGRES_PASSWORD",
@@ -376,6 +377,10 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 	}
 	if len(strings.TrimSpace(cfg.CSRFSecret)) < 32 || cfg.CSRFSecret == "development-csrf-secret" {
 		fmt.Fprintln(stderr, "production preflight failed: PASTEBOX_CSRF_SECRET must be a production random secret at least 32 characters long")
+		return 1
+	}
+	if len(strings.TrimSpace(cfg.MetricsToken)) < 32 {
+		fmt.Fprintln(stderr, "production preflight failed: PASTEBOX_METRICS_TOKEN must be a production random token at least 32 characters long")
 		return 1
 	}
 	if err := validateGoogleOAuthRedirectURL(cfg.GoogleOAuth.RedirectURL, cfg.PublicURL); err != nil {

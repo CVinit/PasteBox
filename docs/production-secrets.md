@@ -18,6 +18,7 @@ mode `600`.
 - Restic repository password and backup object-storage credentials.
 - Bootstrap admin password.
 - CSRF signing secret.
+- Metrics bearer token (`PASTEBOX_METRICS_TOKEN`).
 - SMTP credentials.
 - Stripe webhook signing secret (`PASTEBOX_STRIPE_WEBHOOK_SECRET`) and API keys.
 - Epusdt merchant id (`PASTEBOX_EPUSDT_PID`) and callback secret

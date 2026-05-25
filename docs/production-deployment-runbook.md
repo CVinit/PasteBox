@@ -74,12 +74,12 @@ docker compose --env-file deploy/production.env -f compose.production.yaml pull
 
 The production preflight fails if `PASTEBOX_IMAGE` is mutable, if
 `PASTEBOX_PUBLIC_URL` is not HTTPS, if `PASTEBOX_CSRF_SECRET` is missing or
-left at the development default, if Google OAuth client settings are missing, if
-SMTP is not configured for TLS delivery, if `PASTEBOX_S3_ENDPOINT` points to a
-local or HTTP object store, or if `PASTEBOX_RESTIC_REPOSITORY` is not an
-off-host `s3:https://` repository. Use managed S3-compatible storage for
-attachment objects and a separate off-host S3-compatible restic repository for
-backups.
+left at the development default, if `PASTEBOX_METRICS_TOKEN` is missing or too
+short, if Google OAuth client settings are missing, if SMTP is not configured
+for TLS delivery, if `PASTEBOX_S3_ENDPOINT` points to a local or HTTP object
+store, or if `PASTEBOX_RESTIC_REPOSITORY` is not an off-host `s3:https://`
+repository. Use managed S3-compatible storage for attachment objects and a
+separate off-host S3-compatible restic repository for backups.
 
 The first production launch also requires billing to be enabled with real
 provider callback credentials: `PASTEBOX_STRIPE_ENABLED=true`,
@@ -138,6 +138,28 @@ Expected responses:
 ```json
 {"app":"PasteBox","env":"production","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"mail","status":"ok"}]}
 ```
+
+## Metrics And Alerting
+
+The API exposes Prometheus text metrics at `/metrics`. The endpoint is not
+browser-authenticated and must be scraped with the production metrics bearer
+token:
+
+```sh
+curl -fsS -H "Authorization: Bearer $PASTEBOX_METRICS_TOKEN" https://pastebox.example.com/metrics
+```
+
+Do not put `PASTEBOX_METRICS_TOKEN` in dashboards, public URLs, or shared
+screenshots. Configure the monitoring agent to send the `Authorization` header
+and alert on these baseline series:
+
+- `pastebox_readiness_ready == 0` for dependency readiness failures.
+- `pastebox_readiness_component_ready{name=~"database|object_storage|redis|worker_queue|mail"} == 0` for component-specific outages.
+- `pastebox_queue_depth{status="failed"} > 0` for failed worker jobs.
+- `pastebox_queue_depth{kind="scan",status="pending"}` growing for scanner lag.
+- `pastebox_mail_queue_depth` growing for mail delivery backlog.
+- `pastebox_reports_open` growing for unresolved abuse/support load.
+- Absence of fresh backup and restore-drill evidence in the release notes.
 
 ## Worker Supervision
 

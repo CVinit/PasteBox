@@ -90,6 +90,60 @@ func TestReadinessEndpointReturnsUnavailableForFailedDependency(t *testing.T) {
 	}
 }
 
+func TestMetricsEndpointRequiresBearerToken(t *testing.T) {
+	cfg := config.FromEnv()
+	cfg.MetricsToken = "test-metrics-token"
+	handler := New(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)))
+
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	assertStatus(t, res, http.StatusUnauthorized)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Authorization", "Bearer wrong")
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	assertStatus(t, res, http.StatusUnauthorized)
+}
+
+func TestMetricsEndpointExposesReadinessHTTPAndOperationalGauges(t *testing.T) {
+	cfg := config.FromEnv()
+	cfg.AppEnv = "production"
+	cfg.MetricsToken = "test-metrics-token"
+	handler := NewWithServiceAndReadiness(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), app.New(cfg), func(context.Context) []ReadinessComponent {
+		return []ReadinessComponent{
+			{Name: "database", Status: "ok"},
+			{Name: "mail", Status: "skipped"},
+		}
+	})
+
+	health := httptest.NewRecorder()
+	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+	assertStatus(t, health, http.StatusOK)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Authorization", "Bearer test-metrics-token")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	assertStatus(t, res, http.StatusOK)
+	if contentType := res.Header().Get("Content-Type"); !strings.Contains(contentType, "text/plain") {
+		t.Fatalf("expected prometheus text content type, got %q", contentType)
+	}
+	body := res.Body.String()
+	for _, expected := range []string{
+		`pastebox_info{app="PasteBox",env="production"} 1`,
+		`pastebox_readiness_ready 1`,
+		`pastebox_readiness_component_ready{name="database",status="ok"} 1`,
+		`pastebox_http_requests_total{method="GET",path="/api/v1/health",status="200"} 1`,
+		`pastebox_operational_metrics_available 1`,
+		`pastebox_queue_depth{kind="scan",status="pending"} 0`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("expected metrics body to contain %q, got:\n%s", expected, body)
+		}
+	}
+}
+
 func TestPlanCatalogEndpoint(t *testing.T) {
 	handler := New(config.FromEnv(), slog.New(slog.NewTextHandler(testWriter{t: t}, nil)))
 

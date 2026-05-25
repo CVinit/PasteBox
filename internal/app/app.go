@@ -450,6 +450,20 @@ type Mail struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+type OperationalMetrics struct {
+	UserCount          int
+	ActivePastes       int
+	ActiveStorageBytes int64
+	ReportsOpen        int
+	CleanupQueueDepth  int
+	ScanQueueDepth     int
+	ScanFailureDepth   int
+	FailedJobDepth     int
+	MailQueueDepth     int
+	WebhookEvents      int
+	OrdersByStatus     map[string]int
+}
+
 type QuotaView struct {
 	Plan                    plans.Plan `json:"plan"`
 	ActivePasteCount        int        `json:"activePasteCount"`
@@ -1832,12 +1846,40 @@ func (s *Service) AdminDashboard(actorID string) (map[string]any, error) {
 	if err := s.requireAdminLocked(actorID); err != nil {
 		return nil, err
 	}
-	if err := s.refreshQueueCachesLocked(context.Background()); err != nil {
+	metrics, err := s.operationalMetricsLocked(context.Background())
+	if err != nil {
 		return nil, err
+	}
+	return map[string]any{
+		"users":                 metrics.UserCount,
+		"activePastes":          metrics.ActivePastes,
+		"activeStorageBytes":    metrics.ActiveStorageBytes,
+		"reportsOpen":           metrics.ReportsOpen,
+		"cleanupQueueDepth":     metrics.CleanupQueueDepth,
+		"scanQueueDepth":        metrics.ScanQueueDepth,
+		"scanFailureQueueDepth": metrics.ScanFailureDepth,
+		"failedJobQueueDepth":   metrics.FailedJobDepth,
+		"orders":                len(s.ordersByID),
+		"webhookEvents":         metrics.WebhookEvents,
+	}, nil
+}
+
+func (s *Service) OperationalMetrics() (OperationalMetrics, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.operationalMetricsLocked(context.Background())
+}
+
+func (s *Service) operationalMetricsLocked(ctx context.Context) (OperationalMetrics, error) {
+	if err := s.refreshQueueCachesLocked(ctx); err != nil {
+		return OperationalMetrics{}, err
+	}
+	if err := s.refreshMailCacheLocked(ctx); err != nil {
+		return OperationalMetrics{}, err
 	}
 	users, err := s.listUsersLocked()
 	if err != nil {
-		return nil, err
+		return OperationalMetrics{}, err
 	}
 	var activePastes int
 	var storage int64
@@ -1847,17 +1889,22 @@ func (s *Service) AdminDashboard(actorID string) (map[string]any, error) {
 			storage += s.pasteSizeLocked(paste)
 		}
 	}
-	return map[string]any{
-		"users":                 len(users),
-		"activePastes":          activePastes,
-		"activeStorageBytes":    storage,
-		"reportsOpen":           countReports(s.reports, "open"),
-		"cleanupQueueDepth":     len(s.cleanupJobs),
-		"scanQueueDepth":        len(s.scanJobs),
-		"scanFailureQueueDepth": len(s.scanFailures),
-		"failedJobQueueDepth":   len(s.failedJobs),
-		"orders":                len(s.ordersByID),
-		"webhookEvents":         len(s.webhookEvents),
+	ordersByStatus := map[string]int{}
+	for _, order := range s.ordersByID {
+		ordersByStatus[order.Status]++
+	}
+	return OperationalMetrics{
+		UserCount:          len(users),
+		ActivePastes:       activePastes,
+		ActiveStorageBytes: storage,
+		ReportsOpen:        countReports(s.reports, "open"),
+		CleanupQueueDepth:  len(s.cleanupJobs),
+		ScanQueueDepth:     len(s.scanJobs),
+		ScanFailureDepth:   len(s.scanFailures),
+		FailedJobDepth:     len(s.failedJobs),
+		MailQueueDepth:     len(s.mails),
+		WebhookEvents:      len(s.webhookEvents),
+		OrdersByStatus:     ordersByStatus,
 	}, nil
 }
 
@@ -2428,13 +2475,7 @@ func (s *Service) loadOperationalCaches(ctx context.Context) error {
 		}
 	}
 	if s.ops.Mails != nil {
-		mails, err := s.ops.Mails.QueuedMails(ctx, 1000)
-		if err != nil {
-			return fmt.Errorf("load queued mails: %w", err)
-		}
-		for _, mail := range mails {
-			s.cacheMailLocked(mail)
-		}
+		return s.refreshMailCacheLocked(ctx)
 	}
 	return nil
 }
@@ -2935,6 +2976,21 @@ func (s *Service) cacheMailLocked(mail Mail) *Mail {
 	}
 	s.mails = append(s.mails, &cached)
 	return &cached
+}
+
+func (s *Service) refreshMailCacheLocked(ctx context.Context) error {
+	if s.ops.Mails == nil {
+		return nil
+	}
+	mails, err := s.ops.Mails.QueuedMails(ctx, 1000)
+	if err != nil {
+		return fmt.Errorf("load queued mails: %w", err)
+	}
+	s.mails = []*Mail{}
+	for _, mail := range mails {
+		s.cacheMailLocked(mail)
+	}
+	return nil
 }
 
 func (s *Service) createMailLocked(mail *Mail) error {

@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -52,10 +53,18 @@ var (
 var staticFS embed.FS
 
 type Server struct {
-	cfg       config.Config
-	logger    *slog.Logger
-	app       *app.Service
-	readiness ReadinessChecker
+	cfg          config.Config
+	logger       *slog.Logger
+	app          *app.Service
+	readiness    ReadinessChecker
+	metricsMu    sync.Mutex
+	httpRequests map[httpMetricKey]int64
+}
+
+type httpMetricKey struct {
+	Method string
+	Path   string
+	Status int
 }
 
 type ReadinessChecker func(ctx context.Context) []ReadinessComponent
@@ -95,10 +104,11 @@ func NewWithServiceAndReadiness(cfg config.Config, logger *slog.Logger, service 
 	}
 
 	server := &Server{
-		cfg:       cfg,
-		logger:    logger,
-		app:       service,
-		readiness: readiness,
+		cfg:          cfg,
+		logger:       logger,
+		app:          service,
+		readiness:    readiness,
+		httpRequests: map[httpMetricKey]int64{},
 	}
 	return server.routes()
 }
@@ -112,6 +122,7 @@ func (s *Server) routes() http.Handler {
 
 	r.Get("/healthz", s.healthz)
 	r.Get("/readyz", s.readyz)
+	r.Get("/metrics", s.metrics)
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(s.csrfProtection)
@@ -223,6 +234,30 @@ func (s *Server) apiReady(w http.ResponseWriter, r *http.Request) {
 	s.writeReadiness(w, r)
 }
 
+func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
+	if !s.validMetricsToken(r) {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="pastebox metrics"`)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "metrics_unauthorized", "message": "metrics token is missing or invalid"})
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(s.prometheusMetrics(r.Context())))
+}
+
+func (s *Server) validMetricsToken(r *http.Request) bool {
+	expected := strings.TrimSpace(s.cfg.MetricsToken)
+	if expected == "" {
+		return false
+	}
+	header := strings.TrimSpace(r.Header.Get("Authorization"))
+	token, ok := strings.CutPrefix(header, "Bearer ")
+	if !ok {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(strings.TrimSpace(token)), []byte(expected)) == 1
+}
+
 func (s *Server) writeReadiness(w http.ResponseWriter, r *http.Request) {
 	components := s.readiness(r.Context())
 	status := "ready"
@@ -237,6 +272,159 @@ func (s *Server) writeReadiness(w http.ResponseWriter, r *http.Request) {
 		code = http.StatusServiceUnavailable
 	}
 	writeJSON(w, code, ReadinessReport{App: s.cfg.AppName, Env: s.cfg.AppEnv, Status: status, Components: components})
+}
+
+func (s *Server) prometheusMetrics(ctx context.Context) string {
+	var b strings.Builder
+	components := s.readiness(ctx)
+	ready := 1
+	for _, component := range components {
+		if component.Status != "ok" && component.Status != "skipped" {
+			ready = 0
+			break
+		}
+	}
+
+	writeMetricHelp(&b, "pastebox_info", "PasteBox process information.")
+	writeMetricType(&b, "pastebox_info", "gauge")
+	writeMetric(&b, "pastebox_info", map[string]string{"app": s.cfg.AppName, "env": s.cfg.AppEnv}, 1)
+	writeMetricHelp(&b, "pastebox_readiness_ready", "Overall readiness state, 1 when every component is ok or skipped.")
+	writeMetricType(&b, "pastebox_readiness_ready", "gauge")
+	writeMetric(&b, "pastebox_readiness_ready", nil, float64(ready))
+	writeMetricHelp(&b, "pastebox_readiness_component_ready", "Readiness component state, 1 when the component is ok or skipped.")
+	writeMetricType(&b, "pastebox_readiness_component_ready", "gauge")
+	for _, component := range components {
+		componentReady := 0
+		if component.Status == "ok" || component.Status == "skipped" {
+			componentReady = 1
+		}
+		writeMetric(&b, "pastebox_readiness_component_ready", map[string]string{
+			"name":   component.Name,
+			"status": component.Status,
+		}, float64(componentReady))
+	}
+
+	writeMetricHelp(&b, "pastebox_http_requests_total", "HTTP requests handled by method, route pattern, and status code.")
+	writeMetricType(&b, "pastebox_http_requests_total", "counter")
+	for _, sample := range s.httpRequestSamples() {
+		writeMetric(&b, "pastebox_http_requests_total", map[string]string{
+			"method": sample.key.Method,
+			"path":   sample.key.Path,
+			"status": strconv.Itoa(sample.key.Status),
+		}, float64(sample.count))
+	}
+
+	ops, err := s.app.OperationalMetrics()
+	writeMetricHelp(&b, "pastebox_operational_metrics_available", "Whether aggregate operational metrics could be loaded.")
+	writeMetricType(&b, "pastebox_operational_metrics_available", "gauge")
+	if err != nil {
+		writeMetric(&b, "pastebox_operational_metrics_available", nil, 0)
+		return b.String()
+	}
+	writeMetric(&b, "pastebox_operational_metrics_available", nil, 1)
+	writeOperationalMetrics(&b, ops)
+	return b.String()
+}
+
+type httpRequestSample struct {
+	key   httpMetricKey
+	count int64
+}
+
+func (s *Server) httpRequestSamples() []httpRequestSample {
+	s.metricsMu.Lock()
+	defer s.metricsMu.Unlock()
+	samples := make([]httpRequestSample, 0, len(s.httpRequests))
+	for key, count := range s.httpRequests {
+		samples = append(samples, httpRequestSample{key: key, count: count})
+	}
+	sort.Slice(samples, func(i, j int) bool {
+		if samples[i].key.Method != samples[j].key.Method {
+			return samples[i].key.Method < samples[j].key.Method
+		}
+		if samples[i].key.Path != samples[j].key.Path {
+			return samples[i].key.Path < samples[j].key.Path
+		}
+		return samples[i].key.Status < samples[j].key.Status
+	})
+	return samples
+}
+
+func writeOperationalMetrics(b *strings.Builder, ops app.OperationalMetrics) {
+	writeMetricHelp(b, "pastebox_users_total", "Total known PasteBox users.")
+	writeMetricType(b, "pastebox_users_total", "gauge")
+	writeMetric(b, "pastebox_users_total", nil, float64(ops.UserCount))
+	writeMetricHelp(b, "pastebox_active_pastes", "Currently visible active pastes.")
+	writeMetricType(b, "pastebox_active_pastes", "gauge")
+	writeMetric(b, "pastebox_active_pastes", nil, float64(ops.ActivePastes))
+	writeMetricHelp(b, "pastebox_active_storage_bytes", "Currently active paste and attachment bytes.")
+	writeMetricType(b, "pastebox_active_storage_bytes", "gauge")
+	writeMetric(b, "pastebox_active_storage_bytes", nil, float64(ops.ActiveStorageBytes))
+	writeMetricHelp(b, "pastebox_reports_open", "Open abuse or support reports.")
+	writeMetricType(b, "pastebox_reports_open", "gauge")
+	writeMetric(b, "pastebox_reports_open", nil, float64(ops.ReportsOpen))
+	writeMetricHelp(b, "pastebox_queue_depth", "Operational queue depth by kind and status.")
+	writeMetricType(b, "pastebox_queue_depth", "gauge")
+	writeMetric(b, "pastebox_queue_depth", map[string]string{"kind": "cleanup", "status": "pending"}, float64(ops.CleanupQueueDepth))
+	writeMetric(b, "pastebox_queue_depth", map[string]string{"kind": "scan", "status": "pending"}, float64(ops.ScanQueueDepth))
+	writeMetric(b, "pastebox_queue_depth", map[string]string{"kind": "scan", "status": "failed"}, float64(ops.ScanFailureDepth))
+	writeMetric(b, "pastebox_queue_depth", map[string]string{"kind": "all", "status": "failed"}, float64(ops.FailedJobDepth))
+	writeMetricHelp(b, "pastebox_mail_queue_depth", "Queued outbound mails waiting for delivery.")
+	writeMetricType(b, "pastebox_mail_queue_depth", "gauge")
+	writeMetric(b, "pastebox_mail_queue_depth", nil, float64(ops.MailQueueDepth))
+	writeMetricHelp(b, "pastebox_webhook_events_total", "Stored provider webhook events.")
+	writeMetricType(b, "pastebox_webhook_events_total", "gauge")
+	writeMetric(b, "pastebox_webhook_events_total", nil, float64(ops.WebhookEvents))
+	writeMetricHelp(b, "pastebox_billing_orders_total", "Stored billing orders by lifecycle status.")
+	writeMetricType(b, "pastebox_billing_orders_total", "gauge")
+	statuses := make([]string, 0, len(ops.OrdersByStatus))
+	for status := range ops.OrdersByStatus {
+		statuses = append(statuses, status)
+	}
+	sort.Strings(statuses)
+	for _, status := range statuses {
+		writeMetric(b, "pastebox_billing_orders_total", map[string]string{"status": status}, float64(ops.OrdersByStatus[status]))
+	}
+}
+
+func writeMetricHelp(b *strings.Builder, name string, help string) {
+	b.WriteString("# HELP ")
+	b.WriteString(name)
+	b.WriteByte(' ')
+	b.WriteString(help)
+	b.WriteByte('\n')
+}
+
+func writeMetricType(b *strings.Builder, name string, metricType string) {
+	b.WriteString("# TYPE ")
+	b.WriteString(name)
+	b.WriteByte(' ')
+	b.WriteString(metricType)
+	b.WriteByte('\n')
+}
+
+func writeMetric(b *strings.Builder, name string, labels map[string]string, value float64) {
+	b.WriteString(name)
+	if len(labels) > 0 {
+		keys := make([]string, 0, len(labels))
+		for key := range labels {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		b.WriteByte('{')
+		for i, key := range keys {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(key)
+			b.WriteByte('=')
+			b.WriteString(strconv.Quote(labels[key]))
+		}
+		b.WriteByte('}')
+	}
+	b.WriteByte(' ')
+	b.WriteString(strconv.FormatFloat(value, 'f', -1, 64))
+	b.WriteByte('\n')
 }
 
 func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
@@ -1190,17 +1378,32 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 		start := time.Now()
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 		next.ServeHTTP(ww, r)
+		status := ww.Status()
+		if status == 0 {
+			status = http.StatusOK
+		}
+		s.recordHTTPRequest(r, status)
 
 		s.logger.Info(
 			"http request",
 			"method", r.Method,
 			"path", r.URL.Path,
-			"status", ww.Status(),
+			"status", status,
 			"bytes", ww.BytesWritten(),
 			"duration_ms", time.Since(start).Milliseconds(),
 			"request_id", middleware.GetReqID(r.Context()),
 		)
 	})
+}
+
+func (s *Server) recordHTTPRequest(r *http.Request, status int) {
+	routePath := chi.RouteContext(r.Context()).RoutePattern()
+	if routePath == "" {
+		routePath = r.URL.Path
+	}
+	s.metricsMu.Lock()
+	defer s.metricsMu.Unlock()
+	s.httpRequests[httpMetricKey{Method: r.Method, Path: routePath, Status: status}]++
 }
 
 func (s *Server) csrfProtection(next http.Handler) http.Handler {

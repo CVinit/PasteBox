@@ -435,6 +435,79 @@ writeJSON(w, statusCode, ReadinessReport{
 })
 ```
 
+## Scenario: Protected Production Metrics
+
+### 1. Scope / Trigger
+
+- Trigger: Any change to `/metrics`, HTTP request middleware, readiness
+  reporting, admin/operational queue data, production preflight, or monitoring
+  runbooks.
+
+### 2. Signatures
+
+- API: `GET /metrics`
+- Config: `PASTEBOX_METRICS_TOKEN`
+- Preflight: `pastebox preflight production`
+- Service: `app.Service.OperationalMetrics()`
+
+### 3. Contracts
+
+- `/metrics` returns Prometheus text format only when `Authorization: Bearer
+  <PASTEBOX_METRICS_TOKEN>` matches the configured token.
+- Production preflight requires `PASTEBOX_METRICS_TOKEN` to be explicitly set
+  and at least 32 characters long.
+- Metrics must avoid user PII, secrets, magic links, reset tokens, OAuth tokens,
+  webhook payloads, paste bodies, and object-storage credentials.
+- HTTP request counters use route patterns, methods, and status codes; do not
+  add raw URLs or user-supplied IDs as labels.
+- Readiness component gauges mirror `/readyz` semantics: `ok` and `skipped`
+  count as ready, every other status counts as not ready.
+- Operational gauges are aggregate counts only: active pastes/storage, open
+  reports, queue depths, mail backlog, webhook event count, and order counts by
+  lifecycle status.
+
+### 4. Validation & Error Matrix
+
+- Missing or wrong bearer token -> `401 metrics_unauthorized`.
+- Missing production token -> production preflight fails.
+- Readiness check fails -> metrics endpoint still returns text with readiness
+  gauges set to `0`.
+- Operational metric loading fails -> emit `pastebox_operational_metrics_available
+  0` without exposing the internal error text.
+
+### 5. Good/Base/Bad Cases
+
+- Good: Monitoring scrapes `/metrics` over HTTPS with the bearer token and
+  alerts on readiness, failed jobs, queue lag, and mail backlog.
+- Base: Development can leave the metrics token empty; `/metrics` remains
+  unauthorized until a token is configured.
+- Bad: Exposing `/metrics` publicly without a token or labeling HTTP metrics
+  with raw share tokens, paste IDs, emails, or object keys.
+
+### 6. Tests Required
+
+- Handler tests must cover unauthorized and authorized `/metrics` access.
+- Handler tests must assert representative Prometheus lines for readiness,
+  HTTP request counters, and operational gauges.
+- Command tests must cover production preflight rejecting missing or short
+  metrics tokens.
+- Run full `make test` after changing metrics because middleware, preflight,
+  and deployment docs consume the same contract.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+writeMetric("pastebox_http_requests_total", map[string]string{"path": r.URL.Path})
+```
+
+#### Correct
+
+```go
+writeMetric("pastebox_http_requests_total", map[string]string{"path": chi.RouteContext(r.Context()).RoutePattern()})
+```
+
 ## Scenario: Backup Restore Drill
 
 ### 1. Scope / Trigger

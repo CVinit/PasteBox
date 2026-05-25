@@ -8,12 +8,13 @@ import (
 )
 
 type Config struct {
-	AppName    string
-	AppEnv     string
-	HTTPAddr   string
-	PublicURL  string
-	LogLevel   slog.Level
-	CSRFSecret string
+	AppName      string
+	AppEnv       string
+	HTTPAddr     string
+	PublicURL    string
+	LogLevel     slog.Level
+	CSRFSecret   string
+	MetricsToken string
 
 	DatabaseURL string
 	RedisAddr   string
@@ -81,12 +82,13 @@ type EpusdtConfig struct {
 func FromEnv() Config {
 	publicURL := envString("PASTEBOX_PUBLIC_URL", "http://localhost:5173")
 	return Config{
-		AppName:    envString("PASTEBOX_APP_NAME", "PasteBox"),
-		AppEnv:     envString("PASTEBOX_APP_ENV", "development"),
-		HTTPAddr:   envString("PASTEBOX_HTTP_ADDR", ":8080"),
-		PublicURL:  publicURL,
-		LogLevel:   envLogLevel("PASTEBOX_LOG_LEVEL", slog.LevelInfo),
-		CSRFSecret: envString("PASTEBOX_CSRF_SECRET", "development-csrf-secret"),
+		AppName:      envString("PASTEBOX_APP_NAME", "PasteBox"),
+		AppEnv:       envString("PASTEBOX_APP_ENV", "development"),
+		HTTPAddr:     envString("PASTEBOX_HTTP_ADDR", ":8080"),
+		PublicURL:    publicURL,
+		LogLevel:     envLogLevel("PASTEBOX_LOG_LEVEL", slog.LevelInfo),
+		CSRFSecret:   envString("PASTEBOX_CSRF_SECRET", "development-csrf-secret"),
+		MetricsToken: envString("PASTEBOX_METRICS_TOKEN", ""),
 
 		DatabaseURL: envString("PASTEBOX_DATABASE_URL", "postgres://pastebox:pastebox@localhost:5432/pastebox?sslmode=disable"),
 		RedisAddr:   envString("PASTEBOX_REDIS_ADDR", "localhost:6379"),

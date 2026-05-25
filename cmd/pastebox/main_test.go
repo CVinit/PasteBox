@@ -82,6 +82,7 @@ func TestProductionPreflightRequiresExplicitProductionEnvironment(t *testing.T) 
 		"PASTEBOX_APP_ENV",
 		"PASTEBOX_PUBLIC_URL",
 		"PASTEBOX_CSRF_SECRET",
+		"PASTEBOX_METRICS_TOKEN",
 		"PASTEBOX_DOMAIN",
 		"PASTEBOX_ADMIN_EMAIL",
 		"PASTEBOX_POSTGRES_PASSWORD",
@@ -254,6 +255,24 @@ func TestProductionPreflightRejectsDevelopmentCSRFSecret(t *testing.T) {
 	}
 }
 
+func TestProductionPreflightRejectsShortMetricsToken(t *testing.T) {
+	setValidProductionEnv(t)
+	t.Setenv("PASTEBOX_METRICS_TOKEN", "short")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"preflight", "production"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("expected short metrics token to fail, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "PASTEBOX_METRICS_TOKEN must be a production random token") {
+		t.Fatalf("expected metrics token validation error, got %q", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+}
+
 func TestProductionPreflightRejectsGoogleOAuthRedirectHostMismatch(t *testing.T) {
 	setValidProductionEnv(t)
 	t.Setenv("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL", "https://auth.example.com/api/v1/auth/google/callback")
@@ -368,6 +387,7 @@ func setValidProductionEnv(t *testing.T) {
 	t.Setenv("PASTEBOX_APP_ENV", "production")
 	t.Setenv("PASTEBOX_PUBLIC_URL", "https://pastebox.example.com")
 	t.Setenv("PASTEBOX_CSRF_SECRET", "csrf-secret-32-bytes-minimum-prod")
+	t.Setenv("PASTEBOX_METRICS_TOKEN", "metrics-token-32-bytes-minimum-prod")
 	t.Setenv("PASTEBOX_DOMAIN", "pastebox.example.com")
 	t.Setenv("PASTEBOX_ADMIN_EMAIL", "admin@example.com")
 	t.Setenv("PASTEBOX_POSTGRES_PASSWORD", "db-secret")
