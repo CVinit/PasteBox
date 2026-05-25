@@ -1,6 +1,8 @@
 #!/bin/sh
 set -eu
 
+. /usr/local/bin/pastebox-textfile-metrics.sh 2>/dev/null || pastebox_write_textfile_metrics() { :; }
+
 wal_dir=/backups/wal
 max_age_seconds="${PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS:-900}"
 wait_seconds="${PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS:-60}"
@@ -80,5 +82,17 @@ fi
 latest_wal_info="$(wait_for_fresh_wal)"
 latest_wal="${latest_wal_info% *}"
 age_seconds="${latest_wal_info##* }"
+finished_at="$(date +%s)"
+
+pastebox_write_textfile_metrics "pastebox-wal-archive.prom" \
+	"# HELP pastebox_wal_archive_last_success_timestamp_seconds Unix timestamp of the latest successful WAL freshness check." \
+	"# TYPE pastebox_wal_archive_last_success_timestamp_seconds gauge" \
+	"pastebox_wal_archive_last_success_timestamp_seconds $finished_at" \
+	"# HELP pastebox_wal_archive_latest_age_seconds Age in seconds of the newest archived WAL segment during the latest check." \
+	"# TYPE pastebox_wal_archive_latest_age_seconds gauge" \
+	"pastebox_wal_archive_latest_age_seconds $age_seconds" \
+	"# HELP pastebox_wal_archive_max_age_seconds Configured maximum acceptable archived WAL age." \
+	"# TYPE pastebox_wal_archive_max_age_seconds gauge" \
+	"pastebox_wal_archive_max_age_seconds $max_age_seconds"
 
 echo "wal archive check succeeded file=$latest_wal age_seconds=$age_seconds max_age_seconds=$max_age_seconds"

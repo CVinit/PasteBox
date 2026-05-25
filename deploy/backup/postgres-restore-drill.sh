@@ -1,6 +1,8 @@
 #!/bin/sh
 set -eu
 
+. /usr/local/bin/pastebox-textfile-metrics.sh 2>/dev/null || pastebox_write_textfile_metrics() { :; }
+
 backup_dir=/backups/postgres
 source_backup="${PASTEBOX_RESTORE_SOURCE:-}"
 drill_db="${PASTEBOX_RESTORE_DRILL_DATABASE:-pastebox_restore_drill}"
@@ -53,5 +55,16 @@ schema_count="$(cat /tmp/pastebox-restore-drill-schema-count | tr -d '[:space:]'
 if [ "$keep_drill_db" != "true" ]; then
 	dropdb "$drill_db"
 fi
+
+pastebox_write_textfile_metrics "pastebox-restore-drill.prom" \
+	"# HELP pastebox_restore_drill_last_success_timestamp_seconds Unix timestamp of the latest successful logical restore drill." \
+	"# TYPE pastebox_restore_drill_last_success_timestamp_seconds gauge" \
+	"pastebox_restore_drill_last_success_timestamp_seconds $finished_at" \
+	"# HELP pastebox_restore_drill_last_duration_seconds Duration of the latest successful logical restore drill." \
+	"# TYPE pastebox_restore_drill_last_duration_seconds gauge" \
+	"pastebox_restore_drill_last_duration_seconds $duration_seconds" \
+	"# HELP pastebox_restore_drill_schema_migrations Number of schema migration rows observed during the latest logical restore drill." \
+	"# TYPE pastebox_restore_drill_schema_migrations gauge" \
+	"pastebox_restore_drill_schema_migrations $schema_count"
 
 echo "restore drill succeeded backup=$source_backup duration_seconds=$duration_seconds schema_migrations=$schema_count kept_database=$keep_drill_db"

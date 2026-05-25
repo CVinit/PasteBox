@@ -11,6 +11,46 @@ groups:
           description: Prometheus cannot scrape the protected PasteBox /metrics endpoint.
           runbook: docs/production-deployment-runbook.md#metrics-and-alerting
 
+      - alert: PasteBoxCaddyMetricsScrapeDown
+        expr: up{job="pastebox-caddy"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: PasteBox Caddy metrics scrape is down
+          description: Prometheus cannot scrape Caddy's internal metrics endpoint.
+          runbook: docs/production-deployment-runbook.md#metrics-and-alerting
+
+      - alert: PasteBoxNodeExporterDown
+        expr: up{job="node-exporter"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: PasteBox host metrics scrape is down
+          description: Prometheus cannot scrape node-exporter host metrics or backup textfile metrics.
+          runbook: docs/production-deployment-runbook.md#metrics-and-alerting
+
+      - alert: PasteBoxHttpsProbeDown
+        expr: probe_success{job="pastebox-https"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: PasteBox HTTPS probe is failing
+          description: Blackbox probing cannot reach the configured production public URL over HTTPS.
+          runbook: docs/production-deployment-runbook.md#https-and-certificate-renewal
+
+      - alert: PasteBoxCertificateExpiresSoon
+        expr: probe_ssl_earliest_cert_expiry{job="pastebox-https"} - time() < 1209600
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: PasteBox TLS certificate expires soon
+          description: The public TLS certificate has less than 14 days before expiry.
+          runbook: docs/production-deployment-runbook.md#https-and-certificate-renewal
+
       - alert: PasteBoxReadinessDown
         expr: pastebox_readiness_ready == 0
         for: 2m
@@ -80,3 +120,103 @@ groups:
           summary: PasteBox abuse/support reports remain open
           description: Open report backlog has persisted for 24 hours and needs operator triage.
           runbook: docs/production-support-operations-runbook.md
+
+      - alert: PasteBoxHostDiskPressure
+        expr: (node_filesystem_avail_bytes{job="node-exporter",fstype!~"tmpfs|devtmpfs|overlay|squashfs"} / node_filesystem_size_bytes{job="node-exporter",fstype!~"tmpfs|devtmpfs|overlay|squashfs"}) < 0.15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: PasteBox host disk space is low
+          description: "Filesystem {{ $labels.mountpoint }} has less than 15% available space."
+          runbook: docs/production-deployment-runbook.md#metrics-and-alerting
+
+      - alert: PasteBoxHostMemoryPressure
+        expr: (node_memory_MemAvailable_bytes{job="node-exporter"} / node_memory_MemTotal_bytes{job="node-exporter"}) < 0.15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: PasteBox host memory is low
+          description: The production host has less than 15% available memory.
+          runbook: docs/production-deployment-runbook.md#metrics-and-alerting
+
+      - alert: PasteBoxHostCpuPressure
+        expr: 1 - avg by (instance) (rate(node_cpu_seconds_total{job="node-exporter",mode="idle"}[5m])) > 0.85
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: PasteBox host CPU usage is high
+          description: The production host CPU usage has stayed above 85% for 15 minutes.
+          runbook: docs/production-deployment-runbook.md#metrics-and-alerting
+
+      - alert: PasteBoxLogicalBackupStale
+        expr: absent(pastebox_logical_backup_last_success_timestamp_seconds) or time() - pastebox_logical_backup_last_success_timestamp_seconds > 93600
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: PasteBox logical backup is stale
+          description: No successful logical PostgreSQL backup metric has been recorded within 26 hours.
+          runbook: docs/production-deployment-runbook.md#backups
+
+      - alert: PasteBoxWalArchiveStale
+        expr: absent(pastebox_wal_archive_last_success_timestamp_seconds) or time() - pastebox_wal_archive_last_success_timestamp_seconds > 1800 or absent(pastebox_wal_archive_latest_age_seconds) or pastebox_wal_archive_latest_age_seconds > 900
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: PasteBox WAL archive freshness is outside RPO
+          description: WAL freshness evidence is missing, stale, or older than the 15-minute RPO target.
+          runbook: docs/production-deployment-runbook.md#backups
+
+      - alert: PasteBoxBaseBackupStale
+        expr: absent(pastebox_basebackup_last_success_timestamp_seconds) or time() - pastebox_basebackup_last_success_timestamp_seconds > 93600
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: PasteBox PITR base backup is stale
+          description: No successful PITR base backup metric has been recorded within 26 hours.
+          runbook: docs/production-deployment-runbook.md#backups
+
+      - alert: PasteBoxRestoreDrillStale
+        expr: absent(pastebox_restore_drill_last_success_timestamp_seconds) or time() - pastebox_restore_drill_last_success_timestamp_seconds > 2592000
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: PasteBox logical restore drill is stale
+          description: No successful logical restore drill metric has been recorded within 30 days.
+          runbook: docs/production-deployment-runbook.md#backups
+
+      - alert: PasteBoxPitrDrillStale
+        expr: absent(pastebox_pitr_drill_last_success_timestamp_seconds) or time() - pastebox_pitr_drill_last_success_timestamp_seconds > 2592000
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: PasteBox PITR restore drill is stale
+          description: No successful PITR restore drill metric has been recorded within 30 days.
+          runbook: docs/production-deployment-runbook.md#backups
+
+      - alert: PasteBoxPitrDrillRtoExceeded
+        expr: pastebox_pitr_drill_last_duration_seconds > 14400
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: PasteBox PITR restore drill exceeds RTO
+          description: Latest PITR restore drill duration exceeded the 4-hour RTO target.
+          runbook: docs/production-deployment-runbook.md#backups
+
+      - alert: PasteBoxOffHostBackupStale
+        expr: absent(pastebox_offhost_backup_last_success_timestamp_seconds) or time() - pastebox_offhost_backup_last_success_timestamp_seconds > 93600
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: PasteBox off-host backup push is stale
+          description: No successful off-host restic backup and integrity-check metric has been recorded within 26 hours.
+          runbook: docs/production-deployment-runbook.md#backups

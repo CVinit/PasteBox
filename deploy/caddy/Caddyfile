@@ -1,6 +1,7 @@
 {
-	admin 127.0.0.1:2019
+	admin 0.0.0.0:2019
 	email {$PASTEBOX_ADMIN_EMAIL}
+	metrics
 }
 
 {$PASTEBOX_DOMAIN} {

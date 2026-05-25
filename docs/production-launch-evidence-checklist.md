@@ -123,9 +123,12 @@ commit real secrets, raw provider payloads, private object keys, or user data.
 ## Monitoring And Alerts
 
 - [ ] Prometheus or external monitoring scrapes `/metrics` with the bearer
-  token.
+  token, plus Caddy metrics, host metrics, backup textfile metrics, and HTTPS
+  blackbox probe metrics.
 - [ ] Alert rules cover scrape failure, readiness, failed jobs, scanner
-  backlog, mail backlog, and open support/abuse report backlog.
+  backlog, mail backlog, open support/abuse report backlog, stale backup/WAL
+  evidence, restore-drill freshness, RTO breach, host resources, and
+  certificate expiry.
 - [ ] Certificate renewal status was checked through Caddy logs or equivalent
   provider tooling.
 - [ ] Disk, CPU, memory, PostgreSQL health, WAL lag, backup failure, queue lag,

@@ -129,6 +129,8 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    expose:
+      - "2019"
     volumes:
       - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - pastebox-caddy-data:/data
@@ -151,11 +153,15 @@ services:
     depends_on:
       api:
         condition: service_healthy
+      caddy:
+        condition: service_started
+      node-exporter:
+        condition: service_started
+      blackbox:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--storage.tsdb.retention.time=${PASTEBOX_PROMETHEUS_RETENTION:-15d}"
-      - "--web.listen-address=0.0.0.0:9090"
+      - "sed 's#__PASTEBOX_PUBLIC_URL__#${PASTEBOX_PUBLIC_URL:?set PASTEBOX_PUBLIC_URL}#g' /etc/prometheus/prometheus.yml > /tmp/prometheus.yml && exec /bin/prometheus --config.file=/tmp/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=${PASTEBOX_PROMETHEUS_RETENTION:-15d} --web.listen-address=0.0.0.0:9090"
     expose:
       - "9090"
     volumes:
@@ -164,6 +170,41 @@ services:
       - pastebox-prometheus:/prometheus
     secrets:
       - pastebox_metrics_token
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  node-exporter:
+    image: ${PASTEBOX_NODE_EXPORTER_IMAGE:-prom/node-exporter:v1.8.2}
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    command:
+      - "--path.rootfs=/host"
+      - "--collector.textfile.directory=/var/lib/node_exporter/textfile_collector"
+      - "--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/containers/.+)($$|/)"
+    expose:
+      - "9100"
+    volumes:
+      - /:/host:ro,rslave
+      - pastebox-node-textfile:/var/lib/node_exporter/textfile_collector:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  blackbox:
+    image: ${PASTEBOX_BLACKBOX_EXPORTER_IMAGE:-prom/blackbox-exporter:v0.25.0}
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/blackbox_exporter/config.yml"
+    expose:
+      - "9115"
+    volumes:
+      - ./deploy/monitoring/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
     logging:
       driver: json-file
       options:
@@ -196,9 +237,12 @@ services:
       PGUSER: ${PASTEBOX_POSTGRES_USER:-pastebox}
       PGPASSWORD: ${PASTEBOX_POSTGRES_PASSWORD:?set PASTEBOX_POSTGRES_PASSWORD}
       PASTEBOX_BACKUP_RETENTION_DAYS: ${PASTEBOX_BACKUP_RETENTION_DAYS:-30}
+      PASTEBOX_TEXTFILE_COLLECTOR_DIR: /var/lib/node_exporter/textfile_collector
     volumes:
       - pastebox-backups:/backups
       - ./deploy/backup/postgres-backup.sh:/usr/local/bin/pastebox-postgres-backup.sh:ro
+      - ./deploy/monitoring/textfile-metrics.sh:/usr/local/bin/pastebox-textfile-metrics.sh:ro
+      - pastebox-node-textfile:/var/lib/node_exporter/textfile_collector
     depends_on:
       postgres:
         condition: service_healthy
@@ -215,9 +259,12 @@ services:
       PASTEBOX_BACKUP_RETENTION_DAYS: ${PASTEBOX_BACKUP_RETENTION_DAYS:-30}
       PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS: ${PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS:-900}
       PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS: ${PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS:-60}
+      PASTEBOX_TEXTFILE_COLLECTOR_DIR: /var/lib/node_exporter/textfile_collector
     volumes:
       - pastebox-backups:/backups
       - ./deploy/backup/postgres-basebackup.sh:/usr/local/bin/pastebox-postgres-basebackup.sh:ro
+      - ./deploy/monitoring/textfile-metrics.sh:/usr/local/bin/pastebox-textfile-metrics.sh:ro
+      - pastebox-node-textfile:/var/lib/node_exporter/textfile_collector
     depends_on:
       postgres:
         condition: service_healthy
@@ -233,9 +280,12 @@ services:
       PGPASSWORD: ${PASTEBOX_POSTGRES_PASSWORD:?set PASTEBOX_POSTGRES_PASSWORD}
       PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS: ${PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS:-900}
       PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS: ${PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS:-60}
+      PASTEBOX_TEXTFILE_COLLECTOR_DIR: /var/lib/node_exporter/textfile_collector
     volumes:
       - pastebox-backups:/backups
       - ./deploy/backup/postgres-wal-check.sh:/usr/local/bin/pastebox-postgres-wal-check.sh:ro
+      - ./deploy/monitoring/textfile-metrics.sh:/usr/local/bin/pastebox-textfile-metrics.sh:ro
+      - pastebox-node-textfile:/var/lib/node_exporter/textfile_collector
     depends_on:
       postgres:
         condition: service_healthy
@@ -252,9 +302,12 @@ services:
       PASTEBOX_RESTORE_SOURCE: ${PASTEBOX_RESTORE_SOURCE:-}
       PASTEBOX_RESTORE_DRILL_DATABASE: ${PASTEBOX_RESTORE_DRILL_DATABASE:-pastebox_restore_drill}
       PASTEBOX_KEEP_RESTORE_DRILL_DB: ${PASTEBOX_KEEP_RESTORE_DRILL_DB:-false}
+      PASTEBOX_TEXTFILE_COLLECTOR_DIR: /var/lib/node_exporter/textfile_collector
     volumes:
       - pastebox-backups:/backups
       - ./deploy/backup/postgres-restore-drill.sh:/usr/local/bin/pastebox-postgres-restore-drill.sh:ro
+      - ./deploy/monitoring/textfile-metrics.sh:/usr/local/bin/pastebox-textfile-metrics.sh:ro
+      - pastebox-node-textfile:/var/lib/node_exporter/textfile_collector
     depends_on:
       postgres:
         condition: service_healthy
@@ -273,9 +326,12 @@ services:
       PASTEBOX_PITR_DRILL_PORT: ${PASTEBOX_PITR_DRILL_PORT:-55432}
       PASTEBOX_PITR_RECOVERY_WAIT_SECONDS: ${PASTEBOX_PITR_RECOVERY_WAIT_SECONDS:-300}
       PASTEBOX_KEEP_PITR_DRILL_DIR: ${PASTEBOX_KEEP_PITR_DRILL_DIR:-false}
+      PASTEBOX_TEXTFILE_COLLECTOR_DIR: /var/lib/node_exporter/textfile_collector
     volumes:
       - pastebox-backups:/backups
       - ./deploy/backup/postgres-pitr-restore-drill.sh:/usr/local/bin/pastebox-postgres-pitr-restore-drill.sh:ro
+      - ./deploy/monitoring/textfile-metrics.sh:/usr/local/bin/pastebox-textfile-metrics.sh:ro
+      - pastebox-node-textfile:/var/lib/node_exporter/textfile_collector
     entrypoint: ["/bin/sh", "/usr/local/bin/pastebox-postgres-pitr-restore-drill.sh"]
 
   backup-push:
@@ -287,9 +343,12 @@ services:
       AWS_ACCESS_KEY_ID: ${PASTEBOX_BACKUP_S3_ACCESS_KEY:?set PASTEBOX_BACKUP_S3_ACCESS_KEY}
       AWS_SECRET_ACCESS_KEY: ${PASTEBOX_BACKUP_S3_SECRET_KEY:?set PASTEBOX_BACKUP_S3_SECRET_KEY}
       AWS_DEFAULT_REGION: ${PASTEBOX_BACKUP_S3_REGION:-us-east-1}
+      PASTEBOX_TEXTFILE_COLLECTOR_DIR: /var/lib/node_exporter/textfile_collector
     volumes:
       - pastebox-backups:/backups:ro
       - ./deploy/backup/restic-backup.sh:/usr/local/bin/pastebox-restic-backup.sh:ro
+      - ./deploy/monitoring/textfile-metrics.sh:/usr/local/bin/pastebox-textfile-metrics.sh:ro
+      - pastebox-node-textfile:/var/lib/node_exporter/textfile_collector
     entrypoint: ["/bin/sh", "/usr/local/bin/pastebox-restic-backup.sh"]
 
 volumes:
@@ -300,6 +359,7 @@ volumes:
   pastebox-caddy-config:
   pastebox-backups:
   pastebox-prometheus:
+  pastebox-node-textfile:
 
 secrets:
   pastebox_metrics_token:

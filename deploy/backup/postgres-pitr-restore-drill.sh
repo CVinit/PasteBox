@@ -1,6 +1,8 @@
 #!/bin/sh
 set -eu
 
+. /usr/local/bin/pastebox-textfile-metrics.sh 2>/dev/null || pastebox_write_textfile_metrics() { :; }
+
 backup_root=/backups/basebackups
 wal_dir=/backups/wal
 source_base="${PASTEBOX_PITR_SOURCE_BASE:-}"
@@ -137,5 +139,16 @@ schema_count="$(psql --host=127.0.0.1 --port="$drill_port" --username="$PGUSER" 
 
 finished_at="$(date +%s)"
 duration_seconds=$((finished_at - started_at))
+
+pastebox_write_textfile_metrics "pastebox-pitr-drill.prom" \
+	"# HELP pastebox_pitr_drill_last_success_timestamp_seconds Unix timestamp of the latest successful PITR restore drill." \
+	"# TYPE pastebox_pitr_drill_last_success_timestamp_seconds gauge" \
+	"pastebox_pitr_drill_last_success_timestamp_seconds $finished_at" \
+	"# HELP pastebox_pitr_drill_last_duration_seconds Duration of the latest successful PITR restore drill." \
+	"# TYPE pastebox_pitr_drill_last_duration_seconds gauge" \
+	"pastebox_pitr_drill_last_duration_seconds $duration_seconds" \
+	"# HELP pastebox_pitr_drill_schema_migrations Number of schema migration rows observed during the latest PITR restore drill." \
+	"# TYPE pastebox_pitr_drill_schema_migrations gauge" \
+	"pastebox_pitr_drill_schema_migrations $schema_count"
 
 echo "pitr restore drill succeeded base_backup=$source_base duration_seconds=$duration_seconds schema_migrations=$schema_count in_recovery=$recovery_state kept_dir=$keep_drill_dir"

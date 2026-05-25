@@ -18,9 +18,15 @@ traffic is allowed.
 - `deploy/production.env.example`: production environment template.
 - `deploy/caddy/Caddyfile`: HTTPS reverse proxy and certificate renewal.
 - `deploy/monitoring/prometheus.yml`: optional production Prometheus scrape
-  configuration for the protected PasteBox metrics endpoint.
+  configuration for the protected PasteBox metrics endpoint, Caddy metrics,
+  host metrics, backup textfile metrics, and HTTPS probing.
 - `deploy/monitoring/pastebox-alerts.yml`: baseline production alert rules for
-  readiness, worker queues, mail backlog, and support/abuse report backlog.
+  readiness, worker queues, mail backlog, support/abuse report backlog, host
+  resources, certificate expiry, and backup/WAL freshness.
+- `deploy/monitoring/blackbox.yml`: blackbox exporter probe configuration for
+  HTTPS and certificate-expiry checks.
+- `deploy/monitoring/textfile-metrics.sh`: helper used by backup and restore
+  maintenance jobs to publish node-exporter textfile metrics.
 - `deploy/postgres/pg_hba.conf`: PostgreSQL password-auth rules, including
   replication access for PITR base backups from maintenance containers.
 - `deploy/backup/postgres-backup.sh`: logical PostgreSQL backup job.
@@ -58,6 +64,8 @@ traffic is allowed.
    deploy/caddy/Caddyfile
    deploy/monitoring/prometheus.yml
    deploy/monitoring/pastebox-alerts.yml
+   deploy/monitoring/blackbox.yml
+   deploy/monitoring/textfile-metrics.sh
    deploy/postgres/pg_hba.conf
    deploy/backup/postgres-backup.sh
    deploy/backup/postgres-basebackup.sh
@@ -218,23 +226,32 @@ curl -fsS -H "Authorization: Bearer $PASTEBOX_METRICS_TOKEN" https://pastebox.ex
 
 Do not put `PASTEBOX_METRICS_TOKEN` in dashboards, public URLs, or shared
 screenshots. The optional in-stack Prometheus profile reads this token as a
-Compose secret from `PASTEBOX_METRICS_TOKEN` and mounts committed scrape and
-alert-rule files:
+Compose secret from `PASTEBOX_METRICS_TOKEN`, renders the configured
+`PASTEBOX_PUBLIC_URL` into the blackbox scrape target, and mounts committed
+scrape, probe, and alert-rule files:
 
 ```sh
 docker compose --env-file deploy/production.env -f compose.production.yaml --profile monitoring up -d prometheus
 docker compose --env-file deploy/production.env -f compose.production.yaml --profile monitoring exec prometheus promtool check config /etc/prometheus/prometheus.yml
+docker compose --env-file deploy/production.env -f compose.production.yaml --profile monitoring exec blackbox /bin/blackbox_exporter --version
 ```
 
 Keep Prometheus private to the Compose network or a protected operator network;
 the production Compose file intentionally exposes port `9090` only to sibling
-containers. If you use an external monitoring provider instead, import
-`deploy/monitoring/pastebox-alerts.yml` or equivalent rules and keep the same
-authorization header.
+containers. The monitoring profile also runs Caddy internal metrics,
+node-exporter with a textfile collector, and blackbox-exporter for the
+production HTTPS URL. If you use an external monitoring provider instead,
+import `deploy/monitoring/pastebox-alerts.yml` or equivalent rules, keep the
+same authorization header for `/metrics`, and provide equivalent host,
+certificate, backup, WAL, and restore-drill signals.
 
 The committed baseline alert rules cover these launch gates:
 
 - `PasteBoxMetricsScrapeDown` for failed `/metrics` scraping.
+- `PasteBoxCaddyMetricsScrapeDown` for failed Caddy metrics scraping.
+- `PasteBoxNodeExporterDown` for failed host/textfile metrics scraping.
+- `PasteBoxHttpsProbeDown` for failed public HTTPS probing.
+- `PasteBoxCertificateExpiresSoon` for certificates expiring within 14 days.
 - `PasteBoxReadinessDown` for overall dependency readiness failures.
 - `PasteBoxReadinessComponentDown` for database, object storage, Redis, worker
   queue, or mail readiness failures.
@@ -244,11 +261,20 @@ The committed baseline alert rules cover these launch gates:
 - `PasteBoxScannerBacklog` for scan queue lag.
 - `PasteBoxMailBacklog` for mail delivery backlog.
 - `PasteBoxOpenReportsBacklog` for unresolved abuse/support report load.
+- `PasteBoxHostDiskPressure`, `PasteBoxHostMemoryPressure`, and
+  `PasteBoxHostCpuPressure` for VPS resource pressure.
+- `PasteBoxLogicalBackupStale`, `PasteBoxWalArchiveStale`,
+  `PasteBoxBaseBackupStale`, `PasteBoxRestoreDrillStale`,
+  `PasteBoxPitrDrillStale`, `PasteBoxPitrDrillRtoExceeded`, and
+  `PasteBoxOffHostBackupStale` for backup, RPO, restore-drill, RTO, and
+  off-host backup evidence freshness.
 
-Prometheus rules cannot prove backup evidence by themselves. The release notes
-must still record fresh logical backup, WAL freshness check, base-backup
-manifest, restore-drill evidence, PITR drill evidence, and off-host backup push
-evidence before public beta traffic is accepted.
+The backup and restore maintenance jobs update node-exporter textfile metrics
+only after successful runs. A missing textfile metric is treated as stale by the
+baseline rules. Prometheus rules cannot prove backup evidence by themselves:
+release notes must still record fresh logical backup, WAL freshness check,
+base-backup manifest, restore-drill evidence, PITR drill evidence, and
+off-host backup push evidence before public beta traffic is accepted.
 
 ## Worker Supervision
 
@@ -306,8 +332,9 @@ the backup volume, for example `/backups/postgres/pastebox-20260525T120000Z.sql.
 The drill verifies the `.sha256`, restores into
 `PASTEBOX_RESTORE_DRILL_DATABASE` (default `pastebox_restore_drill`), checks the
 `schema_migrations` table, drops the scratch database unless
-`PASTEBOX_KEEP_RESTORE_DRILL_DB=true`, and prints `duration_seconds`. Record
-that duration and the backup path in release notes.
+`PASTEBOX_KEEP_RESTORE_DRILL_DB=true`, prints `duration_seconds`, and updates
+the `pastebox_restore_drill_*` textfile metrics. Record that duration and the
+backup path in release notes.
 
 Check WAL archive freshness. Schedule this at least every 15 minutes:
 
@@ -323,8 +350,9 @@ docker compose --env-file deploy/production.env -f compose.production.yaml --pro
 
 The base-backup job verifies the backup with `pg_verifybackup` against the WAL
 archive, then writes `/backups/basebackups/pastebox-base-*.tar.gz`, `*.sha256`,
-and `*.manifest`. The manifest records the latest archived WAL file, the WAL
-age, `pg_verifybackup=passed`, `rpo_target_seconds=900`, and
+and `*.manifest`, and updates the `pastebox_basebackup_*` textfile metrics.
+The manifest records the latest archived WAL file, the WAL age, backup
+duration, size, `pg_verifybackup=passed`, `rpo_target_seconds=900`, and
 `rto_target_seconds=14400`.
 
 Run a scratch PITR restore drill against the latest local base backup and WAL
@@ -347,7 +375,8 @@ The PITR drill verifies the base-backup checksum, runs `pg_verifybackup` against
 the WAL archive, replays `/backups/wal` into an isolated temporary PostgreSQL
 data directory, waits for recovery to promote, checks `schema_migrations`,
 prints `duration_seconds`, and removes the temporary data directory unless
-`PASTEBOX_KEEP_PITR_DRILL_DIR=true`. Tune
+`PASTEBOX_KEEP_PITR_DRILL_DIR=true`. Successful runs update
+`pastebox_pitr_drill_*` textfile metrics. Tune
 `PASTEBOX_PITR_RECOVERY_WAIT_SECONDS` only when a larger backup needs more local
 replay time; record the base backup path, target time, duration, latest WAL age,
 and whether the run met the 4-hour RTO target.
@@ -358,6 +387,12 @@ base backup jobs:
 ```sh
 docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm backup-push
 ```
+
+Successful logical backup, WAL freshness, base backup, restore drill, PITR
+drill, and off-host push jobs write Prometheus textfile metrics into the shared
+`pastebox-node-textfile` volume. The monitoring profile exposes those metrics
+through node-exporter so missing or stale maintenance evidence can page before
+the launch RPO/RTO target is violated.
 
 Schedule logical backups, base backups, and off-host pushes at least daily.
 Schedule WAL freshness checks at least every 15 minutes. The confirmed launch
