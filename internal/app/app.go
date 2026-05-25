@@ -1829,6 +1829,16 @@ func (s *Service) ExportUser(userID string) (map[string]any, error) {
 	sort.Slice(orders, func(i, j int) bool { return orders[i].CreatedAt.After(orders[j].CreatedAt) })
 	reports := s.reportsByUserLocked(userID)
 	webhookEvents := s.webhookEventsForOrdersLocked(orders)
+	exportedAt := s.now().UTC()
+	if err := s.auditLocked(userID, "account.export", userID, map[string]any{
+		"pasteCount":        len(pastes),
+		"shareCount":        len(shares),
+		"orderCount":        len(orders),
+		"reportCount":       len(reports),
+		"webhookEventCount": len(webhookEvents),
+	}); err != nil {
+		return nil, err
+	}
 	auditLogs, err := s.auditLogsForExportLocked(userID, pastes, shares, orders, reports, webhookEvents)
 	if err != nil {
 		return nil, err
@@ -1841,7 +1851,7 @@ func (s *Service) ExportUser(userID string) (map[string]any, error) {
 		"reports":       reports,
 		"webhookEvents": webhookEvents,
 		"auditLogs":     auditLogs,
-		"exportedAt":    s.now().UTC(),
+		"exportedAt":    exportedAt,
 	}, nil
 }
 

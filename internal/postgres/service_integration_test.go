@@ -179,6 +179,9 @@ func TestServiceWithPostgresStoresPreservesLaunchStateAcrossRestart(t *testing.T
 	if got := exportAfterRestart["auditLogs"].([]app.AuditLog); !containsAuditTargetAction(got, order.ID, "billing.order_paid") {
 		t.Fatalf("expected export to include scoped billing audit log after restart, got %#v", exportAfterRestart["auditLogs"])
 	}
+	if got := exportAfterRestart["auditLogs"].([]app.AuditLog); !containsAuditTargetAction(got, auth.User.ID, "account.export") {
+		t.Fatalf("expected export to include account export audit log after restart, got %#v", exportAfterRestart["auditLogs"])
+	}
 	queuesAfterRestart, err := restarted.AdminQueues(admin.ID)
 	if err != nil {
 		t.Fatalf("admin queues after restart: %v", err)

@@ -1007,6 +1007,9 @@ func TestExportUserIncludesOrdersReportsWebhooksAndScopedAuditLogs(t *testing.T)
 	if !containsAuditTargetAction(logs, order.ID, "billing.order_paid") || !containsAuditTargetAction(logs, report.ID, "admin.report_status") {
 		t.Fatalf("expected scoped audit logs in export, got %#v", logs)
 	}
+	if !containsAuditTargetAction(logs, owner.User.ID, "account.export") {
+		t.Fatalf("expected account export audit log in export, got %#v", logs)
+	}
 	if containsAuditTargetAction(logs, other.User.ID, "admin.user_plan_set") {
 		t.Fatalf("export leaked unrelated audit log: %#v", logs)
 	}

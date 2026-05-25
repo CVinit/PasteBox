@@ -268,6 +268,9 @@ if err != nil {
   webhook events for exported orders, scoped audit logs, and `exportedAt`.
   Export-scoped collections must be initialized as empty arrays and sorted
   newest-first where the service exposes ordering.
+- Account export must record an `account.export` audit log with the exported
+  user as both actor and target before returning the scoped audit log snapshot,
+  so export requests are themselves included in the auditable data-rights trail.
 - Account export must not leak unrelated users' audit entries just because an
   admin actor created them. Admin-created entries are exportable only when their
   `target` is part of the exported user's target set.
@@ -308,7 +311,8 @@ if err != nil {
 - PostgreSQL audit log integration tests assert JSONB metadata round-trips and
   listing order is newest-first.
 - App export tests assert orders, reports, webhook events, and scoped audit logs
-  are included, and unrelated user audit logs are excluded.
+  are included, `account.export` is audited, and unrelated user audit logs are
+  excluded.
 - Handler tests for `/api/v1/plans` must continue to cover response shape.
 - Run full `make test` after changing catalog, billing price, or audit-log API
   contracts.
