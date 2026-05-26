@@ -19,7 +19,8 @@ user-level Go cache permissions.
 - Do not rely on Redis as a source of truth for plans, billing, paste metadata,
   object references, or final order state.
 - Do not log secrets, magic links, reset tokens, OAuth tokens, object storage
-  credentials, or full user-provided paste bodies.
+  credentials, share tokens, frontend token route values, or full
+  user-provided paste bodies.
 
 ---
 
@@ -42,6 +43,81 @@ user-level Go cache permissions.
   literals, and single-label internal names for public URLs, CORS origins,
   contact emails, SMTP sender/host, OAuth redirects, object storage, backup
   repositories, and payment checkout templates.
+- HTTP request logs and Prometheus route labels must use sanitized route
+  patterns, not raw URL paths.
+
+## Scenario: Sanitized HTTP Observability Paths
+
+### 1. Scope / Trigger
+
+- Trigger: Any backend change that touches request logging, HTTP metrics,
+  routing, frontend fallback behavior, share URLs, auth token URLs, or any path
+  containing user-controlled IDs or secrets.
+
+### 2. Signatures
+
+- Middleware: `Server.logRequests(next http.Handler) http.Handler`
+- Helper: `requestRoutePath(r *http.Request) string`
+- Metrics recorder: `Server.recordHTTPRequest(method string, routePath string, status int)`
+- Metrics output: `pastebox_http_requests_total{method,path,status}`
+
+### 3. Contracts
+
+- Known chi routes must log and emit the chi route pattern, for example
+  `/api/v1/shares/{token}/access`, not the concrete token value.
+- Unknown API paths must collapse to `/api/{unmatched}`.
+- Frontend SPA deep links without file extensions must collapse to
+  `/{frontend}`.
+- Static asset paths or unknown dotted paths must collapse to `/{asset}`.
+- Logs may include HTTP method, sanitized path, status, byte count, duration,
+  and request ID. They must not include query strings, request bodies, cookies,
+  bearer tokens, CSRF tokens, share tokens, magic/reset/verification tokens, or
+  full user-provided paste content.
+
+### 4. Validation & Error Matrix
+
+- Raw share token appears in request log or metric label -> security bug.
+- Raw frontend token route such as `/s/<token>` appears in request log or
+  metric label -> security bug.
+- Unknown API path appears verbatim in request log or metric label -> security
+  bug; use `/api/{unmatched}`.
+- Static missing asset path appears with the exact filename -> acceptable only
+  when it is collapsed to `/{asset}`.
+
+### 5. Good/Base/Bad Cases
+
+- Good: `POST /api/v1/shares/secret-token/access` logs
+  `/api/v1/shares/{token}/access` and metrics use the same pattern.
+- Base: `GET /legal/privacy` logs `/{frontend}` because the SPA route is served
+  through fallback.
+- Bad: `GET /s/dev-token` logs `/s/dev-token` or creates a metric label with
+  that value.
+
+### 6. Tests Required
+
+- Add or keep handler tests that send token-like frontend and API paths, then
+  assert request logs and `/metrics` output do not contain the concrete token
+  values.
+- Assert expected sanitized path labels are present for both logs and metrics.
+- Run `go test ./internal/httpserver` after changing route logging or HTTP
+  metric label behavior.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+s.logger.Info("http request", "path", r.URL.Path)
+s.httpRequests[httpMetricKey{Method: r.Method, Path: r.URL.Path, Status: status}]++
+```
+
+#### Correct
+
+```go
+routePath := requestRoutePath(r)
+s.logger.Info("http request", "path", routePath)
+s.recordHTTPRequest(r.Method, routePath, status)
+```
 
 ## Scenario: Paste Quota Enforcement On Updates
 

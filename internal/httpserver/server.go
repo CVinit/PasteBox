@@ -1435,12 +1435,13 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 		if status == 0 {
 			status = http.StatusOK
 		}
-		s.recordHTTPRequest(r, status)
+		routePath := requestRoutePath(r)
+		s.recordHTTPRequest(r.Method, routePath, status)
 
 		s.logger.Info(
 			"http request",
 			"method", r.Method,
-			"path", r.URL.Path,
+			"path", routePath,
 			"status", status,
 			"bytes", ww.BytesWritten(),
 			"duration_ms", time.Since(start).Milliseconds(),
@@ -1498,14 +1499,27 @@ func (s *Server) corsOriginAllowed(origin string) bool {
 	return false
 }
 
-func (s *Server) recordHTTPRequest(r *http.Request, status int) {
-	routePath := chi.RouteContext(r.Context()).RoutePattern()
-	if routePath == "" {
-		routePath = r.URL.Path
+func requestRoutePath(r *http.Request) string {
+	if routePath := chi.RouteContext(r.Context()).RoutePattern(); routePath != "" {
+		return routePath
 	}
+	path := r.URL.Path
+	if path == "" || path == "/" {
+		return "/"
+	}
+	if strings.HasPrefix(path, "/api/") {
+		return "/api/{unmatched}"
+	}
+	if strings.Contains(strings.TrimPrefix(path, "/"), ".") {
+		return "/{asset}"
+	}
+	return "/{frontend}"
+}
+
+func (s *Server) recordHTTPRequest(method string, routePath string, status int) {
 	s.metricsMu.Lock()
 	defer s.metricsMu.Unlock()
-	s.httpRequests[httpMetricKey{Method: r.Method, Path: routePath, Status: status}]++
+	s.httpRequests[httpMetricKey{Method: method, Path: routePath, Status: status}]++
 }
 
 func newRateLimiter() *rateLimiter {

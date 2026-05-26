@@ -145,6 +145,49 @@ func TestMetricsEndpointExposesReadinessHTTPAndOperationalGauges(t *testing.T) {
 	}
 }
 
+func TestRequestLogsAndMetricsUseSanitizedRoutePaths(t *testing.T) {
+	cfg := config.FromEnv()
+	cfg.MetricsToken = "test-metrics-token"
+	var logs bytes.Buffer
+	handler := New(cfg, slog.New(slog.NewTextHandler(&logs, nil)))
+	client := newHTTPTestClient(t, handler)
+
+	frontendToken := "frontend-secret-token-123"
+	frontend := client.json(http.MethodGet, "/s/"+frontendToken, "")
+	assertStatus(t, frontend, http.StatusOK)
+
+	shareToken := "share-secret-token-456"
+	shareAccess := client.json(http.MethodPost, "/api/v1/shares/"+shareToken+"/access", `{}`)
+	assertStatus(t, shareAccess, http.StatusNotFound)
+
+	metricsReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metricsReq.Header.Set("Authorization", "Bearer "+cfg.MetricsToken)
+	metrics := httptest.NewRecorder()
+	handler.ServeHTTP(metrics, metricsReq)
+	assertStatus(t, metrics, http.StatusOK)
+
+	logBody := logs.String()
+	metricsBody := metrics.Body.String()
+	for _, secret := range []string{frontendToken, shareToken} {
+		if strings.Contains(logBody, secret) {
+			t.Fatalf("request logs must not contain token %q: %s", secret, logBody)
+		}
+		if strings.Contains(metricsBody, secret) {
+			t.Fatalf("request metrics must not contain token %q: %s", secret, metricsBody)
+		}
+	}
+	for _, expected := range []string{`path=/{frontend}`, `path=/api/v1/shares/{token}/access`} {
+		if !strings.Contains(logBody, expected) {
+			t.Fatalf("expected sanitized log path %q in logs:\n%s", expected, logBody)
+		}
+	}
+	for _, expected := range []string{`path="/{frontend}"`, `path="/api/v1/shares/{token}/access"`} {
+		if !strings.Contains(metricsBody, expected) {
+			t.Fatalf("expected sanitized metric path %q in metrics:\n%s", expected, metricsBody)
+		}
+	}
+}
+
 func TestPlanCatalogEndpoint(t *testing.T) {
 	handler := New(config.FromEnv(), slog.New(slog.NewTextHandler(testWriter{t: t}, nil)))
 
