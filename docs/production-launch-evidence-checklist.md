@@ -67,9 +67,12 @@ commit real secrets, raw provider payloads, private object keys, or user data.
   migrations before deploy.
 - [ ] `pastebox migrate up` completed successfully.
 - [ ] `pastebox migrate status` showed no dirty migration after deploy.
-- [ ] `api`, `worker`, `postgres`, `redis`, and `caddy` services are running.
+- [ ] `api`, `worker`, `postgres`, `redis`, `clamav`, and `caddy` services are
+  running.
 - [ ] `curl -fsS https://<domain>/readyz` returned `status=ready`.
 - [ ] `curl -fsS https://<domain>/api/v1/ready` returned `status=ready`.
+- [ ] Readiness includes `scanner` with `status=ok`, proving ClamAV TCP
+  reachability from the API container.
 - [ ] Readiness includes `worker` with `status=ok`, proving a fresh worker
   heartbeat within `PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS`.
 - [ ] `pastebox worker --once` completed without failed runnable jobs.
@@ -131,10 +134,10 @@ commit real secrets, raw provider payloads, private object keys, or user data.
 - [ ] Prometheus or external monitoring scrapes `/metrics` with the bearer
   token, plus Caddy metrics, host metrics, backup textfile metrics, and HTTPS
   blackbox probe metrics.
-- [ ] Alert rules cover scrape failure, readiness, failed jobs, scanner
-  backlog, mail backlog, failed outbound mail, open support/abuse report
-  backlog, stale backup/WAL evidence, restore-drill freshness, RTO breach, host
-  resources, and certificate expiry.
+- [ ] Alert rules cover scrape failure, readiness, scanner readiness, failed
+  jobs, scanner backlog, mail backlog, failed outbound mail, open support/abuse
+  report backlog, stale backup/WAL evidence, restore-drill freshness, RTO
+  breach, host resources, and certificate expiry.
 - [ ] Certificate renewal status was checked through Caddy logs or equivalent
   provider tooling.
 - [ ] Disk, CPU, memory, PostgreSQL health, WAL lag, backup failure, queue lag,
