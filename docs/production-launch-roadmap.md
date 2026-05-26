@@ -1,12 +1,33 @@
 # PasteBox Production Launch Roadmap
 
-Status: confirmed as implementation source of truth; implementation deferred to
-a future session by user request.
+Status: confirmed implementation source of truth; repo-local implementation is
+in progress and verified by the production-readiness gate.
 
 This roadmap turns the production launch design into executable work phases. It
-contains the confirmed launch decisions. Implementation should start from this
-roadmap and `docs/production-launch-design.md` in a future session when the user
-explicitly starts goal-mode implementation.
+contains the confirmed launch decisions. Continue implementation from this
+roadmap, `docs/production-launch-design.md`, and the current source tree. Do not
+mark public beta launch complete from source checks alone: the release candidate
+must still satisfy `docs/production-launch-evidence-checklist.md` with live VPS,
+provider, backup/PITR, rollback, monitoring, and support evidence.
+
+## Current Implementation Checkpoint
+
+As of 2026-05-26, recent implementation slices have moved the repository beyond
+the original demo baseline. The local launch gate now includes:
+
+- Production Compose/default, monitoring, and maintenance profile rendering.
+- Maintenance script, Prometheus/blackbox, Caddy, production preflight,
+  backend/frontend test, PostgreSQL integration, build, Docker image, and web
+  launch-surface checks.
+- PostgreSQL-backed restart-persistence coverage for auth, content,
+  billing/support, audit, mail, jobs, and source-of-truth state.
+- S3-compatible object-storage boundaries, scanner/worker readiness,
+  signed-provider billing webhooks, production checkout fail-closed behavior,
+  legal/support UI surfaces, and release evidence docs.
+
+Use this checkpoint to choose the next slice. Repo-local implementation can keep
+closing source-verifiable gaps, but the final launch gate remains incomplete
+until operator-owned live evidence is recorded.
 
 ## Phase 0: Confirm Launch Decisions
 

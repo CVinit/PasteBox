@@ -1,24 +1,61 @@
 # PasteBox Production Launch Design
 
-Status: confirmed as implementation source of truth; implementation deferred to
-a future session by user request.
+Status: confirmed implementation source of truth; repo-local implementation is
+in progress and verified by the production-readiness gate.
 
-This document tracks the design needed to move PasteBox from the current
+This document tracks the design needed to move PasteBox from the original
 demo/MVP to a production service. The launch-scope decisions are resolved and
-confirmed. Implementation should start from this document and
-`docs/production-launch-roadmap.md` in a future session when the user explicitly
-starts goal-mode implementation.
+confirmed. Continue implementation from this document,
+`docs/production-launch-roadmap.md`, and the current source tree. Do not treat
+repo-local checks as live launch approval: public beta still requires
+operator-owned VPS, provider, backup/PITR, rollback, monitoring, and support
+evidence recorded through `docs/production-launch-evidence-checklist.md`.
 
-## Current Baseline
+## Original Demo Baseline
 
-- The application currently runs as a single Go API plus embedded React
-  frontend image.
-- User, session, paste, attachment, share, order, audit, and queue state are
-  currently in memory.
+- At the start of launch planning, the application ran as a single Go API plus
+  embedded React frontend image.
+- User, session, paste, attachment, share, order, audit, and queue state were
+  in memory.
 - PostgreSQL, Redis/queues, S3-compatible storage, mail, payment providers,
-  ClamAV, cleanup, and admin surfaces exist as seams or stubs.
-- The current deployment shape is suitable for demos, internal review, and
+  ClamAV, cleanup, and admin surfaces existed as seams or stubs.
+- The original deployment shape was suitable for demos, internal review, and
   low-risk evaluation, not real customer data or paid public SaaS.
+
+## Current Repo Implementation Checkpoint
+
+As of 2026-05-26, the repository contains the launch-oriented implementation
+foundation and `make production-readiness` proves the local release-candidate
+gate. The current source tree includes:
+
+- Production Docker Compose, Caddy, monitoring, backup/PITR maintenance jobs,
+  production preflight, immutable image publishing gate, deployment and rollback
+  runbooks, and an evidence checklist.
+- PostgreSQL migrations and typed repository boundaries for users, sessions,
+  auth tokens, OAuth identities, pastes, attachments, object references, shares,
+  catalog, daily metrics, orders, webhook events, audit logs, reports, jobs,
+  mail, and worker heartbeats.
+- API and worker runtime wiring that uses PostgreSQL stores, S3-compatible
+  object storage, SMTP mail queues, ClamAV scanning, worker heartbeats, and
+  readiness components in production.
+- Production auth/email/OAuth behavior: development token output is disabled in
+  production mode, auth mails are queued, Google OAuth uses state/nonce and
+  verified ID tokens, and account-linking/unlinking is audited.
+- File scanning and abuse controls for pending, clean, failed, and malicious
+  attachment states, including public-share clean-scan gates and owner-facing
+  scan status presentation.
+- Stripe and Epusdt launch readiness behavior for signed webhooks, idempotency,
+  order lifecycle states, plan activation/revocation, reconciliation, admin
+  manual corrections, replay support, and UI status presentation.
+- Legal, support, retention, subprocessors, refund, abuse/DMCA, status,
+  account deletion, and data export surfaces with a local web launch-surface
+  smoke gate.
+
+Remaining launch approval is external evidence, not more placeholder code:
+real production secrets, production domain and OAuth app, SMTP delivery smoke
+tests, managed object-storage smoke tests, Stripe/Epusdt provider smoke tests,
+ClamAV smoke tests, backup/PITR restore drills, rollback rehearsal, alert
+target setup, and operator approval must be captured for each release candidate.
 
 ## Launch Target
 
@@ -219,5 +256,6 @@ Public beta can launch only after:
 
 ## Open Decisions
 
-No launch-scope decision remains open. Implementation is intentionally deferred
-to a future session by user request.
+No launch-scope decision remains open. Continue implementation and verification
+from the roadmap until repo-local gates plus operator-owned release evidence
+prove the public beta launch gate.

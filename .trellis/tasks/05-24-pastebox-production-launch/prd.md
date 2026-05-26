@@ -2,28 +2,35 @@
 
 ## Goal
 
-Move PasteBox from the current demo/MVP state to a production-ready service by
-resolving launch-scope uncertainties one decision at a time, then producing a
-repo-backed production launch design document and implementation plan.
+Move PasteBox from the original demo/MVP state to a production-ready service by
+resolving launch-scope uncertainties one decision at a time, producing
+repo-backed launch design/roadmap artifacts, and continuing implementation until
+repo-local gates plus operator-owned release evidence prove the public beta
+launch gate.
 
 ## What I already know
 
 - The user wants Codex goal-mode work to continue until the production launch
   objective is complete.
-- Current demo can be deployed for demos, internal review, and low-risk
-  evaluation.
-- Current MVP is not ready for real customer data, paid SaaS, or long-running
+- At the start of launch planning, the demo could be deployed for internal
+  review but was not ready for real customer data, paid SaaS, or long-running
   production operation.
-- Current state is in-memory for users, sessions, pastes, attachments, shares,
-  orders, audit logs, and queues.
-- Current PostgreSQL, Redis, S3, mail, Stripe, Epusdt, ClamAV, and worker
-  paths are seams/stubs rather than production implementations.
-- Development auth flows expose verification, magic-link, and reset tokens in
-  JSON responses.
-- Billing webhook flow is local stub behavior and does not verify real payment
-  provider signatures.
-- Existing deployment docs cover single-container demo deployment, GHCR image,
-  HTTPS reverse proxy, and HTTP test-environment cookie behavior.
+- The original baseline kept users, sessions, pastes, attachments, shares,
+  orders, audit logs, and queues in memory, with PostgreSQL, Redis, S3, mail,
+  Stripe, Epusdt, ClamAV, and worker paths as seams/stubs.
+- As of 2026-05-26, the current source tree has production Compose/default,
+  monitoring, maintenance, Caddy, backup/PITR, rollback, preflight, immutable
+  image, PostgreSQL, object-storage, worker, scanner, OAuth, mail, billing,
+  legal/support, and readiness-gate slices implemented and locally verified.
+- `make production-readiness` now covers Compose rendering, maintenance script
+  syntax, monitoring config syntax, Caddy config syntax, production preflight,
+  backend/frontend tests, web launch-surface smoke checks, PostgreSQL
+  integration tests, project build, and Docker image build.
+- Public beta launch approval still requires operator-owned external evidence:
+  production secrets/domain, OAuth app, SMTP delivery, managed object storage,
+  Stripe/Epusdt provider smoke tests, ClamAV smoke tests, backup/PITR restore
+  drills, rollback rehearsal, monitoring/alert targets, support readiness, and
+  release approval recorded through `docs/production-launch-evidence-checklist.md`.
 
 ## Source Context
 
@@ -72,7 +79,9 @@ repo-backed production launch design document and implementation plan.
 - [x] Production launch design document is saved in the repository.
 - [x] Implementation roadmap is saved in the repository.
 - [x] Trellis task can be activated with enough context to implement.
-- [ ] Follow-up implementation phases can be executed and verified.
+- [x] Follow-up implementation phases can be executed and verified locally.
+- [ ] Operator-owned external release evidence is complete for a public beta
+  release candidate.
 
 ## Definition of Done
 
@@ -84,7 +93,7 @@ repo-backed production launch design document and implementation plan.
 
 ## Out of Scope For This Planning Pass
 
-- Implementing all production systems before the design is confirmed.
+- Reopening already-confirmed launch-scope decisions without new evidence.
 - Choosing vendors without user confirmation when the choice affects cost,
   compliance, or operations.
 - Treating demo-only stubs as production-ready.
@@ -268,8 +277,10 @@ repo-backed production launch design document and implementation plan.
 - All 10 launch gap areas now have explicit decisions or derived launch
   contracts.
 - User confirmed `docs/production-launch-design.md` and
-  `docs/production-launch-roadmap.md` as the implementation source of truth, but
-  explicitly requested that implementation not start in this session.
-- Next implementation session should load `trellis-continue`, then run
-  `task.py start .trellis/tasks/05-24-pastebox-production-launch` only after the
-  user says to begin implementation.
+  `docs/production-launch-roadmap.md` as the implementation source of truth.
+- The task is active and implementation is in progress. Future continuations
+  should load `trellis-continue`, verify git status, keep the task activated,
+  and continue from the next source-verifiable roadmap/evidence gap.
+- Do not mark the public beta launch objective complete from source checks
+  alone. Completion requires the release-candidate evidence checklist to be
+  satisfied with live VPS/provider/backup/rollback/monitoring/support evidence.
