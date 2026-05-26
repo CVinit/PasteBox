@@ -214,7 +214,7 @@ curl -fsS https://pastebox.example.com/api/v1/ready
 Expected responses:
 
 ```json
-{"app":"PasteBox","env":"production","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"mail","status":"ok"}]}
+{"app":"PasteBox","env":"production","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"worker","status":"ok"},{"name":"mail","status":"ok"}]}
 ```
 
 ## Metrics And Alerting
@@ -257,7 +257,7 @@ The committed baseline alert rules cover these launch gates:
 - `PasteBoxCertificateExpiresSoon` for certificates expiring within 14 days.
 - `PasteBoxReadinessDown` for overall dependency readiness failures.
 - `PasteBoxReadinessComponentDown` for database, object storage, Redis, worker
-  queue, or mail readiness failures.
+  queue, worker heartbeat, or mail readiness failures.
 - `PasteBoxOperationalMetricsUnavailable` when aggregate operational metrics
   cannot be loaded.
 - `PasteBoxFailedWorkerJobs` for failed durable worker jobs.
@@ -289,6 +289,12 @@ through the same production service wiring as the API. Scan jobs use the
 configured ClamAV scanner and update attachment scan state to `clean`,
 `scan_failed`, or `malicious`. The same worker also drains queued mail through
 the configured SMTP sender and preserves retry/failure state in PostgreSQL.
+Each worker loop records a PostgreSQL-backed heartbeat under
+`PASTEBOX_WORKER_ID`; production readiness fails when the latest heartbeat is
+missing or older than `PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS`.
+`PasteBoxReadinessComponentDown{name="worker"}` means the worker container is
+stopped, cannot reach PostgreSQL, or has not completed a poll within the launch
+threshold.
 `PasteBoxMailFailures` should be triaged from the admin Queues panel by checking
 recipient, subject, attempts, last error, and SMTP/provider status before
 restarting the worker or changing mail credentials. Use the bounded one-shot

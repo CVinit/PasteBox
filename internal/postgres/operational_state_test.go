@@ -39,12 +39,13 @@ func TestOperationalStateStoresRoundTripBillingSupportJobsAndMail(t *testing.T) 
 	reportID := "rpt_operational_state_test"
 	jobID := "job_operational_state_test"
 	mailID := "mail_operational_state_test"
+	workerID := "worker_operational_state_test"
 	idempotencyKey := "operational-state-idempotency-key"
-	cleanupOperationalStateTestRows(ctx, t, pool, userID, orderID, webhookID, duplicateWebhookID, reportID, jobID, mailID, idempotencyKey)
+	cleanupOperationalStateTestRows(ctx, t, pool, userID, orderID, webhookID, duplicateWebhookID, reportID, jobID, mailID, workerID, idempotencyKey)
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
-		cleanupOperationalStateTestRows(cleanupCtx, t, pool, userID, orderID, webhookID, duplicateWebhookID, reportID, jobID, mailID, idempotencyKey)
+		cleanupOperationalStateTestRows(cleanupCtx, t, pool, userID, orderID, webhookID, duplicateWebhookID, reportID, jobID, mailID, workerID, idempotencyKey)
 	})
 
 	now := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
@@ -294,15 +295,40 @@ func TestOperationalStateStoresRoundTripBillingSupportJobsAndMail(t *testing.T) 
 	if _, err := mailStore.MailByID(ctx, "mail_operational_state_missing"); !errors.Is(err, ErrMailNotFound) {
 		t.Fatalf("expected missing mail error, got %v", err)
 	}
+
+	heartbeatStore := NewWorkerHeartbeatStore(pool)
+	firstSeen := now.Add(4 * time.Minute)
+	if err := heartbeatStore.RecordWorkerHeartbeat(ctx, workerID, firstSeen); err != nil {
+		t.Fatalf("record worker heartbeat: %v", err)
+	}
+	heartbeat, err := heartbeatStore.LastWorkerHeartbeat(ctx)
+	if err != nil {
+		t.Fatalf("read latest worker heartbeat: %v", err)
+	}
+	if heartbeat.WorkerID != workerID || !heartbeat.LastSeenAt.Equal(firstSeen) {
+		t.Fatalf("unexpected worker heartbeat: %#v", heartbeat)
+	}
+	secondSeen := now.Add(5 * time.Minute)
+	if err := heartbeatStore.RecordWorkerHeartbeat(ctx, workerID, secondSeen); err != nil {
+		t.Fatalf("update worker heartbeat: %v", err)
+	}
+	heartbeat, err = heartbeatStore.LastWorkerHeartbeat(ctx)
+	if err != nil {
+		t.Fatalf("read updated worker heartbeat: %v", err)
+	}
+	if heartbeat.WorkerID != workerID || !heartbeat.LastSeenAt.Equal(secondSeen) || !heartbeat.UpdatedAt.Equal(secondSeen) {
+		t.Fatalf("unexpected updated worker heartbeat: %#v", heartbeat)
+	}
 }
 
-func cleanupOperationalStateTestRows(ctx context.Context, t *testing.T, pool *pgxpool.Pool, userID string, orderID string, webhookID string, duplicateWebhookID string, reportID string, jobID string, mailID string, idempotencyKey string) {
+func cleanupOperationalStateTestRows(ctx context.Context, t *testing.T, pool *pgxpool.Pool, userID string, orderID string, webhookID string, duplicateWebhookID string, reportID string, jobID string, mailID string, workerID string, idempotencyKey string) {
 	t.Helper()
 	_, _ = pool.Exec(ctx, `DELETE FROM webhook_events WHERE id IN ($1, $2) OR idempotency_key = $3`, webhookID, duplicateWebhookID, idempotencyKey)
 	_, _ = pool.Exec(ctx, `DELETE FROM orders WHERE id = $1`, orderID)
 	_, _ = pool.Exec(ctx, `DELETE FROM reports WHERE id = $1`, reportID)
 	_, _ = pool.Exec(ctx, `DELETE FROM jobs WHERE id = $1`, jobID)
 	_, _ = pool.Exec(ctx, `DELETE FROM mails WHERE id = $1`, mailID)
+	_, _ = pool.Exec(ctx, `DELETE FROM worker_heartbeats WHERE worker_id = $1`, workerID)
 	_, _ = pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, userID)
 }
 

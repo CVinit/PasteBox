@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,43 @@ func TestRunnerCompletesCleanupJob(t *testing.T) {
 	updated := jobs.updated[0]
 	if updated.Status != "completed" || updated.Attempts != 1 || updated.LastError != "" {
 		t.Fatalf("expected completed job update, got %#v", updated)
+	}
+}
+
+func TestRunnerRecordsWorkerHeartbeat(t *testing.T) {
+	now := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
+	heartbeats := &fakeHeartbeatStore{}
+
+	runner := NewRunner(&fakeJobStore{}, &fakeCleanupService{}, Config{
+		Now:        func() time.Time { return now },
+		Logger:     slog.Default(),
+		WorkerID:   "worker-test",
+		Heartbeats: heartbeats,
+	})
+	summary, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if summary.Seen != 0 || summary.MailSeen != 0 {
+		t.Fatalf("unexpected summary for idle heartbeat: %#v", summary)
+	}
+	if len(heartbeats.records) != 1 || heartbeats.records[0].workerID != "worker-test" || !heartbeats.records[0].seenAt.Equal(now) {
+		t.Fatalf("expected one worker heartbeat, got %#v", heartbeats.records)
+	}
+}
+
+func TestRunnerFailsWhenWorkerHeartbeatCannotBeRecorded(t *testing.T) {
+	now := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
+	heartbeatErr := errors.New("postgres unavailable")
+
+	runner := NewRunner(&fakeJobStore{}, &fakeCleanupService{}, Config{
+		Now:        func() time.Time { return now },
+		Logger:     slog.Default(),
+		WorkerID:   "worker-test",
+		Heartbeats: &fakeHeartbeatStore{err: heartbeatErr},
+	})
+	if _, err := runner.RunOnce(context.Background()); err == nil || !strings.Contains(err.Error(), "record worker heartbeat") {
+		t.Fatalf("expected heartbeat failure, got %v", err)
 	}
 }
 
@@ -338,6 +376,24 @@ func (s *fakeMailStore) UpdateMail(_ context.Context, mail postgres.MailRecord) 
 type fakeMailSender struct {
 	err  error
 	sent []sentMail
+}
+
+type fakeHeartbeatStore struct {
+	err     error
+	records []heartbeatRecord
+}
+
+type heartbeatRecord struct {
+	workerID string
+	seenAt   time.Time
+}
+
+func (s *fakeHeartbeatStore) RecordWorkerHeartbeat(_ context.Context, workerID string, seenAt time.Time) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.records = append(s.records, heartbeatRecord{workerID: workerID, seenAt: seenAt})
+	return nil
 }
 
 type sentMail struct {

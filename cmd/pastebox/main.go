@@ -137,6 +137,7 @@ func productionReadinessChecker(cfg config.Config, pool *pgxpool.Pool, objects o
 				return err
 			}),
 		}
+		components = append(components, workerReadinessComponent(ctx, cfg, postgres.NewWorkerHeartbeatStore(pool), time.Now().UTC()))
 		if strings.EqualFold(strings.TrimSpace(cfg.MailerProvider), "smtp") {
 			components = append(components, readinessCheck(ctx, "mail", func(checkCtx context.Context) error {
 				return tcpReadiness(checkCtx, net.JoinHostPort(cfg.SMTP.Host, strconv.Itoa(cfg.SMTP.Port)))
@@ -146,6 +147,44 @@ func productionReadinessChecker(cfg config.Config, pool *pgxpool.Pool, objects o
 		}
 		return components
 	}
+}
+
+type workerHeartbeatReader interface {
+	LastWorkerHeartbeat(ctx context.Context) (postgres.WorkerHeartbeat, error)
+}
+
+func workerReadinessComponent(ctx context.Context, cfg config.Config, heartbeats workerHeartbeatReader, now time.Time) httpserver.ReadinessComponent {
+	if cfg.AppEnv != "production" {
+		return httpserver.ReadinessComponent{Name: "worker", Status: "skipped", Message: "worker heartbeat is required in production"}
+	}
+	return readinessCheck(ctx, "worker", func(checkCtx context.Context) error {
+		return validateWorkerHeartbeat(checkCtx, cfg, heartbeats, now)
+	})
+}
+
+func validateWorkerHeartbeat(ctx context.Context, cfg config.Config, heartbeats workerHeartbeatReader, now time.Time) error {
+	if heartbeats == nil {
+		return errors.New("worker heartbeat store is not configured")
+	}
+	maxAge := time.Duration(cfg.WorkerHeartbeatMaxAgeSeconds) * time.Second
+	if maxAge <= 0 {
+		return errors.New("worker heartbeat max age must be positive")
+	}
+	heartbeat, err := heartbeats.LastWorkerHeartbeat(ctx)
+	if err != nil {
+		if errors.Is(err, app.ErrStoreNotFound) {
+			return errors.New("worker heartbeat is missing")
+		}
+		return err
+	}
+	age := now.Sub(heartbeat.LastSeenAt)
+	if age < 0 {
+		age = 0
+	}
+	if age > maxAge {
+		return fmt.Errorf("worker heartbeat stale: last seen %s ago by %s", age.Round(time.Second), heartbeat.WorkerID)
+	}
+	return nil
 }
 
 func mailReadinessNotConfigured(cfg config.Config) httpserver.ReadinessComponent {
@@ -339,6 +378,7 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		"PASTEBOX_POSTGRES_PASSWORD",
 		"PASTEBOX_DATABASE_URL",
 		"PASTEBOX_REDIS_ADDR",
+		"PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS",
 		"PASTEBOX_S3_ENDPOINT",
 		"PASTEBOX_S3_BUCKET",
 		"PASTEBOX_S3_REGION",
@@ -425,6 +465,10 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	if err := validateRateLimitConfig(cfg); err != nil {
+		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
+		return 1
+	}
+	if err := validateWorkerHeartbeatConfig(); err != nil {
 		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
 		return 1
 	}
@@ -585,6 +629,17 @@ func validateRateLimitConfig(cfg config.Config) error {
 		if value <= 0 {
 			return fmt.Errorf("%s must be positive", key)
 		}
+	}
+	return nil
+}
+
+func validateWorkerHeartbeatConfig() error {
+	maxAge, err := positiveIntEnv("PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS")
+	if err != nil {
+		return err
+	}
+	if maxAge > 300 {
+		return fmt.Errorf("PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS must be <= 300")
 	}
 	return nil
 }
@@ -863,6 +918,7 @@ func runWorker(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	cfg := config.FromEnv()
+	workerID := configuredWorkerID(cfg)
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: cfg.LogLevel,
 	}))
@@ -892,6 +948,8 @@ func runWorker(args []string, stdout io.Writer, stderr io.Writer) int {
 		PollInterval: *pollInterval,
 		Logger:       logger,
 		Scanner:      scan,
+		WorkerID:     workerID,
+		Heartbeats:   postgres.NewWorkerHeartbeatStore(pool),
 	})
 
 	if *once {
@@ -904,7 +962,7 @@ func runWorker(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
-	logger.Info("pastebox worker started", "env", cfg.AppEnv, "batchSize", *batchSize, "pollInterval", pollInterval.String())
+	logger.Info("pastebox worker started", "env", cfg.AppEnv, "workerID", workerID, "batchSize", *batchSize, "pollInterval", pollInterval.String())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -915,6 +973,17 @@ func runWorker(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	logger.Info("pastebox worker stopped")
 	return 0
+}
+
+func configuredWorkerID(cfg config.Config) string {
+	if workerID := strings.TrimSpace(cfg.WorkerID); workerID != "" {
+		return workerID
+	}
+	hostname, err := os.Hostname()
+	if err == nil && strings.TrimSpace(hostname) != "" {
+		return strings.TrimSpace(hostname) + "-" + strconv.Itoa(os.Getpid())
+	}
+	return "worker-" + strconv.Itoa(os.Getpid())
 }
 
 func runAdminCreate(args []string, stdout io.Writer, stderr io.Writer) int {

@@ -40,6 +40,8 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	t.Setenv("PASTEBOX_RATE_LIMIT_UPLOAD", "30")
 	t.Setenv("PASTEBOX_RATE_LIMIT_DOWNLOAD", "40")
 	t.Setenv("PASTEBOX_RATE_LIMIT_WEBHOOK", "50")
+	t.Setenv("PASTEBOX_WORKER_ID", "worker-a")
+	t.Setenv("PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS", "90")
 	t.Setenv("PASTEBOX_SUPPORT_EMAIL", "support@pastebox.example.com")
 	t.Setenv("PASTEBOX_ABUSE_EMAIL", "abuse@pastebox.example.com")
 	t.Setenv("PASTEBOX_CSRF_SECRET", "test-csrf-secret")
@@ -100,6 +102,9 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	}
 	if !cfg.RateLimit.Enabled || cfg.RateLimit.WindowSeconds != 120 || cfg.RateLimit.AuthLimit != 10 || cfg.RateLimit.WriteLimit != 20 || cfg.RateLimit.UploadLimit != 30 || cfg.RateLimit.DownloadLimit != 40 || cfg.RateLimit.WebhookLimit != 50 {
 		t.Fatalf("expected parsed rate limits from env, got %#v", cfg.RateLimit)
+	}
+	if cfg.WorkerID != "worker-a" || cfg.WorkerHeartbeatMaxAgeSeconds != 90 {
+		t.Fatalf("expected worker heartbeat settings from env, got id=%q maxAge=%d", cfg.WorkerID, cfg.WorkerHeartbeatMaxAgeSeconds)
 	}
 	if cfg.MailerProvider != "smtp" || cfg.SMTP.Host != "smtp.example.com" || cfg.SMTP.Port != 587 {
 		t.Fatalf("expected SMTP settings from env, got provider=%q smtp=%#v", cfg.MailerProvider, cfg.SMTP)

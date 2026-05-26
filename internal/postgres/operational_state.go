@@ -16,12 +16,13 @@ import (
 )
 
 var (
-	ErrOrderNotFound        = errors.Join(errors.New("postgres order not found"), app.ErrStoreNotFound)
-	ErrWebhookEventNotFound = errors.Join(errors.New("postgres webhook event not found"), app.ErrStoreNotFound)
-	ErrWebhookEventExists   = errors.Join(errors.New("postgres webhook event exists"), app.ErrStoreConflict)
-	ErrReportNotFound       = errors.Join(errors.New("postgres report not found"), app.ErrStoreNotFound)
-	ErrJobNotFound          = errors.Join(errors.New("postgres job not found"), app.ErrStoreNotFound)
-	ErrMailNotFound         = errors.Join(errors.New("postgres mail not found"), app.ErrStoreNotFound)
+	ErrOrderNotFound           = errors.Join(errors.New("postgres order not found"), app.ErrStoreNotFound)
+	ErrWebhookEventNotFound    = errors.Join(errors.New("postgres webhook event not found"), app.ErrStoreNotFound)
+	ErrWebhookEventExists      = errors.Join(errors.New("postgres webhook event exists"), app.ErrStoreConflict)
+	ErrReportNotFound          = errors.Join(errors.New("postgres report not found"), app.ErrStoreNotFound)
+	ErrJobNotFound             = errors.Join(errors.New("postgres job not found"), app.ErrStoreNotFound)
+	ErrMailNotFound            = errors.Join(errors.New("postgres mail not found"), app.ErrStoreNotFound)
+	ErrWorkerHeartbeatNotFound = errors.Join(errors.New("postgres worker heartbeat not found"), app.ErrStoreNotFound)
 )
 
 type JobRecord struct {
@@ -47,6 +48,12 @@ type MailRecord struct {
 	RunAfter  time.Time
 	CreatedAt time.Time
 	SentAt    *time.Time
+}
+
+type WorkerHeartbeat struct {
+	WorkerID   string
+	LastSeenAt time.Time
+	UpdatedAt  time.Time
 }
 
 type OrderStore struct {
@@ -671,6 +678,50 @@ WHERE id = $1
 		return ErrMailNotFound
 	}
 	return nil
+}
+
+type WorkerHeartbeatStore struct {
+	pool *pgxpool.Pool
+}
+
+func NewWorkerHeartbeatStore(pool *pgxpool.Pool) *WorkerHeartbeatStore {
+	return &WorkerHeartbeatStore{pool: pool}
+}
+
+func (s *WorkerHeartbeatStore) RecordWorkerHeartbeat(ctx context.Context, workerID string, seenAt time.Time) error {
+	workerID = strings.TrimSpace(workerID)
+	if workerID == "" {
+		return fmt.Errorf("worker heartbeat id is required")
+	}
+	if seenAt.IsZero() {
+		seenAt = time.Now().UTC()
+	}
+	if _, err := s.pool.Exec(ctx, `
+INSERT INTO worker_heartbeats (worker_id, last_seen_at, updated_at)
+VALUES ($1, $2, $2)
+ON CONFLICT (worker_id) DO UPDATE SET
+	last_seen_at = EXCLUDED.last_seen_at,
+	updated_at = EXCLUDED.updated_at
+`, workerID, seenAt.UTC()); err != nil {
+		return fmt.Errorf("record worker heartbeat: %w", err)
+	}
+	return nil
+}
+
+func (s *WorkerHeartbeatStore) LastWorkerHeartbeat(ctx context.Context) (WorkerHeartbeat, error) {
+	var heartbeat WorkerHeartbeat
+	if err := s.pool.QueryRow(ctx, `
+SELECT worker_id, last_seen_at, updated_at
+FROM worker_heartbeats
+ORDER BY last_seen_at DESC, worker_id ASC
+LIMIT 1
+`).Scan(&heartbeat.WorkerID, &heartbeat.LastSeenAt, &heartbeat.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return WorkerHeartbeat{}, ErrWorkerHeartbeatNotFound
+		}
+		return WorkerHeartbeat{}, fmt.Errorf("read worker heartbeat: %w", err)
+	}
+	return heartbeat, nil
 }
 
 func scanOrders(rows rowsScanner) ([]app.Order, error) {

@@ -20,8 +20,10 @@ type Config struct {
 	CORSAllowedOrigins []string
 	RateLimit          RateLimitConfig
 
-	DatabaseURL string
-	RedisAddr   string
+	DatabaseURL                  string
+	RedisAddr                    string
+	WorkerID                     string
+	WorkerHeartbeatMaxAgeSeconds int
 
 	S3          S3Config
 	Scanner     ScannerConfig
@@ -120,8 +122,10 @@ func FromEnv() Config {
 			WebhookLimit:  envInt("PASTEBOX_RATE_LIMIT_WEBHOOK", 300),
 		},
 
-		DatabaseURL: envString("PASTEBOX_DATABASE_URL", "postgres://pastebox:pastebox@localhost:5432/pastebox?sslmode=disable"),
-		RedisAddr:   envString("PASTEBOX_REDIS_ADDR", "localhost:6379"),
+		DatabaseURL:                  envString("PASTEBOX_DATABASE_URL", "postgres://pastebox:pastebox@localhost:5432/pastebox?sslmode=disable"),
+		RedisAddr:                    envString("PASTEBOX_REDIS_ADDR", "localhost:6379"),
+		WorkerID:                     envString("PASTEBOX_WORKER_ID", ""),
+		WorkerHeartbeatMaxAgeSeconds: envInt("PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS", 120),
 
 		S3: S3Config{
 			Endpoint:     envString("PASTEBOX_S3_ENDPOINT", "http://localhost:9000"),

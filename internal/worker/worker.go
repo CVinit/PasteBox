@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"pastebox/internal/app"
@@ -31,6 +32,10 @@ type MailSender interface {
 	Send(ctx context.Context, to string, subject string, body string) error
 }
 
+type HeartbeatStore interface {
+	RecordWorkerHeartbeat(ctx context.Context, workerID string, seenAt time.Time) error
+}
+
 type Config struct {
 	BatchSize    int
 	MaxAttempts  int
@@ -38,6 +43,8 @@ type Config struct {
 	Now          func() time.Time
 	Logger       *slog.Logger
 	Scanner      app.Scanner
+	WorkerID     string
+	Heartbeats   HeartbeatStore
 }
 
 type Summary struct {
@@ -114,6 +121,9 @@ func (r *Runner) Run(ctx context.Context) error {
 
 func (r *Runner) RunOnce(ctx context.Context) (Summary, error) {
 	now := r.cfg.Now().UTC()
+	if err := r.recordHeartbeat(ctx, now); err != nil {
+		return Summary{}, err
+	}
 	jobs, err := r.jobs.ListRunnableJobs(ctx, r.cfg.BatchSize, now)
 	if err != nil {
 		return Summary{}, fmt.Errorf("list runnable jobs: %w", err)
@@ -138,6 +148,11 @@ func (r *Runner) RunOnce(ctx context.Context) (Summary, error) {
 		summary.Completed++
 	}
 	if r.mails == nil || r.mailSender == nil {
+		if summary.Seen > 0 {
+			if err := r.recordHeartbeat(ctx, r.cfg.Now().UTC()); err != nil {
+				return summary, err
+			}
+		}
 		return summary, nil
 	}
 	mails, err := r.mails.ListRunnableMail(ctx, r.cfg.BatchSize, now)
@@ -162,7 +177,26 @@ func (r *Runner) RunOnce(ctx context.Context) (Summary, error) {
 		}
 		summary.MailSent++
 	}
+	if summary.Seen > 0 || summary.MailSeen > 0 {
+		if err := r.recordHeartbeat(ctx, r.cfg.Now().UTC()); err != nil {
+			return summary, err
+		}
+	}
 	return summary, nil
+}
+
+func (r *Runner) recordHeartbeat(ctx context.Context, now time.Time) error {
+	if r.cfg.Heartbeats == nil {
+		return nil
+	}
+	workerID := strings.TrimSpace(r.cfg.WorkerID)
+	if workerID == "" {
+		workerID = "worker"
+	}
+	if err := r.cfg.Heartbeats.RecordWorkerHeartbeat(ctx, workerID, now.UTC()); err != nil {
+		return fmt.Errorf("record worker heartbeat: %w", err)
+	}
+	return nil
 }
 
 func (r *Runner) handleJob(ctx context.Context, job postgres.JobRecord) error {

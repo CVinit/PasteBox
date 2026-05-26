@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"pastebox/internal/config"
+	"pastebox/internal/postgres"
 )
 
 func TestAdminCreateCommandEmitsBootstrapEnvWithoutPassword(t *testing.T) {
@@ -841,6 +844,80 @@ func TestProductionPreflightRejectsWALArchiveWaitAboveFifteenMinutes(t *testing.
 	}
 }
 
+func TestProductionPreflightRejectsInvalidWorkerHeartbeatMaxAge(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    string
+		expected string
+	}{
+		{name: "zero", value: "0", expected: "PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS must be a positive integer"},
+		{name: "not numeric", value: "later", expected: "PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS must be a positive integer"},
+		{name: "too high", value: "301", expected: "PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS must be <= 300"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setValidProductionEnv(t)
+			t.Setenv("PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS", tt.value)
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run([]string{"preflight", "production"}, &stdout, &stderr)
+			if code != 1 {
+				t.Fatalf("expected invalid worker heartbeat max age to fail, got %d", code)
+			}
+			if !strings.Contains(stderr.String(), tt.expected) {
+				t.Fatalf("expected %q in stderr, got %q", tt.expected, stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("expected empty stdout, got %q", stdout.String())
+			}
+		})
+	}
+}
+
+func TestWorkerReadinessComponentUsesDurableHeartbeat(t *testing.T) {
+	now := time.Date(2026, 5, 26, 12, 0, 0, 0, time.UTC)
+	cfg := config.Config{AppEnv: "production", WorkerHeartbeatMaxAgeSeconds: 120}
+
+	missing := workerReadinessComponent(context.Background(), cfg, fakeWorkerHeartbeatReader{err: postgres.ErrWorkerHeartbeatNotFound}, now)
+	if missing.Status != "fail" || !strings.Contains(missing.Message, "worker heartbeat is missing") {
+		t.Fatalf("expected missing worker heartbeat failure, got %#v", missing)
+	}
+
+	stale := workerReadinessComponent(context.Background(), cfg, fakeWorkerHeartbeatReader{heartbeat: postgres.WorkerHeartbeat{
+		WorkerID:   "worker-old",
+		LastSeenAt: now.Add(-3 * time.Minute),
+	}}, now)
+	if stale.Status != "fail" || !strings.Contains(stale.Message, "worker heartbeat stale") {
+		t.Fatalf("expected stale worker heartbeat failure, got %#v", stale)
+	}
+
+	ok := workerReadinessComponent(context.Background(), cfg, fakeWorkerHeartbeatReader{heartbeat: postgres.WorkerHeartbeat{
+		WorkerID:   "worker-current",
+		LastSeenAt: now.Add(-30 * time.Second),
+	}}, now)
+	if ok.Status != "ok" || ok.Message != "" {
+		t.Fatalf("expected current worker heartbeat to pass, got %#v", ok)
+	}
+
+	dev := workerReadinessComponent(context.Background(), config.Config{AppEnv: "development"}, fakeWorkerHeartbeatReader{}, now)
+	if dev.Status != "skipped" {
+		t.Fatalf("expected development worker heartbeat to be skipped, got %#v", dev)
+	}
+}
+
+type fakeWorkerHeartbeatReader struct {
+	heartbeat postgres.WorkerHeartbeat
+	err       error
+}
+
+func (s fakeWorkerHeartbeatReader) LastWorkerHeartbeat(context.Context) (postgres.WorkerHeartbeat, error) {
+	if s.err != nil {
+		return postgres.WorkerHeartbeat{}, s.err
+	}
+	return s.heartbeat, nil
+}
+
 func setValidProductionEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("PASTEBOX_IMAGE", "ghcr.io/cvinit/pastebox:sha-abc123")
@@ -863,6 +940,8 @@ func setValidProductionEnv(t *testing.T) {
 	t.Setenv("PASTEBOX_POSTGRES_PASSWORD", "db-secret")
 	t.Setenv("PASTEBOX_DATABASE_URL", "postgres://pastebox:secret@postgres:5432/pastebox?sslmode=disable")
 	t.Setenv("PASTEBOX_REDIS_ADDR", "redis:6379")
+	t.Setenv("PASTEBOX_WORKER_ID", "pastebox-worker")
+	t.Setenv("PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS", "120")
 	t.Setenv("PASTEBOX_S3_ENDPOINT", "https://objects.example.com")
 	t.Setenv("PASTEBOX_S3_BUCKET", "pastebox-prod")
 	t.Setenv("PASTEBOX_S3_REGION", "us-east-1")

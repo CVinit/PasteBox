@@ -98,3 +98,30 @@ func TestLoadMigrationsIncludesOAuthIdentities(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadMigrationsIncludesWorkerHeartbeats(t *testing.T) {
+	migrations, err := LoadMigrations()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	var migration Migration
+	for _, item := range migrations {
+		if item.Version == 4 {
+			migration = item
+			break
+		}
+	}
+	if migration.Name != "worker_heartbeats" || migration.Filename != "000004_worker_heartbeats.sql" {
+		t.Fatalf("expected worker heartbeat migration, got %#v", migration)
+	}
+	for _, expected := range []string{
+		"CREATE TABLE IF NOT EXISTS worker_heartbeats",
+		"worker_id text PRIMARY KEY",
+		"last_seen_at timestamptz NOT NULL",
+		"worker_heartbeats_last_seen_at_idx",
+	} {
+		if !strings.Contains(migration.SQL, expected) {
+			t.Fatalf("expected worker heartbeat migration to contain %q", expected)
+		}
+	}
+}

@@ -66,6 +66,8 @@ commit real secrets, raw provider payloads, private object keys, or user data.
 - [ ] `api`, `worker`, `postgres`, `redis`, and `caddy` services are running.
 - [ ] `curl -fsS https://<domain>/readyz` returned `status=ready`.
 - [ ] `curl -fsS https://<domain>/api/v1/ready` returned `status=ready`.
+- [ ] Readiness includes `worker` with `status=ok`, proving a fresh worker
+  heartbeat within `PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS`.
 - [ ] `pastebox worker --once` completed without failed runnable jobs.
 
 ## Provider Smoke Tests
