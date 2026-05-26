@@ -958,6 +958,11 @@ content, err := objectStore.Get(ctx, attachment.ObjectKey)
 - Runtime billing, support, worker, queue, and mail code must not treat
   in-memory maps or slices as production source of truth once these repositories
   are wired.
+- Long-running worker service instances must refresh the relevant PostgreSQL
+  source-of-truth rows before service-level background jobs process mutable
+  entities. `Service.RunCleanup` refreshes content metadata before deleting
+  pending-delete pastes or attachments, and `Service.RunBillingReconciliation`
+  refreshes orders before expiring pending orders.
 - `cmd/pastebox` API startup must wire PostgreSQL operational stores together
   with PostgreSQL auth/content/catalog/audit stores. Partial operational wiring
   is not production-safe because webhook idempotency, order state, reports,
@@ -1005,6 +1010,10 @@ content, err := objectStore.Get(ctx, attachment.ObjectKey)
 - Runtime switch tests must prove delete-paste cleanup jobs are durable across
   restart and admin queues distinguish `cleanupJobs`, `cleanupFailures`,
   `scanFailures`, and `failedJobs`.
+- Worker freshness regression tests must simulate an API service mutating
+  store-backed content/orders after a worker service has already started, then
+  assert `RunCleanup` and `RunBillingReconciliation` process the refreshed
+  durable rows.
 - Worker tests must prove cleanup, scan, and billing reconciliation job
   completion, retry/backoff, and terminal failure for unsupported job kinds.
 - Run full `make test` after changing operational repositories or runtime
@@ -1047,4 +1056,25 @@ if err := s.refreshQueueCachesLocked(ctx); err != nil {
     return nil, err
 }
 return map[string]any{"cleanupJobs": s.cleanupJobs}, nil
+```
+
+#### Wrong
+
+```go
+// Worker started before the API created or deleted this paste, so the startup
+// cache can miss the row that the cleanup job is supposed to process.
+for _, paste := range s.pastesByID {
+    cleanupPaste(paste)
+}
+```
+
+#### Correct
+
+```go
+if err := s.refreshContentCachesLocked(ctx); err != nil {
+    return nil, err
+}
+for _, paste := range s.pastesByID {
+    cleanupPaste(paste)
+}
 ```

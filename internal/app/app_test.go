@@ -790,6 +790,54 @@ func TestDeletePasteSchedulesDurableCleanupJob(t *testing.T) {
 	}
 }
 
+func TestRunCleanupRefreshesStoreBackedContentBeforeProcessing(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	authStores := newMemoryAuthStores()
+	contentStores := newMemoryContentStores()
+	objectStore := newMemoryObjectStore()
+	operationalStores := newMemoryOperationalStores()
+
+	apiSvc := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		Objects:      objectStore,
+		Operational:  operationalStores.operationalStores(),
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	owner := registerTestUser(t, apiSvc, "cleanup-refresh-owner@example.com")
+	paste := createTestPaste(t, apiSvc, owner.User.ID, PasteInput{Title: "worker cleanup", Text: "delete", ExpiresInSeconds: 3600})
+	attachment := addTestAttachment(t, apiSvc, owner.User.ID, paste.ID, "delete.txt", []byte("delete me"))
+	objectKey := apiSvc.attachmentsByID[attachment.ID].ObjectKey
+
+	workerSvc := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		Objects:      objectStore,
+		Operational:  operationalStores.operationalStores(),
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	if err := apiSvc.DeletePaste(owner.User.ID, paste.ID); err != nil {
+		t.Fatalf("delete paste through api service: %v", err)
+	}
+
+	result, err := workerSvc.RunCleanup("")
+	if err != nil {
+		t.Fatalf("run cleanup through stale worker service: %v", err)
+	}
+	if result["deletedAttachments"] != 1 || result["deletedPastes"] != 1 {
+		t.Fatalf("expected stale worker cleanup to process refreshed content, got %#v", result)
+	}
+	if objectStore.has(objectKey) {
+		t.Fatalf("expected stale worker cleanup to delete object store content")
+	}
+	if storedPaste := contentStores.pastes[paste.ID]; storedPaste.Status != "deleted" {
+		t.Fatalf("expected refreshed cleanup to persist deleted paste, got %#v", storedPaste)
+	}
+	if storedAttachment := contentStores.attachments[attachment.ID]; storedAttachment.Status != "deleted" {
+		t.Fatalf("expected refreshed cleanup to persist deleted attachment, got %#v", storedAttachment)
+	}
+}
+
 func TestStoreBackedOperationalStateSurvivesServiceRestart(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	authStores := newMemoryAuthStores()
@@ -1543,6 +1591,41 @@ func TestBillingReconciliationExpiresStalePendingOrders(t *testing.T) {
 		t.Fatalf("audit logs: %v", err)
 	}
 	assertAuditAction(t, logs, "billing.order_expired")
+}
+
+func TestBillingReconciliationRefreshesStoreBackedOrdersBeforeProcessing(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	authStores := newMemoryAuthStores()
+	operationalStores := newMemoryOperationalStores()
+
+	apiSvc := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Operational:  operationalStores.operationalStores(),
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	owner := registerTestUser(t, apiSvc, "billing-refresh-owner@example.com")
+	workerSvc := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Operational:  operationalStores.operationalStores(),
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+
+	order, err := apiSvc.CreateOrder(owner.User.ID, "epusdt", "plus", "monthly")
+	if err != nil {
+		t.Fatalf("create order through api service: %v", err)
+	}
+	now = now.Add(31 * time.Minute)
+
+	result, err := workerSvc.RunBillingReconciliation("")
+	if err != nil {
+		t.Fatalf("run billing reconciliation through stale worker service: %v", err)
+	}
+	if result["checkedOrders"] != 1 || result["pendingOrders"] != 1 || result["expiredOrders"] != 1 {
+		t.Fatalf("expected stale worker reconciliation to process refreshed order, got %#v", result)
+	}
+	if stored := operationalStores.orders[order.ID]; stored.Status != "expired" {
+		t.Fatalf("expected refreshed reconciliation to persist expired order, got %#v", stored)
+	}
 }
 
 func TestAccountDeletionRevokesSharesAndSessions(t *testing.T) {

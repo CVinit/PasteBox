@@ -1999,6 +1999,9 @@ func (s *Service) RunBillingReconciliation(actorID string) (map[string]int, erro
 			return nil, err
 		}
 	}
+	if err := s.refreshOrderCachesLocked(context.Background()); err != nil {
+		return nil, err
+	}
 	actor := actorID
 	if actor == "" {
 		actor = "system:billing_reconcile"
@@ -2705,6 +2708,9 @@ func (s *Service) RunCleanup(actorID string) (map[string]int, error) {
 			return nil, err
 		}
 	}
+	if err := s.refreshContentCachesLocked(context.Background()); err != nil {
+		return nil, err
+	}
 	now := s.now().UTC()
 	expired := 0
 	deletedAttachments := 0
@@ -2873,11 +2879,16 @@ func (s *Service) ListPastesLocked(userID string, opts ListOptions) ([]PasteView
 }
 
 func (s *Service) loadContentCaches(ctx context.Context) error {
+	return s.refreshContentCachesLocked(ctx)
+}
+
+func (s *Service) refreshContentCachesLocked(ctx context.Context) error {
 	if s.content.Pastes != nil {
 		pastes, err := s.content.Pastes.ListPastes(ctx)
 		if err != nil {
 			return fmt.Errorf("load pastes: %w", err)
 		}
+		s.pastesByID = map[string]*Paste{}
 		for _, paste := range pastes {
 			s.cachePasteLocked(paste)
 		}
@@ -2886,6 +2897,10 @@ func (s *Service) loadContentCaches(ctx context.Context) error {
 		attachments, err := s.content.Attachments.ListAttachments(ctx)
 		if err != nil {
 			return fmt.Errorf("load attachments: %w", err)
+		}
+		s.attachmentsByID = map[string]*Attachment{}
+		for _, paste := range s.pastesByID {
+			paste.AttachmentIDs = nil
 		}
 		for _, attachment := range attachments {
 			s.cacheAttachmentLocked(attachment)
@@ -2899,6 +2914,8 @@ func (s *Service) loadContentCaches(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("load shares: %w", err)
 		}
+		s.sharesByID = map[string]*Share{}
+		s.shareIDByToken = map[string]string{}
 		for _, share := range shares {
 			s.cacheShareLocked(share)
 		}
@@ -2907,14 +2924,8 @@ func (s *Service) loadContentCaches(ctx context.Context) error {
 }
 
 func (s *Service) loadOperationalCaches(ctx context.Context) error {
-	if s.ops.Orders != nil {
-		orders, err := s.ops.Orders.ListOrders(ctx)
-		if err != nil {
-			return fmt.Errorf("load orders: %w", err)
-		}
-		for _, order := range orders {
-			s.cacheOrderLocked(order)
-		}
+	if err := s.refreshOrderCachesLocked(ctx); err != nil {
+		return err
 	}
 	if s.ops.WebhookEvents != nil {
 		events, err := s.ops.WebhookEvents.ListWebhookEvents(ctx)
@@ -2941,6 +2952,21 @@ func (s *Service) loadOperationalCaches(ctx context.Context) error {
 	}
 	if s.ops.Mails != nil {
 		return s.refreshMailCacheLocked(ctx)
+	}
+	return nil
+}
+
+func (s *Service) refreshOrderCachesLocked(ctx context.Context) error {
+	if s.ops.Orders == nil {
+		return nil
+	}
+	orders, err := s.ops.Orders.ListOrders(ctx)
+	if err != nil {
+		return fmt.Errorf("load orders: %w", err)
+	}
+	s.ordersByID = map[string]*Order{}
+	for _, order := range orders {
+		s.cacheOrderLocked(order)
 	}
 	return nil
 }
