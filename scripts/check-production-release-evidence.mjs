@@ -61,6 +61,8 @@ const requiredChecklistFields = [
   "Migration classification",
 ];
 
+const releaseIdentityFields = [...requiredChecklistFields];
+
 let throwOnFailure = false;
 
 function usage() {
@@ -224,6 +226,51 @@ function checklistItemSatisfied(templateText, completedTexts) {
     return [...completedTexts].some((text) => text.startsWith(templateText));
   }
   return false;
+}
+
+function checklistFieldEntries(markdown) {
+  const values = new Map();
+  for (const { text } of checklistItems(markdown)) {
+    const normalized = normalizeChecklistText(text);
+    for (const field of releaseIdentityFields) {
+      const value = checklistFieldValue(normalized, field);
+      if (value !== null) {
+        values.set(field, value);
+      }
+    }
+  }
+  return values;
+}
+
+function releaseNotesFieldEntries(markdown) {
+  return new Map(
+    releaseFieldEntries(markdown).map((entry) => [fieldName(entry), fieldValue(entry)]),
+  );
+}
+
+function normalizeEvidenceValue(value) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function validateEvidenceConsistency(checklistMarkdown, releaseNotesMarkdown) {
+  const checklistFields = checklistFieldEntries(checklistMarkdown);
+  const releaseFields = releaseNotesFieldEntries(releaseNotesMarkdown);
+
+  for (const field of releaseIdentityFields) {
+    const checklistValue = checklistFields.get(field);
+    const releaseValue = releaseFields.get(field);
+    if (!checklistValue) {
+      fail(`completed evidence checklist is missing release identity field ${field}`);
+    }
+    if (!releaseValue) {
+      fail(`completed release notes are missing release identity field ${field}`);
+    }
+    if (normalizeEvidenceValue(checklistValue) !== normalizeEvidenceValue(releaseValue)) {
+      fail(
+        `release identity mismatch for ${field}: checklist has ${JSON.stringify(checklistValue)}, release notes have ${JSON.stringify(releaseValue)}`,
+      );
+    }
+  }
 }
 
 function validateChecklist(markdown, templateMarkdown = null) {
@@ -418,6 +465,7 @@ function runSelfTest() {
 
   validateChecklist(completeChecklistFixture(), checklistTemplate);
   validateReleaseNotes(releaseNotesFixture, releaseNotesTemplate);
+  validateEvidenceConsistency(completeChecklistFixture(), releaseNotesFixture);
 
   assertSelfTestFailure(
     "unchecked checklist",
@@ -482,6 +530,15 @@ function runSelfTest() {
       ),
     "empty or placeholder",
   );
+  assertSelfTestFailure(
+    "mismatched release identity",
+    () =>
+      validateEvidenceConsistency(
+        completeChecklistFixture(),
+        releaseNotesFixture.replace("- Release commit: abc1234", "- Release commit: def5678"),
+      ),
+    "release identity mismatch",
+  );
 
   throwOnFailure = false;
   console.log("production release evidence self-test passed");
@@ -504,5 +561,6 @@ const releaseNotesTemplate = readRequired(releaseNotesTemplatePath, "release not
 
 validateChecklist(checklist, checklistTemplate);
 validateReleaseNotes(releaseNotes, releaseNotesTemplate);
+validateEvidenceConsistency(checklist, releaseNotes);
 
 console.log("production release evidence check passed");
