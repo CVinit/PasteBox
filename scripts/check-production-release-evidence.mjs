@@ -288,6 +288,25 @@ function validateMigrationClassification(label, value) {
   }
 }
 
+function isPinnedImageReference(value) {
+  const image = normalizeEvidenceValue(value);
+  if (!image || image.endsWith(":latest")) {
+    return false;
+  }
+  if (image.includes("@sha256:")) {
+    return true;
+  }
+  const lastSlash = image.lastIndexOf("/");
+  const lastColon = image.lastIndexOf(":");
+  return lastColon > lastSlash && image.slice(lastColon + 1).startsWith("sha-");
+}
+
+function validatePinnedImageReference(label, field, value) {
+  if (!isPinnedImageReference(value)) {
+    fail(`${label} ${field} must use a sha-* tag or digest`);
+  }
+}
+
 function validateEvidenceConsistency(checklistMarkdown, releaseNotesMarkdown) {
   const checklistFields = checklistFieldEntries(checklistMarkdown);
   const releaseFields = releaseNotesFieldEntries(releaseNotesMarkdown);
@@ -384,6 +403,9 @@ function validateChecklist(markdown, templateMarkdown = null) {
     "completed evidence checklist",
     checklistFields.get("Migration classification") || "",
   );
+  for (const field of ["Immutable image reference or digest", "Previous known-good image"]) {
+    validatePinnedImageReference("completed evidence checklist", field, checklistFields.get(field) || "");
+  }
 
   if (templateMarkdown) {
     const templateItems = checklistItems(templateMarkdown).map(({ text }) =>
@@ -444,6 +466,9 @@ function validateReleaseNotes(markdown, templateMarkdown = null) {
     "completed release notes",
     fields.get("Migration classification") || "",
   );
+  for (const field of ["Immutable image reference or digest", "Previous known-good image"]) {
+    validatePinnedImageReference("completed release notes", field, fields.get(field) || "");
+  }
 
   const validatorResult = fields.get("Release evidence validator result");
   if (!/^passed\b/i.test(validatorResult)) {
@@ -611,6 +636,18 @@ function runSelfTest() {
     "migration classification must be one of",
   );
   assertSelfTestFailure(
+    "mutable checklist image reference",
+    () =>
+      validateChecklist(
+        completeChecklistFixture().replace(
+          "- [x] Immutable image reference or digest: ghcr.io/cvinit/pastebox:sha-abc1234",
+          "- [x] Immutable image reference or digest: ghcr.io/cvinit/pastebox:latest",
+        ),
+        checklistTemplate,
+      ),
+    "must use a sha-* tag or digest",
+  );
+  assertSelfTestFailure(
     "missing release notes field",
     () =>
       validateReleaseNotes(
@@ -630,6 +667,18 @@ function runSelfTest() {
         releaseNotesTemplate,
       ),
     "migration classification must be one of",
+  );
+  assertSelfTestFailure(
+    "mutable release notes previous image",
+    () =>
+      validateReleaseNotes(
+        releaseNotesFixture.replace(
+          "- Previous known-good image: ghcr.io/cvinit/pastebox:sha-previous",
+          "- Previous known-good image: ghcr.io/cvinit/pastebox:v1.2.3",
+        ),
+        releaseNotesTemplate,
+      ),
+    "must use a sha-* tag or digest",
   );
   assertSelfTestFailure(
     "unapproved launch",

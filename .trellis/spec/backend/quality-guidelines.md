@@ -1290,6 +1290,9 @@ order, err := svc.MarkOrderPaid(admin.ID, order.ID, "manual-123", "SUP-123 verif
   `Previous known-good image`, and `Migration classification`.
 - `Migration classification` must be one of `no-migration`, `reversible`,
   `forward-compatible`, or `non-reversible` in both completed artifacts.
+- `Immutable image reference or digest` and `Previous known-good image` must
+  use a `sha-*` tag or registry digest, mirroring production preflight's pinned
+  `PASTEBOX_IMAGE` rule.
 - The release notes `Completed evidence checklist path` must match the
   `--checklist` path passed to the validator, accepting equivalent absolute,
   working-directory-relative, or repo-root-relative path forms.
@@ -1307,6 +1310,8 @@ order, err := svc.MarkOrderPaid(admin.ID, order.ID, "manual-123", "SUP-123 verif
   fails.
 - Placeholder field value -> release evidence check fails.
 - Invalid migration classification -> release evidence check fails.
+- Mutable image reference such as `:latest` or `:v1.2.3` -> release evidence
+  check fails.
 - Checklist/release-notes release identity mismatch -> release evidence check
   fails.
 - `Completed evidence checklist path` does not refer to `--checklist` ->
@@ -1331,9 +1336,10 @@ order, err := svc.MarkOrderPaid(admin.ID, order.ID, "manual-123", "SUP-123 verif
 
 - Keep `--self-test` cases for success plus unchecked checklist, missing
   checklist item, empty/placeholder field, invalid migration classification in
-  both artifacts, missing release-notes field, unapproved launch, failed
-  validator result, pending operator approval, raw-secret rejection in both
-  files, release identity mismatch, and mismatched completed-checklist path.
+  both artifacts, mutable image references, missing release-notes field,
+  unapproved launch, failed validator result, pending operator approval,
+  raw-secret rejection in both files, release identity mismatch, and mismatched
+  completed-checklist path.
 - Run `node scripts/check-production-release-evidence.mjs --self-test` after
   changing the validator.
 - Run `node scripts/check-release-evidence-template.mjs` after changing
