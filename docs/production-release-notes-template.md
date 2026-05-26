@@ -31,6 +31,7 @@ node scripts/check-production-release-evidence.mjs \
 - `make test-postgres` result:
 - `make build` result:
 - Web launch-surface smoke result:
+- Release evidence validator self-test result:
 - Docker image build or CI image result:
 - Production Compose config results:
 - Production preflight result:

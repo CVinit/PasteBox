@@ -36,9 +36,11 @@ Pull Request 只构建镜像，不推送镜像。
 
 镜像发布前，workflow 会安装 Go 和前端工具链，并以跳过本地 Docker build
 的方式运行 `make production-readiness`。该 gate 会验证生产 Compose
-渲染、维护脚本语法、监控配置语法、Caddy 配置语法、后端测试、前端
-typecheck/build，以及后端和前端构建。只有该 gate 在对应 release commit
-通过后，`sha-*` 镜像标签才可作为生产上线证据；最终 Buildx 步骤负责发布时的镜像构建。
+渲染、维护脚本语法、监控配置语法、Caddy 配置语法、合成生产 preflight、
+后端测试、前端 typecheck/build、Web 上线页面检查、release evidence
+template/validator 检查、provider smoke runbook 检查、PostgreSQL 集成测试，
+以及后端和前端构建。只有该 gate 在对应 release commit 通过后，`sha-*`
+镜像标签才可作为生产上线证据；最终 Buildx 步骤负责发布时的镜像构建。
 
 如果目标机器拉取镜像失败，请检查：
 

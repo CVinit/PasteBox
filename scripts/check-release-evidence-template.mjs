@@ -53,6 +53,7 @@ const requiredEvidence = [
   "Migration classification",
   "make production-readiness",
   "Web launch-surface smoke result",
+  "Release evidence validator self-test result",
   "Provider smoke-test runbook path",
   "Stripe signed webhook replay",
   "Epusdt expired or canceled callback",
@@ -77,6 +78,7 @@ const validatorReference = "scripts/check-production-release-evidence.mjs";
 requireIncludes("production launch evidence checklist", checklist, templateReference);
 requireIncludes("production deployment runbook", runbook, templateReference);
 requireIncludes("production launch evidence checklist", checklist, validatorReference);
+requireIncludes("production launch evidence checklist", checklist, "node scripts/check-production-release-evidence.mjs --self-test");
 requireIncludes("production release notes template", template, validatorReference);
 requireIncludes("production deployment runbook", runbook, validatorReference);
 

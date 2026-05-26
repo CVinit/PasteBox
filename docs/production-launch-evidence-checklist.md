@@ -41,6 +41,9 @@ payloads, private object keys, or user data.
   release-notes template still covers image, migration, provider smoke,
   backup/PITR, rollback, monitoring, support, residual-risk, and launch-decision
   evidence.
+- [ ] `node scripts/check-production-release-evidence.mjs --self-test` passed,
+  proving the release-evidence validator accepts completed template-shaped
+  evidence and rejects unchecked, missing, placeholder, or unapproved evidence.
 - [ ] `node scripts/check-provider-smoke-runbook.mjs` passed, proving the live
   provider smoke-test runbook still covers managed S3, SMTP, Google OAuth,
   Stripe, Epusdt, and ClamAV evidence.
