@@ -1024,6 +1024,9 @@ func TestMaliciousScanBlocksOwnerAndPublicDownloads(t *testing.T) {
 	if err := svc.RunAttachmentScan(staticScanner{result: ScanResult{Status: "malicious", Risk: "eicar_test_file"}}, attachment.ID); err != nil {
 		t.Fatalf("run malicious scan: %v", err)
 	}
+	if _, err := svc.CreateShare(owner.User.ID, paste.ID, ShareInput{ExpiresInSeconds: 3600}); !hasAppCode(err, "malicious_file") {
+		t.Fatalf("expected future share creation to block malicious file, got %v", err)
+	}
 	if _, _, err := svc.DownloadAttachment(owner.User.ID, attachment.ID); !hasAppCode(err, "malicious_file") {
 		t.Fatalf("expected owner download to block malicious file, got %v", err)
 	}

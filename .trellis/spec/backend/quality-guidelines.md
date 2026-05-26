@@ -299,6 +299,88 @@ out := []PasteView{}
 writeJSON(w, http.StatusOK, map[string]any{"pastes": out})
 ```
 
+## Scenario: Attachment Scan Sharing Gates
+
+### 1. Scope / Trigger
+
+- Trigger: Any backend change that touches attachment scan states, owner
+  downloads, shared attachment downloads, share creation, scanner workers, or
+  scan retry behavior.
+
+### 2. Signatures
+
+- Service share creation:
+  `CreateShare(userID string, pasteID string, input ShareInput) (ShareView, error)`
+- Owner download:
+  `DownloadAttachment(userID string, attachmentID string) (AttachmentView, []byte, error)`
+- Shared download:
+  `DownloadSharedAttachment(token string, password string, attachmentID string, viewerUserID string) (AttachmentView, []byte, error)`
+- Scanner result application:
+  `RunAttachmentScan(scanner Scanner, attachmentID string) error`
+- Scan states: `pending`, `clean`, `scan_failed`, and `malicious`.
+
+### 3. Contracts
+
+- Owner downloads may proceed for `pending` and `scan_failed` attachments, but
+  must reject `malicious` attachments with `403 malicious_file`.
+- Shared attachment downloads require `scanStatus == "clean"`. Pending,
+  failed, malicious, and unknown scan states must reject with
+  `403 scan_not_clean`.
+- New share creation must reject active pastes that contain any active
+  `malicious` attachment with `403 malicious_file`.
+- Existing shares remain auditable and revocable after a file is later marked
+  malicious, but shared downloads through those shares remain blocked by the
+  clean-scan gate.
+- Retrying scans must not auto-retry `malicious` attachments.
+
+### 4. Validation & Error Matrix
+
+- Owner downloads `pending` attachment -> allowed.
+- Owner downloads `scan_failed` attachment -> allowed.
+- Owner downloads `malicious` attachment -> `403 malicious_file`.
+- Public/shared downloads any non-`clean` attachment -> `403 scan_not_clean`.
+- Create share for paste containing active `malicious` attachment ->
+  `403 malicious_file`.
+- Admin retry scan for `malicious` attachment -> `403 malicious_file`.
+
+### 5. Good/Base/Bad Cases
+
+- Good: A paste with a malicious attachment cannot receive new public share
+  links, and an old share cannot download the malicious file.
+- Base: A paste with a pending executable upload can still be shared, but the
+  public file download waits until the scanner marks the attachment clean.
+- Bad: Blocking only shared downloads but allowing new shares on known
+  malicious files, because the product would still advertise a public link for
+  content known to be blocked globally.
+
+### 6. Tests Required
+
+- Domain tests in `internal/app` must cover pending owner downloads,
+  scan-failed owner downloads, public clean-scan gates, malicious owner
+  download rejection, malicious shared download rejection, and malicious share
+  creation rejection.
+- Run full `make test` after changing scan gates because frontend attachment
+  status presentation consumes the same API fields.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+share := &Share{PasteID: paste.ID, UserID: userID}
+return s.createShareLocked(share)
+```
+
+#### Correct
+
+```go
+for _, attachment := range s.attachmentsForPasteLocked(paste) {
+    if attachment.Status == "active" && attachment.ScanStatus == "malicious" {
+        return ShareView{}, E(http.StatusForbidden, "malicious_file", "known malicious files cannot be shared")
+    }
+}
+```
+
 ## Scenario: Production HTTP Rate Limits
 
 ### 1. Scope / Trigger

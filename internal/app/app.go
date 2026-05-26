@@ -1391,6 +1391,11 @@ func (s *Service) CreateShare(userID string, pasteID string, input ShareInput) (
 	if !s.isPasteVisibleLocked(paste) {
 		return ShareView{}, E(http.StatusGone, "paste_expired", "cannot share expired paste")
 	}
+	for _, attachment := range s.attachmentsForPasteLocked(paste) {
+		if attachment.Status == "active" && attachment.ScanStatus == "malicious" {
+			return ShareView{}, E(http.StatusForbidden, "malicious_file", "known malicious files cannot be shared")
+		}
+	}
 	now := s.now().UTC()
 	expiresAt := paste.ExpiresAt
 	if input.ExpiresInSeconds > 0 {
