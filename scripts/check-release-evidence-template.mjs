@@ -7,6 +7,7 @@ const templatePath = join(repoRoot, "docs/production-release-notes-template.md")
 const checklistPath = join(repoRoot, "docs/production-launch-evidence-checklist.md");
 const runbookPath = join(repoRoot, "docs/production-deployment-runbook.md");
 const validatorPath = join(repoRoot, "scripts/check-production-release-evidence.mjs");
+const makefilePath = join(repoRoot, "Makefile");
 
 function fail(message) {
   console.error(`release evidence template check failed: ${message}`);
@@ -30,6 +31,7 @@ const template = readRequired(templatePath);
 const checklist = readRequired(checklistPath);
 const runbook = readRequired(runbookPath);
 readRequired(validatorPath);
+const makefile = readRequired(makefilePath);
 
 const requiredHeadings = [
   "## Release Identity",
@@ -75,11 +77,16 @@ for (const evidence of requiredEvidence) {
 
 const templateReference = "docs/production-release-notes-template.md";
 const validatorReference = "scripts/check-production-release-evidence.mjs";
+const makeTargetReference = "make release-evidence";
 requireIncludes("production launch evidence checklist", checklist, templateReference);
 requireIncludes("production deployment runbook", runbook, templateReference);
 requireIncludes("production launch evidence checklist", checklist, validatorReference);
 requireIncludes("production launch evidence checklist", checklist, "node scripts/check-production-release-evidence.mjs --self-test");
 requireIncludes("production release notes template", template, validatorReference);
 requireIncludes("production deployment runbook", runbook, validatorReference);
+requireIncludes("Makefile release evidence target", makefile, "release-evidence:");
+requireIncludes("production launch evidence checklist", checklist, makeTargetReference);
+requireIncludes("production release notes template", template, makeTargetReference);
+requireIncludes("production deployment runbook", runbook, makeTargetReference);
 
 console.log("release evidence template check passed");

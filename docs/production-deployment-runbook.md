@@ -503,5 +503,5 @@ support/admin audit workflows. Complete
 `docs/production-release-notes-template.md`, using
 `docs/production-provider-smoke-tests.md` for live provider evidence, for each
 release candidate before accepting public beta traffic. Run
-`node scripts/check-production-release-evidence.mjs --checklist <completed-checklist.md> --release-notes <completed-release-notes.md>`
+`make release-evidence RELEASE_CHECKLIST=<completed-checklist.md> RELEASE_NOTES=<completed-release-notes.md>`
 against the completed sanitized copies before operator approval.

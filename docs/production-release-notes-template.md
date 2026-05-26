@@ -8,10 +8,12 @@ Before accepting public beta traffic, validate the completed sanitized release
 notes and completed evidence checklist:
 
 ```sh
-node scripts/check-production-release-evidence.mjs \
-  --checklist <completed-checklist.md> \
-  --release-notes <completed-release-notes.md>
+make release-evidence \
+  RELEASE_CHECKLIST=<completed-checklist.md> \
+  RELEASE_NOTES=<completed-release-notes.md>
 ```
+
+The Make target wraps `scripts/check-production-release-evidence.mjs`.
 
 ## Release Identity
 

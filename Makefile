@@ -8,7 +8,7 @@ include .env
 export
 endif
 
-.PHONY: help dev api web db-up object-bucket db-status db-migrate db-reset test test-api test-postgres test-web build build-api build-web production-readiness fmt clean
+.PHONY: help dev api web db-up object-bucket db-status db-migrate db-reset test test-api test-postgres test-web build build-api build-web production-readiness release-evidence fmt clean
 
 help:
 	@printf '%s\n' 'PasteBox commands:'
@@ -24,6 +24,8 @@ help:
 	@printf '%s\n' '  make build      Build backend binary and frontend assets'
 	@printf '%s\n' '  make production-readiness'
 	@printf '%s\n' '                  Run local production launch-gate checks'
+	@printf '%s\n' '  make release-evidence RELEASE_CHECKLIST=<file> RELEASE_NOTES=<file>'
+	@printf '%s\n' '                  Validate completed sanitized production release evidence'
 
 dev:
 	docker compose up -d postgres redis minio clamav mailpit
@@ -75,6 +77,13 @@ build-web:
 
 production-readiness:
 	sh scripts/check-production-readiness.sh
+
+release-evidence:
+	@if [ -z "$(RELEASE_CHECKLIST)" ] || [ -z "$(RELEASE_NOTES)" ]; then \
+		printf '%s\n' 'usage: make release-evidence RELEASE_CHECKLIST=<completed-checklist.md> RELEASE_NOTES=<completed-release-notes.md>'; \
+		exit 2; \
+	fi
+	node scripts/check-production-release-evidence.mjs --checklist "$(RELEASE_CHECKLIST)" --release-notes "$(RELEASE_NOTES)"
 
 fmt:
 	gofmt -w cmd internal
