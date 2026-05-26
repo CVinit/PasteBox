@@ -159,6 +159,8 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - API readiness endpoint: `GET /api/v1/ready`
 - Production Compose file: `compose.production.yaml`
 - Production env template: `deploy/production.env.example`
+- Production preflight verifier:
+  `scripts/check-production-preflight.sh`
 - Production monitoring files: `deploy/monitoring/prometheus.yml` and
   `deploy/monitoring/pastebox-alerts.yml`
 - PostgreSQL integration verifier:
@@ -218,6 +220,10 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
   `PASTEBOX_METRICS_TOKEN` Compose secret, not from committed YAML.
 - The committed env template may contain placeholders; the real production env
   file must not be committed.
+- `scripts/check-production-preflight.sh` must derive a synthetic
+  production-safe environment from `deploy/production.env.example`, fail on any
+  unmapped `CHANGE_ME` placeholder, and execute
+  `go run ./cmd/pastebox preflight production`.
 - `make test-postgres` starts an ephemeral PostgreSQL container on a loopback
   random host port, sets `PASTEBOX_TEST_DATABASE_URL`, runs
   `go test ./internal/postgres`, and removes the container on exit.
@@ -254,6 +260,11 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - Production monitoring profile fails to render -> config validation failure.
 - Prometheus scrape or alert-rule config is syntactically invalid -> launch
   monitoring validation failure.
+- New placeholder env key added to `deploy/production.env.example` but not
+  mapped by `scripts/check-production-preflight.sh` -> preflight verifier exits
+  1 with the unmapped key name.
+- Synthetic production preflight fails -> `make production-readiness` fails
+  before tests/build/image evidence.
 - PostgreSQL integration container does not become ready -> `make
   test-postgres` exits 1 and prints container logs.
 - Any `internal/postgres` integration test fails with
@@ -271,6 +282,9 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - Good: A release-candidate verification run executes `make test-postgres` with
   a throwaway PostgreSQL container instead of relying on integration tests that
   skip when `PASTEBOX_TEST_DATABASE_URL` is absent.
+- Good: Adding a new required production env key updates
+  `deploy/production.env.example`, `pastebox preflight production`, and the
+  synthetic preflight verifier mapping in the same change.
 - Base: Worker support may start with one job kind, but it must use the durable
   `jobs` table and preserve retry state across process restarts.
 - Bad: Editing an already-applied migration, silently ignoring checksum drift,
@@ -299,6 +313,8 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
   successfully with `PASTEBOX_ENV_FILE=./deploy/production.env.example`.
 - Validate Prometheus syntax for `deploy/monitoring/prometheus.yml` and
   `deploy/monitoring/pastebox-alerts.yml` after alert or scrape changes.
+- `scripts/check-production-preflight.sh` must pass after changing production
+  preflight validation, production env templates, or required launch secrets.
 - `make test-postgres` must pass after changing PostgreSQL stores, migrations,
   runtime store wiring, or production-readiness scripts.
 - `make production-readiness` must run `make test-postgres` before build/image
@@ -338,4 +354,19 @@ make test
 make test-postgres
 make production-readiness
 # release verification includes a live PostgreSQL-backed integration pass.
+```
+
+#### Wrong
+
+```sh
+PASTEBOX_PRODUCTION_ENV_FILE=deploy/production.env.example make production-readiness
+# Compose renders, but the actual preflight command is never executed.
+```
+
+#### Correct
+
+```sh
+sh scripts/check-production-preflight.sh
+make production-readiness
+# release verification proves the preflight command accepts a complete env set.
 ```

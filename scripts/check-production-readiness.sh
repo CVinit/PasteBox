@@ -49,6 +49,7 @@ run docker compose --env-file "$env_file" -f compose.production.yaml --profile m
 
 section "Maintenance script syntax"
 run sh -n \
+	scripts/check-production-preflight.sh \
 	scripts/check-postgres-integration.sh \
 	deploy/monitoring/textfile-metrics.sh \
 	deploy/backup/postgres-backup.sh \
@@ -75,6 +76,9 @@ run docker run --rm --env-file "$env_file" \
 	-v "$repo_root/deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
 	"$caddy_image" \
 	caddy validate --config /etc/caddy/Caddyfile
+
+section "Production preflight"
+run sh scripts/check-production-preflight.sh
 
 section "Project tests"
 run make test

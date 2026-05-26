@@ -41,6 +41,9 @@ commit real secrets, raw provider payloads, private object keys, or user data.
   --env-file deploy/production.env.example -f compose.production.yaml
   --profile maintenance config` renders with the committed template.
 - [ ] Any changed backup scripts passed `sh -n`.
+- [ ] `scripts/check-production-preflight.sh` passed, proving the committed
+  production env template can be mapped to a complete production-shaped
+  preflight environment.
 - [ ] Any changed Prometheus config or rules passed `promtool` or equivalent
   syntax validation.
 
