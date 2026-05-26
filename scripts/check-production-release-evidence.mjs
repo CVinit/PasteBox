@@ -72,6 +72,12 @@ const requiredChecklistFields = [
 ];
 
 const releaseIdentityFields = [...requiredChecklistFields];
+const allowedMigrationClassifications = new Set([
+  "no-migration",
+  "reversible",
+  "forward-compatible",
+  "non-reversible",
+]);
 
 let throwOnFailure = false;
 
@@ -273,6 +279,15 @@ function normalizeEvidenceValue(value) {
   return value.replace(/\s+/g, " ").trim();
 }
 
+function validateMigrationClassification(label, value) {
+  const normalized = normalizeEvidenceValue(value).toLowerCase();
+  if (!allowedMigrationClassifications.has(normalized)) {
+    fail(
+      `${label} migration classification must be one of ${[...allowedMigrationClassifications].join(", ")}`,
+    );
+  }
+}
+
 function validateEvidenceConsistency(checklistMarkdown, releaseNotesMarkdown) {
   const checklistFields = checklistFieldEntries(checklistMarkdown);
   const releaseFields = releaseNotesFieldEntries(releaseNotesMarkdown);
@@ -364,6 +379,11 @@ function validateChecklist(markdown, templateMarkdown = null) {
   if (emptyField) {
     fail(`completed evidence checklist has an empty or placeholder field at line ${emptyField.lineNumber}: ${emptyField.line}`);
   }
+  const checklistFields = checklistFieldEntries(markdown);
+  validateMigrationClassification(
+    "completed evidence checklist",
+    checklistFields.get("Migration classification") || "",
+  );
 
   if (templateMarkdown) {
     const templateItems = checklistItems(templateMarkdown).map(({ text }) =>
@@ -420,6 +440,10 @@ function validateReleaseNotes(markdown, templateMarkdown = null) {
       fail(`release notes launch decision is missing ${field}`);
     }
   }
+  validateMigrationClassification(
+    "completed release notes",
+    fields.get("Migration classification") || "",
+  );
 
   const validatorResult = fields.get("Release evidence validator result");
   if (!/^passed\b/i.test(validatorResult)) {
@@ -575,6 +599,18 @@ function runSelfTest() {
     "empty or placeholder field",
   );
   assertSelfTestFailure(
+    "invalid checklist migration classification",
+    () =>
+      validateChecklist(
+        completeChecklistFixture().replace(
+          "- [x] Migration classification: reversible",
+          "- [x] Migration classification: risky",
+        ),
+        checklistTemplate,
+      ),
+    "migration classification must be one of",
+  );
+  assertSelfTestFailure(
     "missing release notes field",
     () =>
       validateReleaseNotes(
@@ -582,6 +618,18 @@ function runSelfTest() {
         releaseNotesTemplate,
       ),
     "missing required field",
+  );
+  assertSelfTestFailure(
+    "invalid release notes migration classification",
+    () =>
+      validateReleaseNotes(
+        releaseNotesFixture.replace(
+          "- Migration classification: reversible",
+          "- Migration classification: risky",
+        ),
+        releaseNotesTemplate,
+      ),
+    "migration classification must be one of",
   );
   assertSelfTestFailure(
     "unapproved launch",
