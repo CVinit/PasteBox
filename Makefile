@@ -8,7 +8,7 @@ include .env
 export
 endif
 
-.PHONY: help dev api web db-up object-bucket db-status db-migrate db-reset test test-api test-web build build-api build-web fmt clean
+.PHONY: help dev api web db-up object-bucket db-status db-migrate db-reset test test-api test-web build build-api build-web production-readiness fmt clean
 
 help:
 	@printf '%s\n' 'PasteBox commands:'
@@ -20,6 +20,8 @@ help:
 	@printf '%s\n' '  make db-reset   Reset local PostgreSQL schema and rerun migrations'
 	@printf '%s\n' '  make test       Run backend and frontend checks'
 	@printf '%s\n' '  make build      Build backend binary and frontend assets'
+	@printf '%s\n' '  make production-readiness'
+	@printf '%s\n' '                  Run local production launch-gate checks'
 
 dev:
 	docker compose up -d postgres redis minio clamav mailpit
@@ -65,6 +67,9 @@ build-api:
 
 build-web:
 	$(NPM) run build
+
+production-readiness:
+	sh scripts/check-production-readiness.sh
 
 fmt:
 	gofmt -w cmd internal

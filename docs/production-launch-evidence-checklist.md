@@ -23,6 +23,7 @@ commit real secrets, raw provider payloads, private object keys, or user data.
 
 ## Repository Verification
 
+- [ ] `make production-readiness` passed for the release commit.
 - [ ] `make test` passed for the release commit.
 - [ ] `make build` passed for the release commit.
 - [ ] `docker build -t pastebox:<release> .` passed, or CI produced the image

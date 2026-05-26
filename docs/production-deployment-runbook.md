@@ -35,6 +35,9 @@ traffic is allowed.
 - `deploy/backup/postgres-restore-drill.sh`: scratch database restore drill.
 - `deploy/backup/postgres-pitr-restore-drill.sh`: scratch PITR restore drill.
 - `deploy/backup/restic-backup.sh`: off-host backup push and integrity check.
+- `scripts/check-production-readiness.sh`: local release-candidate verifier for
+  Compose rendering, maintenance script syntax, monitoring config syntax,
+  Caddy config syntax, tests, builds, and Docker image build.
 - `docs/production-rollback-runbook.md`: image rollback and restore gates.
 - `docs/production-secrets.md`: secret handling checklist.
 - `docs/production-support-operations-runbook.md`: legal, support, refund,
@@ -97,10 +100,21 @@ traffic is allowed.
 Run these checks before starting or upgrading the stack:
 
 ```sh
+make production-readiness
 docker compose --env-file deploy/production.env -f compose.production.yaml config
 docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm preflight
 docker compose --env-file deploy/production.env -f compose.production.yaml pull
 ```
+
+`make production-readiness` uses the committed `deploy/production.env.example`
+by default and proves the repo-local release candidate gates: production
+Compose rendering, monitoring-profile Compose rendering, shell syntax for
+maintenance scripts, Prometheus/blackbox/Caddy config syntax through container
+images, `make test`, `make build`, and a local Docker image build. To run the
+same verifier against a server-specific env file without committing it, set
+`PASTEBOX_PRODUCTION_ENV_FILE=deploy/production.env`. To skip the local image
+build only when CI has already built the exact release image, set
+`PASTEBOX_SKIP_DOCKER_BUILD=true`.
 
 The production preflight fails if `PASTEBOX_IMAGE` is mutable, if
 `PASTEBOX_PUBLIC_URL` is not a root HTTPS production origin, if
