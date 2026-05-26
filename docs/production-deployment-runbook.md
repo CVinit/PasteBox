@@ -118,6 +118,14 @@ object store, if `PASTEBOX_RESTIC_REPOSITORY` is not an off-host `s3:https://`
 repository, or if backup S3 credentials reuse the attachment object-storage
 credentials. Use managed S3-compatible storage for attachment objects and a
 separate off-host S3-compatible restic repository for backups.
+Preflight also rejects `CHANGE_ME` placeholders and documentation-only hostnames
+such as `example.com`, `.example.com`, `.test`, `.invalid`, localhost,
+single-label internal hostnames, and IP literals for production-facing URLs,
+email domains, CORS origins, OAuth redirects, SMTP, object storage, backup
+repositories, and payment checkout templates. The committed
+`deploy/production.env.example` is only a key inventory; copy it to the server
+as `deploy/production.env` and replace every placeholder with operator-owned
+real values before running preflight.
 `PASTEBOX_WAL_ARCHIVE_TIMEOUT_SECONDS` and
 `PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS` must both be positive and no more than
 `900`; `PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS` must also be positive and no more
@@ -136,10 +144,11 @@ callbacks. Production order creation fails closed instead of returning
 development checkout URLs or test USDT addresses when these checkout settings
 are missing or invalid.
 
-The Google OAuth app must include this authorized redirect URI:
+The Google OAuth app must include the production authorized redirect URI for
+the real `PASTEBOX_PUBLIC_URL` host:
 
 ```text
-https://pastebox.example.com/api/v1/auth/google/callback
+https://<production-domain>/api/v1/auth/google/callback
 ```
 
 SMTP must use the confirmed enterprise mail service with
@@ -207,8 +216,8 @@ Verify local readiness:
 
 ```sh
 curl -fsS http://127.0.0.1/readyz
-curl -fsS https://pastebox.example.com/readyz
-curl -fsS https://pastebox.example.com/api/v1/ready
+curl -fsS https://<production-domain>/readyz
+curl -fsS https://<production-domain>/api/v1/ready
 ```
 
 Expected responses:
@@ -224,7 +233,7 @@ browser-authenticated and must be scraped with the production metrics bearer
 token:
 
 ```sh
-curl -fsS -H "Authorization: Bearer $PASTEBOX_METRICS_TOKEN" https://pastebox.example.com/metrics
+curl -fsS -H "Authorization: Bearer $PASTEBOX_METRICS_TOKEN" https://<production-domain>/metrics
 ```
 
 Do not put `PASTEBOX_METRICS_TOKEN` in dashboards, public URLs, or shared

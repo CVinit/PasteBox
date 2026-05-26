@@ -976,15 +976,17 @@ if order.Status == "pending" && order.ExpiresAt != nil && !order.ExpiresAt.After
 - Missing contact env key -> production preflight exits `1` and lists the key.
 - `CHANGE_ME` placeholder -> production preflight exits `1`.
 - Invalid email syntax -> production preflight exits `1`.
-- Display-name address such as `Support <support@example.com>` -> production
+- Display-name address such as `Support <support@pastebox.app>` -> production
   preflight exits `1`; only the plain address is accepted.
 - Local or non-production domain such as `support@localhost` -> production
   preflight exits `1`.
+- Reserved/documentation domains such as `support@pastebox.example.com` ->
+  production preflight exits `1`.
 - API request succeeds -> `200` with both configured address fields.
 
 ### 5. Good/Base/Bad Cases
 
-- Good: `support@pastebox.example.com` and `abuse@pastebox.example.com` pass
+- Good: `support@pastebox.app` and `abuse@pastebox.app` pass
   preflight, are returned by the API, and render on `/support`.
 - Base: Development defaults may use local addresses, but production preflight
   must reject them.
