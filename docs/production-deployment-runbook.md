@@ -38,6 +38,8 @@ traffic is allowed.
 - `scripts/check-production-readiness.sh`: local release-candidate verifier for
   Compose rendering, maintenance script syntax, monitoring config syntax,
   Caddy config syntax, tests, builds, and Docker image build.
+- `.github/workflows/docker-image.yml`: CI image workflow; it runs the
+  production-readiness gate before publishing immutable `sha-*` image tags.
 - `docs/production-rollback-runbook.md`: image rollback and restore gates.
 - `docs/production-secrets.md`: secret handling checklist.
 - `docs/production-support-operations-runbook.md`: legal, support, refund,
@@ -115,6 +117,11 @@ run the same verifier against a server-specific env file without committing it,
 set `PASTEBOX_PRODUCTION_ENV_FILE=deploy/production.env`. To skip the local
 image build only when CI has already built the exact release image, set
 `PASTEBOX_SKIP_DOCKER_BUILD=true`.
+
+The GitHub Actions image workflow runs the same production-readiness gate before
+the Buildx publish step. A production image tag is not acceptable launch
+evidence unless that workflow passed for the exact release commit or an
+equivalent operator-owned CI job recorded the same checks.
 
 The production preflight fails if `PASTEBOX_IMAGE` is mutable, if
 `PASTEBOX_PUBLIC_URL` is not a root HTTPS production origin, if

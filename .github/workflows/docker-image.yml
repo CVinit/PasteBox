@@ -27,6 +27,22 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        run: npm --prefix web ci
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -50,6 +66,12 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=tag
             type=sha,prefix=sha-
+
+      - name: Run production readiness gate
+        env:
+          PASTEBOX_READINESS_IMAGE: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          PASTEBOX_SKIP_DOCKER_BUILD: "true"
+        run: make production-readiness
 
       - name: Build and optionally push
         uses: docker/build-push-action@v7
