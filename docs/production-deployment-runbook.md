@@ -68,7 +68,7 @@ traffic is allowed.
    cd /opt/pastebox
    ```
 
-5. Copy these repository files into `/opt/pastebox`:
+5. Copy these runtime files into `/opt/pastebox` on the server:
 
    ```text
    compose.production.yaml
@@ -87,14 +87,31 @@ traffic is allowed.
    deploy/backup/postgres-pitr-restore-drill.sh
    ```
 
-6. Create the real environment file:
+6. Keep a release checkout or operator-controlled evidence workspace for the
+   repo-local verification scripts and release evidence artifacts. It must
+   contain at least these files when validating completed evidence:
+
+   ```text
+   docs/production-launch-evidence-checklist.md
+   docs/production-release-notes-template.md
+   docs/production-provider-smoke-tests.md
+   docs/production-support-operations-runbook.md
+   docs/production-rollback-runbook.md
+   scripts/check-production-release-evidence.mjs
+   ```
+
+   Do not store real secrets, raw provider payloads, private object keys, or
+   user data in the repository checkout. Store completed sanitized release
+   evidence in the operator evidence archive.
+
+7. Create the real environment file:
 
    ```sh
    cp deploy/production.env.example deploy/production.env
    chmod 600 deploy/production.env
    ```
 
-7. Edit `deploy/production.env` and replace every `CHANGE_ME` value. Set
+8. Edit `deploy/production.env` and replace every `CHANGE_ME` value. Set
    `PASTEBOX_IMAGE` to an immutable image reference:
 
    ```text
@@ -106,10 +123,17 @@ traffic is allowed.
 
 ## Pre-Deploy Checks
 
-Run these checks before starting or upgrading the stack:
+Run the repo-local release-candidate gate from the exact release checkout or an
+equivalent operator-owned CI job before starting or upgrading the stack:
 
 ```sh
 make production-readiness
+node scripts/check-production-release-evidence.mjs --self-test
+```
+
+Then run these checks from `/opt/pastebox` on the server:
+
+```sh
 docker compose --env-file deploy/production.env -f compose.production.yaml config
 docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm preflight
 docker compose --env-file deploy/production.env -f compose.production.yaml pull
