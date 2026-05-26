@@ -6,6 +6,7 @@ const repoRoot = new URL("..", import.meta.url).pathname;
 const templatePath = join(repoRoot, "docs/production-release-notes-template.md");
 const checklistPath = join(repoRoot, "docs/production-launch-evidence-checklist.md");
 const runbookPath = join(repoRoot, "docs/production-deployment-runbook.md");
+const validatorPath = join(repoRoot, "scripts/check-production-release-evidence.mjs");
 
 function fail(message) {
   console.error(`release evidence template check failed: ${message}`);
@@ -28,6 +29,7 @@ function requireIncludes(label, content, expected) {
 const template = readRequired(templatePath);
 const checklist = readRequired(checklistPath);
 const runbook = readRequired(runbookPath);
+readRequired(validatorPath);
 
 const requiredHeadings = [
   "## Release Identity",
@@ -62,6 +64,7 @@ const requiredEvidence = [
   "Operator escalation targets",
   "Legal/support/status deep-link evidence",
   "Skipped checklist items with justification",
+  "Release evidence validator result",
   "Public beta traffic accepted",
 ];
 
@@ -70,7 +73,11 @@ for (const evidence of requiredEvidence) {
 }
 
 const templateReference = "docs/production-release-notes-template.md";
+const validatorReference = "scripts/check-production-release-evidence.mjs";
 requireIncludes("production launch evidence checklist", checklist, templateReference);
 requireIncludes("production deployment runbook", runbook, templateReference);
+requireIncludes("production launch evidence checklist", checklist, validatorReference);
+requireIncludes("production release notes template", template, validatorReference);
+requireIncludes("production deployment runbook", runbook, validatorReference);
 
 console.log("release evidence template check passed");

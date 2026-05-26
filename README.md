@@ -100,6 +100,9 @@ operator-owned evidence for live provider credentials, restore/PITR drills,
 rollback rehearsal, monitoring/alerts, and support/compliance workflows. Track
 that release-candidate evidence in
 [docs/production-launch-evidence-checklist.md](docs/production-launch-evidence-checklist.md).
+Validate the completed sanitized checklist and release notes with
+`node scripts/check-production-release-evidence.mjs --checklist <completed-checklist.md> --release-notes <completed-release-notes.md>`
+before accepting public beta traffic.
 
 ## Deployment Readiness
 

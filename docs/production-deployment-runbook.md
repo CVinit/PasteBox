@@ -51,6 +51,8 @@ traffic is allowed.
   abuse, data-rights, retention, and subprocessor workflows.
 - `docs/production-launch-evidence-checklist.md`: release-candidate evidence
   checklist for accepting public beta traffic.
+- `scripts/check-production-release-evidence.mjs`: operator-side validator for
+  completed sanitized release notes and evidence checklist copies.
 
 ## Fresh VPS Provisioning
 
@@ -121,9 +123,10 @@ container images, `pastebox preflight production` against a synthetic
 production-safe environment derived from `deploy/production.env.example`,
 `make test`, the web launch-surface smoke check for legal/support/status
 routes and support/billing/settings links, the release evidence template check,
-the provider smoke-test runbook check, PostgreSQL-backed integration tests in an
-ephemeral container, `make build`, and a local Docker image build. To run the
-same verifier against a server-specific env file without committing it, set
+the release evidence validator self-test, the provider smoke-test runbook
+check, PostgreSQL-backed integration tests in an ephemeral container,
+`make build`, and a local Docker image build. To run the same verifier against
+a server-specific env file without committing it, set
 `PASTEBOX_PRODUCTION_ENV_FILE=deploy/production.env`. To skip the local image
 build only when CI has already built the exact release image, set
 `PASTEBOX_SKIP_DOCKER_BUILD=true`.
@@ -475,4 +478,6 @@ support/admin audit workflows. Complete
 `docs/production-launch-evidence-checklist.md` and
 `docs/production-release-notes-template.md`, using
 `docs/production-provider-smoke-tests.md` for live provider evidence, for each
-release candidate before accepting public beta traffic.
+release candidate before accepting public beta traffic. Run
+`node scripts/check-production-release-evidence.mjs --checklist <completed-checklist.md> --release-notes <completed-release-notes.md>`
+against the completed sanitized copies before operator approval.

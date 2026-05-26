@@ -89,6 +89,9 @@ run node scripts/check-web-launch-surfaces.mjs
 section "Release evidence template"
 run node scripts/check-release-evidence-template.mjs
 
+section "Release evidence validator"
+run node scripts/check-production-release-evidence.mjs --self-test
+
 section "Provider smoke runbook"
 run node scripts/check-provider-smoke-runbook.mjs
 

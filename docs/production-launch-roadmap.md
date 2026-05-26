@@ -273,3 +273,7 @@ Exit gate:
 - `docs/production-launch-evidence-checklist.md` is completed for the release
   candidate with provider smoke tests, backup/PITR evidence, rollback evidence,
   monitoring evidence, and legal/support readiness.
+- Completed sanitized release-candidate evidence passes
+  `node scripts/check-production-release-evidence.mjs --checklist
+  <completed-checklist.md> --release-notes <completed-release-notes.md>`
+  before public beta approval.

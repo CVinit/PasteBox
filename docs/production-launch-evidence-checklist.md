@@ -10,8 +10,10 @@ Create one completed copy of this file and one completed copy of
 `docs/production-release-notes-template.md` per production release candidate.
 Use `docs/production-provider-smoke-tests.md` for the provider evidence steps.
 Store both completed artifacts with release notes or an operator-controlled
-evidence archive. Do not commit real secrets, raw provider payloads, private
-object keys, or user data.
+evidence archive. Before accepting public beta traffic, run
+`node scripts/check-production-release-evidence.mjs --checklist <completed-checklist.md> --release-notes <completed-release-notes.md>`
+against the sanitized completed copies. Do not commit real secrets, raw provider
+payloads, private object keys, or user data.
 
 ## Release Identity
 
@@ -196,4 +198,7 @@ object keys, or user data.
 - [ ] Release notes use `docs/production-release-notes-template.md` and include
   image, migration class, backup/PITR evidence, rollback evidence, provider
   smoke-test results, and known residual risks.
+- [ ] `node scripts/check-production-release-evidence.mjs --checklist
+  <completed-checklist.md> --release-notes <completed-release-notes.md>` passed
+  against the sanitized completed release-candidate evidence files.
 - [ ] Operator approved public beta traffic.

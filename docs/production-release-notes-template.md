@@ -4,6 +4,15 @@ Copy this template for each public beta release candidate and store the filled
 copy with the operator-controlled evidence archive. Do not commit real secrets,
 raw provider payloads, private object keys, or user data.
 
+Before accepting public beta traffic, validate the completed sanitized release
+notes and completed evidence checklist:
+
+```sh
+node scripts/check-production-release-evidence.mjs \
+  --checklist <completed-checklist.md> \
+  --release-notes <completed-release-notes.md>
+```
+
 ## Release Identity
 
 - Release commit:
@@ -116,6 +125,7 @@ raw provider payloads, private object keys, or user data.
 
 - Completed evidence checklist path:
 - Skipped checklist items with justification:
+- Release evidence validator result:
 - Operator approval:
 - Approval time:
 - Public beta traffic accepted: yes / no
