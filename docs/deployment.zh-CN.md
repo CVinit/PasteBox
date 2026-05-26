@@ -111,7 +111,7 @@ curl -fsS http://127.0.0.1:8080/api/v1/ready
 以及：
 
 ```json
-{"app":"PasteBox","env":"development","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"mail","status":"skipped","message":"smtp provider is not configured"}]}
+{"app":"PasteBox","env":"development","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"worker","status":"skipped","message":"worker heartbeat is required in production"},{"name":"mail","status":"skipped","message":"smtp provider is not configured"}]}
 ```
 
 以及：
@@ -123,7 +123,7 @@ curl -fsS http://127.0.0.1:8080/api/v1/ready
 以及：
 
 ```json
-{"app":"PasteBox","env":"development","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"mail","status":"skipped","message":"smtp provider is not configured"}]}
+{"app":"PasteBox","env":"development","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"worker","status":"skipped","message":"worker heartbeat is required in production"},{"name":"mail","status":"skipped","message":"smtp provider is not configured"}]}
 ```
 
 浏览器打开：
