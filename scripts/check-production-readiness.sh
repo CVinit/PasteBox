@@ -45,6 +45,7 @@ export PASTEBOX_ENV_FILE="$env_file"
 section "Compose config"
 run docker compose --env-file "$env_file" -f compose.production.yaml config >/dev/null
 run docker compose --env-file "$env_file" -f compose.production.yaml --profile monitoring config >/dev/null
+run docker compose --env-file "$env_file" -f compose.production.yaml --profile maintenance config >/dev/null
 
 section "Maintenance script syntax"
 run sh -n \

@@ -34,6 +34,9 @@ commit real secrets, raw provider payloads, private object keys, or user data.
 - [ ] `PASTEBOX_ENV_FILE=./deploy/production.env.example docker compose
   --env-file deploy/production.env.example -f compose.production.yaml
   --profile monitoring config` renders with the committed template.
+- [ ] `PASTEBOX_ENV_FILE=./deploy/production.env.example docker compose
+  --env-file deploy/production.env.example -f compose.production.yaml
+  --profile maintenance config` renders with the committed template.
 - [ ] Any changed backup scripts passed `sh -n`.
 - [ ] Any changed Prometheus config or rules passed `promtool` or equivalent
   syntax validation.
