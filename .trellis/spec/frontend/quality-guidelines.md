@@ -114,6 +114,90 @@ const status = orderStatusDetail(order.status, locale);
 
 ---
 
+## Scenario: Attachment Scan Status Presentation
+
+### 1. Scope / Trigger
+
+- Trigger: Any frontend change that touches `Attachment.scanStatus`,
+  attachment download rows, owner paste cards, share previews, or public share
+  attachment links.
+
+### 2. Signatures
+
+- Type: `Attachment.scanStatus` and optional `Attachment.risk` in
+  `web/src/api.ts`.
+- UI helper: `attachmentScanDetail(attachment, locale, context)` in
+  `web/src/App.tsx`.
+- UI component: `AttachmentDownloadItem` in `web/src/App.tsx`.
+- Download paths: `attachmentDownloadPath()` and
+  `sharedAttachmentDownloadPath()` in `web/src/api.ts`.
+
+### 3. Contracts
+
+- Known scan statuses are `clean`, `pending`, `scan_failed`, and `malicious`;
+  unknown provider strings must render safely with a neutral badge.
+- Owner attachment rows must show a stable scan label, a short description, and
+  any backend-provided risk before download. Owners may download `pending` and
+  `scan_failed` files, but the UI must make the risk state explicit.
+- Public share attachment rows must only render active download links for
+  `clean` files. Pending, failed, malicious, and unknown scan states must render
+  as blocked or non-downloadable rows rather than links that the backend will
+  reject.
+- `malicious` files must appear blocked in owner and public contexts, matching
+  the backend global malicious-file gate.
+- Scan status copy must be available for English and Chinese locales when the
+  rest of the screen is localized.
+
+### 4. Validation & Error Matrix
+
+- `clean` -> success badge and active owner/public download link.
+- `pending` -> warning badge; owner link active with risk copy; public link
+  blocked.
+- `scan_failed` -> warning badge; owner link active with caution copy; public
+  link blocked until retry succeeds.
+- `malicious` -> danger badge; owner and public links blocked.
+- Unknown non-empty scan status -> neutral badge and blocked public link.
+
+### 5. Good/Base/Bad Cases
+
+- Good: A pending owner attachment says public sharing waits for a clean scan
+  while preserving the owner download link.
+- Base: A clean attachment still renders as a normal downloadable file with a
+  clean badge.
+- Bad: Rendering a raw `<a>` for every attachment, because public share links
+  would invite users to click downloads that are known to fail the scan gate.
+
+### 6. Tests Required
+
+- Run `make test-web` after changing attachment scan presentation.
+- Run full `make test` when the frontend consumes backend scan fields or when
+  backend scan policy changes in the same slice.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+<a href={sharedAttachmentDownloadPath(token, attachment.id, password)}>
+  {attachment.fileName}
+</a>
+```
+
+#### Correct
+
+```tsx
+const scan = attachmentScanDetail(attachment, locale, "public");
+return scan.canDownload ? (
+  <a href={sharedAttachmentDownloadPath(token, attachment.id, password)}>
+    <span className={`scan-badge scan-badge--${scan.tone}`}>{scan.label}</span>
+  </a>
+) : (
+  <span aria-disabled="true">{scan.description}</span>
+);
+```
+
+---
+
 ## Code Review Checklist
 
 - Does the UI still present a functional PasteBox workspace as the first

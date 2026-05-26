@@ -708,12 +708,72 @@ code {
 }
 
 .attachment-link {
-  display: inline-flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid #dbe5df;
+  border-radius: 8px;
   color: #0f5f59;
+  background: #f8fbfa;
   font-size: 13px;
   text-decoration: none;
+}
+
+.attachment-link-main {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+  font-weight: 800;
+}
+
+.attachment-link-main span,
+.attachment-scan-note {
+  overflow-wrap: anywhere;
+}
+
+.attachment-link--blocked {
+  color: #7f1d1d;
+  cursor: not-allowed;
+  background: #fff1f1;
+}
+
+.scan-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.scan-badge--success {
+  color: #0d6b4c;
+  background: #e8f7ef;
+}
+
+.scan-badge--warning {
+  color: #8a4b0f;
+  background: #fff0d8;
+}
+
+.scan-badge--danger {
+  color: #9f1d14;
+  background: #fff0ee;
+}
+
+.scan-badge--neutral {
+  color: #40564f;
+  background: #edf3f0;
+}
+
+.attachment-scan-note {
+  grid-column: 1 / -1;
+  color: #596963;
 }
 
 .share-preview {

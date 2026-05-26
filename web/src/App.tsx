@@ -41,6 +41,7 @@ import {
   formatBytes,
   formatDuration,
   sharedAttachmentDownloadPath,
+  type Attachment,
   type AdminAttachment,
   type AdminQueues,
   type AdminShare,
@@ -92,11 +93,19 @@ type AdminData = {
 type Locale = "en" | "zh";
 
 type OrderStatusTone = "pending" | "success" | "warning" | "danger" | "neutral";
+type AttachmentScanTone = "success" | "warning" | "danger" | "neutral";
 
 type OrderStatusDetail = {
   label: string;
   description: string;
   tone: OrderStatusTone;
+};
+
+type AttachmentScanDetail = {
+  label: string;
+  description: string;
+  tone: AttachmentScanTone;
+  canDownload: boolean;
 };
 
 type PublicPage = {
@@ -850,6 +859,51 @@ const orderStatusText: Record<
   },
 };
 
+const attachmentScanText: Record<
+  Locale,
+  Record<string, Omit<AttachmentScanDetail, "tone" | "canDownload">>
+> = {
+  en: {
+    clean: {
+      label: "Clean",
+      description: "Scan passed. Downloads are allowed.",
+    },
+    pending: {
+      label: "Scan pending",
+      description:
+        "Owner download is allowed, but public share downloads wait for a clean scan.",
+    },
+    scan_failed: {
+      label: "Scan failed",
+      description:
+        "Owner download is allowed with caution. Public share downloads are blocked until retry passes.",
+    },
+    malicious: {
+      label: "Blocked",
+      description:
+        "Known malicious files are blocked for owner and public downloads.",
+    },
+  },
+  zh: {
+    clean: {
+      label: "扫描通过",
+      description: "文件已通过扫描，可以下载。",
+    },
+    pending: {
+      label: "等待扫描",
+      description: "所有者可下载，但公开分享下载需等待扫描通过。",
+    },
+    scan_failed: {
+      label: "扫描失败",
+      description: "所有者可谨慎下载；公开分享下载会阻止到重试通过为止。",
+    },
+    malicious: {
+      label: "已阻止",
+      description: "已知恶意文件会阻止所有者和公开下载。",
+    },
+  },
+};
+
 function orderStatusTone(status: string): OrderStatusTone {
   switch (status.toLowerCase()) {
     case "paid":
@@ -878,6 +932,41 @@ function orderStatusDetail(status: string, locale: Locale): OrderStatusDetail {
         : "Provider returned this status.",
   };
   return { ...detail, tone: orderStatusTone(normalized) };
+}
+
+function attachmentScanDetail(
+  attachment: Attachment,
+  locale: Locale,
+  context: "owner" | "public",
+): AttachmentScanDetail {
+  const normalized = attachment.scanStatus.toLowerCase();
+  const base = attachmentScanText[locale][normalized] ?? {
+    label: attachment.scanStatus || "Unknown",
+    description:
+      locale === "zh"
+        ? "扫描服务返回的状态。"
+        : "Scanner returned this status.",
+  };
+  const canDownload =
+    normalized === "malicious"
+      ? false
+      : context === "owner" || normalized === "clean";
+  let tone: AttachmentScanTone = "neutral";
+  if (normalized === "clean") tone = "success";
+  if (normalized === "pending" || normalized === "scan_failed") {
+    tone = "warning";
+  }
+  if (normalized === "malicious") tone = "danger";
+  const risk = attachment.risk?.trim();
+  const riskPrefix = locale === "zh" ? "风险" : "Risk";
+  return {
+    ...base,
+    description: risk
+      ? `${base.description} ${riskPrefix}: ${risk}`
+      : base.description,
+    tone,
+    canDownload,
+  };
 }
 
 function paymentProviderOptions(price: Price): Array<{
@@ -1594,6 +1683,7 @@ function App() {
         onToken={setPublicShareToken}
         onPassword={setPublicSharePassword}
         onOpen={() => void openPublicShare()}
+        locale={browserLocale}
       />
     );
   }
@@ -1961,6 +2051,7 @@ function App() {
                 onToggleFlag={(paste, field) =>
                   void updatePasteFlag(paste, field)
                 }
+                locale={locale}
               />
               <aside className="side-panel">
                 <PasteEditor
@@ -1978,6 +2069,7 @@ function App() {
                   onOpen={() => void openShare()}
                   access={shareAccess}
                   sharePassword={shareDraft.password}
+                  locale={locale}
                 />
               </aside>
             </section>
@@ -2508,6 +2600,7 @@ function PasteList({
   onDelete,
   onExtend,
   onToggleFlag,
+  locale,
 }: {
   pastes: Paste[];
   selectedId: string;
@@ -2516,6 +2609,7 @@ function PasteList({
   onDelete: (id: string) => void;
   onExtend: (paste: Paste, expiresInSeconds: number) => void;
   onToggleFlag: (paste: Paste, field: "pinned" | "favorite") => void;
+  locale: Locale;
 }) {
   return (
     <section className="paste-list">
@@ -2586,14 +2680,14 @@ function PasteList({
           </div>
           {paste.shareCount ? <span className="share-chip">Shared</span> : null}
           {paste.attachments.map((attachment) => (
-            <a
-              className="attachment-link"
+            <AttachmentDownloadItem
+              attachment={attachment}
+              context="owner"
               href={attachmentDownloadPath(attachment.id)}
+              icon="file"
               key={attachment.id}
-            >
-              <FileUp size={14} aria-hidden="true" />
-              {attachment.fileName}
-            </a>
+              locale={locale}
+            />
           ))}
         </article>
       ))}
@@ -2610,6 +2704,7 @@ function PublicShareScreen({
   onToken,
   onPassword,
   onOpen,
+  locale,
 }: {
   token: string;
   password: string;
@@ -2619,6 +2714,7 @@ function PublicShareScreen({
   onToken: (value: string) => void;
   onPassword: (value: string) => void;
   onOpen: () => void;
+  locale: Locale;
 }) {
   return (
     <main className="auth-screen public-share-screen">
@@ -2672,18 +2768,18 @@ function PublicShareScreen({
             {access.paste.text ? <pre>{access.paste.text}</pre> : null}
             <div className="share-preview">
               {access.paste.attachments.map((attachment) => (
-                <a
-                  className="attachment-link"
+                <AttachmentDownloadItem
+                  attachment={attachment}
+                  context="public"
                   href={sharedAttachmentDownloadPath(
                     access.share.token,
                     attachment.id,
                     password,
                   )}
+                  icon="download"
                   key={attachment.id}
-                >
-                  <Download size={14} aria-hidden="true" />
-                  {attachment.fileName}
-                </a>
+                  locale={locale}
+                />
               ))}
             </div>
           </section>
@@ -2882,6 +2978,7 @@ function ShareBox({
   onCreate,
   onOpen,
   sharePassword,
+  locale,
 }: {
   paste?: Paste;
   draft: ShareDraft;
@@ -2891,6 +2988,7 @@ function ShareBox({
   onCreate: () => void;
   onOpen: () => void;
   sharePassword: string;
+  locale: Locale;
 }) {
   return (
     <Panel
@@ -2970,22 +3068,73 @@ function ShareBox({
             </div>
           </article>
           {access.paste.attachments.map((attachment) => (
-            <a
-              className="attachment-link"
+            <AttachmentDownloadItem
+              attachment={attachment}
+              context="public"
               href={sharedAttachmentDownloadPath(
                 access.share.token,
                 attachment.id,
                 sharePassword,
               )}
+              icon="download"
               key={attachment.id}
-            >
-              <Download size={14} aria-hidden="true" />
-              {attachment.fileName}
-            </a>
+              locale={locale}
+            />
           ))}
         </div>
       ) : null}
     </Panel>
+  );
+}
+
+function AttachmentDownloadItem({
+  attachment,
+  context,
+  href,
+  icon,
+  locale,
+}: {
+  attachment: Attachment;
+  context: "owner" | "public";
+  href: string;
+  icon: "file" | "download";
+  locale: Locale;
+}) {
+  const scan = attachmentScanDetail(attachment, locale, context);
+  const iconNode =
+    icon === "download" ? (
+      <Download size={14} aria-hidden="true" />
+    ) : (
+      <FileUp size={14} aria-hidden="true" />
+    );
+  const content = (
+    <>
+      <span className="attachment-link-main">
+        {iconNode}
+        <span>{attachment.fileName}</span>
+      </span>
+      <span className={`scan-badge scan-badge--${scan.tone}`}>
+        {scan.label}
+      </span>
+      <span className="attachment-scan-note">{scan.description}</span>
+    </>
+  );
+
+  if (!scan.canDownload) {
+    return (
+      <span
+        className="attachment-link attachment-link--blocked"
+        aria-disabled="true"
+      >
+        {content}
+      </span>
+    );
+  }
+
+  return (
+    <a className="attachment-link" href={href}>
+      {content}
+    </a>
   );
 }
 
