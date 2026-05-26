@@ -356,6 +356,16 @@ function validateReleaseNotes(markdown, templateMarkdown = null) {
     }
   }
 
+  const validatorResult = fields.get("Release evidence validator result");
+  if (!/^passed\b/i.test(validatorResult)) {
+    fail("release notes must record Release evidence validator result as passed");
+  }
+
+  const operatorApproval = fields.get("Operator approval");
+  if (!/^approved\b/i.test(operatorApproval)) {
+    fail("release notes must record Operator approval as approved");
+  }
+
   if (!/^yes$/i.test(fields.get("Public beta traffic accepted"))) {
     fail("release notes must set Public beta traffic accepted to yes");
   }
@@ -517,6 +527,30 @@ function runSelfTest() {
         releaseNotesTemplate,
       ),
     "must set Public beta traffic accepted to yes",
+  );
+  assertSelfTestFailure(
+    "failed release evidence validator result",
+    () =>
+      validateReleaseNotes(
+        releaseNotesFixture.replace(
+          "- Release evidence validator result: passed",
+          "- Release evidence validator result: failed",
+        ),
+        releaseNotesTemplate,
+      ),
+    "must record Release evidence validator result as passed",
+  );
+  assertSelfTestFailure(
+    "pending operator approval",
+    () =>
+      validateReleaseNotes(
+        releaseNotesFixture.replace(
+          "- Operator approval: approved by release-operator",
+          "- Operator approval: pending release-operator review",
+        ),
+        releaseNotesTemplate,
+      ),
+    "must record Operator approval as approved",
   );
   assertSelfTestFailure(
     "placeholder release field",
