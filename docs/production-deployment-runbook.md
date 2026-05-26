@@ -289,6 +289,8 @@ through the same production service wiring as the API. Scan jobs use the
 configured ClamAV scanner and update attachment scan state to `clean`,
 `scan_failed`, or `malicious`. The same worker also drains queued mail through
 the configured SMTP sender and preserves retry/failure state in PostgreSQL.
+The worker service disables the image-level `/readyz` healthcheck because the
+worker process does not serve HTTP.
 Each worker loop records a PostgreSQL-backed heartbeat under
 `PASTEBOX_WORKER_ID`; production readiness fails when the latest heartbeat is
 missing or older than `PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS`.

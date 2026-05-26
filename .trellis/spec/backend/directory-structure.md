@@ -168,6 +168,10 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - `pastebox worker` is a supervised long-running process that polls the
   PostgreSQL-backed `jobs` table. `--once` processes one runnable batch and
   exits for deployment checks or maintenance.
+- Compose worker services must disable the image-level `/readyz` healthcheck,
+  because the shared image healthcheck is only valid for the API process. Worker
+  health is proven through PostgreSQL-backed heartbeats consumed by API
+  readiness and metrics.
 - Production Compose uses `pastebox` as the image entrypoint and `worker` as
   the service command. When using `docker compose run` for one-shot checks,
   run arguments replace the service command, so the command must include both
@@ -231,6 +235,9 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
   reports a dirty/checksum mismatch.
 - `pastebox worker --once` cannot list runnable jobs or update job state ->
   exits 1 with a worker-specific error.
+- Worker service inherits the image-level API `/readyz` healthcheck -> Docker
+  marks the worker `unhealthy`; disable the service healthcheck and rely on the
+  worker heartbeat readiness component.
 - `docker compose run --rm worker --once` -> exits 2 with
   `unknown command "--once"` because it omits the application `worker`
   subcommand.

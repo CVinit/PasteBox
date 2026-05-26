@@ -30,6 +30,8 @@ services:
     image: ${PASTEBOX_IMAGE:?set PASTEBOX_IMAGE to a pinned ghcr.io/cvinit/pastebox:sha-* tag or digest}
     command: ["worker"]
     restart: unless-stopped
+    healthcheck:
+      disable: true
     env_file:
       - ${PASTEBOX_ENV_FILE:-./deploy/production.env}
     depends_on:

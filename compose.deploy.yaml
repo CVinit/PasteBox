@@ -61,6 +61,8 @@ services:
     image: ${PASTEBOX_IMAGE:?set PASTEBOX_IMAGE to ghcr.io/cvinit/pastebox:sha-* or a digest}
     command: ["worker"]
     restart: unless-stopped
+    healthcheck:
+      disable: true
     environment: *pastebox-env
     depends_on:
       migrate:
