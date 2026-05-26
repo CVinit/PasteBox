@@ -86,6 +86,9 @@ run make test
 section "Web launch surfaces"
 run node scripts/check-web-launch-surfaces.mjs
 
+section "Release evidence template"
+run node scripts/check-release-evidence-template.mjs
+
 section "PostgreSQL integration tests"
 run make test-postgres
 

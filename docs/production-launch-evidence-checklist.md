@@ -6,8 +6,9 @@ runbooks, legal/support surfaces, and local verification gates, but final launch
 approval still requires live-provider and VPS evidence that cannot be proven
 from source code alone.
 
-Create one completed copy of this file per production release candidate and
-store it with release notes or an operator-controlled evidence archive. Do not
+Create one completed copy of this file and one completed copy of
+`docs/production-release-notes-template.md` per production release candidate.
+Store both with release notes or an operator-controlled evidence archive. Do not
 commit real secrets, raw provider payloads, private object keys, or user data.
 
 ## Release Identity
@@ -32,6 +33,10 @@ commit real secrets, raw provider payloads, private object keys, or user data.
 - [ ] `node scripts/check-web-launch-surfaces.mjs` passed after the production
   web bundle was built, proving committed legal/support/status routes and
   support/billing/settings links are present in the built frontend.
+- [ ] `node scripts/check-release-evidence-template.mjs` passed, proving the
+  release-notes template still covers image, migration, provider smoke,
+  backup/PITR, rollback, monitoring, support, residual-risk, and launch-decision
+  evidence.
 - [ ] `docker build -t pastebox:<release> .` passed, or CI produced the image
   for the exact release commit.
 - [ ] `PASTEBOX_ENV_FILE=./deploy/production.env.example docker compose
@@ -181,6 +186,7 @@ commit real secrets, raw provider payloads, private object keys, or user data.
 
 - [ ] All required evidence above is complete.
 - [ ] Any skipped item is explicitly justified with owner, risk, and deadline.
-- [ ] Release notes include image, migration class, backup/PITR evidence,
-  rollback evidence, provider smoke-test results, and known residual risks.
+- [ ] Release notes use `docs/production-release-notes-template.md` and include
+  image, migration class, backup/PITR evidence, rollback evidence, provider
+  smoke-test results, and known residual risks.
 - [ ] Operator approved public beta traffic.
