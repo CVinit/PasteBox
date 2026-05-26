@@ -32,13 +32,13 @@ port=""
 for _ in $(seq 1 60); do
 	port_mapping=$(docker port "$container_name" 5432/tcp 2>/dev/null || true)
 	port=${port_mapping##*:}
-	if [ -n "$port" ] && docker exec "$container_name" pg_isready -U "$user" -d "$database" >/dev/null 2>&1; then
+	if [ -n "$port" ] && docker exec "$container_name" pg_isready -h 127.0.0.1 -p 5432 -U "$user" -d "$database" >/dev/null 2>&1; then
 		break
 	fi
 	sleep 1
 done
 
-if [ -z "$port" ] || ! docker exec "$container_name" pg_isready -U "$user" -d "$database" >/dev/null 2>&1; then
+if [ -z "$port" ] || ! docker exec "$container_name" pg_isready -h 127.0.0.1 -p 5432 -U "$user" -d "$database" >/dev/null 2>&1; then
 	printf 'PostgreSQL integration container did not become ready\n' >&2
 	docker logs "$container_name" >&2 || true
 	exit 1

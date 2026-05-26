@@ -1260,6 +1260,94 @@ order, err := svc.MarkOrderPaid(admin.ID, order.ID, "manual-123")
 order, err := svc.MarkOrderPaid(admin.ID, order.ID, "manual-123", "SUP-123 verified stuck payment")
 ```
 
+## Scenario: Production Release Evidence Validator
+
+### 1. Scope / Trigger
+
+- Trigger: Any change to `scripts/check-production-release-evidence.mjs`,
+  `docs/production-launch-evidence-checklist.md`,
+  `docs/production-release-notes-template.md`, `Makefile` `release-evidence`,
+  or the public beta launch decision contract.
+
+### 2. Signatures
+
+- Command: `make release-evidence RELEASE_CHECKLIST=<completed-checklist.md>
+  RELEASE_NOTES=<completed-release-notes.md>`
+- Script: `node scripts/check-production-release-evidence.mjs --checklist
+  <completed-checklist.md> --release-notes <completed-release-notes.md>`
+- Self-test: `node scripts/check-production-release-evidence.mjs --self-test`
+
+### 3. Contracts
+
+- Completed evidence must include every required checklist item from
+  `docs/production-launch-evidence-checklist.md`, and every checkbox must be
+  checked.
+- Completed release notes must include every field from
+  `docs/production-release-notes-template.md`.
+- Release identity fields must match exactly across the checklist and release
+  notes after whitespace normalization: `Release commit`, `Immutable image
+  reference or digest`, `Production domain`, `Deployment window`, `Operator`,
+  `Previous known-good image`, and `Migration classification`.
+- The launch decision must record `Release evidence validator result` beginning
+  with `passed`, `Operator approval` beginning with `approved`, and `Public beta
+  traffic accepted` exactly `yes`.
+- Completed evidence must reject placeholder values and common raw-secret
+  patterns such as Stripe keys, Stripe webhook secrets, GitHub tokens, AWS
+  access keys, bearer tokens, JWTs, and private key blocks.
+
+### 4. Validation & Error Matrix
+
+- Unchecked checklist item -> release evidence check fails.
+- Missing checklist item or release-notes field -> release evidence check
+  fails.
+- Placeholder field value -> release evidence check fails.
+- Checklist/release-notes release identity mismatch -> release evidence check
+  fails.
+- Validator result not `passed...` -> release evidence check fails.
+- Operator approval not `approved...` -> release evidence check fails.
+- `Public beta traffic accepted` not `yes` -> release evidence check fails.
+- Raw secret-like value in either file -> release evidence check fails.
+
+### 5. Good/Base/Bad Cases
+
+- Good: A sanitized release candidate checklist and release notes name the same
+  commit, pinned image, domain, operator, previous image, and migration class,
+  include no secrets, record validator `passed`, operator `approved`, and set
+  public beta traffic to `yes`.
+- Base: Template files remain unchecked and placeholder-filled in the repo; they
+  are validated only by template/self-test checks, not as completed evidence.
+- Bad: A completed checklist for commit `abc1234` and release notes for commit
+  `def5678` pass independently, or a release note stores `whsec_...` as proof.
+
+### 6. Tests Required
+
+- Keep `--self-test` cases for success plus unchecked checklist, missing
+  checklist item, empty/placeholder field, missing release-notes field,
+  unapproved launch, failed validator result, pending operator approval,
+  raw-secret rejection in both files, and release identity mismatch.
+- Run `node scripts/check-production-release-evidence.mjs --self-test` after
+  changing the validator.
+- Run `node scripts/check-release-evidence-template.mjs` after changing
+  evidence templates or release decision fields.
+- Run full `make production-readiness` before committing launch-gate changes.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```js
+validateChecklist(checklist, checklistTemplate);
+validateReleaseNotes(releaseNotes, releaseNotesTemplate);
+```
+
+#### Correct
+
+```js
+validateChecklist(checklist, checklistTemplate);
+validateReleaseNotes(releaseNotes, releaseNotesTemplate);
+validateEvidenceConsistency(checklist, releaseNotes);
+```
+
 ---
 
 ## Testing Requirements

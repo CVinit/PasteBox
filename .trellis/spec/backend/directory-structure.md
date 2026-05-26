@@ -227,6 +227,11 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - `make test-postgres` starts an ephemeral PostgreSQL container on a loopback
   random host port, sets `PASTEBOX_TEST_DATABASE_URL`, runs
   `go test ./internal/postgres`, and removes the container on exit.
+- The PostgreSQL integration verifier must wait for the final TCP listener
+  (`pg_isready -h 127.0.0.1 -p 5432`) before running tests. Do not rely on the
+  container's default Unix-socket `pg_isready`: the official PostgreSQL
+  entrypoint can report ready during the temporary init server, then shut down
+  and restart before the final TCP listener accepts tests.
 - `make production-readiness` must include `make test-postgres` so the
   release-candidate gate proves migrations and PostgreSQL-backed repository /
   restart-persistence integration tests against a real PostgreSQL server.
@@ -267,6 +272,8 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
   before tests/build/image evidence.
 - PostgreSQL integration container does not become ready -> `make
   test-postgres` exits 1 and prints container logs.
+- PostgreSQL temporary init server reports ready but final TCP listener is not
+  ready -> `make test-postgres` must keep waiting, not start tests.
 - Any `internal/postgres` integration test fails with
   `PASTEBOX_TEST_DATABASE_URL` set -> `make test-postgres` and
   `make production-readiness` fail.
@@ -282,6 +289,9 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - Good: A release-candidate verification run executes `make test-postgres` with
   a throwaway PostgreSQL container instead of relying on integration tests that
   skip when `PASTEBOX_TEST_DATABASE_URL` is absent.
+- Good: `scripts/check-postgres-integration.sh` waits for the container TCP
+  listener on `127.0.0.1:5432`, avoiding false readiness from the temporary
+  init server's Unix socket.
 - Good: Adding a new required production env key updates
   `deploy/production.env.example`, `pastebox preflight production`, and the
   synthetic preflight verifier mapping in the same change.
@@ -317,6 +327,8 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
   preflight validation, production env templates, or required launch secrets.
 - `make test-postgres` must pass after changing PostgreSQL stores, migrations,
   runtime store wiring, or production-readiness scripts.
+- `scripts/check-postgres-integration.sh` changes must be verified with
+  `make test-postgres` directly and then with full `make production-readiness`.
 - `make production-readiness` must run `make test-postgres` before build/image
   evidence is accepted for a release candidate.
 - Run full `make test` after changing production lifecycle commands or HTTP
@@ -354,6 +366,20 @@ make test
 make test-postgres
 make production-readiness
 # release verification includes a live PostgreSQL-backed integration pass.
+```
+
+#### Wrong
+
+```sh
+docker exec "$container_name" pg_isready -U "$user" -d "$database"
+# can pass during the temporary init server before the final TCP listener is ready.
+```
+
+#### Correct
+
+```sh
+docker exec "$container_name" pg_isready -h 127.0.0.1 -p 5432 -U "$user" -d "$database"
+# waits for the same TCP listener used by PASTEBOX_TEST_DATABASE_URL.
 ```
 
 #### Wrong
