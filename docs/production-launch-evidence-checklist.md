@@ -25,6 +25,9 @@ commit real secrets, raw provider payloads, private object keys, or user data.
 
 - [ ] `make production-readiness` passed for the release commit.
 - [ ] `make test` passed for the release commit.
+- [ ] `make test-postgres` passed for the release commit, proving migrations
+  and PostgreSQL-backed auth, content, billing/support, audit, mail, jobs, and
+  restart-persistence integration tests against a real PostgreSQL server.
 - [ ] `make build` passed for the release commit.
 - [ ] `docker build -t pastebox:<release> .` passed, or CI produced the image
   for the exact release commit.

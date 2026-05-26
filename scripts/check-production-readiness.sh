@@ -49,6 +49,7 @@ run docker compose --env-file "$env_file" -f compose.production.yaml --profile m
 
 section "Maintenance script syntax"
 run sh -n \
+	scripts/check-postgres-integration.sh \
 	deploy/monitoring/textfile-metrics.sh \
 	deploy/backup/postgres-backup.sh \
 	deploy/backup/postgres-basebackup.sh \
@@ -77,6 +78,9 @@ run docker run --rm --env-file "$env_file" \
 
 section "Project tests"
 run make test
+
+section "PostgreSQL integration tests"
+run make test-postgres
 
 section "Project build"
 run make build

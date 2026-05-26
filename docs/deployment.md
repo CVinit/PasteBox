@@ -48,9 +48,10 @@ Before the workflow publishes an image, it installs the Go and web toolchains
 and runs `make production-readiness` with the local Docker image build skipped.
 That CI gate covers production Compose rendering, maintenance script syntax,
 monitoring config syntax, Caddy config syntax, backend tests, web typecheck and
-build, and the backend/frontend build. A `sha-*` tag is acceptable production
-launch evidence only when this gate passed for the exact release commit, with
-the final Buildx step providing the publish-time image build.
+build, PostgreSQL-backed integration tests in an ephemeral container, and the
+backend/frontend build. A `sha-*` tag is acceptable production launch evidence
+only when this gate passed for the exact release commit, with the final Buildx
+step providing the publish-time image build.
 
 The workflow uses `GITHUB_TOKEN` with `packages: write` to publish to GHCR. The
 repository's Actions settings must allow workflows to write packages. If the

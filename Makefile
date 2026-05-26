@@ -8,7 +8,7 @@ include .env
 export
 endif
 
-.PHONY: help dev api web db-up object-bucket db-status db-migrate db-reset test test-api test-web build build-api build-web production-readiness fmt clean
+.PHONY: help dev api web db-up object-bucket db-status db-migrate db-reset test test-api test-postgres test-web build build-api build-web production-readiness fmt clean
 
 help:
 	@printf '%s\n' 'PasteBox commands:'
@@ -19,6 +19,8 @@ help:
 	@printf '%s\n' '  make db-migrate Apply local PostgreSQL migrations'
 	@printf '%s\n' '  make db-reset   Reset local PostgreSQL schema and rerun migrations'
 	@printf '%s\n' '  make test       Run backend and frontend checks'
+	@printf '%s\n' '  make test-postgres'
+	@printf '%s\n' '                  Run PostgreSQL integration checks in an ephemeral container'
 	@printf '%s\n' '  make build      Build backend binary and frontend assets'
 	@printf '%s\n' '  make production-readiness'
 	@printf '%s\n' '                  Run local production launch-gate checks'
@@ -55,6 +57,9 @@ test: test-api test-web
 
 test-api:
 	$(GO_ENV) go test ./cmd/... ./internal/...
+
+test-postgres:
+	sh scripts/check-postgres-integration.sh
 
 test-web:
 	$(NPM) run typecheck

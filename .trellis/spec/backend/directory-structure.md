@@ -161,6 +161,9 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - Production env template: `deploy/production.env.example`
 - Production monitoring files: `deploy/monitoring/prometheus.yml` and
   `deploy/monitoring/pastebox-alerts.yml`
+- PostgreSQL integration verifier:
+  `scripts/check-postgres-integration.sh`
+- Make target: `make test-postgres`
 
 ### 3. Contracts
 
@@ -215,6 +218,12 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
   `PASTEBOX_METRICS_TOKEN` Compose secret, not from committed YAML.
 - The committed env template may contain placeholders; the real production env
   file must not be committed.
+- `make test-postgres` starts an ephemeral PostgreSQL container on a loopback
+  random host port, sets `PASTEBOX_TEST_DATABASE_URL`, runs
+  `go test ./internal/postgres`, and removes the container on exit.
+- `make production-readiness` must include `make test-postgres` so the
+  release-candidate gate proves migrations and PostgreSQL-backed repository /
+  restart-persistence integration tests against a real PostgreSQL server.
 
 ### 4. Validation & Error Matrix
 
@@ -245,6 +254,11 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - Production monitoring profile fails to render -> config validation failure.
 - Prometheus scrape or alert-rule config is syntactically invalid -> launch
   monitoring validation failure.
+- PostgreSQL integration container does not become ready -> `make
+  test-postgres` exits 1 and prints container logs.
+- Any `internal/postgres` integration test fails with
+  `PASTEBOX_TEST_DATABASE_URL` set -> `make test-postgres` and
+  `make production-readiness` fail.
 - `pastebox worker --help` exits 0 and prints worker usage.
 - Unknown lifecycle subcommand -> exits 2 and prints usage.
 
@@ -254,11 +268,15 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
   `pastebox preflight production`, Compose wiring, runbooks, and tests together.
 - Good: Adding a metrics alert updates `deploy/monitoring/pastebox-alerts.yml`,
   the deployment runbook, and the metrics spec together.
+- Good: A release-candidate verification run executes `make test-postgres` with
+  a throwaway PostgreSQL container instead of relying on integration tests that
+  skip when `PASTEBOX_TEST_DATABASE_URL` is absent.
 - Base: Worker support may start with one job kind, but it must use the durable
   `jobs` table and preserve retry state across process restarts.
 - Bad: Editing an already-applied migration, silently ignoring checksum drift,
-  using `latest` in the production runbook, or leaving `pastebox worker` as an
-  idle process once runnable jobs exist.
+  using `latest` in the production runbook, leaving `pastebox worker` as an
+  idle process once runnable jobs exist, or treating skipped PostgreSQL
+  integration tests as production-readiness evidence.
 
 ### 6. Tests Required
 
@@ -281,6 +299,10 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
   successfully with `PASTEBOX_ENV_FILE=./deploy/production.env.example`.
 - Validate Prometheus syntax for `deploy/monitoring/prometheus.yml` and
   `deploy/monitoring/pastebox-alerts.yml` after alert or scrape changes.
+- `make test-postgres` must pass after changing PostgreSQL stores, migrations,
+  runtime store wiring, or production-readiness scripts.
+- `make production-readiness` must run `make test-postgres` before build/image
+  evidence is accepted for a release candidate.
 - Run full `make test` after changing production lifecycle commands or HTTP
   readiness endpoints.
 
@@ -301,4 +323,19 @@ PASTEBOX_IMAGE=ghcr.io/cvinit/pastebox:sha-abc123
 pastebox preflight production
 pastebox migrate up
 # applies embedded SQL migrations or fails loudly
+```
+
+#### Wrong
+
+```sh
+make test
+# internal/postgres live tests skip because PASTEBOX_TEST_DATABASE_URL is unset.
+```
+
+#### Correct
+
+```sh
+make test-postgres
+make production-readiness
+# release verification includes a live PostgreSQL-backed integration pass.
 ```
