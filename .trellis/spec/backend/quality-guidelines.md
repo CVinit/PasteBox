@@ -37,6 +37,11 @@ user-level Go cache permissions.
 - Daily upload quota preflights must count every byte that will be recorded in
   the UTC daily upload metric, including text bytes on paste creation and
   positive text deltas on paste updates.
+- Production preflight must reject reserved/documentation-only hostnames such
+  as `example.com`, `.example.com`, `.test`, `.invalid`, localhost, IP
+  literals, and single-label internal names for public URLs, CORS origins,
+  contact emails, SMTP sender/host, OAuth redirects, object storage, backup
+  repositories, and payment checkout templates.
 
 ## Scenario: Paste Quota Enforcement On Updates
 

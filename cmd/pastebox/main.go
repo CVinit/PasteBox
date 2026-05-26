@@ -541,8 +541,8 @@ func validateProductionPublicURL(raw string) error {
 	if publicURL.User != nil {
 		return fmt.Errorf("PASTEBOX_PUBLIC_URL must not include userinfo, got %q", raw)
 	}
-	if isLocalHost(publicURL.Hostname()) {
-		return fmt.Errorf("PASTEBOX_PUBLIC_URL must use the production domain, got local host %q", publicURL.Hostname())
+	if !isProductionHost(publicURL.Hostname()) {
+		return fmt.Errorf("PASTEBOX_PUBLIC_URL must use a real production domain, got %q", publicURL.Hostname())
 	}
 	if publicURL.Path != "" && publicURL.Path != "/" {
 		return fmt.Errorf("PASTEBOX_PUBLIC_URL must be the production origin without a path, got %q", raw)
@@ -564,8 +564,8 @@ func validateGoogleOAuthRedirectURL(raw string, publicRaw string) error {
 	if redirectURL.Path != "/api/v1/auth/google/callback" {
 		return fmt.Errorf("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL must end with /api/v1/auth/google/callback, got %q", raw)
 	}
-	if isLocalHost(redirectURL.Hostname()) {
-		return fmt.Errorf("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL must use the production domain, got local host %q", redirectURL.Hostname())
+	if !isProductionHost(redirectURL.Hostname()) {
+		return fmt.Errorf("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL must use a real production domain, got %q", redirectURL.Hostname())
 	}
 	publicURL, err := url.Parse(strings.TrimSpace(publicRaw))
 	if err != nil || publicURL.Host == "" {
@@ -598,8 +598,8 @@ func validateCORSOrigins(cfg config.Config) error {
 		if parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || strings.Contains(origin, "*") {
 			return fmt.Errorf("PASTEBOX_CORS_ALLOWED_ORIGINS entries must be exact origins without paths, queries, fragments, or wildcards, got %q", origin)
 		}
-		if isLocalHost(parsed.Hostname()) {
-			return fmt.Errorf("PASTEBOX_CORS_ALLOWED_ORIGINS must not include local hosts in production, got %q", origin)
+		if !isProductionHost(parsed.Hostname()) {
+			return fmt.Errorf("PASTEBOX_CORS_ALLOWED_ORIGINS must use real production domains, got %q", origin)
 		}
 		if strings.EqualFold(parsed.Scheme+"://"+parsed.Host, publicOrigin) {
 			hasPublicOrigin = true
@@ -649,7 +649,7 @@ func validateProductionDomainConfig(publicRaw string) error {
 	if strings.Contains(domain, "://") || strings.ContainsAny(domain, "/?#") {
 		return fmt.Errorf("PASTEBOX_DOMAIN must be a hostname without scheme, path, query, or fragment, got %q", domain)
 	}
-	if isLocalHost(domain) || !strings.Contains(domain, ".") {
+	if !isProductionHost(domain) || !strings.Contains(domain, ".") {
 		return fmt.Errorf("PASTEBOX_DOMAIN must be a production hostname, got %q", domain)
 	}
 	publicURL, err := url.Parse(strings.TrimSpace(publicRaw))
@@ -696,7 +696,7 @@ func validatePublicEmail(key string, value string) error {
 		return fmt.Errorf("%s must be a valid public email address, got %q", key, value)
 	}
 	_, domain, ok := strings.Cut(address.Address, "@")
-	if !ok || isLocalHost(domain) || !strings.Contains(domain, ".") {
+	if !ok || !isProductionHost(domain) || !strings.Contains(domain, ".") {
 		return fmt.Errorf("%s must use a production email domain, got %q", key, value)
 	}
 	return nil
@@ -709,8 +709,8 @@ func validateSMTPConfig(cfg config.Config) error {
 	if strings.TrimSpace(cfg.SMTP.Host) == "" {
 		return fmt.Errorf("PASTEBOX_SMTP_HOST is required")
 	}
-	if isLocalHost(cfg.SMTP.Host) {
-		return fmt.Errorf("PASTEBOX_SMTP_HOST must point to the production SMTP service, got local host %q", cfg.SMTP.Host)
+	if !isProductionHost(cfg.SMTP.Host) {
+		return fmt.Errorf("PASTEBOX_SMTP_HOST must point to a real production SMTP service, got %q", cfg.SMTP.Host)
 	}
 	rawPort := strings.TrimSpace(os.Getenv("PASTEBOX_SMTP_PORT"))
 	port, err := strconv.Atoi(rawPort)
@@ -723,8 +723,8 @@ func validateSMTPConfig(cfg config.Config) error {
 	if strings.TrimSpace(cfg.SMTP.Username) == "" || strings.TrimSpace(cfg.SMTP.Password) == "" {
 		return fmt.Errorf("PASTEBOX_SMTP_USERNAME and PASTEBOX_SMTP_PASSWORD are required")
 	}
-	if _, err := mail.ParseAddress(cfg.SMTP.FromEmail); err != nil {
-		return fmt.Errorf("PASTEBOX_SMTP_FROM_EMAIL must be a valid email address: %w", err)
+	if err := validatePublicEmail("PASTEBOX_SMTP_FROM_EMAIL", cfg.SMTP.FromEmail); err != nil {
+		return err
 	}
 	switch strings.ToLower(strings.TrimSpace(cfg.SMTP.TLSMode)) {
 	case "starttls", "tls":
@@ -745,8 +745,8 @@ func validateRemoteHTTPSEndpoint(raw string, envKey string) error {
 		return fmt.Errorf("%s must use https:// managed object storage, got %q", envKey, raw)
 	}
 	host := endpoint.Hostname()
-	if isLocalHost(host) {
-		return fmt.Errorf("%s must point to off-host managed object storage, got local host %q", envKey, host)
+	if !isProductionHost(host) {
+		return fmt.Errorf("%s must point to real off-host managed object storage, got %q", envKey, host)
 	}
 	return nil
 }
@@ -854,8 +854,8 @@ func validatePaymentURLTemplate(template string, envKey string) error {
 	if endpoint.Scheme != "https" {
 		return fmt.Errorf("%s must use https:// payment checkout URLs, got %q", envKey, template)
 	}
-	if isLocalHost(endpoint.Hostname()) {
-		return fmt.Errorf("%s must point to the production payment checkout service, got local host %q", envKey, endpoint.Hostname())
+	if !isProductionHost(endpoint.Hostname()) {
+		return fmt.Errorf("%s must point to a real production payment checkout service, got %q", envKey, endpoint.Hostname())
 	}
 	return nil
 }
@@ -902,6 +902,23 @@ func isLocalHost(host string) bool {
 	}
 	ip := net.ParseIP(normalized)
 	return ip != nil && ip.IsLoopback()
+}
+
+func isProductionHost(host string) bool {
+	normalized := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(strings.Trim(host, "[]"))), ".")
+	if isLocalHost(normalized) {
+		return false
+	}
+	switch normalized {
+	case "example.com", "example.net", "example.org", "example.edu", "invalid", "test":
+		return false
+	}
+	for _, suffix := range []string{".example.com", ".example.net", ".example.org", ".example.edu", ".invalid", ".test", ".localhost"} {
+		if strings.HasSuffix(normalized, suffix) {
+			return false
+		}
+	}
+	return net.ParseIP(normalized) == nil && strings.Contains(normalized, ".")
 }
 
 func runWorker(args []string, stdout io.Writer, stderr io.Writer) int {

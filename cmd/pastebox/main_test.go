@@ -304,22 +304,27 @@ func TestProductionPreflightRejectsInvalidPublicURLShape(t *testing.T) {
 		{
 			name:     "local host",
 			value:    "https://localhost",
-			expected: "PASTEBOX_PUBLIC_URL must use the production domain",
+			expected: "PASTEBOX_PUBLIC_URL must use a real production domain",
 		},
 		{
 			name:     "path",
-			value:    "https://pastebox.example.com/app",
+			value:    "https://pastebox.app/app",
 			expected: "PASTEBOX_PUBLIC_URL must be the production origin without a path",
 		},
 		{
 			name:     "query",
-			value:    "https://pastebox.example.com?app=pastebox",
+			value:    "https://pastebox.app?app=pastebox",
 			expected: "PASTEBOX_PUBLIC_URL must be the production origin without query or fragment",
 		},
 		{
 			name:     "userinfo",
-			value:    "https://user@pastebox.example.com",
+			value:    "https://user@pastebox.app",
 			expected: "PASTEBOX_PUBLIC_URL must not include userinfo",
+		},
+		{
+			name:     "reserved example domain",
+			value:    "https://pastebox.example.com",
+			expected: "PASTEBOX_PUBLIC_URL must use a real production domain",
 		},
 	}
 	for _, tt := range tests {
@@ -353,7 +358,7 @@ func TestProductionPreflightRejectsInvalidProductionDomainConfig(t *testing.T) {
 		{
 			name:     "domain with scheme",
 			key:      "PASTEBOX_DOMAIN",
-			value:    "https://pastebox.example.com",
+			value:    "https://pastebox.app",
 			expected: "PASTEBOX_DOMAIN must be a hostname",
 		},
 		{
@@ -365,14 +370,20 @@ func TestProductionPreflightRejectsInvalidProductionDomainConfig(t *testing.T) {
 		{
 			name:     "domain mismatch",
 			key:      "PASTEBOX_DOMAIN",
-			value:    "admin.pastebox.example.com",
+			value:    "admin.pastebox.app",
 			expected: "PASTEBOX_DOMAIN must match PASTEBOX_PUBLIC_URL host",
 		},
 		{
 			name:     "invalid acme email",
 			key:      "PASTEBOX_ADMIN_EMAIL",
-			value:    "PasteBox Admin <admin@pastebox.example.com>",
+			value:    "PasteBox Admin <admin@pastebox.app>",
 			expected: "PASTEBOX_ADMIN_EMAIL must be a valid public email address",
+		},
+		{
+			name:     "reserved example domain",
+			key:      "PASTEBOX_DOMAIN",
+			value:    "pastebox.example.com",
+			expected: "PASTEBOX_DOMAIN must be a production hostname",
 		},
 	}
 	for _, tt := range tests {
@@ -460,8 +471,14 @@ func TestProductionPreflightRejectsInvalidPublicContactEmails(t *testing.T) {
 		{
 			name:     "display name not allowed",
 			key:      "PASTEBOX_ABUSE_EMAIL",
-			value:    "PasteBox Abuse <abuse@pastebox.example.com>",
+			value:    "PasteBox Abuse <abuse@pastebox.app>",
 			expected: "PASTEBOX_ABUSE_EMAIL must be a valid public email address",
+		},
+		{
+			name:     "reserved example domain",
+			key:      "PASTEBOX_SUPPORT_EMAIL",
+			value:    "support@pastebox.example.com",
+			expected: "PASTEBOX_SUPPORT_EMAIL must use a production email domain",
 		},
 	}
 	for _, tt := range tests {
@@ -524,23 +541,28 @@ func TestProductionPreflightRejectsUnsafeCORSOrigins(t *testing.T) {
 		},
 		{
 			name:     "http",
-			origins:  "http://pastebox.example.com",
+			origins:  "http://pastebox.app",
 			expected: "must use https://",
 		},
 		{
 			name:     "local",
 			origins:  "https://localhost:5173",
-			expected: "must not include local hosts",
+			expected: "must use real production domains",
 		},
 		{
 			name:     "missing public origin",
-			origins:  "https://admin.pastebox.example.com",
+			origins:  "https://admin.pastebox.app",
 			expected: "must include PASTEBOX_PUBLIC_URL origin",
 		},
 		{
 			name:     "path",
-			origins:  "https://pastebox.example.com/app",
+			origins:  "https://pastebox.app/app",
 			expected: "exact origins",
+		},
+		{
+			name:     "reserved example domain",
+			origins:  "https://pastebox.example.com",
+			expected: "must use real production domains",
 		},
 	}
 	for _, tt := range tests {
@@ -619,7 +641,7 @@ func TestProductionPreflightRejectsDisabledOrInvalidRateLimits(t *testing.T) {
 
 func TestProductionPreflightRejectsGoogleOAuthRedirectHostMismatch(t *testing.T) {
 	setValidProductionEnv(t)
-	t.Setenv("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL", "https://auth.example.com/api/v1/auth/google/callback")
+	t.Setenv("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL", "https://auth.pastebox.app/api/v1/auth/google/callback")
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -629,6 +651,24 @@ func TestProductionPreflightRejectsGoogleOAuthRedirectHostMismatch(t *testing.T)
 	}
 	if !strings.Contains(stderr.String(), "host must match PASTEBOX_PUBLIC_URL host") {
 		t.Fatalf("expected Google OAuth redirect host validation error, got %q", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+}
+
+func TestProductionPreflightRejectsReservedGoogleOAuthRedirectHost(t *testing.T) {
+	setValidProductionEnv(t)
+	t.Setenv("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL", "https://pastebox.example.com/api/v1/auth/google/callback")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"preflight", "production"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("expected reserved OAuth redirect host to fail, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL must use a real production domain") {
+		t.Fatalf("expected reserved OAuth redirect host validation error, got %q", stderr.String())
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("expected empty stdout, got %q", stdout.String())
@@ -663,11 +703,52 @@ func TestProductionPreflightRejectsLocalSMTPHost(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("expected local SMTP host to fail, got %d", code)
 	}
-	if !strings.Contains(stderr.String(), "PASTEBOX_SMTP_HOST must point to the production SMTP service") {
+	if !strings.Contains(stderr.String(), "PASTEBOX_SMTP_HOST must point to a real production SMTP service") {
 		t.Fatalf("expected SMTP host validation error, got %q", stderr.String())
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+}
+
+func TestProductionPreflightRejectsReservedSMTPConfigHosts(t *testing.T) {
+	tests := []struct {
+		name     string
+		key      string
+		value    string
+		expected string
+	}{
+		{
+			name:     "smtp host",
+			key:      "PASTEBOX_SMTP_HOST",
+			value:    "smtp.example.com",
+			expected: "PASTEBOX_SMTP_HOST must point to a real production SMTP service",
+		},
+		{
+			name:     "from email",
+			key:      "PASTEBOX_SMTP_FROM_EMAIL",
+			value:    "noreply@example.com",
+			expected: "PASTEBOX_SMTP_FROM_EMAIL must use a production email domain",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setValidProductionEnv(t)
+			t.Setenv(tt.key, tt.value)
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run([]string{"preflight", "production"}, &stdout, &stderr)
+			if code != 1 {
+				t.Fatalf("expected reserved SMTP config to fail, got %d", code)
+			}
+			if !strings.Contains(stderr.String(), tt.expected) {
+				t.Fatalf("expected %q in stderr, got %q", tt.expected, stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("expected empty stdout, got %q", stdout.String())
+			}
+		})
 	}
 }
 
@@ -704,6 +785,47 @@ func TestProductionPreflightRejectsLocalObjectStorageEndpoint(t *testing.T) {
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+}
+
+func TestProductionPreflightRejectsReservedObjectAndBackupEndpoints(t *testing.T) {
+	tests := []struct {
+		name     string
+		key      string
+		value    string
+		expected string
+	}{
+		{
+			name:     "object storage",
+			key:      "PASTEBOX_S3_ENDPOINT",
+			value:    "https://objects.example.com",
+			expected: "PASTEBOX_S3_ENDPOINT must point to real off-host managed object storage",
+		},
+		{
+			name:     "backup repository",
+			key:      "PASTEBOX_RESTIC_REPOSITORY",
+			value:    "s3:https://backups.example.com/pastebox-backups",
+			expected: "PASTEBOX_RESTIC_REPOSITORY must point to real off-host managed object storage",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setValidProductionEnv(t)
+			t.Setenv(tt.key, tt.value)
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run([]string{"preflight", "production"}, &stdout, &stderr)
+			if code != 1 {
+				t.Fatalf("expected reserved storage endpoint to fail, got %d", code)
+			}
+			if !strings.Contains(stderr.String(), tt.expected) {
+				t.Fatalf("expected %q in stderr, got %q", tt.expected, stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("expected empty stdout, got %q", stdout.String())
+			}
+		})
 	}
 }
 
@@ -776,7 +898,7 @@ func TestProductionPreflightRejectsInvalidPaymentCheckoutTemplates(t *testing.T)
 		{
 			name:     "stripe http",
 			key:      "PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE",
-			value:    "http://checkout.stripe.example.com/session?order_id={order_id}",
+			value:    "http://checkout.pastebox-billing.app/session?order_id={order_id}",
 			expected: "PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE must use https:// payment checkout URLs",
 		},
 		{
@@ -784,6 +906,12 @@ func TestProductionPreflightRejectsInvalidPaymentCheckoutTemplates(t *testing.T)
 			key:      "PASTEBOX_EPUSDT_CHECKOUT_URL_TEMPLATE",
 			value:    "not-a-url",
 			expected: "PASTEBOX_EPUSDT_CHECKOUT_URL_TEMPLATE must be a valid https payment checkout URL template",
+		},
+		{
+			name:     "stripe reserved host",
+			key:      "PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE",
+			value:    "https://checkout.example.com/session?order_id={order_id}",
+			expected: "PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE must point to a real production payment checkout service",
 		},
 	}
 	for _, tt := range tests {
@@ -939,12 +1067,12 @@ func setValidProductionEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("PASTEBOX_IMAGE", "ghcr.io/cvinit/pastebox:sha-abc123")
 	t.Setenv("PASTEBOX_APP_ENV", "production")
-	t.Setenv("PASTEBOX_PUBLIC_URL", "https://pastebox.example.com")
-	t.Setenv("PASTEBOX_SUPPORT_EMAIL", "support@pastebox.example.com")
-	t.Setenv("PASTEBOX_ABUSE_EMAIL", "abuse@pastebox.example.com")
+	t.Setenv("PASTEBOX_PUBLIC_URL", "https://pastebox.app")
+	t.Setenv("PASTEBOX_SUPPORT_EMAIL", "support@pastebox.app")
+	t.Setenv("PASTEBOX_ABUSE_EMAIL", "abuse@pastebox.app")
 	t.Setenv("PASTEBOX_CSRF_SECRET", "csrf-secret-32-bytes-minimum-prod")
 	t.Setenv("PASTEBOX_METRICS_TOKEN", "metrics-token-32-bytes-minimum-prod")
-	t.Setenv("PASTEBOX_CORS_ALLOWED_ORIGINS", "https://pastebox.example.com")
+	t.Setenv("PASTEBOX_CORS_ALLOWED_ORIGINS", "https://pastebox.app")
 	t.Setenv("PASTEBOX_RATE_LIMIT_ENABLED", "true")
 	t.Setenv("PASTEBOX_RATE_LIMIT_WINDOW_SECONDS", "60")
 	t.Setenv("PASTEBOX_RATE_LIMIT_AUTH", "60")
@@ -952,14 +1080,14 @@ func setValidProductionEnv(t *testing.T) {
 	t.Setenv("PASTEBOX_RATE_LIMIT_UPLOAD", "120")
 	t.Setenv("PASTEBOX_RATE_LIMIT_DOWNLOAD", "600")
 	t.Setenv("PASTEBOX_RATE_LIMIT_WEBHOOK", "300")
-	t.Setenv("PASTEBOX_DOMAIN", "pastebox.example.com")
-	t.Setenv("PASTEBOX_ADMIN_EMAIL", "admin@example.com")
+	t.Setenv("PASTEBOX_DOMAIN", "pastebox.app")
+	t.Setenv("PASTEBOX_ADMIN_EMAIL", "admin@pastebox.app")
 	t.Setenv("PASTEBOX_POSTGRES_PASSWORD", "db-secret")
 	t.Setenv("PASTEBOX_DATABASE_URL", "postgres://pastebox:secret@postgres:5432/pastebox?sslmode=disable")
 	t.Setenv("PASTEBOX_REDIS_ADDR", "redis:6379")
 	t.Setenv("PASTEBOX_WORKER_ID", "pastebox-worker")
 	t.Setenv("PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS", "120")
-	t.Setenv("PASTEBOX_S3_ENDPOINT", "https://objects.example.com")
+	t.Setenv("PASTEBOX_S3_ENDPOINT", "https://objects.pastebox-storage.app")
 	t.Setenv("PASTEBOX_S3_BUCKET", "pastebox-prod")
 	t.Setenv("PASTEBOX_S3_REGION", "us-east-1")
 	t.Setenv("PASTEBOX_S3_ACCESS_KEY", "access-key")
@@ -969,26 +1097,26 @@ func setValidProductionEnv(t *testing.T) {
 	t.Setenv("PASTEBOX_CLAMAV_TIMEOUT_SECONDS", "30")
 	t.Setenv("PASTEBOX_GOOGLE_OAUTH_CLIENT_ID", "google-client-id")
 	t.Setenv("PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET", "google-client-secret")
-	t.Setenv("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL", "https://pastebox.example.com/api/v1/auth/google/callback")
+	t.Setenv("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL", "https://pastebox.app/api/v1/auth/google/callback")
 	t.Setenv("PASTEBOX_MAILER_PROVIDER", "smtp")
-	t.Setenv("PASTEBOX_SMTP_HOST", "smtp.example.com")
+	t.Setenv("PASTEBOX_SMTP_HOST", "smtp.pastebox-mail.app")
 	t.Setenv("PASTEBOX_SMTP_PORT", "587")
 	t.Setenv("PASTEBOX_SMTP_USERNAME", "smtp-user")
 	t.Setenv("PASTEBOX_SMTP_PASSWORD", "smtp-secret")
-	t.Setenv("PASTEBOX_SMTP_FROM_EMAIL", "noreply@pastebox.example.com")
+	t.Setenv("PASTEBOX_SMTP_FROM_EMAIL", "noreply@pastebox.app")
 	t.Setenv("PASTEBOX_SMTP_TLS_MODE", "starttls")
 	t.Setenv("PASTEBOX_STRIPE_ENABLED", "true")
 	t.Setenv("PASTEBOX_STRIPE_WEBHOOK_SECRET", "whsec_test_production_webhook_secret")
-	t.Setenv("PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE", "https://checkout.stripe.example.com/session?order_id={order_id}&success_url={success_url}&cancel_url={cancel_url}")
+	t.Setenv("PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE", "https://checkout.pastebox-billing.app/session?order_id={order_id}&success_url={success_url}&cancel_url={cancel_url}")
 	t.Setenv("PASTEBOX_EPUSDT_ENABLED", "true")
 	t.Setenv("PASTEBOX_EPUSDT_PID", "1000")
 	t.Setenv("PASTEBOX_EPUSDT_SECRET_KEY", "epusdt-secret")
-	t.Setenv("PASTEBOX_EPUSDT_CHECKOUT_URL_TEMPLATE", "https://epusdt.example.com/pay?order_id={order_id}&amount_cents={amount_cents}&currency={currency}")
+	t.Setenv("PASTEBOX_EPUSDT_CHECKOUT_URL_TEMPLATE", "https://epusdt.pastebox-billing.app/pay?order_id={order_id}&amount_cents={amount_cents}&currency={currency}")
 	t.Setenv("PASTEBOX_EPUSDT_ADDRESS", "TREALUSDTADDRESS")
 	t.Setenv("PASTEBOX_EPUSDT_CHAIN", "USDT-TRC20")
-	t.Setenv("PASTEBOX_BOOTSTRAP_ADMIN_EMAIL", "admin@example.com")
+	t.Setenv("PASTEBOX_BOOTSTRAP_ADMIN_EMAIL", "admin@pastebox.app")
 	t.Setenv("PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD", "bootstrap-random-32-byte-secret")
-	t.Setenv("PASTEBOX_RESTIC_REPOSITORY", "s3:https://objects.example.com/pastebox-backups")
+	t.Setenv("PASTEBOX_RESTIC_REPOSITORY", "s3:https://backups.pastebox-storage.app/pastebox-backups")
 	t.Setenv("PASTEBOX_RESTIC_PASSWORD", "restic-secret")
 	t.Setenv("PASTEBOX_BACKUP_S3_ACCESS_KEY", "backup-access-key")
 	t.Setenv("PASTEBOX_BACKUP_S3_SECRET_KEY", "backup-secret-key")
