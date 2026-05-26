@@ -43,6 +43,7 @@ raw provider payloads, private object keys, or user data.
 
 ## Provider Smoke Tests
 
+- Provider smoke-test runbook path: `docs/production-provider-smoke-tests.md`
 - Managed S3-compatible upload/read/delete result:
 - SMTP delivery result for verification, magic-link, reset, security, billing,
   and account-deletion messages:

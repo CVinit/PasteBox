@@ -8,8 +8,10 @@ from source code alone.
 
 Create one completed copy of this file and one completed copy of
 `docs/production-release-notes-template.md` per production release candidate.
-Store both with release notes or an operator-controlled evidence archive. Do not
-commit real secrets, raw provider payloads, private object keys, or user data.
+Use `docs/production-provider-smoke-tests.md` for the provider evidence steps.
+Store both completed artifacts with release notes or an operator-controlled
+evidence archive. Do not commit real secrets, raw provider payloads, private
+object keys, or user data.
 
 ## Release Identity
 
@@ -37,6 +39,9 @@ commit real secrets, raw provider payloads, private object keys, or user data.
   release-notes template still covers image, migration, provider smoke,
   backup/PITR, rollback, monitoring, support, residual-risk, and launch-decision
   evidence.
+- [ ] `node scripts/check-provider-smoke-runbook.mjs` passed, proving the live
+  provider smoke-test runbook still covers managed S3, SMTP, Google OAuth,
+  Stripe, Epusdt, and ClamAV evidence.
 - [ ] `docker build -t pastebox:<release> .` passed, or CI produced the image
   for the exact release commit.
 - [ ] `PASTEBOX_ENV_FILE=./deploy/production.env.example docker compose
@@ -93,6 +98,8 @@ commit real secrets, raw provider payloads, private object keys, or user data.
 
 ## Provider Smoke Tests
 
+- [ ] Provider smoke tests followed `docs/production-provider-smoke-tests.md`
+  and sanitized evidence was copied into the release notes.
 - [ ] Managed S3-compatible object storage accepted upload, private read, and
   delete through the application path.
 - [ ] SMTP delivered verification, magic-link, reset, security, billing, and

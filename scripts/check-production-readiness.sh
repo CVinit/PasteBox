@@ -89,6 +89,9 @@ run node scripts/check-web-launch-surfaces.mjs
 section "Release evidence template"
 run node scripts/check-release-evidence-template.mjs
 
+section "Provider smoke runbook"
+run node scripts/check-provider-smoke-runbook.mjs
+
 section "PostgreSQL integration tests"
 run make test-postgres
 

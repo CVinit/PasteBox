@@ -51,6 +51,7 @@ const requiredEvidence = [
   "Migration classification",
   "make production-readiness",
   "Web launch-surface smoke result",
+  "Provider smoke-test runbook path",
   "Stripe signed webhook replay",
   "Epusdt expired or canceled callback",
   "Logical restore drill result and duration",
