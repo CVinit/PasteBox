@@ -1288,6 +1288,9 @@ order, err := svc.MarkOrderPaid(admin.ID, order.ID, "manual-123", "SUP-123 verif
   notes after whitespace normalization: `Release commit`, `Immutable image
   reference or digest`, `Production domain`, `Deployment window`, `Operator`,
   `Previous known-good image`, and `Migration classification`.
+- The release notes `Completed evidence checklist path` must match the
+  `--checklist` path passed to the validator, accepting equivalent absolute,
+  working-directory-relative, or repo-root-relative path forms.
 - The launch decision must record `Release evidence validator result` beginning
   with `passed`, `Operator approval` beginning with `approved`, and `Public beta
   traffic accepted` exactly `yes`.
@@ -1303,6 +1306,8 @@ order, err := svc.MarkOrderPaid(admin.ID, order.ID, "manual-123", "SUP-123 verif
 - Placeholder field value -> release evidence check fails.
 - Checklist/release-notes release identity mismatch -> release evidence check
   fails.
+- `Completed evidence checklist path` does not refer to `--checklist` ->
+  release evidence check fails.
 - Validator result not `passed...` -> release evidence check fails.
 - Operator approval not `approved...` -> release evidence check fails.
 - `Public beta traffic accepted` not `yes` -> release evidence check fails.
@@ -1312,8 +1317,8 @@ order, err := svc.MarkOrderPaid(admin.ID, order.ID, "manual-123", "SUP-123 verif
 
 - Good: A sanitized release candidate checklist and release notes name the same
   commit, pinned image, domain, operator, previous image, and migration class,
-  include no secrets, record validator `passed`, operator `approved`, and set
-  public beta traffic to `yes`.
+  include no secrets, record the actual checklist path, record validator
+  `passed`, operator `approved`, and set public beta traffic to `yes`.
 - Base: Template files remain unchecked and placeholder-filled in the repo; they
   are validated only by template/self-test checks, not as completed evidence.
 - Bad: A completed checklist for commit `abc1234` and release notes for commit
@@ -1324,7 +1329,8 @@ order, err := svc.MarkOrderPaid(admin.ID, order.ID, "manual-123", "SUP-123 verif
 - Keep `--self-test` cases for success plus unchecked checklist, missing
   checklist item, empty/placeholder field, missing release-notes field,
   unapproved launch, failed validator result, pending operator approval,
-  raw-secret rejection in both files, and release identity mismatch.
+  raw-secret rejection in both files, release identity mismatch, and mismatched
+  completed-checklist path.
 - Run `node scripts/check-production-release-evidence.mjs --self-test` after
   changing the validator.
 - Run `node scripts/check-release-evidence-template.mjs` after changing
@@ -1346,6 +1352,7 @@ validateReleaseNotes(releaseNotes, releaseNotesTemplate);
 validateChecklist(checklist, checklistTemplate);
 validateReleaseNotes(releaseNotes, releaseNotesTemplate);
 validateEvidenceConsistency(checklist, releaseNotes);
+validateChecklistPathReference(options.checklist, releaseNotes);
 ```
 
 ---

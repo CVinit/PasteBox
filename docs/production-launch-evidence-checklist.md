@@ -14,8 +14,10 @@ evidence archive. Before accepting public beta traffic, run
 `make release-evidence RELEASE_CHECKLIST=<completed-checklist.md> RELEASE_NOTES=<completed-release-notes.md>`
 against the sanitized completed copies. The validator rejects unchecked,
 placeholder, missing, unapproved, release-identity-mismatched, or common
-raw-secret evidence across the checklist and release notes. Do not commit real
-secrets, raw provider payloads, private object keys, or user data.
+raw-secret evidence across the checklist and release notes. It also requires the
+release notes' `Completed evidence checklist path` to match the checklist file
+passed to `RELEASE_CHECKLIST`. Do not commit real secrets, raw provider
+payloads, private object keys, or user data.
 
 ## Release Identity
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -294,6 +294,46 @@ function validateEvidenceConsistency(checklistMarkdown, releaseNotesMarkdown) {
   }
 }
 
+function normalizeEvidencePath(path) {
+  return path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+/g, "/").trim();
+}
+
+function candidateEvidencePaths(path) {
+  const candidates = new Set();
+  const resolved = resolve(path);
+  const values = [
+    path,
+    normalizeEvidencePath(path),
+    resolved,
+    relative(process.cwd(), resolved),
+    relative(repoRoot, resolved),
+  ];
+  for (const value of values) {
+    if (value && value !== ".") {
+      candidates.add(normalizeEvidencePath(value));
+    }
+  }
+  if (isAbsolute(path)) {
+    candidates.add(normalizeEvidencePath(path));
+  }
+  return candidates;
+}
+
+function validateChecklistPathReference(checklistPath, releaseNotesMarkdown) {
+  const fields = releaseNotesFieldEntries(releaseNotesMarkdown);
+  const recordedPath = fields.get("Completed evidence checklist path");
+  if (!recordedPath || isPlaceholderValue(recordedPath)) {
+    fail("release notes launch decision is missing Completed evidence checklist path");
+  }
+
+  const normalizedRecordedPath = normalizeEvidencePath(recordedPath);
+  if (!candidateEvidencePaths(checklistPath).has(normalizedRecordedPath)) {
+    fail(
+      `release notes Completed evidence checklist path ${JSON.stringify(recordedPath)} does not match --checklist ${JSON.stringify(checklistPath)}`,
+    );
+  }
+}
+
 function validateChecklist(markdown, templateMarkdown = null) {
   validateNoRawSecrets("completed evidence checklist", markdown);
 
@@ -497,10 +537,12 @@ function runSelfTest() {
   const releaseNotesTemplate = readFileSync(releaseNotesTemplatePath, "utf8");
 
   const releaseNotesFixture = completeReleaseNotesFixture(releaseNotesTemplate);
+  const fixtureChecklistPath = "evidence/rc-1/checklist.md";
 
   validateChecklist(completeChecklistFixture(), checklistTemplate);
   validateReleaseNotes(releaseNotesFixture, releaseNotesTemplate);
   validateEvidenceConsistency(completeChecklistFixture(), releaseNotesFixture);
+  validateChecklistPathReference(fixtureChecklistPath, releaseNotesFixture);
 
   assertSelfTestFailure(
     "unchecked checklist",
@@ -622,6 +664,15 @@ function runSelfTest() {
       ),
     "release identity mismatch",
   );
+  assertSelfTestFailure(
+    "mismatched checklist path",
+    () =>
+      validateChecklistPathReference(
+        "evidence/rc-2/checklist.md",
+        releaseNotesFixture,
+      ),
+    "does not match --checklist",
+  );
 
   throwOnFailure = false;
   console.log("production release evidence self-test passed");
@@ -645,5 +696,6 @@ const releaseNotesTemplate = readRequired(releaseNotesTemplatePath, "release not
 validateChecklist(checklist, checklistTemplate);
 validateReleaseNotes(releaseNotes, releaseNotesTemplate);
 validateEvidenceConsistency(checklist, releaseNotes);
+validateChecklistPathReference(options.checklist, releaseNotes);
 
 console.log("production release evidence check passed");
