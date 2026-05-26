@@ -114,9 +114,10 @@ Compose rendering for the default, monitoring, and maintenance profiles, shell
 syntax for maintenance scripts, Prometheus/blackbox/Caddy config syntax through
 container images, `pastebox preflight production` against a synthetic
 production-safe environment derived from `deploy/production.env.example`,
-`make test`, PostgreSQL-backed integration tests in an ephemeral container,
-`make build`, and a local Docker image build. To run the same verifier against
-a server-specific env file without committing it, set
+`make test`, the web launch-surface smoke check for legal/support/status
+routes and support/billing/settings links, PostgreSQL-backed integration tests
+in an ephemeral container, `make build`, and a local Docker image build. To run
+the same verifier against a server-specific env file without committing it, set
 `PASTEBOX_PRODUCTION_ENV_FILE=deploy/production.env`. To skip the local image
 build only when CI has already built the exact release image, set
 `PASTEBOX_SKIP_DOCKER_BUILD=true`.

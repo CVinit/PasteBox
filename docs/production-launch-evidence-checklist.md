@@ -29,6 +29,9 @@ commit real secrets, raw provider payloads, private object keys, or user data.
   and PostgreSQL-backed auth, content, billing/support, audit, mail, jobs, and
   restart-persistence integration tests against a real PostgreSQL server.
 - [ ] `make build` passed for the release commit.
+- [ ] `node scripts/check-web-launch-surfaces.mjs` passed after the production
+  web bundle was built, proving committed legal/support/status routes and
+  support/billing/settings links are present in the built frontend.
 - [ ] `docker build -t pastebox:<release> .` passed, or CI produced the image
   for the exact release commit.
 - [ ] `PASTEBOX_ENV_FILE=./deploy/production.env.example docker compose

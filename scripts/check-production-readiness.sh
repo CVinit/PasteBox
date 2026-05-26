@@ -83,6 +83,9 @@ run sh scripts/check-production-preflight.sh
 section "Project tests"
 run make test
 
+section "Web launch surfaces"
+run node scripts/check-web-launch-surfaces.mjs
+
 section "PostgreSQL integration tests"
 run make test-postgres
 
