@@ -1330,8 +1330,12 @@ func (s *Service) AddAttachment(userID string, pasteID string, fileName string, 
 		s.rollbackUnreferencedStoredObjectLocked(attachment.ObjectKey, existingObjectRefs)
 		return AttachmentView{}, err
 	}
-	s.objectRefs[attachment.ObjectKey]++
 	attachmentCreated := true
+	if err := s.incrementObjectRefLocked(attachment, existingObjectRefs, now); err != nil {
+		_ = s.deleteAttachmentLocked(attachment)
+		s.rollbackUnreferencedStoredObjectLocked(attachment.ObjectKey, existingObjectRefs)
+		return AttachmentView{}, err
+	}
 	previousPasteScanStatus := paste.ScanStatus
 	previousPasteUpdatedAt := paste.UpdatedAt
 	paste.ScanStatus = aggregateScanStatus(s.attachmentsForPasteLocked(paste))
@@ -2730,17 +2734,37 @@ func (s *Service) RunCleanup(actorID string) (map[string]int, error) {
 					continue
 				}
 				if att.Status == "pending_delete" {
+					previousAttachment := *att
+					previousAttachment.Content = append([]byte(nil), att.Content...)
+					previousRefs := s.objectRefs[att.ObjectKey]
 					att.Status = "deleted"
 					att.Content = nil
-					s.objectRefs[att.ObjectKey]--
-					if s.objectRefs[att.ObjectKey] <= 0 {
-						delete(s.objectRefs, att.ObjectKey)
-						if err := s.deleteObjectLocked(att.ObjectKey); err != nil {
+					if previousRefs <= 1 {
+						if err := s.updateAttachmentLocked(att); err != nil {
+							s.cacheAttachmentLocked(previousAttachment)
 							return nil, err
 						}
-					}
-					if err := s.updateAttachmentLocked(att); err != nil {
-						return nil, err
+						if err := s.decrementObjectRefLocked(att); err != nil {
+							restoreErr := s.updateAttachmentLocked(&previousAttachment)
+							if restoreErr != nil {
+								return nil, errors.Join(err, restoreErr)
+							}
+							return nil, err
+						}
+					} else {
+						if err := s.decrementObjectRefLocked(att); err != nil {
+							_ = s.restoreObjectRefAfterCleanupFailureLocked(&previousAttachment, previousRefs, now)
+							s.cacheAttachmentLocked(previousAttachment)
+							return nil, err
+						}
+						if err := s.updateAttachmentLocked(att); err != nil {
+							restoreErr := s.restoreObjectRefAfterCleanupFailureLocked(&previousAttachment, previousRefs, now)
+							s.cacheAttachmentLocked(previousAttachment)
+							if restoreErr != nil {
+								return nil, errors.Join(err, restoreErr)
+							}
+							return nil, err
+						}
 					}
 					deletedAttachments++
 				}
@@ -2866,7 +2890,9 @@ func (s *Service) loadContentCaches(ctx context.Context) error {
 		for _, attachment := range attachments {
 			s.cacheAttachmentLocked(attachment)
 		}
-		s.rebuildObjectRefsLocked()
+		if err := s.rebuildObjectRefsLocked(); err != nil {
+			return fmt.Errorf("rebuild object refs: %w", err)
+		}
 	}
 	if s.content.Shares != nil {
 		shares, err := s.content.Shares.ListShares(ctx)
@@ -3036,7 +3062,7 @@ func (s *Service) cacheAttachmentLocked(attachment Attachment) *Attachment {
 	return &cached
 }
 
-func (s *Service) rebuildObjectRefsLocked() {
+func (s *Service) rebuildObjectRefsLocked() error {
 	s.objectRefs = map[string]int{}
 	for _, attachment := range s.attachmentsByID {
 		if attachment.ObjectKey == "" || attachment.Status == "deleted" {
@@ -3044,6 +3070,109 @@ func (s *Service) rebuildObjectRefsLocked() {
 		}
 		s.objectRefs[attachment.ObjectKey]++
 	}
+	if s.content.ObjectRefs == nil {
+		return nil
+	}
+	now := s.now().UTC()
+	for objectKey, refs := range s.objectRefs {
+		if refs <= 0 {
+			continue
+		}
+		attachment := s.attachmentForObjectKeyLocked(objectKey)
+		if attachment == nil {
+			continue
+		}
+		if err := s.persistObjectRefLocked(attachment, refs, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) incrementObjectRefLocked(attachment *Attachment, previousRefs int, now time.Time) error {
+	if attachment.ObjectKey == "" {
+		return nil
+	}
+	nextRefs := previousRefs + 1
+	if err := s.persistObjectRefLocked(attachment, nextRefs, now); err != nil {
+		return err
+	}
+	s.objectRefs[attachment.ObjectKey] = nextRefs
+	return nil
+}
+
+func (s *Service) decrementObjectRefLocked(attachment *Attachment) error {
+	if attachment.ObjectKey == "" {
+		return nil
+	}
+	currentRefs := s.objectRefs[attachment.ObjectKey]
+	nextRefs := currentRefs - 1
+	if nextRefs > 0 {
+		if err := s.persistObjectRefLocked(attachment, nextRefs, s.now().UTC()); err != nil {
+			return err
+		}
+		s.objectRefs[attachment.ObjectKey] = nextRefs
+		return nil
+	}
+	if s.content.ObjectRefs != nil {
+		if err := s.deleteObjectLocked(attachment.ObjectKey); err != nil {
+			return err
+		}
+		if err := s.content.ObjectRefs.DeleteObjectRef(context.Background(), attachment.ObjectKey); err != nil && !isStoreNotFound(err) {
+			return err
+		}
+	} else {
+		if err := s.deleteObjectLocked(attachment.ObjectKey); err != nil {
+			return err
+		}
+	}
+	delete(s.objectRefs, attachment.ObjectKey)
+	return nil
+}
+
+func (s *Service) persistObjectRefLocked(attachment *Attachment, refs int, now time.Time) error {
+	if s.content.ObjectRefs == nil || attachment.ObjectKey == "" {
+		return nil
+	}
+	if refs <= 0 {
+		if err := s.content.ObjectRefs.DeleteObjectRef(context.Background(), attachment.ObjectKey); err != nil && !isStoreNotFound(err) {
+			return err
+		}
+		return nil
+	}
+	createdAt := attachment.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	return s.content.ObjectRefs.UpsertObjectRef(context.Background(), ObjectRef{
+		ObjectKey: attachment.ObjectKey,
+		RefCount:  refs,
+		Size:      attachment.Size,
+		SHA256:    attachment.SHA256,
+		CreatedAt: createdAt,
+		UpdatedAt: now,
+	})
+}
+
+func (s *Service) attachmentForObjectKeyLocked(objectKey string) *Attachment {
+	for _, attachment := range s.attachmentsByID {
+		if attachment.ObjectKey == objectKey && attachment.Status != "deleted" {
+			return attachment
+		}
+	}
+	return nil
+}
+
+func (s *Service) restoreObjectRefAfterCleanupFailureLocked(attachment *Attachment, refs int, now time.Time) error {
+	if attachment.ObjectKey == "" {
+		return nil
+	}
+	if refs <= 0 {
+		delete(s.objectRefs, attachment.ObjectKey)
+		return nil
+	}
+	s.objectRefs[attachment.ObjectKey] = refs
+	return s.persistObjectRefLocked(attachment, refs, now)
 }
 
 func (s *Service) createShareLocked(share *Share) error {
@@ -4286,11 +4415,21 @@ func (s *Service) rollbackStoredObjectLocked(objectKey string) {
 	if refs := s.objectRefs[objectKey]; refs > 0 {
 		s.objectRefs[objectKey] = refs - 1
 		if s.objectRefs[objectKey] > 0 {
+			if attachment := s.attachmentForObjectKeyLocked(objectKey); attachment != nil {
+				_ = s.persistObjectRefLocked(attachment, s.objectRefs[objectKey], s.now().UTC())
+			}
 			return
 		}
 	}
 	delete(s.objectRefs, objectKey)
-	_ = s.deleteObjectLocked(objectKey)
+	if err := s.deleteObjectLocked(objectKey); err != nil {
+		return
+	}
+	if s.content.ObjectRefs != nil {
+		if err := s.content.ObjectRefs.DeleteObjectRef(context.Background(), objectKey); err != nil && !isStoreNotFound(err) {
+			return
+		}
+	}
 }
 
 func (s *Service) rollbackUnreferencedStoredObjectLocked(objectKey string, previousRefs int) {

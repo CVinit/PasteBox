@@ -231,6 +231,7 @@ func TestServiceWithPostgresStoresPreservesLaunchStateAcrossRestart(t *testing.T
 
 func newPostgresBackedService(t *testing.T, ctx context.Context, pool *pgxpool.Pool, cfg config.Config) *app.Service {
 	t.Helper()
+	attachmentStore := NewAttachmentStore(pool)
 	svc, err := app.NewWithStorage(ctx, cfg, app.Stores{
 		Auth: app.AuthStores{
 			Users:           NewUserStore(pool),
@@ -241,7 +242,8 @@ func newPostgresBackedService(t *testing.T, ctx context.Context, pool *pgxpool.P
 		},
 		Content: app.ContentStores{
 			Pastes:      NewPasteStore(pool),
-			Attachments: NewAttachmentStore(pool),
+			Attachments: attachmentStore,
+			ObjectRefs:  attachmentStore,
 			Shares:      NewShareStore(pool),
 		},
 		Operational: app.OperationalStores{

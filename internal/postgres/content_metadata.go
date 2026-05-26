@@ -17,19 +17,12 @@ import (
 var (
 	ErrPasteNotFound      = errors.Join(errors.New("postgres paste not found"), app.ErrStoreNotFound)
 	ErrAttachmentNotFound = errors.Join(errors.New("postgres attachment not found"), app.ErrStoreNotFound)
-	ErrObjectRefNotFound  = errors.New("postgres object ref not found")
+	ErrObjectRefNotFound  = errors.Join(errors.New("postgres object ref not found"), app.ErrStoreNotFound)
 	ErrShareNotFound      = errors.Join(errors.New("postgres share not found"), app.ErrStoreNotFound)
 	ErrShareTokenExists   = errors.Join(errors.New("postgres share token exists"), app.ErrStoreConflict)
 )
 
-type ObjectRef struct {
-	ObjectKey string
-	RefCount  int
-	Size      int64
-	SHA256    string
-	CreatedAt time.Time
-	UpdatedAt time.Time
-}
+type ObjectRef = app.ObjectRef
 
 type PasteStore struct {
 	pool *pgxpool.Pool
@@ -270,7 +263,7 @@ func (s *AttachmentStore) DeleteAttachment(ctx context.Context, id string) error
 	return nil
 }
 
-func (s *AttachmentStore) UpsertObjectRef(ctx context.Context, ref ObjectRef) error {
+func (s *AttachmentStore) UpsertObjectRef(ctx context.Context, ref app.ObjectRef) error {
 	if ref.CreatedAt.IsZero() {
 		ref.CreatedAt = time.Now().UTC()
 	}
@@ -287,6 +280,17 @@ ON CONFLICT (object_key) DO UPDATE SET
 	updated_at = EXCLUDED.updated_at
 `, ref.ObjectKey, ref.RefCount, ref.Size, ref.SHA256, ref.CreatedAt, ref.UpdatedAt); err != nil {
 		return fmt.Errorf("upsert object ref: %w", err)
+	}
+	return nil
+}
+
+func (s *AttachmentStore) DeleteObjectRef(ctx context.Context, objectKey string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM object_refs WHERE object_key = $1`, objectKey)
+	if err != nil {
+		return fmt.Errorf("delete object ref: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrObjectRefNotFound
 	}
 	return nil
 }

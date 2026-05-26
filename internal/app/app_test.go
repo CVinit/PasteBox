@@ -498,6 +498,9 @@ func TestObjectStoreBackedAttachmentsSurviveServiceRestartAndCleanup(t *testing.
 	if firstStored.ObjectKey != secondStored.ObjectKey {
 		t.Fatalf("expected duplicate content to share object key, got %q and %q", firstStored.ObjectKey, secondStored.ObjectKey)
 	}
+	if ref := contentStores.objectRefs[firstStored.ObjectKey]; ref.RefCount != 2 || ref.Size != int64(len(content)) || ref.SHA256 != firstStored.SHA256 {
+		t.Fatalf("expected object ref metadata to persist after duplicate upload, got %#v", ref)
+	}
 	if len(svc.objects) != 0 {
 		t.Fatalf("injected object store should keep bytes out of service memory, got %d fallback objects", len(svc.objects))
 	}
@@ -524,6 +527,9 @@ func TestObjectStoreBackedAttachmentsSurviveServiceRestartAndCleanup(t *testing.
 	if refs := restarted.objectRefs[firstStored.ObjectKey]; refs != 1 {
 		t.Fatalf("expected one object reference after first cleanup, got %d", refs)
 	}
+	if ref := contentStores.objectRefs[firstStored.ObjectKey]; ref.RefCount != 1 {
+		t.Fatalf("expected persisted object reference count to decrement after first cleanup, got %#v", ref)
+	}
 	if !objectStore.has(firstStored.ObjectKey) {
 		t.Fatalf("expected shared object to remain while second attachment references it")
 	}
@@ -536,6 +542,9 @@ func TestObjectStoreBackedAttachmentsSurviveServiceRestartAndCleanup(t *testing.
 	}
 	if objectStore.has(firstStored.ObjectKey) {
 		t.Fatalf("expected object store content to be deleted after last reference cleanup")
+	}
+	if _, ok := contentStores.objectRefs[firstStored.ObjectKey]; ok {
+		t.Fatalf("expected persisted object reference to be deleted after last cleanup, got %#v", contentStores.objectRefs)
 	}
 }
 
@@ -568,6 +577,38 @@ func TestObjectStoreWriteFailureDoesNotCreateAttachmentMetadata(t *testing.T) {
 	}
 	if quota, err := svc.Quota(owner.User.ID); err != nil || quota.DailyUploadBytes != int64(len("base")) {
 		t.Fatalf("failed object write must not consume attachment daily quota, quota=%#v err=%v", quota, err)
+	}
+}
+
+func TestObjectRefWriteFailureRollsBackStoredObjectAndAttachmentMetadata(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	objectRefErr := errors.New("object ref unavailable")
+	authStores := newMemoryAuthStores()
+	contentStores := newMemoryContentStores()
+	objectStore := newMemoryObjectStore()
+
+	svc := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		Objects:      objectStore,
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	owner := registerTestUser(t, svc, "object-ref-failure@example.com")
+	paste := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "object ref", Text: "base", ExpiresInSeconds: 3600})
+	contentStores.objectRefErr = objectRefErr
+
+	if _, err := svc.AddAttachment(owner.User.ID, paste.ID, "ref.txt", "text/plain", []byte("ref")); !errors.Is(err, objectRefErr) {
+		t.Fatalf("expected object ref write error, got %v", err)
+	}
+	attachments, err := contentStores.ListAttachmentsByPaste(context.Background(), paste.ID)
+	if err != nil {
+		t.Fatalf("list attachments after object ref failure: %v", err)
+	}
+	if len(attachments) != 0 {
+		t.Fatalf("object ref failure must roll back attachment row, got %#v", attachments)
+	}
+	if len(objectStore.objects) != 0 || len(svc.objectRefs) != 0 || len(contentStores.objectRefs) != 0 {
+		t.Fatalf("object ref failure must roll back object state, objects=%#v refs=%#v persisted=%#v", objectStore.objects, svc.objectRefs, contentStores.objectRefs)
 	}
 }
 
@@ -654,6 +695,49 @@ func TestAttachmentQuotaWriteFailureRollsBackMetadataObjectAndQueue(t *testing.T
 	}
 	if got, err := dailyMetrics.delegate.DailyMetric(context.Background(), owner.User.ID, "upload", now); err != nil || got != int64(len("base")) {
 		t.Fatalf("quota failure must not consume attachment daily quota, got %d err=%v", got, err)
+	}
+}
+
+func TestCleanupAttachmentUpdateFailurePreservesSharedObjectRef(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	updateErr := errors.New("attachment metadata unavailable")
+	authStores := newMemoryAuthStores()
+	contentStores := newMemoryContentStores()
+	objectStore := newMemoryObjectStore()
+
+	svc := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		Objects:      objectStore,
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	owner := registerTestUser(t, svc, "cleanup-ref-failure@example.com")
+	firstPaste := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "first", Text: "one", ExpiresInSeconds: 3600})
+	secondPaste := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "second", Text: "two", ExpiresInSeconds: 3600})
+	content := []byte("shared cleanup bytes")
+	firstAttachment := addTestAttachment(t, svc, owner.User.ID, firstPaste.ID, "first.txt", content)
+	secondAttachment := addTestAttachment(t, svc, owner.User.ID, secondPaste.ID, "second.txt", content)
+	objectKey := svc.attachmentsByID[firstAttachment.ID].ObjectKey
+
+	if err := svc.DeletePaste(owner.User.ID, firstPaste.ID); err != nil {
+		t.Fatalf("delete first paste: %v", err)
+	}
+	contentStores.updateAttachmentErr = updateErr
+	if _, err := svc.RunCleanup(""); !errors.Is(err, updateErr) {
+		t.Fatalf("expected cleanup attachment update error, got %v", err)
+	}
+	if refs := svc.objectRefs[objectKey]; refs != 2 {
+		t.Fatalf("expected in-memory object ref count to be restored after cleanup failure, got %d", refs)
+	}
+	if ref := contentStores.objectRefs[objectKey]; ref.RefCount != 2 {
+		t.Fatalf("expected persisted object ref count to be restored after cleanup failure, got %#v", ref)
+	}
+	if !objectStore.has(objectKey) {
+		t.Fatalf("expected shared object to remain after cleanup metadata failure")
+	}
+	contentStores.updateAttachmentErr = nil
+	if _, downloaded, err := svc.DownloadAttachment(owner.User.ID, secondAttachment.ID); err != nil || string(downloaded) != string(content) {
+		t.Fatalf("expected second attachment to remain downloadable, got content=%q err=%v", string(downloaded), err)
 	}
 }
 
@@ -1602,17 +1686,21 @@ func (s *memoryAuditLogStore) AuditLogsForActorOrTargets(ctx context.Context, ac
 }
 
 type memoryContentStores struct {
-	pastes         map[string]Paste
-	attachments    map[string]Attachment
-	shares         map[string]Share
-	shareTokens    map[string]string
-	updatePasteErr error
+	pastes              map[string]Paste
+	attachments         map[string]Attachment
+	objectRefs          map[string]ObjectRef
+	shares              map[string]Share
+	shareTokens         map[string]string
+	updatePasteErr      error
+	updateAttachmentErr error
+	objectRefErr        error
 }
 
 func newMemoryContentStores() *memoryContentStores {
 	return &memoryContentStores{
 		pastes:      map[string]Paste{},
 		attachments: map[string]Attachment{},
+		objectRefs:  map[string]ObjectRef{},
 		shares:      map[string]Share{},
 		shareTokens: map[string]string{},
 	}
@@ -1622,6 +1710,7 @@ func (s *memoryContentStores) contentStores() ContentStores {
 	return ContentStores{
 		Pastes:      s,
 		Attachments: s,
+		ObjectRefs:  s,
 		Shares:      s,
 	}
 }
@@ -1706,6 +1795,9 @@ func (s *memoryContentStores) ListAttachmentsByPaste(_ context.Context, pasteID 
 }
 
 func (s *memoryContentStores) UpdateAttachment(_ context.Context, attachment Attachment) error {
+	if s.updateAttachmentErr != nil {
+		return s.updateAttachmentErr
+	}
 	if _, ok := s.attachments[attachment.ID]; !ok {
 		return ErrStoreNotFound
 	}
@@ -1719,6 +1811,33 @@ func (s *memoryContentStores) DeleteAttachment(_ context.Context, id string) err
 	}
 	delete(s.attachments, id)
 	return nil
+}
+
+func (s *memoryContentStores) UpsertObjectRef(_ context.Context, ref ObjectRef) error {
+	if s.objectRefErr != nil {
+		return s.objectRefErr
+	}
+	s.objectRefs[ref.ObjectKey] = ref
+	return nil
+}
+
+func (s *memoryContentStores) DeleteObjectRef(_ context.Context, objectKey string) error {
+	if s.objectRefErr != nil {
+		return s.objectRefErr
+	}
+	if _, ok := s.objectRefs[objectKey]; !ok {
+		return ErrStoreNotFound
+	}
+	delete(s.objectRefs, objectKey)
+	return nil
+}
+
+func (s *memoryContentStores) ObjectRef(objectKey string) (ObjectRef, error) {
+	ref, ok := s.objectRefs[objectKey]
+	if !ok {
+		return ObjectRef{}, ErrStoreNotFound
+	}
+	return ref, nil
 }
 
 func (s *memoryContentStores) CreateShare(_ context.Context, share Share) error {

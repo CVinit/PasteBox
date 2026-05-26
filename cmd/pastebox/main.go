@@ -225,6 +225,7 @@ func newProductionService(ctx context.Context, cfg config.Config) (*app.Service,
 		pool.Close()
 		return nil, nil, nil, fmt.Errorf("object store setup: %w", err)
 	}
+	attachmentStore := postgres.NewAttachmentStore(pool)
 	service, err := app.NewWithStorage(ctx, cfg, app.Stores{
 		Auth: app.AuthStores{
 			Users:           postgres.NewUserStore(pool),
@@ -235,7 +236,8 @@ func newProductionService(ctx context.Context, cfg config.Config) (*app.Service,
 		},
 		Content: app.ContentStores{
 			Pastes:      postgres.NewPasteStore(pool),
-			Attachments: postgres.NewAttachmentStore(pool),
+			Attachments: attachmentStore,
+			ObjectRefs:  attachmentStore,
 			Shares:      postgres.NewShareStore(pool),
 		},
 		Objects: objects,

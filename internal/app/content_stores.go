@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 var ErrObjectNotFound = errors.New("object not found")
@@ -10,6 +11,7 @@ var ErrObjectNotFound = errors.New("object not found")
 type ContentStores struct {
 	Pastes      PasteStore
 	Attachments AttachmentStore
+	ObjectRefs  ObjectRefStore
 	Shares      ShareStore
 }
 
@@ -43,6 +45,20 @@ type AttachmentStore interface {
 	ListAttachmentsByPaste(ctx context.Context, pasteID string) ([]Attachment, error)
 	UpdateAttachment(ctx context.Context, attachment Attachment) error
 	DeleteAttachment(ctx context.Context, id string) error
+}
+
+type ObjectRef struct {
+	ObjectKey string
+	RefCount  int
+	Size      int64
+	SHA256    string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type ObjectRefStore interface {
+	UpsertObjectRef(ctx context.Context, ref ObjectRef) error
+	DeleteObjectRef(ctx context.Context, objectKey string) error
 }
 
 type ShareStore interface {
