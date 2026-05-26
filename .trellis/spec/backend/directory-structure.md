@@ -148,6 +148,8 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 
 - API command: `pastebox` or `pastebox api`
 - Worker command: `pastebox worker [--once] [--batch-size <n>] [--poll-interval <duration>]`
+- Compose one-shot worker check:
+  `docker compose --env-file deploy/production.env -f compose.production.yaml run --rm worker worker --once`
 - Migration commands: `pastebox migrate status` and `pastebox migrate up`
 - Preflight command: `pastebox preflight production`
 - Scanner constructor: `scanner.New(config.ScannerConfig) (scanner.Scanner, error)`
@@ -166,6 +168,12 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - `pastebox worker` is a supervised long-running process that polls the
   PostgreSQL-backed `jobs` table. `--once` processes one runnable batch and
   exits for deployment checks or maintenance.
+- Production Compose uses `pastebox` as the image entrypoint and `worker` as
+  the service command. When using `docker compose run` for one-shot checks,
+  run arguments replace the service command, so the command must include both
+  the service name and the application subcommand: `run --rm worker worker
+  --once`. `run --rm worker --once` invokes `pastebox --once` and fails with
+  `unknown command "--once"`.
 - The worker currently handles `kind = 'cleanup'` jobs by calling the same
   service cleanup path used by admin cleanup, then marking the job
   `completed`, `pending` for retry with backoff, or `failed` after the retry
@@ -223,6 +231,9 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
   reports a dirty/checksum mismatch.
 - `pastebox worker --once` cannot list runnable jobs or update job state ->
   exits 1 with a worker-specific error.
+- `docker compose run --rm worker --once` -> exits 2 with
+  `unknown command "--once"` because it omits the application `worker`
+  subcommand.
 - Production monitoring profile fails to render -> config validation failure.
 - Prometheus scrape or alert-rule config is syntactically invalid -> launch
   monitoring validation failure.

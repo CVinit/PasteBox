@@ -301,7 +301,7 @@ restarting the worker or changing mail credentials. Use the bounded one-shot
 mode for deployment checks or maintenance:
 
 ```sh
-docker compose --env-file deploy/production.env -f compose.production.yaml run --rm worker --once
+docker compose --env-file deploy/production.env -f compose.production.yaml run --rm worker worker --once
 ```
 
 Future worker extensions should use the same durable `jobs` table or `mails`

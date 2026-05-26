@@ -919,6 +919,7 @@ func runWorker(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	cfg := config.FromEnv()
 	workerID := configuredWorkerID(cfg)
+	cfg = workerServiceConfig(cfg)
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: cfg.LogLevel,
 	}))
@@ -984,6 +985,12 @@ func configuredWorkerID(cfg config.Config) string {
 		return strings.TrimSpace(hostname) + "-" + strconv.Itoa(os.Getpid())
 	}
 	return "worker-" + strconv.Itoa(os.Getpid())
+}
+
+func workerServiceConfig(cfg config.Config) config.Config {
+	cfg.BootstrapAdminEmail = ""
+	cfg.BootstrapAdminPassword = ""
+	return cfg
 }
 
 func runAdminCreate(args []string, stdout io.Writer, stderr io.Writer) int {

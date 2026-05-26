@@ -64,6 +64,23 @@ func TestMailReadinessCanSkipSMTPOutsideProduction(t *testing.T) {
 	}
 }
 
+func TestWorkerServiceConfigIgnoresBootstrapAdminCredentials(t *testing.T) {
+	cfg := config.Config{
+		AppEnv:                 "production",
+		WorkerID:               "worker-1",
+		BootstrapAdminEmail:    "admin@example.com",
+		BootstrapAdminPassword: "bootstrap-secret",
+	}
+
+	workerCfg := workerServiceConfig(cfg)
+	if workerCfg.BootstrapAdminEmail != "" || workerCfg.BootstrapAdminPassword != "" {
+		t.Fatalf("worker must not seed or rotate bootstrap admin credentials: %#v", workerCfg)
+	}
+	if workerCfg.AppEnv != cfg.AppEnv || workerCfg.WorkerID != cfg.WorkerID {
+		t.Fatalf("worker service config should preserve non-bootstrap settings, got %#v", workerCfg)
+	}
+}
+
 func TestMigrateCommandsUseConfiguredDatabaseURL(t *testing.T) {
 	t.Setenv("PASTEBOX_DATABASE_URL", "not-a-postgres-url")
 
