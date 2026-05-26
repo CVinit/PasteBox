@@ -433,6 +433,11 @@ base backup jobs:
 docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm backup-push
 ```
 
+The off-host backup job prints `snapshot_id=<id>` and writes a manifest under
+`/backups/restic/pastebox-restic-*.manifest` containing the restic snapshot ID,
+duration, `read_data_subset=1/20`, and `integrity_check=passed`. Record that
+snapshot ID in release notes and in the production launch evidence checklist.
+
 Successful logical backup, WAL freshness, base backup, restore drill, PITR
 drill, and off-host push jobs write Prometheus textfile metrics into the shared
 `pastebox-node-textfile` volume. The monitoring profile exposes those metrics

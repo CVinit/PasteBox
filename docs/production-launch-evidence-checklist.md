@@ -124,7 +124,9 @@ commit real secrets, raw provider payloads, private object keys, or user data.
   the manifest.
 - [ ] PITR restore drill completed and read `schema_migrations`.
 - [ ] PITR drill duration was recorded and is within the 4-hour RTO target.
-- [ ] Off-host backup push completed and the snapshot ID was recorded.
+- [ ] Off-host backup push completed, `backup-push` printed
+  `snapshot_id=<id>`, and `/backups/restic/pastebox-restic-*.manifest`
+  recorded the same snapshot ID with `integrity_check=passed`.
 - [ ] Reversible image rollback was rehearsed with the previous known-good
   image.
 - [ ] Non-reversible migration restore procedure was rehearsed when applicable.
