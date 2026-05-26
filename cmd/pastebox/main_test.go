@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -61,6 +62,54 @@ func TestMailReadinessCanSkipSMTPOutsideProduction(t *testing.T) {
 	component := mailReadinessNotConfigured(config.Config{AppEnv: "development"})
 	if component.Name != "mail" || component.Status != "skipped" || !strings.Contains(component.Message, "not configured") {
 		t.Fatalf("expected development mail readiness skip, got %#v", component)
+	}
+}
+
+func TestScannerReadinessRequiresClamAVInProduction(t *testing.T) {
+	component := scannerReadinessComponent(context.Background(), config.Config{AppEnv: "production"})
+	if component.Name != "scanner" || component.Status != "fail" || !strings.Contains(component.Message, "required in production") {
+		t.Fatalf("expected production scanner readiness failure, got %#v", component)
+	}
+}
+
+func TestScannerReadinessCanSkipClamAVOutsideProduction(t *testing.T) {
+	component := scannerReadinessComponent(context.Background(), config.Config{AppEnv: "development"})
+	if component.Name != "scanner" || component.Status != "skipped" || !strings.Contains(component.Message, "not configured") {
+		t.Fatalf("expected development scanner readiness skip, got %#v", component)
+	}
+}
+
+func TestScannerReadinessChecksClamAVTCPReachability(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = listener.Close()
+	})
+	accepted := make(chan struct{}, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err == nil {
+			_ = conn.Close()
+			accepted <- struct{}{}
+		}
+	}()
+
+	component := scannerReadinessComponent(context.Background(), config.Config{
+		AppEnv: "production",
+		Scanner: config.ScannerConfig{
+			Provider: "clamav",
+			ClamAV:   config.ClamAVConfig{Addr: listener.Addr().String()},
+		},
+	})
+	if component.Name != "scanner" || component.Status != "ok" {
+		t.Fatalf("expected reachable ClamAV scanner readiness, got %#v", component)
+	}
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("scanner readiness did not connect to the ClamAV address")
 	}
 }
 

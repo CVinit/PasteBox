@@ -127,7 +127,7 @@ Expected response:
 and:
 
 ```json
-{"app":"PasteBox","env":"development","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"worker","status":"skipped","message":"worker heartbeat is required in production"},{"name":"mail","status":"skipped","message":"smtp provider is not configured"}]}
+{"app":"PasteBox","env":"development","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"scanner","status":"skipped","message":"clamav scanner is not configured"},{"name":"worker_queue","status":"ok"},{"name":"worker","status":"skipped","message":"worker heartbeat is required in production"},{"name":"mail","status":"skipped","message":"smtp provider is not configured"}]}
 ```
 
 and:
@@ -139,7 +139,7 @@ and:
 and:
 
 ```json
-{"app":"PasteBox","env":"development","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"worker","status":"skipped","message":"worker heartbeat is required in production"},{"name":"mail","status":"skipped","message":"smtp provider is not configured"}]}
+{"app":"PasteBox","env":"development","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"scanner","status":"skipped","message":"clamav scanner is not configured"},{"name":"worker_queue","status":"ok"},{"name":"worker","status":"skipped","message":"worker heartbeat is required in production"},{"name":"mail","status":"skipped","message":"smtp provider is not configured"}]}
 ```
 
 ## TLS and Reverse Proxy

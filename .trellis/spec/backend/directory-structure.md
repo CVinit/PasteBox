@@ -205,7 +205,8 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
   endpoint, require `PASTEBOX_RESTIC_REPOSITORY` to use an off-host
   `s3:https://` repository, and reject non-ClamAV production scanner settings.
 - `GET /readyz` returns `{"status":"ready"}` once the process is ready for
-  traffic.
+  traffic and its production dependencies, including ClamAV when configured,
+  are reachable.
 - `GET /api/v1/ready` returns `app`, `env`, and `status`.
 - Production deployment uses `compose.production.yaml`, a non-committed
   `deploy/production.env`, and a pinned `PASTEBOX_IMAGE` tag or digest.

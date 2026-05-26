@@ -62,7 +62,7 @@ groups:
           runbook: docs/production-deployment-runbook.md#metrics-and-alerting
 
       - alert: PasteBoxReadinessComponentDown
-        expr: pastebox_readiness_component_ready{name=~"database|object_storage|redis|worker_queue|worker|mail"} == 0
+        expr: pastebox_readiness_component_ready{name=~"database|object_storage|redis|scanner|worker_queue|worker|mail"} == 0
         for: 2m
         labels:
           severity: critical

@@ -132,6 +132,7 @@ func productionReadinessChecker(cfg config.Config, pool *pgxpool.Pool, objects o
 			readinessCheck(ctx, "redis", func(checkCtx context.Context) error {
 				return tcpReadiness(checkCtx, cfg.RedisAddr)
 			}),
+			scannerReadinessComponent(ctx, cfg),
 			readinessCheck(ctx, "worker_queue", func(checkCtx context.Context) error {
 				_, err := postgres.NewJobStore(pool).ListRunnableJobs(checkCtx, 1, time.Now().UTC())
 				return err
@@ -192,6 +193,18 @@ func mailReadinessNotConfigured(cfg config.Config) httpserver.ReadinessComponent
 		return httpserver.ReadinessComponent{Name: "mail", Status: "fail", Message: "smtp provider is required in production"}
 	}
 	return httpserver.ReadinessComponent{Name: "mail", Status: "skipped", Message: "smtp provider is not configured"}
+}
+
+func scannerReadinessComponent(ctx context.Context, cfg config.Config) httpserver.ReadinessComponent {
+	if strings.EqualFold(strings.TrimSpace(cfg.Scanner.Provider), "clamav") {
+		return readinessCheck(ctx, "scanner", func(checkCtx context.Context) error {
+			return tcpReadiness(checkCtx, cfg.Scanner.ClamAV.Addr)
+		})
+	}
+	if cfg.AppEnv == "production" {
+		return httpserver.ReadinessComponent{Name: "scanner", Status: "fail", Message: "clamav scanner is required in production"}
+	}
+	return httpserver.ReadinessComponent{Name: "scanner", Status: "skipped", Message: "clamav scanner is not configured"}
 }
 
 func readinessCheck(ctx context.Context, name string, check func(context.Context) error) httpserver.ReadinessComponent {

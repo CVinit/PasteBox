@@ -237,7 +237,7 @@ curl -fsS https://<production-domain>/api/v1/ready
 Expected responses:
 
 ```json
-{"app":"PasteBox","env":"production","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"worker","status":"ok"},{"name":"mail","status":"ok"}]}
+{"app":"PasteBox","env":"production","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"scanner","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"worker","status":"ok"},{"name":"mail","status":"ok"}]}
 ```
 
 ## Metrics And Alerting
@@ -279,8 +279,8 @@ The committed baseline alert rules cover these launch gates:
 - `PasteBoxHttpsProbeDown` for failed public HTTPS probing.
 - `PasteBoxCertificateExpiresSoon` for certificates expiring within 14 days.
 - `PasteBoxReadinessDown` for overall dependency readiness failures.
-- `PasteBoxReadinessComponentDown` for database, object storage, Redis, worker
-  queue, worker heartbeat, or mail readiness failures.
+- `PasteBoxReadinessComponentDown` for database, object storage, Redis,
+  scanner, worker queue, worker heartbeat, or mail readiness failures.
 - `PasteBoxOperationalMetricsUnavailable` when aggregate operational metrics
   cannot be loaded.
 - `PasteBoxFailedWorkerJobs` for failed durable worker jobs.

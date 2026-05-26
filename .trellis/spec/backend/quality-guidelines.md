@@ -556,7 +556,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/pastebox ./cmd/pastebox
 ### 1. Scope / Trigger
 
 - Trigger: Any change to `/readyz`, `/api/v1/ready`, production service wiring,
-  object storage setup, Redis config, SMTP config, or worker queue wiring.
+  object storage setup, Redis config, scanner config, SMTP config, or worker
+  queue wiring.
 
 ### 2. Signatures
 
@@ -575,8 +576,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/pastebox ./cmd/pastebox
 - Any component status other than `ok` or `skipped` returns HTTP 503 with
   `status = not_ready`.
 - Production API startup injects dependency checks for PostgreSQL, S3/object
-  storage, Redis TCP reachability, worker job-table access, and SMTP TCP
-  reachability when SMTP is configured.
+  storage, Redis TCP reachability, ClamAV TCP reachability when the scanner
+  provider is `clamav`, worker job-table access, worker heartbeat freshness,
+  and SMTP TCP reachability when SMTP is configured.
 - Development/test handlers that do not inject a checker use a default
   in-process `application: ok` component so local tests do not require external
   services.
@@ -584,14 +586,20 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/pastebox ./cmd/pastebox
 ### 4. Validation & Error Matrix
 
 - Dependency check succeeds -> component `ok`.
+- `PASTEBOX_SCANNER_PROVIDER=clamav` and `PASTEBOX_CLAMAV_ADDR` is reachable ->
+  scanner component `ok`.
+- Scanner provider is not `clamav` in production -> scanner component `fail`.
+- Scanner provider is not `clamav` outside production -> scanner component
+  `skipped`.
 - SMTP provider is not `smtp` -> mail component `skipped`.
 - Dependency check fails or times out -> component `fail`, HTTP 503.
 - S3 bucket cannot be checked -> object storage component `fail`, HTTP 503.
 
 ### 5. Good/Base/Bad Cases
 
-- Good: Production `/readyz` proves database, object storage, Redis, SMTP, and
-  worker queue access before Compose marks API healthy.
+- Good: Production `/readyz` proves database, object storage, Redis, ClamAV,
+  SMTP, worker queue access, and worker heartbeat freshness before Compose
+  marks API healthy.
 - Base: Unit tests can inject a failing checker and assert 503 without opening
   real sockets.
 - Bad: A static `{"status":"ready"}` response while PostgreSQL or object
@@ -603,6 +611,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/pastebox ./cmd/pastebox
   codes.
 - Command/package tests compile the production readiness checker with the real
   PostgreSQL pool and S3 health interface.
+- Command/package tests assert scanner readiness fails in production when
+  ClamAV is not configured, skips outside production, and succeeds against a
+  reachable ClamAV TCP address.
 - Run full `make test` after changing readiness contracts because deployment
   docs and Compose health checks consume them.
 
