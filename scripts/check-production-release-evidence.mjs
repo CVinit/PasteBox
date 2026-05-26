@@ -16,6 +16,16 @@ const emptyTemplateValues = new Set([
 const placeholderPattern =
   /\b(TBD|TODO|CHANGE_ME|REPLACE_ME|placeholder|example\.com|<[^>\n]+>)\b/i;
 
+const forbiddenSecretPatterns = [
+  ["Stripe secret key", /\b[rs]k_(?:live|test)_[A-Za-z0-9]{8,}\b/],
+  ["Stripe webhook secret", /\bwhsec_[A-Za-z0-9]{8,}\b/],
+  ["GitHub token", /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b/],
+  ["AWS access key", /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/],
+  ["private key block", /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
+  ["bearer token", /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}\b/],
+  ["JWT", /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/],
+];
+
 const requiredChecklistHeadings = [
   "## Release Identity",
   "## Repository Verification",
@@ -200,6 +210,17 @@ function isPlaceholderValue(value) {
   return emptyTemplateValues.has(value) || placeholderPattern.test(value);
 }
 
+function validateNoRawSecrets(label, markdown) {
+  const lines = markdown.split(/\r?\n/);
+  lines.forEach((line, index) => {
+    for (const [secretLabel, pattern] of forbiddenSecretPatterns) {
+      if (pattern.test(line)) {
+        fail(`${label} contains a raw ${secretLabel} at line ${index + 1}; store only sanitized evidence`);
+      }
+    }
+  });
+}
+
 function normalizeChecklistText(text) {
   return text.replace(/\s+/g, " ").trim();
 }
@@ -274,6 +295,8 @@ function validateEvidenceConsistency(checklistMarkdown, releaseNotesMarkdown) {
 }
 
 function validateChecklist(markdown, templateMarkdown = null) {
+  validateNoRawSecrets("completed evidence checklist", markdown);
+
   for (const heading of requiredChecklistHeadings) {
     requireIncludes("completed evidence checklist", markdown, heading);
   }
@@ -326,6 +349,8 @@ function validateChecklist(markdown, templateMarkdown = null) {
 }
 
 function validateReleaseNotes(markdown, templateMarkdown = null) {
+  validateNoRawSecrets("completed release notes", markdown);
+
   for (const heading of requiredReleaseHeadings) {
     requireIncludes("completed release notes", markdown, heading);
   }
@@ -563,6 +588,30 @@ function runSelfTest() {
         releaseNotesTemplate,
       ),
     "empty or placeholder",
+  );
+  assertSelfTestFailure(
+    "raw secret in checklist",
+    () =>
+      validateChecklist(
+        completeChecklistFixture().replace(
+          "- [x] Operator: release-operator",
+          "- [x] Operator: release-operator whsec_1234567890abcdef",
+        ),
+        checklistTemplate,
+      ),
+    "contains a raw Stripe webhook secret",
+  );
+  assertSelfTestFailure(
+    "raw secret in release notes",
+    () =>
+      validateReleaseNotes(
+        releaseNotesFixture.replace(
+          "- Stripe checkout result: recorded stripe-checkout-result",
+          "- Stripe checkout result: Bearer abcdefghijklmnopqrstuvwxyz123456",
+        ),
+        releaseNotesTemplate,
+      ),
+    "contains a raw bearer token",
   );
   assertSelfTestFailure(
     "mismatched release identity",
