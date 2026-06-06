@@ -19,6 +19,7 @@ web/node_modules/
 web/dist/
 web/.vite/
 web/tsconfig.tsbuildinfo
+.playwright-mcp/
 
 # Docker/local data
 .data/

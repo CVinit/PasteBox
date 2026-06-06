@@ -143,6 +143,36 @@ type AuthLink = {
   token: string;
 };
 
+type AuthMode = "login" | "register";
+
+type AuthFormState = {
+  email: string;
+  password: string;
+  displayName: string;
+};
+
+type LandingFeature = {
+  title: string;
+  body: string;
+  stat: string;
+};
+
+type LandingContent = {
+  navProduct: string;
+  navSecurity: string;
+  navPricing: string;
+  eyebrow: string;
+  title: string;
+  subtitle: string;
+  primaryCta: string;
+  secondaryCta: string;
+  workspaceLabel: string;
+  workspaceTitle: string;
+  workspaceBody: string;
+  features: LandingFeature[];
+  steps: Array<{ title: string; body: string }>;
+};
+
 const defaultDraft: Draft = {
   title: "",
   text: "",
@@ -685,6 +715,36 @@ const publicLinks = [
 function publicPageForPath(pathname: string): PublicPage | null {
   const normalized = pathname.replace(/\/+$/, "") || "/";
   return publicPages.find((page) => page.path === normalized) ?? null;
+}
+
+function normalizedPathname(): string {
+  if (typeof window === "undefined") return "/";
+  return window.location.pathname.replace(/\/+$/, "") || "/";
+}
+
+function authModeForPath(pathname: string): AuthMode | null {
+  const normalized = pathname.replace(/\/+$/, "") || "/";
+  if (normalized === "/register") return "register";
+  if (
+    normalized === "/login" ||
+    normalized === "/magic" ||
+    normalized === "/password-reset" ||
+    normalized === "/email-verification"
+  ) {
+    return "login";
+  }
+  return null;
+}
+
+function isWorkspacePath(pathname: string): boolean {
+  const normalized = pathname.replace(/\/+$/, "") || "/";
+  return normalized === "/app";
+}
+
+function moveToWorkspacePath() {
+  if (typeof window === "undefined") return;
+  if (isWorkspacePath(window.location.pathname)) return;
+  window.history.replaceState(null, "", "/app");
 }
 
 const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
@@ -1541,6 +1601,166 @@ function copyFor(language?: string) {
   return (key: string) => copy[locale][key] ?? copy.en[key] ?? key;
 }
 
+function landingContentFor(locale: Locale): LandingContent {
+  if (locale === "zh-TW") {
+    return {
+      navProduct: "產品",
+      navSecurity: "安全",
+      navPricing: "方案",
+      eyebrow: "跨裝置線上剪貼簿",
+      title: "把文字、檔案和分享控制放進同一個乾淨工作台。",
+      subtitle:
+        "PasteBox 結合線上剪貼簿的快速輸入體驗與產品級分享、掃描、到期和帳號控制。",
+      primaryCta: "免費註冊",
+      secondaryCta: "登入",
+      workspaceLabel: "PasteBox 工作台",
+      workspaceTitle: "貼上內容，設定期限，生成可控分享。",
+      workspaceBody:
+        "緊湊卡片、明確輸入框、掃描狀態和分享限制都在同一屏，適合快速跨設備傳輸。",
+      features: [
+        {
+          title: "快速貼上",
+          body: "像 online clipboard 一樣直接輸入，但保留私有帳號空間。",
+          stat: "6s",
+        },
+        {
+          title: "可控分享",
+          body: "密碼、訪問次數、下載上限和過期時間都可在建立時設定。",
+          stat: "4x",
+        },
+        {
+          title: "檔案掃描",
+          body: "附件在公開下載前顯示掃描狀態，降低誤分享風險。",
+          stat: "safe",
+        },
+      ],
+      steps: [
+        { title: "貼上", body: "保存文字、連結、憑證片段或交付說明。" },
+        { title: "附檔", body: "拖放檔案到同一條內容，保留上下文。" },
+        { title: "分享", body: "生成限時連結，之後仍可撤銷。" },
+      ],
+    };
+  }
+
+  if (locale === "zh-CN") {
+    return {
+      navProduct: "产品",
+      navSecurity: "安全",
+      navPricing: "套餐",
+      eyebrow: "跨设备在线剪切板",
+      title: "把文字、文件和分享控制放进同一个清爽工作台。",
+      subtitle:
+        "PasteBox 结合在线剪切板的快速输入体验与产品级分享、扫描、到期和账号控制。",
+      primaryCta: "免费注册",
+      secondaryCta: "登录",
+      workspaceLabel: "PasteBox 工作台",
+      workspaceTitle: "粘贴内容，设置期限，生成可控分享。",
+      workspaceBody:
+        "紧凑卡片、清晰输入框、扫描状态和分享限制都在同一屏，适合快速跨设备传输。",
+      features: [
+        {
+          title: "快速粘贴",
+          body: "像 online clipboard 一样直接输入，但保留私有账号空间。",
+          stat: "6s",
+        },
+        {
+          title: "可控分享",
+          body: "密码、访问次数、下载上限和过期时间都可在创建时设置。",
+          stat: "4x",
+        },
+        {
+          title: "文件扫描",
+          body: "附件在公开下载前展示扫描状态，降低误分享风险。",
+          stat: "safe",
+        },
+      ],
+      steps: [
+        { title: "粘贴", body: "保存文本、链接、凭据片段或交付说明。" },
+        { title: "附加文件", body: "拖放文件到同一条内容，保留上下文。" },
+        { title: "分享", body: "生成限时链接，之后仍可撤销。" },
+      ],
+    };
+  }
+
+  if (locale === "es") {
+    return {
+      navProduct: "Producto",
+      navSecurity: "Seguridad",
+      navPricing: "Planes",
+      eyebrow: "Portapapeles online entre dispositivos",
+      title: "Texto, archivos y control de enlaces en un solo escritorio limpio.",
+      subtitle:
+        "PasteBox combina una captura rápida tipo online clipboard con enlaces privados, escaneo, vencimientos y cuenta.",
+      primaryCta: "Registrarse gratis",
+      secondaryCta: "Iniciar sesión",
+      workspaceLabel: "Escritorio PasteBox",
+      workspaceTitle: "Pega contenido, define vencimiento y comparte con control.",
+      workspaceBody:
+        "Tarjetas compactas, campos visibles, estado de escaneo y límites de enlace en una sola pantalla.",
+      features: [
+        {
+          title: "Pega rápido",
+          body: "Captura directa con espacio privado de cuenta.",
+          stat: "6s",
+        },
+        {
+          title: "Enlaces controlados",
+          body: "Contraseña, visitas, descargas y vencimiento al crear.",
+          stat: "4x",
+        },
+        {
+          title: "Escaneo de archivos",
+          body: "Estado claro antes de permitir descargas públicas.",
+          stat: "safe",
+        },
+      ],
+      steps: [
+        { title: "Pega", body: "Guarda texto, enlaces, credenciales o contexto." },
+        { title: "Adjunta", body: "Suelta archivos junto al mismo contenido." },
+        { title: "Comparte", body: "Crea enlaces temporales y revócalos luego." },
+      ],
+    };
+  }
+
+  return {
+    navProduct: "Product",
+    navSecurity: "Security",
+    navPricing: "Pricing",
+    eyebrow: "Cross-device online clipboard",
+    title: "Put text, files, and share controls in one clean workspace.",
+    subtitle:
+      "PasteBox blends the speed of an online clipboard with product-grade sharing, scanning, expiry, and account controls.",
+    primaryCta: "Register free",
+    secondaryCta: "Login",
+    workspaceLabel: "PasteBox workspace",
+    workspaceTitle: "Paste content, set expiry, and share with control.",
+    workspaceBody:
+      "Compact cards, clear inputs, scan state, and link limits stay visible on one screen for quick cross-device transfer.",
+    features: [
+      {
+        title: "Fast paste",
+        body: "Direct entry like an online clipboard, backed by private account space.",
+        stat: "6s",
+      },
+      {
+        title: "Controlled links",
+        body: "Set password, visit caps, download caps, and expiry before sharing.",
+        stat: "4x",
+      },
+      {
+        title: "File scanning",
+        body: "Show attachment scan state before public downloads are available.",
+        stat: "safe",
+      },
+    ],
+    steps: [
+      { title: "Paste", body: "Save text, links, credential snippets, or handoff notes." },
+      { title: "Attach", body: "Drop files into the same paste and keep context together." },
+      { title: "Share", body: "Create expiring links and revoke them later." },
+    ],
+  };
+}
+
 const orderStatusText: Record<
   string,
   Record<string, Omit<OrderStatusDetail, "tone">>
@@ -1863,6 +2083,11 @@ function App() {
         : null,
     [],
   );
+  const currentPath = normalizedPathname();
+  const publicShareRoute = Boolean(publicShareToken);
+  const authRoute = authModeForPath(currentPath);
+  const workspaceRoute = isWorkspacePath(currentPath);
+  const shouldProbeSession = Boolean(authLink || publicShareRoute || workspaceRoute);
 
   const activePlan = useMemo(() => {
     const planId = user?.planId ?? "free";
@@ -2039,13 +2264,15 @@ function App() {
   }, [user?.role]);
 
   useEffect(() => {
+    if (!publicPage) return;
     void loadSupportContacts();
-  }, [loadSupportContacts]);
+  }, [loadSupportContacts, publicPage]);
 
   useEffect(() => {
     if (publicPage) return;
+    if (!shouldProbeSession) return;
     void loadCore();
-  }, [loadCore, publicPage]);
+  }, [loadCore, publicPage, shouldProbeSession]);
 
   useEffect(() => {
     if (publicPage) return;
@@ -2090,6 +2317,7 @@ function App() {
           displayName: result.user.displayName,
           language: localeFor(result.user.language),
         });
+        moveToWorkspacePath();
         await refreshAuthed();
       }
     }
@@ -2161,6 +2389,7 @@ function App() {
         displayName: result.user.displayName,
         language: localeFor(result.user.language),
       });
+      moveToWorkspacePath();
       await refreshAuthed();
     }
   }
@@ -2177,14 +2406,13 @@ function App() {
         displayName: result.user.displayName,
         language: localeFor(result.user.language),
       });
+      moveToWorkspacePath();
       await refreshAuthed();
     }
   }
 
   function googleOAuth() {
-    window.location.assign(
-      client.googleOAuthStartPath(window.location.pathname),
-    );
+    window.location.assign(client.googleOAuthStartPath("/app"));
   }
 
   async function startVerification() {
@@ -2225,6 +2453,7 @@ function App() {
         displayName: result.user.displayName,
         language: localeFor(result.user.language),
       });
+      moveToWorkspacePath();
       await refreshAuthed();
     }
   }
@@ -2571,121 +2800,39 @@ function App() {
   }
 
   if (!user) {
+    if (authRoute) {
+      return (
+        <AuthScreen
+          mode={authRoute}
+          auth={auth}
+          busy={busy}
+          message={message}
+          magicToken={magicToken}
+          resetToken={resetToken}
+          verificationToken={verificationToken}
+          passwordResetLinkActive={passwordResetLinkActive}
+          onAuth={setAuth}
+          onLogin={() => void login()}
+          onRegister={() => void register()}
+          onGoogle={googleOAuth}
+          onStartMagic={() => void startMagic()}
+          onFinishMagic={() => void finishMagic()}
+          onMagicToken={setMagicToken}
+          onPasswordReset={() => void passwordReset()}
+          onFinishPasswordReset={() => void finishPasswordReset()}
+          onResetToken={setResetToken}
+          onVerificationToken={setVerificationToken}
+          onFinishVerification={() => void finishVerification()}
+          locale={browserLocale}
+        />
+      );
+    }
+
     return (
-      <main className="auth-screen">
-        <section className="auth-panel">
-          <div className="brand-mark">
-            <div className="brand-icon">
-              <ClipboardCopy size={22} aria-hidden="true" />
-            </div>
-            <div>
-              <strong>PasteBox</strong>
-              <span>{t("privateCloudClipboard")}</span>
-            </div>
-          </div>
-          <div className="auth-grid">
-            <label>
-              {t("email")}
-              <input
-                value={auth.email}
-                onChange={(event) =>
-                  setAuth({ ...auth, email: event.target.value })
-                }
-              />
-            </label>
-            <label>
-              {t("password")}
-              <input
-                value={auth.password}
-                type="password"
-                onChange={(event) =>
-                  setAuth({ ...auth, password: event.target.value })
-                }
-              />
-            </label>
-            <label>
-              {t("displayName")}
-              <input
-                value={auth.displayName}
-                onChange={(event) =>
-                  setAuth({ ...auth, displayName: event.target.value })
-                }
-              />
-            </label>
-            <div className="button-row">
-              <button type="button" onClick={login} disabled={busy}>
-                <KeyRound size={16} aria-hidden="true" />
-                {t("login")}
-              </button>
-              <button type="button" onClick={register} disabled={busy}>
-                <Sparkles size={16} aria-hidden="true" />
-                {t("register")}
-              </button>
-              <button type="button" onClick={googleOAuth} disabled={busy}>
-                <ShieldCheck size={16} aria-hidden="true" />
-                {t("google")}
-              </button>
-            </div>
-            {passwordResetLinkActive ? (
-              <div className="auth-link-callout">
-                <MailCheck size={16} aria-hidden="true" />
-                <span>{t("passwordResetLinkReady")}</span>
-              </div>
-            ) : null}
-            <div className="magic-row">
-              <button type="button" onClick={startMagic} disabled={busy}>
-                {t("magicLink")}
-              </button>
-              <input
-                value={magicToken}
-                onChange={(event) => setMagicToken(event.target.value)}
-                placeholder={t("magicToken")}
-              />
-              <button
-                type="button"
-                onClick={finishMagic}
-                disabled={busy || !magicToken}
-              >
-                {t("useToken")}
-              </button>
-            </div>
-            <div className="magic-row">
-              <button type="button" onClick={passwordReset} disabled={busy}>
-                {t("reset")}
-              </button>
-              <input
-                value={resetToken}
-                onChange={(event) => setResetToken(event.target.value)}
-                placeholder={t("resetToken")}
-              />
-              <button
-                type="button"
-                onClick={finishPasswordReset}
-                disabled={busy || !resetToken}
-              >
-                {t("updatePassword")}
-              </button>
-            </div>
-            <div className="magic-row manual-token-row">
-              <span>{t("manualTokenFallback")}</span>
-              <input
-                value={verificationToken}
-                onChange={(event) => setVerificationToken(event.target.value)}
-                placeholder={t("verificationToken")}
-              />
-              <button
-                type="button"
-                onClick={finishVerification}
-                disabled={busy || !verificationToken}
-              >
-                {t("verify")}
-              </button>
-            </div>
-          </div>
-          {message ? <p className="status-line">{message}</p> : null}
-          <PublicFooter locale={locale} />
-        </section>
-      </main>
+      <LandingPage
+        locale={browserLocale}
+        plans={catalog?.plans ?? []}
+      />
     );
   }
 
@@ -3620,6 +3767,399 @@ function PasteList({
         </article>
       ))}
     </section>
+  );
+}
+
+function LandingPage({
+  locale,
+  plans,
+}: {
+  locale: Locale;
+  plans: PlanCatalog["plans"];
+}) {
+  const t = copyFor(locale);
+  const content = landingContentFor(locale);
+  const showcasePlan = plans[0];
+  const priceCards =
+    plans.length > 0
+      ? plans.slice(0, 3)
+      : [
+          {
+            id: "free",
+            name: "Free",
+            activePasteLimit: 25,
+            activeStorageBytes: 256 * 1024 * 1024,
+            maxRetentionSeconds: 7 * 24 * 60 * 60,
+          },
+          {
+            id: "pro",
+            name: "Pro",
+            activePasteLimit: 500,
+            activeStorageBytes: 10 * 1024 * 1024 * 1024,
+            maxRetentionSeconds: 180 * 24 * 60 * 60,
+          },
+        ];
+
+  return (
+    <main className="landing-page">
+      <header className="landing-nav">
+        <a className="brand-mark landing-brand" href="/">
+          <div className="brand-icon">
+            <ClipboardCopy size={22} aria-hidden="true" />
+          </div>
+          <div>
+            <strong>PasteBox</strong>
+            <span>{t("privateCloudClipboard")}</span>
+          </div>
+        </a>
+        <nav className="landing-links" aria-label="Product navigation">
+          <a href="#product">{content.navProduct}</a>
+          <a href="#security">{content.navSecurity}</a>
+          <a href="#pricing">{content.navPricing}</a>
+        </nav>
+        <div className="landing-actions">
+          <a className="landing-link-button" href="/login">
+            {t("login")}
+          </a>
+          <a className="landing-primary-button" href="/register">
+            {t("register")}
+          </a>
+        </div>
+      </header>
+
+      <section className="landing-hero" id="product">
+        <div className="landing-copy">
+          <span className="eyebrow">{content.eyebrow}</span>
+          <h1>{content.title}</h1>
+          <p>{content.subtitle}</p>
+          <div className="landing-cta-row">
+            <a className="landing-primary-button large" href="/register">
+              <Sparkles size={18} aria-hidden="true" />
+              {content.primaryCta}
+            </a>
+            <a className="landing-link-button large" href="/login">
+              <KeyRound size={18} aria-hidden="true" />
+              {content.secondaryCta}
+            </a>
+          </div>
+        </div>
+
+        <div className="landing-clipboard-card" aria-label={content.workspaceLabel}>
+          <div className="clipboard-window-bar">
+            <span />
+            <span />
+            <span />
+            <strong>{content.workspaceLabel}</strong>
+          </div>
+          <div className="clipboard-tabs" aria-hidden="true">
+            <span className="active">{t("text")}</span>
+            <span>{t("files")}</span>
+            <span>{t("shared")}</span>
+          </div>
+          <label className="clipboard-field">
+            <span>{t("title")}</span>
+            <input readOnly value="Launch notes, API keys, or handoff text" />
+          </label>
+          <label className="clipboard-field">
+            <span>{t("text")}</span>
+            <textarea
+              readOnly
+              value={
+                "Paste once, open anywhere.\nSet expiry, attach files, and revoke links without leaving the clipboard."
+              }
+            />
+          </label>
+          <div className="clipboard-button-row">
+            <button type="button">
+              <UploadCloud size={16} aria-hidden="true" />
+              {t("upload")}
+            </button>
+            <button type="button">
+              <Link2 size={16} aria-hidden="true" />
+              {t("share")}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="landing-strip" aria-label="Clipboard workflow">
+        {content.steps.map((step, index) => (
+          <article key={step.title}>
+            <span>{String(index + 1).padStart(2, "0")}</span>
+            <strong>{step.title}</strong>
+            <p>{step.body}</p>
+          </article>
+        ))}
+      </section>
+
+      <section className="landing-feature-grid" id="security">
+        <div className="landing-section-heading">
+          <span className="eyebrow">{content.workspaceTitle}</span>
+          <h2>{content.workspaceBody}</h2>
+        </div>
+        {content.features.map((feature) => (
+          <article className="landing-feature-card" key={feature.title}>
+            <span>{feature.stat}</span>
+            <strong>{feature.title}</strong>
+            <p>{feature.body}</p>
+          </article>
+        ))}
+      </section>
+
+      <section className="landing-pricing" id="pricing">
+        <div className="landing-section-heading">
+          <span className="eyebrow">{t("currentPlan")}</span>
+          <h2>{t("stripeUsdtPayments")}</h2>
+        </div>
+        <div className="landing-plan-grid">
+          {priceCards.map((plan) => (
+            <article className="landing-plan-card" key={plan.id}>
+              <strong>{plan.name}</strong>
+              <span>
+                {plan.activePasteLimit.toLocaleString()} {t("activePastes")}
+              </span>
+              <dl>
+                <div>
+                  <dt>{t("storage")}</dt>
+                  <dd>{formatBytes(plan.activeStorageBytes)}</dd>
+                </div>
+                <div>
+                  <dt>{t("retention")}</dt>
+                  <dd>{formatDuration(plan.maxRetentionSeconds)}</dd>
+                </div>
+              </dl>
+            </article>
+          ))}
+        </div>
+        {showcasePlan ? (
+          <p className="landing-footnote">
+            {showcasePlan.name} · {formatBytes(showcasePlan.activeStorageBytes)} ·{" "}
+            {formatDuration(showcasePlan.maxRetentionSeconds)}
+          </p>
+        ) : null}
+      </section>
+
+      <PublicFooter locale={locale} />
+    </main>
+  );
+}
+
+function AuthScreen({
+  mode,
+  auth,
+  busy,
+  message,
+  magicToken,
+  resetToken,
+  verificationToken,
+  passwordResetLinkActive,
+  onAuth,
+  onLogin,
+  onRegister,
+  onGoogle,
+  onStartMagic,
+  onFinishMagic,
+  onMagicToken,
+  onPasswordReset,
+  onFinishPasswordReset,
+  onResetToken,
+  onVerificationToken,
+  onFinishVerification,
+  locale,
+}: {
+  mode: AuthMode;
+  auth: AuthFormState;
+  busy: boolean;
+  message: string;
+  magicToken: string;
+  resetToken: string;
+  verificationToken: string;
+  passwordResetLinkActive: boolean;
+  onAuth: (value: AuthFormState) => void;
+  onLogin: () => void;
+  onRegister: () => void;
+  onGoogle: () => void;
+  onStartMagic: () => void;
+  onFinishMagic: () => void;
+  onMagicToken: (value: string) => void;
+  onPasswordReset: () => void;
+  onFinishPasswordReset: () => void;
+  onResetToken: (value: string) => void;
+  onVerificationToken: (value: string) => void;
+  onFinishVerification: () => void;
+  locale: Locale;
+}) {
+  const t = copyFor(locale);
+  const content = landingContentFor(locale);
+  const isRegister = mode === "register";
+
+  return (
+    <main className="auth-screen product-auth-screen">
+      <section className="auth-product-panel">
+        <a className="brand-mark landing-brand" href="/">
+          <div className="brand-icon">
+            <ClipboardCopy size={22} aria-hidden="true" />
+          </div>
+          <div>
+            <strong>PasteBox</strong>
+            <span>{t("privateCloudClipboard")}</span>
+          </div>
+        </a>
+        <div className="auth-product-copy">
+          <span className="eyebrow">{content.eyebrow}</span>
+          <h1>{isRegister ? content.primaryCta : content.secondaryCta}</h1>
+          <p>{content.subtitle}</p>
+        </div>
+        <div className="auth-preview-card">
+          {content.features.map((feature) => (
+            <article key={feature.title}>
+              <span>{feature.stat}</span>
+              <strong>{feature.title}</strong>
+              <p>{feature.body}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="auth-panel auth-form-panel">
+        <div className="auth-mode-tabs" aria-label="Authentication mode">
+          <a className={isRegister ? "" : "active"} href="/login">
+            {t("login")}
+          </a>
+          <a className={isRegister ? "active" : ""} href="/register">
+            {t("register")}
+          </a>
+        </div>
+
+        <form
+          className="auth-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (isRegister) {
+              onRegister();
+            } else {
+              onLogin();
+            }
+          }}
+        >
+          <label>
+            {t("email")}
+            <input
+              autoComplete="email"
+              type="email"
+              value={auth.email}
+              onChange={(event) =>
+                onAuth({ ...auth, email: event.target.value })
+              }
+            />
+          </label>
+          <label>
+            {t("password")}
+            <input
+              autoComplete={isRegister ? "new-password" : "current-password"}
+              value={auth.password}
+              type="password"
+              onChange={(event) =>
+                onAuth({ ...auth, password: event.target.value })
+              }
+            />
+          </label>
+          {isRegister ? (
+            <label>
+              {t("displayName")}
+              <input
+                autoComplete="name"
+                value={auth.displayName}
+                onChange={(event) =>
+                  onAuth({ ...auth, displayName: event.target.value })
+                }
+              />
+            </label>
+          ) : null}
+          <button className="auth-submit" type="submit" disabled={busy}>
+            {isRegister ? (
+              <Sparkles size={16} aria-hidden="true" />
+            ) : (
+              <KeyRound size={16} aria-hidden="true" />
+            )}
+            {isRegister ? t("register") : t("login")}
+          </button>
+        </form>
+
+        <button
+          className="auth-oauth-button"
+          type="button"
+          onClick={onGoogle}
+          disabled={busy}
+        >
+          <ShieldCheck size={16} aria-hidden="true" />
+          {t("google")}
+        </button>
+
+        {passwordResetLinkActive ? (
+          <div className="auth-link-callout">
+            <MailCheck size={16} aria-hidden="true" />
+            <span>{t("passwordResetLinkReady")}</span>
+          </div>
+        ) : null}
+
+        <details className="auth-advanced">
+          <summary>{t("magicLink")}</summary>
+          <div className="magic-row">
+            <button type="button" onClick={onStartMagic} disabled={busy}>
+              {t("magicLink")}
+            </button>
+            <input
+              value={magicToken}
+              onChange={(event) => onMagicToken(event.target.value)}
+              placeholder={t("magicToken")}
+            />
+            <button
+              type="button"
+              onClick={onFinishMagic}
+              disabled={busy || !magicToken}
+            >
+              {t("useToken")}
+            </button>
+          </div>
+          <div className="magic-row">
+            <button type="button" onClick={onPasswordReset} disabled={busy}>
+              {t("reset")}
+            </button>
+            <input
+              value={resetToken}
+              onChange={(event) => onResetToken(event.target.value)}
+              placeholder={t("resetToken")}
+            />
+            <button
+              type="button"
+              onClick={onFinishPasswordReset}
+              disabled={busy || !resetToken}
+            >
+              {t("updatePassword")}
+            </button>
+          </div>
+          <div className="magic-row manual-token-row">
+            <span>{t("manualTokenFallback")}</span>
+            <input
+              value={verificationToken}
+              onChange={(event) => onVerificationToken(event.target.value)}
+              placeholder={t("verificationToken")}
+            />
+            <button
+              type="button"
+              onClick={onFinishVerification}
+              disabled={busy || !verificationToken}
+            >
+              {t("verify")}
+            </button>
+          </div>
+        </details>
+
+        {message ? <p className="status-line">{message}</p> : null}
+        <PublicFooter locale={locale} />
+      </section>
+    </main>
   );
 }
 

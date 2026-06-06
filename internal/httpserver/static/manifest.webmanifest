@@ -4,8 +4,8 @@
   "description": "Private cloud clipboard and temporary file transfer workspace.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#f5f7f5",
-  "theme_color": "#0f766e",
+  "background_color": "#f9fafb",
+  "theme_color": "#6366f1",
   "icons": [
     {
       "src": "/favicon.svg",

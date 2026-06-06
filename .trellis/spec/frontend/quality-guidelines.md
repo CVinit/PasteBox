@@ -13,7 +13,9 @@ TypeScript strict, and build with Vite.
 
 ## Forbidden Patterns
 
-- Do not turn the first screen into a marketing-only landing page.
+- Do not turn the first screen into a marketing-only landing page unless the
+  active task explicitly requests a public product introduction page. When that
+  exception applies, keep a stable product workspace route such as `/app`.
 - Do not duplicate backend plan limits in UI code except for the documented
   local development fallback in `src/api.ts`.
 - Do not use `any` for backend API response types.
@@ -30,6 +32,9 @@ TypeScript strict, and build with Vite.
   grid/flex constraints.
 - Keep API data formatting in helper functions instead of inline string
   concatenation spread across components.
+- Keep editable form controls visually distinct from card and page surfaces.
+  If a wrapper and the real `input`/`textarea`/`select` are both styled, verify
+  later reset selectors do not remove the control's border, fill, or focus ring.
 
 ---
 
@@ -38,6 +43,78 @@ TypeScript strict, and build with Vite.
 - Run `make test-web` before reporting frontend work complete.
 - `make test-web` runs `tsc -b --pretty false` and `vite build`.
 - Run full `make test` when the frontend consumes changed backend API fields.
+
+## Scenario: Form Control Visual Boundaries
+
+### 1. Scope / Trigger
+
+- Trigger: Any frontend change that touches global form CSS, compose forms,
+  side panels, auth forms, settings forms, or select/search wrappers.
+
+### 2. Signatures
+
+- Primary stylesheet: `web/src/styles.css`.
+- Common controls: `.title-input`, `.composer textarea`, `.composer-controls
+  input`, `.form-grid input`, `.form-grid select`, `.panel input`, `.panel
+  select`, and `.panel textarea`.
+
+### 3. Contracts
+
+- Editable controls must have visible fill, border, and focus treatment against
+  the current warm card surface.
+- Wrapper-only controls, such as search boxes and select boxes, may keep the
+  inner input/select transparent only when the wrapper itself provides the
+  visible field boundary.
+- Disabled controls must look non-interactive without disappearing into the
+  panel background.
+
+### 4. Validation & Error Matrix
+
+- Light panel + editable input -> visible field boundary.
+- Focused editable input -> stronger brand-colored border/ring.
+- Disabled editable input -> muted non-interactive surface.
+- Hidden file input inside drop zone -> remains hidden and does not gain visible
+  field chrome.
+
+### 5. Good/Base/Bad Cases
+
+- Good: The compose title, body, tag input, edit textarea, share inputs, and
+  settings language select all read as editable fields before focus.
+- Base: Search and filter controls still preserve their wrapper-based styling.
+- Bad: A later reset selector sets `border: 0` and `background: transparent` on
+  real editable fields that need their own boundary.
+
+### 6. Tests Required
+
+- Run `make test-web` after changing form styles.
+- Browser-check the compose, edit/share side panel, and settings form when the
+  change is visually substantial.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```css
+.form-grid input {
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.form-grid input {
+  border: 0;
+  background: transparent;
+}
+```
+
+#### Correct
+
+```css
+.form-grid input {
+  border: 1px solid var(--field-border);
+  background: var(--field-bg);
+  box-shadow: var(--field-shadow);
+}
+```
 
 ---
 
