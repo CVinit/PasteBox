@@ -233,6 +233,11 @@ return scan.canDownload ? (
   renders a safe label instead of crashing.
 - Status helpers such as `orderStatusDetail` and `attachmentScanDetail` must
   localize known statuses and safely describe unknown provider/scanner strings.
+- Chinese UI chrome should avoid generic English domain words like `paste` when
+  a natural Simplified/Traditional Chinese term is available. Keep product
+  names such as `PasteBox` unchanged.
+- Public footer/legal links must render as an explicit navigation list with
+  stable alignment instead of relying on arbitrary flex wrapping.
 
 ### 4. Validation & Error Matrix
 
@@ -256,6 +261,10 @@ return scan.canDownload ? (
 - Bad: Add a new visible button label only in English while the rest of the
   screen is localized.
 - Bad: Store bare `zh` from the new selector; use `zh-CN` or `zh-TW` instead.
+- Bad: Render Traditional Chinese workspace chrome such as `新增私有 paste` or
+  `為這個 paste 命名`; use localized object wording such as `新增私有內容`.
+- Bad: Let public footer links wrap into a ragged horizontal cluster on narrow
+  sidebars or auth panels; use a consistent vertical list.
 
 ### 6. Tests Required
 
