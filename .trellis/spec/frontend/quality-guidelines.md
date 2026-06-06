@@ -147,6 +147,9 @@ const status = orderStatusDetail(order.status, locale);
   the backend global malicious-file gate.
 - Scan status copy must be available for English and Chinese locales when the
   rest of the screen is localized.
+- Backend-provided `Attachment.risk` must use the same locale as the scan
+  status copy, including `Risk` for English, `风险` for Simplified Chinese,
+  `風險` for Traditional Chinese, and `Riesgo` for Spanish.
 
 ### 4. Validation & Error Matrix
 

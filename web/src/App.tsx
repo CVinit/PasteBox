@@ -1767,7 +1767,8 @@ function attachmentScanDetail(
   }
   if (normalized === "malicious") tone = "danger";
   const risk = attachment.risk?.trim();
-  const riskPrefix = locale === "es" ? "Riesgo" : isChineseLocale(locale) ? "风险" : "Risk";
+  const riskPrefix =
+    locale === "es" ? "Riesgo" : locale === "zh-TW" ? "風險" : isChineseLocale(locale) ? "风险" : "Risk";
   return {
     ...base,
     description: risk
