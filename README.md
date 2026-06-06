@@ -74,6 +74,17 @@ PASTEBOX_IMAGE=pastebox:local docker compose -f compose.deploy.yaml up -d
 
 Open `http://localhost:8080`.
 
+If port 8080 is already occupied, set a host-port override and open that port
+instead:
+
+```sh
+PASTEBOX_IMAGE=pastebox:local PASTEBOX_HTTP_PORT=18080 PASTEBOX_PUBLIC_URL=http://localhost:18080 docker compose -f compose.deploy.yaml up -d
+```
+
+The demo Compose stack uses local ClamAV and Mailpit containers by default, and
+keeps `PASTEBOX_DEV_AUTH_TOKENS=true` in development mode so browser smoke tests
+can complete email verification without relying on an external mailbox.
+
 GitHub Actions publishes a moving convenience tag and immutable release
 references:
 
@@ -107,8 +118,9 @@ before accepting public beta traffic.
 ## Deployment Readiness
 
 The current build can be deployed for demos, internal review, and low-risk
-evaluation with PostgreSQL, Redis, MinIO/S3-compatible storage, migrations, and
-the worker process through `compose.deploy.yaml`.
+evaluation with PostgreSQL, Redis, MinIO/S3-compatible storage, ClamAV scanning,
+Mailpit SMTP delivery, migrations, and the worker process through
+`compose.deploy.yaml`.
 
 For real public beta traffic, use `compose.production.yaml` and
 `docs/production-deployment-runbook.md`, not the demo Compose file. Production

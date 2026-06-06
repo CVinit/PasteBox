@@ -4,12 +4,11 @@
 
 ## 当前可用边界
 
-当前版本可以通过演示 Compose 栈部署用于演示、内部评审、功能走查和低风险试用。API 容器提供 Go API 和内置 React/Vite 前端，旁路容器提供 PostgreSQL、Redis、MinIO 兼容对象存储、数据库迁移、bucket 初始化和 PasteBox worker。
+当前版本可以通过演示 Compose 栈部署用于演示、内部评审、功能走查和低风险试用。API 容器提供 Go API 和内置 React/Vite 前端，旁路容器提供 PostgreSQL、Redis、MinIO 兼容对象存储、数据库迁移、bucket 初始化、ClamAV 扫描、Mailpit SMTP 和 PasteBox worker。
 
 该演示部署不是公网生产上线栈，原因如下：
 
-- 使用演示默认值、本地 PostgreSQL volume、本地 Redis、本地 MinIO 和 log mail。
-- 默认使用 heuristic 扫描；如需 ClamAV 可通过环境变量启用并确保服务可达。
+- 使用演示默认值、本地 PostgreSQL volume、本地 Redis、本地 MinIO、本地 Mailpit SMTP 和本地 ClamAV。
 - 不包含 HTTPS edge、production preflight、off-host backup、恢复演练、PITR 证据和生产告警。
 - 开发认证流程可在 JSON 响应中返回邮箱验证、magic link 和密码重置 token，便于演示，但不应暴露给真实公网用户。
 
@@ -74,7 +73,7 @@ cd /opt/pastebox
 ```
 
 可以复制仓库中的演示部署模板。该模板会启动 API、worker、PostgreSQL、
-Redis、MinIO、迁移任务和 bucket 初始化任务：
+Redis、MinIO、ClamAV、Mailpit、迁移任务和 bucket 初始化任务：
 
 ```sh
 cp compose.deploy.yaml compose.yaml
@@ -95,6 +94,22 @@ PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=<long-random-password>
 docker compose pull
 docker compose up -d
 docker compose logs -f pastebox
+```
+
+如果本机 8080 已被其他容器占用，可以只改宿主机端口，不改容器内端口：
+
+```sh
+PASTEBOX_HTTP_PORT=18080
+PASTEBOX_PUBLIC_URL=http://localhost:18080
+```
+
+然后访问 `http://localhost:18080`。演示 Compose 默认启动本地 ClamAV 和
+Mailpit，并在 development 模式下启用 `PASTEBOX_DEV_AUTH_TOKENS=true`，便于浏览器测试直接完成邮箱验证且不依赖外部邮箱；不要把该设置带入真实生产环境。
+
+Mailpit 的浏览器收件箱默认暴露在 `http://localhost:18025`。如果该宿主机端口已被占用，只改宿主机端口：
+
+```sh
+PASTEBOX_MAILPIT_HTTP_PORT=18026
 ```
 
 如果通过自己的 HTTPS 反向代理做演示，把 `PASTEBOX_PUBLIC_URL` 设置为
@@ -119,7 +134,7 @@ curl -fsS http://127.0.0.1:8080/api/v1/ready
 以及：
 
 ```json
-{"app":"PasteBox","env":"development","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"scanner","status":"skipped","message":"clamav scanner is not configured"},{"name":"worker_queue","status":"ok"},{"name":"worker","status":"skipped","message":"worker heartbeat is required in production"},{"name":"mail","status":"skipped","message":"smtp provider is not configured"}]}
+{"app":"PasteBox","env":"development","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"scanner","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"worker","status":"skipped","message":"worker heartbeat is required in production"},{"name":"mail","status":"ok"}]}
 ```
 
 以及：
@@ -131,7 +146,7 @@ curl -fsS http://127.0.0.1:8080/api/v1/ready
 以及：
 
 ```json
-{"app":"PasteBox","env":"development","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"scanner","status":"skipped","message":"clamav scanner is not configured"},{"name":"worker_queue","status":"ok"},{"name":"worker","status":"skipped","message":"worker heartbeat is required in production"},{"name":"mail","status":"skipped","message":"smtp provider is not configured"}]}
+{"app":"PasteBox","env":"development","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"scanner","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"worker","status":"skipped","message":"worker heartbeat is required in production"},{"name":"mail","status":"ok"}]}
 ```
 
 浏览器打开：
@@ -230,7 +245,7 @@ curl -v http://127.0.0.1:8080/healthz
 - 浏览器登录后立即丢失登录态：确认访问协议和代理头是否一致。HTTPS 反向代理必须传递 `X-Forwarded-Proto: https`；HTTP 测试环境会自动使用非 `Secure` cookie。
 - `readyz` 显示 object storage 失败：确认 `minio-init` 已成功创建 bucket，或重新执行 `docker compose run --rm minio-init`。
 - `readyz` 显示 database 失败：确认 `migrate` 任务成功完成，或查看 `docker compose logs migrate postgres`。
-- 支付、邮件、病毒扫描没有真实外部效果：演示默认使用 log mail、禁用支付渠道、heuristic 扫描；生产前必须配置真实提供商并验证。
+- 支付、邮件、病毒扫描没有真实外部生产效果：演示默认禁用支付渠道，邮件只投递到本地 Mailpit，扫描只使用本地 ClamAV；生产前必须配置真实提供商并验证。
 
 ## 进入真实生产前必须补齐
 

@@ -23,10 +23,18 @@ x-pastebox-env: &pastebox-env
   PASTEBOX_S3_ACCESS_KEY: ${PASTEBOX_S3_ACCESS_KEY:-pastebox}
   PASTEBOX_S3_SECRET_KEY: ${PASTEBOX_S3_SECRET_KEY:-pastebox-secret}
   PASTEBOX_S3_USE_PATH_STYLE: "true"
-  PASTEBOX_SCANNER_PROVIDER: ${PASTEBOX_SCANNER_PROVIDER:-heuristic}
+  PASTEBOX_SCANNER_PROVIDER: ${PASTEBOX_SCANNER_PROVIDER:-clamav}
   PASTEBOX_CLAMAV_ADDR: ${PASTEBOX_CLAMAV_ADDR:-clamav:3310}
   PASTEBOX_CLAMAV_TIMEOUT_SECONDS: ${PASTEBOX_CLAMAV_TIMEOUT_SECONDS:-30}
-  PASTEBOX_MAILER_PROVIDER: ${PASTEBOX_MAILER_PROVIDER:-log}
+  PASTEBOX_MAILER_PROVIDER: ${PASTEBOX_MAILER_PROVIDER:-smtp}
+  PASTEBOX_SMTP_HOST: ${PASTEBOX_SMTP_HOST:-mailpit}
+  PASTEBOX_SMTP_PORT: ${PASTEBOX_SMTP_PORT:-1025}
+  PASTEBOX_SMTP_USERNAME: ${PASTEBOX_SMTP_USERNAME:-}
+  PASTEBOX_SMTP_PASSWORD: ${PASTEBOX_SMTP_PASSWORD:-}
+  PASTEBOX_SMTP_FROM_EMAIL: ${PASTEBOX_SMTP_FROM_EMAIL:-noreply@localhost}
+  PASTEBOX_SMTP_FROM_NAME: ${PASTEBOX_SMTP_FROM_NAME:-PasteBox}
+  PASTEBOX_SMTP_TLS_MODE: ${PASTEBOX_SMTP_TLS_MODE:-none}
+  PASTEBOX_DEV_AUTH_TOKENS: ${PASTEBOX_DEV_AUTH_TOKENS:-true}
   PASTEBOX_STRIPE_ENABLED: ${PASTEBOX_STRIPE_ENABLED:-false}
   PASTEBOX_STRIPE_WEBHOOK_SECRET: ${PASTEBOX_STRIPE_WEBHOOK_SECRET:-}
   PASTEBOX_EPUSDT_ENABLED: ${PASTEBOX_EPUSDT_ENABLED:-false}
@@ -41,7 +49,7 @@ services:
     command: ["api"]
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "${PASTEBOX_HTTP_PORT:-8080}:8080"
     environment: *pastebox-env
     depends_on:
       migrate:
@@ -50,6 +58,10 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+      clamav:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
       interval: 30s
@@ -71,6 +83,10 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+      clamav:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
 
   migrate:
     image: ${PASTEBOX_IMAGE:?set PASTEBOX_IMAGE to ghcr.io/cvinit/pastebox:sha-* or a digest}
@@ -133,7 +149,24 @@ services:
         mc alias set local http://minio:9000 ${PASTEBOX_S3_ACCESS_KEY:-pastebox} ${PASTEBOX_S3_SECRET_KEY:-pastebox-secret}
         mc mb --ignore-existing local/${PASTEBOX_S3_BUCKET:-pastebox}
 
+  clamav:
+    image: ${PASTEBOX_CLAMAV_IMAGE:-clamav/clamav-debian:1.4}
+    restart: unless-stopped
+    expose:
+      - "3310"
+    volumes:
+      - pastebox-demo-clamav:/var/lib/clamav
+
+  mailpit:
+    image: ${PASTEBOX_MAILPIT_IMAGE:-axllent/mailpit:v1.27}
+    restart: unless-stopped
+    expose:
+      - "1025"
+    ports:
+      - "${PASTEBOX_MAILPIT_HTTP_PORT:-18025}:8025"
+
 volumes:
   pastebox-demo-postgres:
   pastebox-demo-redis:
   pastebox-demo-minio:
+  pastebox-demo-clamav:

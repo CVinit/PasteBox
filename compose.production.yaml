@@ -108,7 +108,7 @@ services:
         max-file: "5"
 
   clamav:
-    image: ${PASTEBOX_CLAMAV_IMAGE:-clamav/clamav:1.4}
+    image: ${PASTEBOX_CLAMAV_IMAGE:-clamav/clamav-debian:1.4}
     restart: unless-stopped
     expose:
       - "3310"

@@ -9,13 +9,13 @@ The current build is deployable for demos, internal review, and low-risk
 evaluation through the demo Compose stack. The API container serves both the Go
 API and the embedded React/Vite frontend, while sibling containers provide
 PostgreSQL, Redis, MinIO-compatible object storage, migrations, bucket
-initialization, and the PasteBox worker.
+initialization, ClamAV scanning, Mailpit SMTP delivery, and the PasteBox worker.
 
 Use this deployment path when you need a runnable MVP with durable demo state.
 Do not use it as the public production launch stack: it uses demo defaults,
-local MinIO, log mail, heuristic scanning by default, no TLS edge container, no
-off-host backup flow, no production preflight, and no restore/PITR launch-gate
-evidence.
+local MinIO, local Mailpit SMTP, local ClamAV scanning, no TLS edge container,
+no off-host backup flow, no production preflight, and no restore/PITR
+launch-gate evidence.
 
 For the confirmed production-launch baseline, use
 `docs/production-deployment-runbook.md` and `compose.production.yaml` instead of
@@ -82,6 +82,19 @@ Open:
 http://localhost:8080
 ```
 
+If another local process already owns port 8080, keep the container port
+unchanged and move only the host binding:
+
+```sh
+PASTEBOX_IMAGE=pastebox:local PASTEBOX_HTTP_PORT=18080 PASTEBOX_PUBLIC_URL=http://localhost:18080 docker compose -f compose.deploy.yaml up -d
+```
+
+Then open `http://localhost:18080`. The demo Compose file starts local ClamAV
+and Mailpit containers by default, and enables `PASTEBOX_DEV_AUTH_TOKENS=true`
+in development mode so browser smoke tests can finish email verification
+without relying on an external mailbox. Do not carry that setting into
+production.
+
 For HTTP-only test deployments, PasteBox now omits the `Secure` cookie flag
 when the browser reaches the app over plain HTTP. For HTTPS deployments behind a
 reverse proxy, forward the original scheme with `X-Forwarded-Proto: https` so
@@ -98,14 +111,28 @@ cp compose.deploy.yaml compose.yaml
 
 Create a `.env` file next to `compose.yaml` or export these variables before
 starting. Use the immutable `sha-*` image tag from the workflow run, or a
-registry digest. The demo file supplies local PostgreSQL, Redis, MinIO, a
-migration job, a bucket-initialization job, and a worker:
+registry digest. The demo file supplies local PostgreSQL, Redis, MinIO, ClamAV,
+Mailpit, a migration job, a bucket-initialization job, and a worker:
 
 ```sh
 PASTEBOX_IMAGE=ghcr.io/cvinit/pastebox:sha-<commit>
 PASTEBOX_PUBLIC_URL=http://localhost:8080
 PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=admin@example.com
 PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=<long-random-password>
+```
+
+Optional local-only override when port 8080 is busy:
+
+```sh
+PASTEBOX_HTTP_PORT=18080
+PASTEBOX_PUBLIC_URL=http://localhost:18080
+```
+
+Mailpit's browser inbox is exposed on `http://localhost:18025` by default. If
+that host port is busy, override only the host binding:
+
+```sh
+PASTEBOX_MAILPIT_HTTP_PORT=18026
 ```
 
 Then run:
@@ -138,7 +165,7 @@ Expected response:
 and:
 
 ```json
-{"app":"PasteBox","env":"development","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"scanner","status":"skipped","message":"clamav scanner is not configured"},{"name":"worker_queue","status":"ok"},{"name":"worker","status":"skipped","message":"worker heartbeat is required in production"},{"name":"mail","status":"skipped","message":"smtp provider is not configured"}]}
+{"app":"PasteBox","env":"development","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"scanner","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"worker","status":"skipped","message":"worker heartbeat is required in production"},{"name":"mail","status":"ok"}]}
 ```
 
 and:
@@ -150,7 +177,7 @@ and:
 and:
 
 ```json
-{"app":"PasteBox","env":"development","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"scanner","status":"skipped","message":"clamav scanner is not configured"},{"name":"worker_queue","status":"ok"},{"name":"worker","status":"skipped","message":"worker heartbeat is required in production"},{"name":"mail","status":"skipped","message":"smtp provider is not configured"}]}
+{"app":"PasteBox","env":"development","status":"ready","components":[{"name":"database","status":"ok"},{"name":"object_storage","status":"ok"},{"name":"redis","status":"ok"},{"name":"scanner","status":"ok"},{"name":"worker_queue","status":"ok"},{"name":"worker","status":"skipped","message":"worker heartbeat is required in production"},{"name":"mail","status":"ok"}]}
 ```
 
 ## TLS and Reverse Proxy

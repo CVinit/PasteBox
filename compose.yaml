@@ -56,7 +56,7 @@ services:
         mc mb --ignore-existing local/pastebox
 
   clamav:
-    image: clamav/clamav:1.4
+    image: ${PASTEBOX_CLAMAV_IMAGE:-clamav/clamav-debian:1.4}
     ports:
       - "3310:3310"
     volumes:
