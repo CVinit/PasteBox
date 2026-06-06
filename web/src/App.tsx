@@ -837,6 +837,9 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     openApp: "Open app",
     launchDocuments: "Launch documents",
     legalNavigation: "Legal navigation",
+    footerLegal: "Legal",
+    footerTrust: "Trust",
+    footerSupport: "Support",
     lastUpdated: "Last updated",
     supportRequests:
       "Account, billing, privacy, DPA, and data-subject requests",
@@ -925,6 +928,9 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
       "Enter a new password to finish resetting your account.",
     signedOut: "Signed out",
     allSessionsSignedOut: "All sessions signed out",
+    logoutAllDevices: "Sign out all device sessions",
+    logoutAllDevicesDescription:
+      "End every active PasteBox session on this browser and other devices. You will need to sign in again everywhere.",
     passwordResetIssued: "Password reset issued",
     passwordUpdated: "Password updated",
     reportSubmitted: "Report submitted",
@@ -1049,6 +1055,9 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     openApp: "打开应用",
     launchDocuments: "上线文档",
     legalNavigation: "法律导航",
+    footerLegal: "法律",
+    footerTrust: "信任",
+    footerSupport: "支持",
     lastUpdated: "最后更新",
     supportRequests: "账号、支付、隐私、DPA 和数据主体请求",
     abuseRequests: "滥用、恶意软件、DMCA 和紧急下架请求",
@@ -1135,6 +1144,9 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     passwordResetLinkReady: "请输入新密码以完成账号密码重置。",
     signedOut: "已退出",
     allSessionsSignedOut: "所有会话已退出",
+    logoutAllDevices: "退出所有设备会话",
+    logoutAllDevicesDescription:
+      "结束当前浏览器和其他设备上的全部 PasteBox 登录会话，之后所有设备都需要重新登录。",
     passwordResetIssued: "密码重置已签发",
     passwordUpdated: "密码已更新",
     reportSubmitted: "举报已提交",
@@ -1259,6 +1271,9 @@ const copy: Record<Locale, Record<string, string>> = {
     openApp: "開啟應用",
     launchDocuments: "上線文件",
     legalNavigation: "法律導覽",
+    footerLegal: "法律",
+    footerTrust: "信任",
+    footerSupport: "支援",
     lastUpdated: "最後更新",
     supportRequests: "帳號、付款、隱私、DPA 和資料主體請求",
     abuseRequests: "濫用、惡意軟體、DMCA 和緊急下架請求",
@@ -1343,6 +1358,9 @@ const copy: Record<Locale, Record<string, string>> = {
     passwordResetLinkReady: "請輸入新密碼以完成帳號密碼重設。",
     signedOut: "已登出",
     allSessionsSignedOut: "所有工作階段已登出",
+    logoutAllDevices: "登出所有裝置工作階段",
+    logoutAllDevicesDescription:
+      "結束目前瀏覽器和其他裝置上的所有 PasteBox 登入工作階段，之後所有裝置都需要重新登入。",
     passwordResetIssued: "密碼重設已簽發",
     passwordUpdated: "密碼已更新",
     reportSubmitted: "檢舉已提交",
@@ -1469,6 +1487,9 @@ const copy: Record<Locale, Record<string, string>> = {
     openApp: "Abrir app",
     launchDocuments: "Documentos de lanzamiento",
     legalNavigation: "Navegación legal",
+    footerLegal: "Legal",
+    footerTrust: "Confianza",
+    footerSupport: "Soporte",
     lastUpdated: "Última actualización",
     supportRequests:
       "Solicitudes de cuenta, facturación, privacidad, DPA y derechos de datos",
@@ -1558,6 +1579,9 @@ const copy: Record<Locale, Record<string, string>> = {
       "Ingresa una contraseña nueva para terminar el restablecimiento.",
     signedOut: "Sesión cerrada",
     allSessionsSignedOut: "Todas las sesiones cerradas",
+    logoutAllDevices: "Cerrar sesiones en todos los dispositivos",
+    logoutAllDevicesDescription:
+      "Cierra cada sesión activa de PasteBox en este navegador y en otros dispositivos. Tendrás que iniciar sesión de nuevo en todas partes.",
     passwordResetIssued: "Restablecimiento emitido",
     passwordUpdated: "Contraseña actualizada",
     reportSubmitted: "Reporte enviado",
@@ -2689,11 +2713,19 @@ function App() {
   }
 
   async function updateProfile() {
+    const nextLocale = localeFor(profileDraft.language);
+    const nextT = copyFor(nextLocale);
     const updated = await run(
       () => client.updateMe(profileDraft),
-      t("profileUpdated"),
+      nextT("profileUpdated"),
     );
-    if (updated) setUser(updated);
+    if (updated) {
+      setUser(updated);
+      setProfileDraft({
+        displayName: updated.displayName,
+        language: localeFor(updated.language),
+      });
+    }
   }
 
   async function unlinkOAuth(provider: string) {
@@ -2920,11 +2952,6 @@ function App() {
           <LogOut size={16} aria-hidden="true" />
           {t("logout")}
         </button>
-        <button className="ghost-button" type="button" onClick={logoutAll}>
-          <LogOut size={16} aria-hidden="true" />
-          {t("logoutAll")}
-        </button>
-        <PublicFooter compact locale={locale} />
       </aside>
 
       <section className="workspace">
@@ -3360,10 +3387,21 @@ function App() {
                   </option>
                 ))}
               </select>
-              <button type="button" onClick={updateProfile}>
+              <button type="button" onClick={updateProfile} disabled={busy}>
                 {t("saveProfile")}
               </button>
             </div>
+            <section className="notice-card session-card">
+              <LogOut size={18} aria-hidden="true" />
+              <div>
+                <strong>{t("logoutAllDevices")}</strong>
+                <span>{t("logoutAllDevicesDescription")}</span>
+                <button type="button" onClick={logoutAll} disabled={busy}>
+                  <LogOut size={16} aria-hidden="true" />
+                  {t("logoutAllDevices")}
+                </button>
+              </div>
+            </section>
             <div className="button-row">
               <button type="button" onClick={exportData}>
                 <Download size={16} aria-hidden="true" />
@@ -3655,6 +3693,7 @@ function App() {
           </Panel>
         ) : null}
       </section>
+      <PublicFooter compact locale={locale} />
     </main>
   );
 }
@@ -4384,23 +4423,43 @@ function PublicFooter({
   locale: Locale;
 }) {
   const t = copyFor(locale);
-  const links = [
-    { href: "/legal", label: t("legalHub") },
-    { href: "/legal/terms", label: t("terms") },
-    { href: "/legal/privacy", label: t("privacy") },
-    { href: "/legal/refund", label: t("refund") },
-    { href: "/legal/abuse", label: t("abuseDmca") },
-    { href: "/legal/cookies", label: t("cookies") },
-    { href: "/support", label: t("support") },
-    { href: "/status", label: t("status") },
+  const groups = [
+    {
+      title: t("footerLegal"),
+      links: [
+        { href: "/legal", label: t("legalHub") },
+        { href: "/legal/terms", label: t("terms") },
+        { href: "/legal/privacy", label: t("privacy") },
+        { href: "/legal/cookies", label: t("cookies") },
+      ],
+    },
+    {
+      title: t("footerTrust"),
+      links: [
+        { href: "/legal/refund", label: t("refund") },
+        { href: "/legal/abuse", label: t("abuseDmca") },
+        { href: "/status", label: t("status") },
+      ],
+    },
+    {
+      title: t("footerSupport"),
+      links: [{ href: "/support", label: t("support") }],
+    },
   ];
   return (
     <footer className={compact ? "public-footer compact" : "public-footer"}>
       <nav aria-label={t("legalNavigation")}>
-        {links.map((link) => (
-          <a href={link.href} key={link.href}>
-            {link.label}
-          </a>
+        {groups.map((group) => (
+          <section className="public-footer-group" key={group.title}>
+            <strong>{group.title}</strong>
+            <div>
+              {group.links.map((link) => (
+                <a href={link.href} key={link.href}>
+                  {link.label}
+                </a>
+              ))}
+            </div>
+          </section>
         ))}
       </nav>
     </footer>

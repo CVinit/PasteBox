@@ -116,13 +116,13 @@ h3 {
 }
 
 h1 {
-  font-size: clamp(34px, 5vw, 64px);
-  line-height: 0.96;
+  font-size: clamp(30px, 4vw, 48px);
+  line-height: 1;
 }
 
 h2 {
-  font-size: clamp(24px, 2.6vw, 34px);
-  line-height: 1;
+  font-size: clamp(22px, 2.2vw, 30px);
+  line-height: 1.08;
 }
 
 h3 {
@@ -413,15 +413,15 @@ h3 {
 }
 
 .landing-copy h1 {
-  max-width: 760px;
-  font-size: clamp(42px, 6vw, 78px);
-  line-height: 0.96;
+  max-width: 700px;
+  font-size: clamp(34px, 5vw, 56px);
+  line-height: 1.02;
 }
 
 .landing-copy p {
   max-width: 650px;
   color: var(--muted-strong);
-  font-size: clamp(17px, 1.7vw, 21px);
+  font-size: clamp(16px, 1.4vw, 18px);
   line-height: 1.58;
 }
 
@@ -610,8 +610,8 @@ h3 {
 
 .landing-section-heading h2 {
   max-width: 570px;
-  font-size: clamp(26px, 3vw, 42px);
-  line-height: 1.04;
+  font-size: clamp(22px, 2.4vw, 32px);
+  line-height: 1.12;
 }
 
 .landing-feature-card span {
@@ -788,8 +788,8 @@ textarea:disabled {
   display: grid;
   align-content: end;
   gap: 15px;
-  min-height: 236px;
-  padding: 26px;
+  min-height: 210px;
+  padding: 24px;
   overflow: hidden;
   border: 1px solid rgba(23, 33, 29, 0.11);
   border-radius: var(--radius-xl);
@@ -833,7 +833,7 @@ textarea:disabled {
 .workspace-hero-copy p {
   max-width: 620px;
   color: var(--muted-strong);
-  font-size: 17px;
+  font-size: 15px;
   line-height: 1.58;
 }
 
@@ -848,8 +848,8 @@ textarea:disabled {
   position: relative;
   display: grid;
   align-content: space-between;
-  min-height: 123px;
-  padding: 18px;
+  min-height: 112px;
+  padding: 16px;
   overflow: hidden;
   border: 1px solid rgba(23, 33, 29, 0.1);
   border-radius: var(--radius-lg);
@@ -880,9 +880,9 @@ textarea:disabled {
 
 .workspace-stat strong {
   position: relative;
-  margin: 10px 0 4px;
+  margin: 8px 0 4px;
   color: var(--ink-strong);
-  font-size: clamp(28px, 3vw, 42px);
+  font-size: clamp(24px, 2.2vw, 34px);
   line-height: 1;
   letter-spacing: -0.04em;
 }
@@ -985,14 +985,14 @@ textarea:disabled {
 }
 
 .auth-product-copy h1 {
-  font-size: clamp(38px, 5vw, 64px);
-  line-height: 0.96;
+  font-size: clamp(30px, 4vw, 48px);
+  line-height: 1.02;
 }
 
 .auth-product-copy p {
   max-width: 540px;
   color: var(--muted-strong);
-  font-size: 17px;
+  font-size: 15px;
   line-height: 1.58;
 }
 
@@ -1948,32 +1948,55 @@ code {
 
 .public-footer {
   display: block;
-  padding-top: 16px;
+  padding: 18px 0 4px;
   border-top: 1px solid var(--line);
   color: var(--muted);
   font-size: 13px;
 }
 
 .public-footer.compact {
-  margin-top: 0;
+  grid-column: 1 / -1;
+  width: min(900px, calc(100% - 32px));
+  margin: 0 auto 22px;
 }
 
 .public-footer nav {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 18px 34px;
+  text-align: center;
+}
+
+.public-footer-group {
   display: grid;
-  grid-template-columns: 1fr;
-  gap: 6px;
+  gap: 7px;
+  min-width: 120px;
+}
+
+.public-footer-group strong {
+  color: var(--ink-strong);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.public-footer-group div {
+  display: grid;
+  gap: 3px;
 }
 
 .public-footer a {
   display: block;
-  padding: 7px 10px;
+  padding: 5px 8px;
   border-radius: 11px;
   color: var(--brand-strong);
-  font-weight: 900;
+  font-weight: 800;
 }
 
 .public-footer a:hover {
-  background: rgba(13, 111, 93, 0.09);
+  background: rgba(99, 102, 241, 0.09);
 }
 
 .icon-button.small {

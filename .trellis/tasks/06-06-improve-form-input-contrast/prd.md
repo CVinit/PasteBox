@@ -37,6 +37,14 @@ dedicated product screen rather than a raw utility form.
 * Avoid changing form logic or backend API behavior.
 * After tests pass, commit the changes, remove the currently running PasteBox
   demo container, and redeploy the updated app.
+* Reduce oversized marketing/auth/workspace headline and stat text so the
+  screens look balanced rather than dominated by large copy.
+* Move public/legal navigation links to a centered bottom footer with grouped
+  link columns instead of a vertical sidebar-style stack.
+* Move "logout all" out of the sidebar and into Settings with copy that makes
+  clear it signs out all device sessions.
+* Fix language-switch status feedback so the top status text uses the same
+  target language as the page after saving the profile language.
 
 ## Acceptance Criteria
 
@@ -54,6 +62,12 @@ dedicated product screen rather than a raw utility form.
 * [ ] Browser smoke checks cover landing, login, register, and workspace routes.
 * [ ] Git commit exists for the verified change.
 * [ ] Running PasteBox app container is removed and redeployed with the new build.
+* [ ] Oversized hero/card text is visibly smaller on desktop and mobile.
+* [ ] Footer links are grouped and centered at the bottom of public and app pages.
+* [ ] Sidebar shows single-device logout only; Settings shows the all-device
+      session logout action and description.
+* [ ] Repeated language changes do not leave the status pill in the previous
+      language after save.
 
 ## Out of Scope
 
