@@ -120,6 +120,10 @@ for (const link of criticalLinks) {
 
 requireIncludes("web/src/api.ts support contact client", apiSource, 'supportContacts: () => api<SupportContacts>("/support/contacts")');
 requireIncludes("web/src/App.tsx support contacts load", appSource, "client.supportContacts()");
+requireIncludes("web/src/App.tsx public share route priority", appSource, "if (publicShareToken)");
+if (appSource.includes("if (!user && publicShareToken)")) {
+  fail("web/src/App.tsx only renders public share routes for anonymous users");
+}
 requireMatches("web/src/App.tsx support contact mailto rendering", appSource, /mailto:\$\{contacts\.supportEmail\}/);
 requireMatches("web/src/App.tsx abuse contact mailto rendering", appSource, /mailto:\$\{contacts\.abuseEmail\}/);
 requireIncludes("production index", distIndex, '<div id="root"></div>');

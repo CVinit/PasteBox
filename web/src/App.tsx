@@ -63,6 +63,19 @@ import "./styles.css";
 type View = "inbox" | "shared" | "billing" | "settings" | "admin";
 type PaymentProvider = "stripe" | "epusdt";
 
+type ViewSummary = {
+  eyebrow: string;
+  title: string;
+  description: string;
+};
+
+type WorkspaceStat = {
+  label: string;
+  value: string;
+  detail: string;
+  tone: "pastes" | "storage" | "shares" | "attachments";
+};
+
 type Draft = {
   title: string;
   text: string;
@@ -155,6 +168,39 @@ const emptyAdminData: AdminData = {
   orders: [],
   queues: null,
   webhookEvents: [],
+};
+
+const viewSummaries: Record<View, ViewSummary> = {
+  inbox: {
+    eyebrow: "Private transfer desk",
+    title: "Capture. Scan. Share.",
+    description:
+      "PasteBox keeps active clips, expiring files, and share controls visible in one operational workspace.",
+  },
+  shared: {
+    eyebrow: "Link control",
+    title: "Shared links, under control.",
+    description:
+      "Review visits, download counts, expiry windows, and revoke risky links before they drift.",
+  },
+  billing: {
+    eyebrow: "Plan and payments",
+    title: "Payments with lifecycle detail.",
+    description:
+      "Stripe and Epusdt orders show lifecycle detail instead of raw status strings.",
+  },
+  settings: {
+    eyebrow: "Account operations",
+    title: "Account operations in one place.",
+    description:
+      "Manage identity, export data, report abuse, and handle deletion requests from one place.",
+  },
+  admin: {
+    eyebrow: "Launch control room",
+    title: "Launch signals at a glance.",
+    description:
+      "Monitor production surfaces that gate public beta readiness and abuse response.",
+  },
 };
 
 const shareTokenFromPath =
@@ -632,7 +678,8 @@ const copy: Record<Locale, Record<string, string>> = {
       "Email verified for another account. Sign out before switching.",
     magicLinkIssued: "Magic link issued",
     signedInMagic: "Signed in with magic link",
-    passwordResetLinkReady: "Enter a new password to finish resetting your account.",
+    passwordResetLinkReady:
+      "Enter a new password to finish resetting your account.",
     signedOut: "Signed out",
     allSessionsSignedOut: "All sessions signed out",
     passwordResetIssued: "Password reset issued",
@@ -770,7 +817,8 @@ const copy: Record<Locale, Record<string, string>> = {
     verificationIssued: "验证令牌已发送",
     emailVerified: "邮箱已验证",
     emailVerifiedLogin: "邮箱已验证，请登录后继续。",
-    emailVerifiedDifferentAccount: "另一个账号的邮箱已验证，切换前请先退出当前账号。",
+    emailVerifiedDifferentAccount:
+      "另一个账号的邮箱已验证，切换前请先退出当前账号。",
     magicLinkIssued: "魔法链接已签发",
     signedInMagic: "已通过魔法链接登录",
     passwordResetLinkReady: "请输入新密码以完成账号密码重置。",
@@ -1063,11 +1111,73 @@ function App() {
     );
   }, [catalog, quota, user]);
   const linkedOAuthProviders = user?.oauthProviders ?? [];
+  const storageUsed = quota?.activeStorageBytes ?? 0;
+  const storageLimit = activePlan?.activeStorageBytes ?? 0;
+  const storagePercent =
+    storageLimit > 0
+      ? Math.min(100, Math.round((storageUsed / storageLimit) * 100))
+      : 0;
 
   const selectedPaste = useMemo(
     () => pastes.find((paste) => paste.id === selectedPasteId) ?? pastes[0],
     [pastes, selectedPasteId],
   );
+
+  const expiringCount = useMemo(
+    () => pastes.filter((paste) => paste.secondsToLive <= 24 * 60 * 60).length,
+    [pastes],
+  );
+  const attachmentCount = useMemo(
+    () => pastes.reduce((total, paste) => total + paste.attachments.length, 0),
+    [pastes],
+  );
+  const sharedPasteCount = useMemo(
+    () => pastes.filter((paste) => paste.shareCount > 0).length,
+    [pastes],
+  );
+  const workspaceStats: WorkspaceStat[] = useMemo(
+    () => [
+      {
+        label: "Active pastes",
+        value: String(quota?.activePasteCount ?? pastes.length),
+        detail: `${activePlan?.activePasteLimit ?? 0} plan limit`,
+        tone: "pastes",
+      },
+      {
+        label: "Storage",
+        value: formatBytes(storageUsed),
+        detail: `${storagePercent}% of ${formatBytes(storageLimit)}`,
+        tone: "storage",
+      },
+      {
+        label: "Shared links",
+        value: String(shares.length),
+        detail: `${sharedPasteCount} pastes exposed`,
+        tone: "shares",
+      },
+      {
+        label: "Attachments",
+        value: String(attachmentCount),
+        detail: expiringCount
+          ? `${expiringCount} expiring in 24h`
+          : "No urgent expiry",
+        tone: "attachments",
+      },
+    ],
+    [
+      activePlan?.activePasteLimit,
+      attachmentCount,
+      expiringCount,
+      pastes.length,
+      quota?.activePasteCount,
+      sharedPasteCount,
+      shares.length,
+      storageLimit,
+      storagePercent,
+      storageUsed,
+    ],
+  );
+  const viewSummary = viewSummaries[view];
 
   const pricesByPlan = useMemo(() => {
     const grouped = new Map<string, Price[]>();
@@ -1672,7 +1782,7 @@ function App() {
     return <PublicPageScreen page={publicPage} contacts={supportContacts} />;
   }
 
-  if (!user && publicShareToken) {
+  if (publicShareToken) {
     return (
       <PublicShareScreen
         token={publicShareToken}
@@ -1876,13 +1986,12 @@ function App() {
           <div className="quota-bar">
             <span
               style={{
-                width: `${quota && activePlan ? Math.min(100, (quota.activeStorageBytes / activePlan.activeStorageBytes) * 100) : 0}%`,
+                width: `${storagePercent}%`,
               }}
             />
           </div>
           <p>
-            {formatBytes(quota?.activeStorageBytes ?? 0)} /{" "}
-            {formatBytes(activePlan?.activeStorageBytes ?? 0)} ·{" "}
+            {formatBytes(storageUsed)} / {formatBytes(storageLimit)} ·{" "}
             {quota?.activePasteCount ?? 0}/{activePlan?.activePasteLimit ?? 0}{" "}
             pastes
           </p>
@@ -1928,6 +2037,26 @@ function App() {
           {message ? <span className="status-pill">{message}</span> : null}
         </header>
 
+        <section className="workspace-hero" aria-label="Workspace overview">
+          <div className="workspace-hero-copy">
+            <span className="eyebrow">{viewSummary.eyebrow}</span>
+            <h1>{viewSummary.title}</h1>
+            <p>{viewSummary.description}</p>
+          </div>
+          <div className="workspace-stat-grid">
+            {workspaceStats.map((stat) => (
+              <article
+                className={`workspace-stat workspace-stat--${stat.tone}`}
+                key={stat.label}
+              >
+                <span>{stat.label}</span>
+                <strong>{stat.value}</strong>
+                <small>{stat.detail}</small>
+              </article>
+            ))}
+          </div>
+        </section>
+
         {!user.emailVerified ? (
           <section className="verify-banner">
             <div>
@@ -1960,7 +2089,7 @@ function App() {
               <div className="composer-heading">
                 <div>
                   <span className="eyebrow">New private paste</span>
-                  <h1 id="new-paste-title">PasteBox</h1>
+                  <h1 id="new-paste-title">Create a secure drop.</h1>
                 </div>
                 <div className="privacy-badge">
                   <LockKeyhole size={16} aria-hidden="true" />
@@ -1973,7 +2102,7 @@ function App() {
                 onChange={(event) =>
                   setDraft({ ...draft, title: event.target.value })
                 }
-                placeholder="Title"
+                placeholder="Title this paste"
               />
               <textarea
                 value={draft.text}
@@ -1984,7 +2113,7 @@ function App() {
                   const file = event.clipboardData.files.item(0);
                   if (file) void uploadFile(file);
                 }}
-                placeholder="Text"
+                placeholder="Paste text, notes, credentials, or transfer context here."
               />
               <div className="composer-controls">
                 <label>
@@ -2009,7 +2138,7 @@ function App() {
                   onChange={(event) =>
                     setDraft({ ...draft, tags: event.target.value })
                   }
-                  placeholder="tags"
+                  placeholder="tags separated by comma"
                 />
                 <button type="button" onClick={createPaste} disabled={busy}>
                   <Sparkles size={16} aria-hidden="true" />
@@ -2033,7 +2162,7 @@ function App() {
                     void uploadFile(event.target.files[0])
                   }
                 />
-                Upload
+                Drop or choose a file
               </label>
             </section>
 
@@ -2175,11 +2304,16 @@ function App() {
                           type="button"
                           key={`${price.id}-${option.provider}`}
                           onClick={() =>
-                            void makeOrder(plan.id, price.period, option.provider)
+                            void makeOrder(
+                              plan.id,
+                              price.period,
+                              option.provider,
+                            )
                           }
                         >
                           {option.label} · {price.period} ·{" "}
-                          {(price.amountCents / 100).toFixed(2)} {price.currency}
+                          {(price.amountCents / 100).toFixed(2)}{" "}
+                          {price.currency}
                         </button>
                       ));
                     })}
@@ -2255,9 +2389,11 @@ function App() {
                 <strong>{t("linkedAccounts")}</strong>
                 {linkedOAuthProviders.length > 0 ? (
                   <span>
-                    {linkedOAuthProviders.map((provider) =>
-                      provider === "google" ? t("google") : provider,
-                    ).join(", ")}
+                    {linkedOAuthProviders
+                      .map((provider) =>
+                        provider === "google" ? t("google") : provider,
+                      )
+                      .join(", ")}
                   </span>
                 ) : (
                   <span>{t("noLinkedAccounts")}</span>
@@ -2514,17 +2650,19 @@ function App() {
                   <strong>Failed mails</strong>
                   <span>{adminData.queues?.failedMails.length ?? 0}</span>
                 </article>
-                {(adminData.queues?.failedMails ?? []).slice(0, 5).map((mail) => (
-                  <article className="list-card" key={mail.id}>
-                    <div>
-                      <strong>{mail.subject}</strong>
-                      <span>
-                        {mail.to} · {mail.status} · {mail.attempts} attempts
-                      </span>
-                      {mail.lastError ? <span>{mail.lastError}</span> : null}
-                    </div>
-                  </article>
-                ))}
+                {(adminData.queues?.failedMails ?? [])
+                  .slice(0, 5)
+                  .map((mail) => (
+                    <article className="list-card" key={mail.id}>
+                      <div>
+                        <strong>{mail.subject}</strong>
+                        <span>
+                          {mail.to} · {mail.status} · {mail.attempts} attempts
+                        </span>
+                        {mail.lastError ? <span>{mail.lastError}</span> : null}
+                      </div>
+                    </article>
+                  ))}
                 {(adminData.queues?.reports ?? []).slice(0, 5).map((report) => (
                   <article className="list-card" key={report.id}>
                     <div>
