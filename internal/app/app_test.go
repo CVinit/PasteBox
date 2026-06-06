@@ -838,6 +838,52 @@ func TestRunCleanupRefreshesStoreBackedContentBeforeProcessing(t *testing.T) {
 	}
 }
 
+func TestListPastesRefreshesWorkerScanResultsFromStore(t *testing.T) {
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	authStores := newMemoryAuthStores()
+	contentStores := newMemoryContentStores()
+	objectStore := newMemoryObjectStore()
+	operationalStores := newMemoryOperationalStores()
+
+	apiSvc := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		Objects:      objectStore,
+		Operational:  operationalStores.operationalStores(),
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	workerSvc := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		Objects:      objectStore,
+		Operational:  operationalStores.operationalStores(),
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	owner := registerTestUser(t, apiSvc, "scan-refresh-owner@example.com")
+	paste := createTestPaste(t, apiSvc, owner.User.ID, PasteInput{Title: "scan refresh", Text: "pending", ExpiresInSeconds: 3600})
+	attachment := addTestAttachment(t, apiSvc, owner.User.ID, paste.ID, "scan.txt", []byte("scan me"))
+
+	before, err := apiSvc.ListPastes(owner.User.ID, ListOptions{})
+	if err != nil {
+		t.Fatalf("list before worker scan: %v", err)
+	}
+	if len(before) != 1 || len(before[0].Attachments) != 1 || before[0].Attachments[0].ScanStatus != "pending" {
+		t.Fatalf("expected pending attachment before worker scan, got %#v", before)
+	}
+
+	if err := workerSvc.RunAttachmentScan(staticScanner{result: ScanResult{Status: "clean"}}, attachment.ID); err != nil {
+		t.Fatalf("run worker scan: %v", err)
+	}
+
+	after, err := apiSvc.ListPastes(owner.User.ID, ListOptions{})
+	if err != nil {
+		t.Fatalf("list after worker scan: %v", err)
+	}
+	if len(after) != 1 || after[0].ScanStatus != "clean" || len(after[0].Attachments) != 1 || after[0].Attachments[0].ScanStatus != "clean" {
+		t.Fatalf("expected API list to refresh worker scan result, got %#v", after)
+	}
+}
+
 func TestStoreBackedOperationalStateSurvivesServiceRestart(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	authStores := newMemoryAuthStores()

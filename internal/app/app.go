@@ -1101,6 +1101,9 @@ func (s *Service) ListPastes(userID string, opts ListOptions) ([]PasteView, erro
 	if _, err := s.activeUserLocked(userID); err != nil {
 		return nil, err
 	}
+	if err := s.refreshContentCachesLocked(context.Background()); err != nil {
+		return nil, err
+	}
 	out := []PasteView{}
 	query := strings.ToLower(strings.TrimSpace(opts.Query))
 	filter := strings.TrimSpace(opts.Filter)
@@ -2590,12 +2593,14 @@ func (s *Service) applyAttachmentScanResultLocked(attachment *Attachment, result
 	if err := s.updateAttachmentLocked(attachment); err != nil {
 		return err
 	}
-	if paste := s.pastesByID[attachment.PasteID]; paste != nil {
-		paste.ScanStatus = aggregateScanStatus(s.attachmentsForPasteLocked(paste))
-		paste.UpdatedAt = now
-		if err := s.updatePasteLocked(paste); err != nil {
-			return err
-		}
+	paste, err := s.pasteByIDLocked(attachment.PasteID)
+	if err != nil {
+		return err
+	}
+	paste.ScanStatus = aggregateScanStatus(s.attachmentsForPasteLocked(paste))
+	paste.UpdatedAt = now
+	if err := s.updatePasteLocked(paste); err != nil {
+		return err
 	}
 	if attachment.ScanStatus == "scan_failed" {
 		return s.markScanFailureLocked(attachment.ID, defaultString(attachment.Risk, "scan_failed"), now)
