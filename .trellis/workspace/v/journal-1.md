@@ -109,3 +109,36 @@ Fixed HTTP test-environment Google auth session persistence by making session co
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: Finish multilingual launch validation
+
+**Date**: 2026-06-06
+**Task**: Finish multilingual launch validation
+**Branch**: `main`
+
+### Summary
+
+Fixed Traditional Chinese attachment risk copy, documented the locale-specific risk-prefix contract, rebuilt the isolated local deployment, and verified tests plus browser/API launch flows.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d61817e` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
