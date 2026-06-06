@@ -103,7 +103,7 @@ type AdminData = {
   webhookEvents: WebhookEvent[];
 };
 
-type Locale = "en" | "zh";
+type Locale = "en" | "zh-CN" | "zh-TW" | "es";
 
 type OrderStatusTone = "pending" | "success" | "warning" | "danger" | "neutral";
 type AttachmentScanTone = "success" | "warning" | "danger" | "neutral";
@@ -170,36 +170,133 @@ const emptyAdminData: AdminData = {
   webhookEvents: [],
 };
 
-const viewSummaries: Record<View, ViewSummary> = {
-  inbox: {
-    eyebrow: "Private transfer desk",
-    title: "Capture. Scan. Share.",
-    description:
-      "PasteBox keeps active clips, expiring files, and share controls visible in one operational workspace.",
+const supportedLocales: Array<{ value: Locale; label: string }> = [
+  { value: "en", label: "English" },
+  { value: "zh-CN", label: "简体中文" },
+  { value: "zh-TW", label: "繁體中文" },
+  { value: "es", label: "Español" },
+];
+
+const viewSummaries: Record<Locale, Record<View, ViewSummary>> = {
+  en: {
+    inbox: {
+      eyebrow: "Private transfer desk",
+      title: "Capture. Scan. Share.",
+      description:
+        "PasteBox keeps active clips, expiring files, and share controls visible in one operational workspace.",
+    },
+    shared: {
+      eyebrow: "Link control",
+      title: "Shared links, under control.",
+      description:
+        "Review visits, download counts, expiry windows, and revoke risky links before they drift.",
+    },
+    billing: {
+      eyebrow: "Plan and payments",
+      title: "Payments with lifecycle detail.",
+      description:
+        "Stripe and Epusdt orders show lifecycle detail instead of raw status strings.",
+    },
+    settings: {
+      eyebrow: "Account operations",
+      title: "Account operations in one place.",
+      description:
+        "Manage identity, export data, report abuse, and handle deletion requests from one place.",
+    },
+    admin: {
+      eyebrow: "Launch control room",
+      title: "Launch signals at a glance.",
+      description:
+        "Monitor production surfaces that gate public beta readiness and abuse response.",
+    },
   },
-  shared: {
-    eyebrow: "Link control",
-    title: "Shared links, under control.",
-    description:
-      "Review visits, download counts, expiry windows, and revoke risky links before they drift.",
+  "zh-CN": {
+    inbox: {
+      eyebrow: "私有传输台",
+      title: "捕获、扫描、分享。",
+      description:
+        "PasteBox 在同一个操作工作区里展示活动内容、即将过期的文件和分享控制。",
+    },
+    shared: {
+      eyebrow: "链接控制",
+      title: "分享链接，始终可控。",
+      description: "查看访问、下载、过期窗口，并在风险扩散前撤销链接。",
+    },
+    billing: {
+      eyebrow: "套餐与支付",
+      title: "带生命周期细节的支付。",
+      description: "Stripe 和 Epusdt 订单显示完整生命周期，而不是原始状态字符串。",
+    },
+    settings: {
+      eyebrow: "账号操作",
+      title: "账号操作集中处理。",
+      description: "在一个位置管理身份、导出数据、举报滥用和处理删除请求。",
+    },
+    admin: {
+      eyebrow: "上线控制室",
+      title: "上线信号一目了然。",
+      description: "监控决定公开 beta 就绪度和滥用响应能力的生产表面。",
+    },
   },
-  billing: {
-    eyebrow: "Plan and payments",
-    title: "Payments with lifecycle detail.",
-    description:
-      "Stripe and Epusdt orders show lifecycle detail instead of raw status strings.",
+  "zh-TW": {
+    inbox: {
+      eyebrow: "私有傳輸台",
+      title: "擷取、掃描、分享。",
+      description:
+        "PasteBox 在同一個操作工作區裡展示作用中內容、即將過期的檔案和分享控制。",
+    },
+    shared: {
+      eyebrow: "連結控制",
+      title: "分享連結，始終可控。",
+      description: "檢視訪問、下載、過期視窗，並在風險擴散前撤銷連結。",
+    },
+    billing: {
+      eyebrow: "方案與付款",
+      title: "帶生命週期細節的付款。",
+      description: "Stripe 和 Epusdt 訂單顯示完整生命週期，而不是原始狀態字串。",
+    },
+    settings: {
+      eyebrow: "帳號操作",
+      title: "帳號操作集中處理。",
+      description: "在一個位置管理身分、匯出資料、檢舉濫用和處理刪除請求。",
+    },
+    admin: {
+      eyebrow: "上線控制室",
+      title: "上線訊號一目了然。",
+      description: "監控決定公開 beta 就緒度和濫用回應能力的生產表面。",
+    },
   },
-  settings: {
-    eyebrow: "Account operations",
-    title: "Account operations in one place.",
-    description:
-      "Manage identity, export data, report abuse, and handle deletion requests from one place.",
-  },
-  admin: {
-    eyebrow: "Launch control room",
-    title: "Launch signals at a glance.",
-    description:
-      "Monitor production surfaces that gate public beta readiness and abuse response.",
+  es: {
+    inbox: {
+      eyebrow: "Mesa privada de transferencia",
+      title: "Captura. Escanea. Comparte.",
+      description:
+        "PasteBox mantiene recortes activos, archivos por vencer y controles de enlace en un solo espacio operativo.",
+    },
+    shared: {
+      eyebrow: "Control de enlaces",
+      title: "Enlaces compartidos bajo control.",
+      description:
+        "Revisa visitas, descargas, vencimientos y revoca enlaces riesgosos antes de que se propaguen.",
+    },
+    billing: {
+      eyebrow: "Planes y pagos",
+      title: "Pagos con detalle de ciclo de vida.",
+      description:
+        "Los pedidos de Stripe y Epusdt muestran estado operativo, no solo cadenas sin contexto.",
+    },
+    settings: {
+      eyebrow: "Operaciones de cuenta",
+      title: "Cuenta, datos y soporte en un lugar.",
+      description:
+        "Gestiona identidad, exportaciones, reportes de abuso y solicitudes de eliminación.",
+    },
+    admin: {
+      eyebrow: "Sala de lanzamiento",
+      title: "Señales de lanzamiento al instante.",
+      description:
+        "Monitorea las superficies que bloquean beta pública y respuesta ante abuso.",
+    },
   },
 };
 
@@ -239,11 +336,36 @@ function clearAuthLinkTokenFromLocation() {
   );
 }
 
-const browserLocale: Locale =
-  typeof navigator !== "undefined" &&
-  navigator.language.toLowerCase().startsWith("zh")
-    ? "zh"
-    : "en";
+function localeFor(language?: string): Locale {
+  const normalized = language?.trim().toLowerCase() ?? "";
+  if (
+    normalized === "zh-tw" ||
+    normalized === "zh-hk" ||
+    normalized === "zh-mo" ||
+    normalized.includes("hant")
+  ) {
+    return "zh-TW";
+  }
+  if (normalized === "zh-cn" || normalized === "zh-sg" || normalized.startsWith("zh")) {
+    return "zh-CN";
+  }
+  if (normalized.startsWith("es")) return "es";
+  return "en";
+}
+
+function isChineseLocale(locale: Locale): boolean {
+  return locale.startsWith("zh");
+}
+
+function browserPreferredLocale(): Locale {
+  if (typeof navigator === "undefined") return "en";
+  const languages = navigator.languages?.length
+    ? navigator.languages
+    : [navigator.language];
+  return localeFor(languages.find(Boolean));
+}
+
+const browserLocale: Locale = browserPreferredLocale();
 
 const publicPages: PublicPage[] = [
   {
@@ -547,17 +669,17 @@ const publicPages: PublicPage[] = [
 ];
 
 const publicLinks = [
-  { href: "/legal/terms", label: "Terms" },
-  { href: "/legal/privacy", label: "Privacy" },
-  { href: "/legal/refund", label: "Refund" },
-  { href: "/legal/abuse", label: "Abuse/DMCA" },
-  { href: "/legal/cookies", label: "Cookies" },
-  { href: "/status", label: "Status" },
-  { href: "/support", label: "Support" },
-  { href: "/legal/account-deletion", label: "Deletion" },
-  { href: "/legal/data-export", label: "Export" },
-  { href: "/legal/data-retention", label: "Retention" },
-  { href: "/legal/subprocessors", label: "Subprocessors" },
+  { href: "/legal/terms", labelKey: "terms" },
+  { href: "/legal/privacy", labelKey: "privacy" },
+  { href: "/legal/refund", labelKey: "refund" },
+  { href: "/legal/abuse", labelKey: "abuseDmca" },
+  { href: "/legal/cookies", labelKey: "cookies" },
+  { href: "/status", labelKey: "status" },
+  { href: "/support", labelKey: "support" },
+  { href: "/legal/account-deletion", labelKey: "deletion" },
+  { href: "/legal/data-export", labelKey: "export" },
+  { href: "/legal/data-retention", labelKey: "retention" },
+  { href: "/legal/subprocessors", labelKey: "subprocessors" },
 ];
 
 function publicPageForPath(pathname: string): PublicPage | null {
@@ -565,7 +687,7 @@ function publicPageForPath(pathname: string): PublicPage | null {
   return publicPages.find((page) => page.path === normalized) ?? null;
 }
 
-const copy: Record<Locale, Record<string, string>> = {
+const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
   en: {
     privateCloudClipboard: "Private cloud clipboard",
     sharedPaste: "Shared paste",
@@ -610,6 +732,17 @@ const copy: Record<Locale, Record<string, string>> = {
     create: "Create",
     upload: "Upload",
     recentPastes: "Recent pastes",
+    untitledPaste: "Untitled paste",
+    createSecureDrop: "Create a secure drop.",
+    titleThisPaste: "Title this paste",
+    pasteTextPlaceholder:
+      "Paste text, notes, credentials, or transfer context here.",
+    tagsSeparatedByComma: "tags separated by comma",
+    dropOrChooseFile: "Drop or choose a file",
+    duration24Hours: "24 hours",
+    duration7Days: "7 days",
+    duration30Days: "30 days",
+    duration180Days: "180 days",
     active: "active",
     edit: "Edit",
     noPasteSelected: "No paste selected",
@@ -622,17 +755,50 @@ const copy: Record<Locale, Record<string, string>> = {
     loginRequired: "login required",
     anonymous: "anonymous",
     expires: "expires",
+    visits: "visits",
+    downloads: "downloads",
+    shareToken: "share token",
+    maxVisits: "max visits",
+    maxDownloads: "max downloads",
+    attachmentsCount: "attachments",
     stripeUsdtPayments: "Stripe and USDT payment lifecycle",
     billingSupport: "Billing support",
     billingSupportBody:
       "Refunds, duplicate charges, stuck Epusdt payments, and manual review requests are handled through the refund policy and support intake.",
     refundPolicy: "Refund Policy",
     support: "Support",
+    legalHub: "Legal hub",
+    terms: "Terms",
+    refund: "Refund",
+    abuseDmca: "Abuse/DMCA",
+    cookies: "Cookies",
+    status: "Status",
+    deletion: "Deletion",
+    openApp: "Open app",
+    launchDocuments: "Launch documents",
+    legalNavigation: "Legal navigation",
+    lastUpdated: "Last updated",
+    supportRequests:
+      "Account, billing, privacy, DPA, and data-subject requests",
+    abuseRequests: "Abuse, malware, DMCA, and urgent takedown requests",
+    supportContactLoading: "Support contact is loading",
+    abuseContactLoading: "Abuse contact is loading",
+    publicDocFooter:
+      "This page reflects the confirmed public-beta launch architecture and must be updated when providers, retention, or request workflows change.",
     storage: "Storage",
     file: "File",
     retention: "Retention",
+    subprocessors: "Subprocessors",
     traffic: "Traffic",
     activePastes: "active pastes",
+    activePastesLabel: "Active pastes",
+    planLimit: "plan limit",
+    storageOf: "of",
+    sharedLinks: "Shared links",
+    pastesExposed: "pastes exposed",
+    attachmentsLabel: "Attachments",
+    expiringIn24h: "expiring in 24h",
+    noUrgentExpiry: "No urgent expiry",
     unavailable: "Unavailable",
     openCheckout: "Open checkout",
     paymentAddress: "address",
@@ -648,6 +814,13 @@ const copy: Record<Locale, Record<string, string>> = {
     deleteRequest: "Delete request",
     cancelDelete: "Cancel delete",
     deleteNow: "Delete now",
+    accountRights: "Account rights",
+    accountRightsBody:
+      "Review data export, account deletion, privacy, and support intake before submitting sensitive requests.",
+    dataExport: "data export",
+    accountDeletion: "account deletion",
+    privacy: "privacy",
+    supportIntake: "support intake",
     reportTarget: "report target",
     reportReason: "report reason",
     auditQueuesCleanup: "Audit, queues, cleanup",
@@ -662,9 +835,19 @@ const copy: Record<Locale, Record<string, string>> = {
     manualPaymentReasonRequired: "Enter a support reason before marking paid",
     queues: "Queues",
     scanFailures: "Scan failures",
+    cleanupJobs: "Cleanup jobs",
+    cleanupFailures: "Cleanup failures",
+    failedJobs: "Failed jobs",
+    queuedMails: "Queued mails",
+    failedMails: "Failed mails",
+    attempts: "attempts",
     deleteFailures: "Delete failures",
     resolve: "Resolve",
     dismiss: "Dismiss",
+    retry: "Retry",
+    release: "Release",
+    freeze: "Freeze",
+    frozen: "frozen",
     webhooks: "Webhooks",
     replay: "Replay",
     copy: "Copy",
@@ -708,8 +891,17 @@ const copy: Record<Locale, Record<string, string>> = {
     webhookProcessed: "Webhook processed",
     webhookReplayed: "Webhook replayed",
     reportUpdated: "Report updated",
+    pasteDeleted: "Paste deleted",
+    requestFailed: "Request failed",
+    unpinPaste: "Unpin paste",
+    pinPaste: "Pin paste",
+    removeFavorite: "Remove favorite",
+    favoritePaste: "Favorite paste",
+    copyText: "Copy text",
+    extendPaste: "Extend paste",
+    deletePaste: "Delete paste",
   },
-  zh: {
+  "zh-CN": {
     privateCloudClipboard: "私有云剪切板",
     sharedPaste: "分享内容",
     email: "邮箱",
@@ -753,6 +945,16 @@ const copy: Record<Locale, Record<string, string>> = {
     create: "创建",
     upload: "上传",
     recentPastes: "最近 paste",
+    untitledPaste: "未命名 paste",
+    createSecureDrop: "创建安全投放。",
+    titleThisPaste: "为这个 paste 命名",
+    pasteTextPlaceholder: "在此粘贴文本、备注、凭据或传输上下文。",
+    tagsSeparatedByComma: "用英文逗号分隔标签",
+    dropOrChooseFile: "拖放或选择文件",
+    duration24Hours: "24 小时",
+    duration7Days: "7 天",
+    duration30Days: "30 天",
+    duration180Days: "180 天",
     active: "有效",
     edit: "编辑",
     noPasteSelected: "未选择 paste",
@@ -765,17 +967,49 @@ const copy: Record<Locale, Record<string, string>> = {
     loginRequired: "需要登录",
     anonymous: "匿名访问",
     expires: "过期",
+    visits: "次访问",
+    downloads: "次下载",
+    shareToken: "分享令牌",
+    maxVisits: "最大访问次数",
+    maxDownloads: "最大下载次数",
+    attachmentsCount: "个附件",
     stripeUsdtPayments: "Stripe 和 USDT 支付状态",
     billingSupport: "支付支持",
     billingSupportBody:
       "退款、重复扣款、卡住的 Epusdt 支付和人工审核请求会通过退款政策和支持入口处理。",
     refundPolicy: "退款政策",
     support: "支持",
+    legalHub: "法律中心",
+    terms: "条款",
+    refund: "退款",
+    abuseDmca: "滥用/DMCA",
+    cookies: "Cookie",
+    status: "状态",
+    deletion: "删除",
+    openApp: "打开应用",
+    launchDocuments: "上线文档",
+    legalNavigation: "法律导航",
+    lastUpdated: "最后更新",
+    supportRequests: "账号、支付、隐私、DPA 和数据主体请求",
+    abuseRequests: "滥用、恶意软件、DMCA 和紧急下架请求",
+    supportContactLoading: "支持联系人加载中",
+    abuseContactLoading: "滥用联系人加载中",
+    publicDocFooter:
+      "本页面反映已确认的公开 beta 上线架构；当提供商、保留策略或请求流程变化时必须更新。",
     storage: "存储",
     file: "文件",
     retention: "有效期",
+    subprocessors: "子处理方",
     traffic: "流量",
     activePastes: "条有效 paste",
+    activePastesLabel: "有效 paste",
+    planLimit: "套餐上限",
+    storageOf: "共",
+    sharedLinks: "分享链接",
+    pastesExposed: "条 paste 已暴露",
+    attachmentsLabel: "附件",
+    expiringIn24h: "24 小时内过期",
+    noUrgentExpiry: "暂无紧急过期",
     unavailable: "不可购买",
     openCheckout: "打开支付页",
     paymentAddress: "收款地址",
@@ -791,6 +1025,13 @@ const copy: Record<Locale, Record<string, string>> = {
     deleteRequest: "申请删除",
     cancelDelete: "取消删除",
     deleteNow: "立即删除",
+    accountRights: "账号权利",
+    accountRightsBody:
+      "提交敏感请求前，请先查看数据导出、账号删除、隐私和支持入口。",
+    dataExport: "数据导出",
+    accountDeletion: "账号删除",
+    privacy: "隐私",
+    supportIntake: "支持入口",
     reportTarget: "举报目标",
     reportReason: "举报原因",
     auditQueuesCleanup: "审计、队列、清理",
@@ -805,9 +1046,19 @@ const copy: Record<Locale, Record<string, string>> = {
     manualPaymentReasonRequired: "标记支付前请输入客服原因",
     queues: "队列",
     scanFailures: "扫描失败",
+    cleanupJobs: "清理任务",
+    cleanupFailures: "清理失败",
+    failedJobs: "失败任务",
+    queuedMails: "排队邮件",
+    failedMails: "失败邮件",
+    attempts: "次尝试",
     deleteFailures: "删除失败",
     resolve: "处理",
     dismiss: "驳回",
+    retry: "重试",
+    release: "解冻",
+    freeze: "冻结",
+    frozen: "已冻结",
     webhooks: "Webhook",
     replay: "重放",
     copy: "复制",
@@ -850,12 +1101,440 @@ const copy: Record<Locale, Record<string, string>> = {
     webhookProcessed: "Webhook 已处理",
     webhookReplayed: "Webhook 已重放",
     reportUpdated: "举报已更新",
+    pasteDeleted: "Paste 已删除",
+    requestFailed: "请求失败",
+    unpinPaste: "取消置顶 paste",
+    pinPaste: "置顶 paste",
+    removeFavorite: "移除收藏",
+    favoritePaste: "收藏 paste",
+    copyText: "复制文本",
+    extendPaste: "延长 paste",
+    deletePaste: "删除 paste",
   },
 };
 
-function localeFor(language?: string): Locale {
-  return language?.toLowerCase().startsWith("zh") ? "zh" : "en";
-}
+const copy: Record<Locale, Record<string, string>> = {
+  en: baseCopy.en,
+  "zh-CN": baseCopy["zh-CN"],
+  "zh-TW": {
+    ...baseCopy["zh-CN"],
+    privateCloudClipboard: "私有雲剪貼簿",
+    sharedPaste: "分享內容",
+    email: "電子郵件",
+    password: "密碼",
+    displayName: "顯示名稱",
+    login: "登入",
+    register: "註冊",
+    verificationToken: "電子郵件驗證碼",
+    verify: "驗證",
+    magicLink: "魔法連結",
+    magicToken: "魔法連結權杖",
+    useToken: "使用權杖",
+    manualTokenFallback: "手動權杖備用入口",
+    reset: "重設",
+    resetToken: "重設權杖",
+    updatePassword: "更新密碼",
+    inbox: "收件匣",
+    shares: "分享",
+    billing: "方案",
+    settings: "設定",
+    admin: "後台",
+    currentPlan: "目前方案",
+    pastes: "則 paste",
+    logout: "登出",
+    logoutAll: "登出全部",
+    search: "搜尋",
+    all: "全部",
+    text: "文字",
+    images: "圖片",
+    files: "檔案",
+    expiring: "即將過期",
+    shared: "已分享",
+    favorites: "收藏",
+    emailVerificationRequired: "需要電子郵件驗證",
+    send: "傳送",
+    newPrivatePaste: "新增私有 paste",
+    private: "私有",
+    title: "標題",
+    tags: "標籤",
+    create: "建立",
+    upload: "上傳",
+    recentPastes: "最近 paste",
+    untitledPaste: "未命名 paste",
+    createSecureDrop: "建立安全投放。",
+    titleThisPaste: "為這個 paste 命名",
+    pasteTextPlaceholder: "在此貼上文字、備註、憑證或傳輸上下文。",
+    tagsSeparatedByComma: "用英文逗號分隔標籤",
+    dropOrChooseFile: "拖放或選擇檔案",
+    duration24Hours: "24 小時",
+    duration7Days: "7 天",
+    duration30Days: "30 天",
+    duration180Days: "180 天",
+    active: "有效",
+    edit: "編輯",
+    noPasteSelected: "未選擇 paste",
+    save: "儲存",
+    share: "分享",
+    open: "開啟",
+    report: "檢舉",
+    revoke: "撤銷",
+    loginRequired: "需要登入",
+    anonymous: "匿名訪問",
+    expires: "過期",
+    visits: "次訪問",
+    downloads: "次下載",
+    shareToken: "分享權杖",
+    maxVisits: "最大訪問次數",
+    maxDownloads: "最大下載次數",
+    attachmentsCount: "個附件",
+    billingSupport: "付款支援",
+    support: "支援",
+    legalHub: "法律中心",
+    terms: "條款",
+    refund: "退款",
+    abuseDmca: "濫用/DMCA",
+    cookies: "Cookie",
+    status: "狀態",
+    deletion: "刪除",
+    openApp: "開啟應用",
+    launchDocuments: "上線文件",
+    legalNavigation: "法律導覽",
+    lastUpdated: "最後更新",
+    supportRequests: "帳號、付款、隱私、DPA 和資料主體請求",
+    abuseRequests: "濫用、惡意軟體、DMCA 和緊急下架請求",
+    supportContactLoading: "支援聯絡人載入中",
+    abuseContactLoading: "濫用聯絡人載入中",
+    publicDocFooter:
+      "本頁面反映已確認的公開 beta 上線架構；當提供商、保留策略或請求流程變化時必須更新。",
+    storage: "儲存",
+    file: "檔案",
+    retention: "保留期限",
+    subprocessors: "子處理方",
+    traffic: "流量",
+    activePastes: "則有效 paste",
+    activePastesLabel: "有效 paste",
+    planLimit: "方案上限",
+    storageOf: "共",
+    sharedLinks: "分享連結",
+    pastesExposed: "則 paste 已公開",
+    attachmentsLabel: "附件",
+    expiringIn24h: "24 小時內過期",
+    noUrgentExpiry: "暫無緊急過期",
+    unavailable: "不可購買",
+    openCheckout: "開啟付款頁",
+    paymentAddress: "收款地址",
+    accountActive: "帳號正常",
+    deletionScheduled: "已排程刪除",
+    saveProfile: "儲存資料",
+    linkedAccounts: "已連結帳號",
+    noLinkedAccounts: "尚未連結外部登入方式。",
+    unlinkGoogle: "解除 Google 連結",
+    oauthUnlinked: "OAuth 帳號已解除連結",
+    export: "匯出",
+    deleteRequest: "申請刪除",
+    cancelDelete: "取消刪除",
+    deleteNow: "立即刪除",
+    accountRights: "帳號權利",
+    accountRightsBody:
+      "提交敏感請求前，請先查看資料匯出、帳號刪除、隱私和支援入口。",
+    dataExport: "資料匯出",
+    accountDeletion: "帳號刪除",
+    privacy: "隱私",
+    supportIntake: "支援入口",
+    reportTarget: "檢舉目標",
+    reportReason: "檢舉原因",
+    auditQueuesCleanup: "稽核、佇列、清理",
+    runCleanup: "執行清理",
+    runBillingReconcile: "執行付款對帳",
+    users: "使用者",
+    attachments: "附件",
+    orders: "訂單",
+    paid: "標記已付款",
+    manualPaymentReason: "人工付款原因",
+    manualPaymentReasonPlaceholder: "客服工單或修正原因",
+    manualPaymentReasonRequired: "標記付款前請輸入客服原因",
+    queues: "佇列",
+    scanFailures: "掃描失敗",
+    cleanupJobs: "清理任務",
+    cleanupFailures: "清理失敗",
+    failedJobs: "失敗任務",
+    queuedMails: "排隊郵件",
+    failedMails: "失敗郵件",
+    attempts: "次嘗試",
+    deleteFailures: "刪除失敗",
+    resolve: "處理",
+    dismiss: "駁回",
+    retry: "重試",
+    release: "解凍",
+    freeze: "凍結",
+    frozen: "已凍結",
+    replay: "重放",
+    copy: "複製",
+    accountReady: "帳號已建立",
+    signedIn: "已登入",
+    signedInWithGoogle: "已透過 Google 登入",
+    verificationIssued: "驗證權杖已傳送",
+    emailVerified: "電子郵件已驗證",
+    emailVerifiedLogin: "電子郵件已驗證，請登入後繼續。",
+    emailVerifiedDifferentAccount:
+      "另一個帳號的電子郵件已驗證，切換前請先登出目前帳號。",
+    magicLinkIssued: "魔法連結已簽發",
+    signedInMagic: "已透過魔法連結登入",
+    passwordResetLinkReady: "請輸入新密碼以完成帳號密碼重設。",
+    signedOut: "已登出",
+    allSessionsSignedOut: "所有工作階段已登出",
+    passwordResetIssued: "密碼重設已簽發",
+    passwordUpdated: "密碼已更新",
+    reportSubmitted: "檢舉已提交",
+    pasteCreated: "Paste 已建立",
+    attachmentUploaded: "附件已上傳",
+    shareLinkCreated: "分享連結已建立",
+    shareOpened: "分享已開啟",
+    pasteUpdated: "Paste 已更新",
+    pinUpdated: "置頂已更新",
+    favoriteUpdated: "收藏已更新",
+    expirationExtended: "有效期已延長",
+    orderCreated: "訂單已建立",
+    exportGenerated: "匯出已產生",
+    deletionCanceled: "刪除已取消",
+    accountDeleted: "帳號已刪除",
+    profileUpdated: "資料已更新",
+    cleanupCompleted: "清理完成",
+    billingReconciled: "付款對帳已完成",
+    scanRetried: "掃描已重試",
+    attachmentFrozen: "附件已凍結",
+    attachmentReleased: "附件已解除凍結",
+    shareRevoked: "分享已撤銷",
+    orderMarkedPaid: "訂單已標記付款",
+    webhookProcessed: "Webhook 已處理",
+    webhookReplayed: "Webhook 已重放",
+    reportUpdated: "檢舉已更新",
+    pasteDeleted: "Paste 已刪除",
+    requestFailed: "請求失敗",
+    unpinPaste: "取消置頂 paste",
+    pinPaste: "置頂 paste",
+    removeFavorite: "移除收藏",
+    favoritePaste: "收藏 paste",
+    copyText: "複製文字",
+    extendPaste: "延長 paste",
+    deletePaste: "刪除 paste",
+  },
+  es: {
+    ...baseCopy.en,
+    privateCloudClipboard: "Portapapeles privado en la nube",
+    sharedPaste: "Paste compartido",
+    email: "Correo",
+    password: "Contraseña",
+    displayName: "Nombre visible",
+    login: "Iniciar sesión",
+    register: "Registrarse",
+    google: "Google",
+    verificationToken: "token de verificación",
+    verify: "Verificar",
+    magicLink: "Enlace mágico",
+    magicToken: "token de enlace mágico",
+    useToken: "Usar token",
+    manualTokenFallback: "Entrada manual de token",
+    reset: "Restablecer",
+    resetToken: "token de restablecimiento",
+    updatePassword: "Actualizar contraseña",
+    inbox: "Bandeja",
+    shares: "Enlaces",
+    billing: "Facturación",
+    settings: "Ajustes",
+    admin: "Admin",
+    currentPlan: "Plan actual",
+    pastes: "pastes",
+    logout: "Salir",
+    logoutAll: "Salir de todo",
+    search: "Buscar",
+    all: "Todo",
+    text: "Texto",
+    images: "Imágenes",
+    files: "Archivos",
+    expiring: "Por vencer",
+    shared: "Compartido",
+    favorites: "Favoritos",
+    emailVerificationRequired: "Verificación de correo requerida",
+    send: "Enviar",
+    newPrivatePaste: "Nuevo paste privado",
+    private: "Privado",
+    title: "Título",
+    tags: "etiquetas",
+    create: "Crear",
+    upload: "Subir",
+    recentPastes: "Pastes recientes",
+    untitledPaste: "Paste sin título",
+    createSecureDrop: "Crea una entrega segura.",
+    titleThisPaste: "Titula este paste",
+    pasteTextPlaceholder:
+      "Pega texto, notas, credenciales o contexto de transferencia aquí.",
+    tagsSeparatedByComma: "etiquetas separadas por coma",
+    dropOrChooseFile: "Arrastra o elige un archivo",
+    duration24Hours: "24 horas",
+    duration7Days: "7 días",
+    duration30Days: "30 días",
+    duration180Days: "180 días",
+    active: "activos",
+    edit: "Editar",
+    noPasteSelected: "Ningún paste seleccionado",
+    save: "Guardar",
+    share: "Compartir",
+    createShare: "Crear",
+    open: "Abrir",
+    report: "Reportar",
+    revoke: "Revocar",
+    loginRequired: "requiere inicio de sesión",
+    anonymous: "anónimo",
+    expires: "vence",
+    visits: "visitas",
+    downloads: "descargas",
+    shareToken: "token de enlace",
+    maxVisits: "visitas máximas",
+    maxDownloads: "descargas máximas",
+    attachmentsCount: "adjuntos",
+    stripeUsdtPayments: "Ciclo de pago de Stripe y USDT",
+    billingSupport: "Soporte de facturación",
+    billingSupportBody:
+      "Reembolsos, cargos duplicados, pagos Epusdt atascados y revisiones manuales se atienden por política de reembolso y soporte.",
+    refundPolicy: "Política de reembolso",
+    support: "Soporte",
+    legalHub: "Centro legal",
+    terms: "Términos",
+    refund: "Reembolso",
+    abuseDmca: "Abuso/DMCA",
+    cookies: "Cookies",
+    status: "Estado",
+    deletion: "Eliminación",
+    openApp: "Abrir app",
+    launchDocuments: "Documentos de lanzamiento",
+    legalNavigation: "Navegación legal",
+    lastUpdated: "Última actualización",
+    supportRequests:
+      "Solicitudes de cuenta, facturación, privacidad, DPA y derechos de datos",
+    abuseRequests: "Abuso, malware, DMCA y solicitudes urgentes de retirada",
+    supportContactLoading: "Contacto de soporte cargando",
+    abuseContactLoading: "Contacto de abuso cargando",
+    publicDocFooter:
+      "Esta página refleja la arquitectura confirmada de beta pública y debe actualizarse cuando cambien proveedores, retención o flujos de solicitud.",
+    storage: "Almacenamiento",
+    file: "Archivo",
+    retention: "Retención",
+    subprocessors: "Subprocesadores",
+    traffic: "Tráfico",
+    activePastes: "pastes activos",
+    activePastesLabel: "Pastes activos",
+    planLimit: "límite del plan",
+    storageOf: "de",
+    sharedLinks: "Enlaces compartidos",
+    pastesExposed: "pastes expuestos",
+    attachmentsLabel: "Adjuntos",
+    expiringIn24h: "vencen en 24 h",
+    noUrgentExpiry: "Sin vencimientos urgentes",
+    unavailable: "No disponible",
+    openCheckout: "Abrir pago",
+    paymentAddress: "dirección",
+    webhook: "Webhook",
+    accountActive: "Cuenta activa",
+    deletionScheduled: "Eliminación programada",
+    saveProfile: "Guardar perfil",
+    linkedAccounts: "Cuentas vinculadas",
+    noLinkedAccounts: "No hay proveedores externos vinculados.",
+    unlinkGoogle: "Desvincular Google",
+    oauthUnlinked: "Cuenta OAuth desvinculada",
+    export: "Exportar",
+    deleteRequest: "Solicitar eliminación",
+    cancelDelete: "Cancelar eliminación",
+    deleteNow: "Eliminar ahora",
+    accountRights: "Derechos de cuenta",
+    accountRightsBody:
+      "Revisa exportación de datos, eliminación de cuenta, privacidad y soporte antes de enviar solicitudes sensibles.",
+    dataExport: "exportación de datos",
+    accountDeletion: "eliminación de cuenta",
+    privacy: "privacidad",
+    supportIntake: "entrada de soporte",
+    reportTarget: "objetivo del reporte",
+    reportReason: "motivo del reporte",
+    auditQueuesCleanup: "Auditoría, colas y limpieza",
+    runCleanup: "Ejecutar limpieza",
+    runBillingReconcile: "Reconciliar facturación",
+    users: "Usuarios",
+    attachments: "Adjuntos",
+    orders: "Pedidos",
+    paid: "Marcar pagado",
+    manualPaymentReason: "Motivo de pago manual",
+    manualPaymentReasonPlaceholder: "Ticket de soporte o motivo de corrección",
+    manualPaymentReasonRequired:
+      "Ingresa un motivo de soporte antes de marcar como pagado",
+    queues: "Colas",
+    scanFailures: "Fallos de escaneo",
+    cleanupJobs: "Trabajos de limpieza",
+    cleanupFailures: "Fallos de limpieza",
+    failedJobs: "Trabajos fallidos",
+    queuedMails: "Correos en cola",
+    failedMails: "Correos fallidos",
+    attempts: "intentos",
+    deleteFailures: "Fallos de eliminación",
+    resolve: "Resolver",
+    dismiss: "Descartar",
+    retry: "Reintentar",
+    release: "Liberar",
+    freeze: "Congelar",
+    frozen: "congelado",
+    webhooks: "Webhooks",
+    replay: "Reintentar",
+    copy: "Copiar",
+    accountReady: "Cuenta lista",
+    signedIn: "Sesión iniciada",
+    signedInWithGoogle: "Sesión iniciada con Google",
+    verificationIssued: "Verificación emitida",
+    emailVerified: "Correo verificado",
+    emailVerifiedLogin: "Correo verificado. Inicia sesión para continuar.",
+    emailVerifiedDifferentAccount:
+      "Correo verificado para otra cuenta. Cierra sesión antes de cambiar.",
+    magicLinkIssued: "Enlace mágico emitido",
+    signedInMagic: "Sesión iniciada con enlace mágico",
+    passwordResetLinkReady:
+      "Ingresa una contraseña nueva para terminar el restablecimiento.",
+    signedOut: "Sesión cerrada",
+    allSessionsSignedOut: "Todas las sesiones cerradas",
+    passwordResetIssued: "Restablecimiento emitido",
+    passwordUpdated: "Contraseña actualizada",
+    reportSubmitted: "Reporte enviado",
+    pasteCreated: "Paste creado",
+    attachmentUploaded: "Adjunto subido",
+    shareLinkCreated: "Enlace creado",
+    shareOpened: "Enlace abierto",
+    pasteUpdated: "Paste actualizado",
+    pinUpdated: "Fijado actualizado",
+    favoriteUpdated: "Favorito actualizado",
+    expirationExtended: "Vencimiento extendido",
+    orderCreated: "Pedido creado",
+    exportGenerated: "Exportación generada",
+    deletionCanceled: "Eliminación cancelada",
+    accountDeleted: "Cuenta eliminada",
+    profileUpdated: "Perfil actualizado",
+    cleanupCompleted: "Limpieza completada",
+    billingReconciled: "Facturación reconciliada",
+    scanRetried: "Escaneo reintentado",
+    attachmentFrozen: "Adjunto congelado",
+    attachmentReleased: "Adjunto liberado",
+    shareRevoked: "Enlace revocado",
+    orderMarkedPaid: "Pedido marcado como pagado",
+    webhookProcessed: "Webhook procesado",
+    webhookReplayed: "Webhook reintentado",
+    reportUpdated: "Reporte actualizado",
+    pasteDeleted: "Paste eliminado",
+    requestFailed: "Solicitud fallida",
+    unpinPaste: "Desfijar paste",
+    pinPaste: "Fijar paste",
+    removeFavorite: "Quitar favorito",
+    favoritePaste: "Marcar favorito",
+    copyText: "Copiar texto",
+    extendPaste: "Extender paste",
+    deletePaste: "Eliminar paste",
+  },
+};
 
 function copyFor(language?: string) {
   const locale = localeFor(language);
@@ -863,7 +1542,7 @@ function copyFor(language?: string) {
 }
 
 const orderStatusText: Record<
-  Locale,
+  string,
   Record<string, Omit<OrderStatusDetail, "tone">>
 > = {
   en: {
@@ -893,7 +1572,7 @@ const orderStatusText: Record<
       description: "Support review is required before activation.",
     },
   },
-  zh: {
+  "zh-CN": {
     pending: { label: "待支付", description: "等待支付渠道确认。" },
     paid: { label: "已支付", description: "会员权益已生效。" },
     failed: { label: "支付失败", description: "支付渠道返回失败状态。" },
@@ -905,10 +1584,49 @@ const orderStatusText: Record<
     },
     needs_review: { label: "需审核", description: "需要客服审核后再处理。" },
   },
+  "zh-TW": {
+    pending: { label: "待付款", description: "等待付款渠道確認。" },
+    paid: { label: "已付款", description: "會員權益已生效。" },
+    failed: { label: "付款失敗", description: "付款渠道返回失敗狀態。" },
+    expired: { label: "已過期", description: "付款視窗已過期，未確認到帳。" },
+    canceled: { label: "已取消", description: "渠道訂單或訂閱已取消。" },
+    refunded: {
+      label: "已退款",
+      description: "已退款，匹配的會員權益已撤銷。",
+    },
+    needs_review: { label: "需審核", description: "需要客服審核後再處理。" },
+  },
+  es: {
+    pending: {
+      label: "Pendiente",
+      description: "Esperando confirmación del proveedor.",
+    },
+    paid: { label: "Pagado", description: "La membresía está activa." },
+    failed: {
+      label: "Fallido",
+      description: "El proveedor reportó un fallo de pago.",
+    },
+    expired: {
+      label: "Vencido",
+      description: "La ventana de pago venció antes de confirmarse.",
+    },
+    canceled: {
+      label: "Cancelado",
+      description: "El pedido o la suscripción fue cancelado.",
+    },
+    refunded: {
+      label: "Reembolsado",
+      description: "El pago fue reembolsado y el acceso relacionado revocado.",
+    },
+    needs_review: {
+      label: "Requiere revisión",
+      description: "Soporte debe revisar antes de activar.",
+    },
+  },
 };
 
 const attachmentScanText: Record<
-  Locale,
+  string,
   Record<string, Omit<AttachmentScanDetail, "tone" | "canDownload">>
 > = {
   en: {
@@ -932,7 +1650,7 @@ const attachmentScanText: Record<
         "Known malicious files are blocked for owner and public downloads.",
     },
   },
-  zh: {
+  "zh-CN": {
     clean: {
       label: "扫描通过",
       description: "文件已通过扫描，可以下载。",
@@ -948,6 +1666,45 @@ const attachmentScanText: Record<
     malicious: {
       label: "已阻止",
       description: "已知恶意文件会阻止所有者和公开下载。",
+    },
+  },
+  "zh-TW": {
+    clean: {
+      label: "掃描通過",
+      description: "檔案已通過掃描，可以下載。",
+    },
+    pending: {
+      label: "等待掃描",
+      description: "擁有者可下載，但公開分享下載需等待掃描通過。",
+    },
+    scan_failed: {
+      label: "掃描失敗",
+      description: "擁有者可謹慎下載；公開分享下載會阻止到重試通過為止。",
+    },
+    malicious: {
+      label: "已阻止",
+      description: "已知惡意檔案會阻止擁有者和公開下載。",
+    },
+  },
+  es: {
+    clean: {
+      label: "Limpio",
+      description: "Escaneo aprobado. Las descargas están permitidas.",
+    },
+    pending: {
+      label: "Escaneo pendiente",
+      description:
+        "El propietario puede descargar, pero los enlaces públicos esperan un escaneo limpio.",
+    },
+    scan_failed: {
+      label: "Escaneo fallido",
+      description:
+        "El propietario puede descargar con cautela. Los enlaces públicos quedan bloqueados hasta que un reintento pase.",
+    },
+    malicious: {
+      label: "Bloqueado",
+      description:
+        "Los archivos maliciosos conocidos se bloquean para descargas privadas y públicas.",
     },
   },
 };
@@ -975,7 +1732,9 @@ function orderStatusDetail(status: string, locale: Locale): OrderStatusDetail {
   const detail = orderStatusText[locale][normalized] ?? {
     label: status || "Unknown",
     description:
-      locale === "zh"
+      locale === "es"
+        ? "El proveedor devolvió este estado."
+        : isChineseLocale(locale)
         ? "支付渠道返回的状态。"
         : "Provider returned this status.",
   };
@@ -991,7 +1750,9 @@ function attachmentScanDetail(
   const base = attachmentScanText[locale][normalized] ?? {
     label: attachment.scanStatus || "Unknown",
     description:
-      locale === "zh"
+      locale === "es"
+        ? "El escáner devolvió este estado."
+        : isChineseLocale(locale)
         ? "扫描服务返回的状态。"
         : "Scanner returned this status.",
   };
@@ -1006,7 +1767,7 @@ function attachmentScanDetail(
   }
   if (normalized === "malicious") tone = "danger";
   const risk = attachment.risk?.trim();
-  const riskPrefix = locale === "zh" ? "风险" : "Risk";
+  const riskPrefix = locale === "es" ? "Riesgo" : isChineseLocale(locale) ? "风险" : "Risk";
   return {
     ...base,
     description: risk
@@ -1083,7 +1844,7 @@ function App() {
   const [resetToken, setResetToken] = useState("");
   const [profileDraft, setProfileDraft] = useState({
     displayName: "",
-    language: "en",
+    language: browserLocale,
   });
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1138,29 +1899,29 @@ function App() {
   const workspaceStats: WorkspaceStat[] = useMemo(
     () => [
       {
-        label: "Active pastes",
+        label: t("activePastesLabel"),
         value: String(quota?.activePasteCount ?? pastes.length),
-        detail: `${activePlan?.activePasteLimit ?? 0} plan limit`,
+        detail: `${activePlan?.activePasteLimit ?? 0} ${t("planLimit")}`,
         tone: "pastes",
       },
       {
-        label: "Storage",
+        label: t("storage"),
         value: formatBytes(storageUsed),
-        detail: `${storagePercent}% of ${formatBytes(storageLimit)}`,
+        detail: `${storagePercent}% ${t("storageOf")} ${formatBytes(storageLimit)}`,
         tone: "storage",
       },
       {
-        label: "Shared links",
+        label: t("sharedLinks"),
         value: String(shares.length),
-        detail: `${sharedPasteCount} pastes exposed`,
+        detail: `${sharedPasteCount} ${t("pastesExposed")}`,
         tone: "shares",
       },
       {
-        label: "Attachments",
+        label: t("attachmentsLabel"),
         value: String(attachmentCount),
         detail: expiringCount
-          ? `${expiringCount} expiring in 24h`
-          : "No urgent expiry",
+          ? `${expiringCount} ${t("expiringIn24h")}`
+          : t("noUrgentExpiry"),
         tone: "attachments",
       },
     ],
@@ -1175,9 +1936,10 @@ function App() {
       storageLimit,
       storagePercent,
       storageUsed,
+      t,
     ],
   );
-  const viewSummary = viewSummaries[view];
+  const viewSummary = viewSummaries[locale][view];
 
   const pricesByPlan = useMemo(() => {
     const grouped = new Map<string, Price[]>();
@@ -1209,7 +1971,7 @@ function App() {
       setUser(meResult.value);
       setProfileDraft({
         displayName: meResult.value.displayName,
-        language: meResult.value.language || "en",
+        language: localeFor(meResult.value.language),
       });
       await refreshAuthed();
     }
@@ -1325,7 +2087,7 @@ function App() {
         setVerificationToken("");
         setProfileDraft({
           displayName: result.user.displayName,
-          language: result.user.language || "en",
+          language: localeFor(result.user.language),
         });
         await refreshAuthed();
       }
@@ -1359,7 +2121,7 @@ function App() {
       return result;
     } catch (error) {
       const apiError = error as ApiError;
-      setMessage(apiError.message || "Request failed");
+      setMessage(apiError.message || t("requestFailed"));
       return null;
     } finally {
       setBusy(false);
@@ -1381,19 +2143,22 @@ function App() {
     setUser(updated);
     setProfileDraft({
       displayName: updated.displayName,
-      language: updated.language || "en",
+      language: localeFor(updated.language),
     });
     await refreshAuthed();
   }
 
   async function register() {
-    const result = await run(() => client.register(auth), "Account ready");
+    const result = await run(
+      () => client.register({ ...auth, language: locale }),
+      t("accountReady"),
+    );
     if (result) {
       setUser(result.user);
       setVerificationToken(result.devEmailVerificationToken ?? "");
       setProfileDraft({
         displayName: result.user.displayName,
-        language: result.user.language || "en",
+        language: localeFor(result.user.language),
       });
       await refreshAuthed();
     }
@@ -1402,14 +2167,14 @@ function App() {
   async function login() {
     const result = await run(
       () => client.login({ email: auth.email, password: auth.password }),
-      "Signed in",
+      t("signedIn"),
     );
     if (result) {
       setUser(result.user);
       setVerificationToken("");
       setProfileDraft({
         displayName: result.user.displayName,
-        language: result.user.language || "en",
+        language: localeFor(result.user.language),
       });
       await refreshAuthed();
     }
@@ -1424,7 +2189,7 @@ function App() {
   async function startVerification() {
     const result = await run(
       () => client.startEmailVerification(),
-      "Verification issued",
+      t("verificationIssued"),
     );
     if (result?.devToken) setVerificationToken(result.devToken);
   }
@@ -1432,7 +2197,7 @@ function App() {
   async function finishVerification() {
     const updated = await run(
       () => client.finishEmailVerification(verificationToken),
-      "Email verified",
+      t("emailVerified"),
     );
     if (updated) {
       await applyVerifiedEmail(updated);
@@ -1442,7 +2207,7 @@ function App() {
   async function startMagic() {
     const result = await run(
       () => client.startMagic(auth.email),
-      "Magic link issued",
+      t("magicLinkIssued"),
     );
     if (result) setMagicToken(result.devToken ?? "");
   }
@@ -1450,21 +2215,21 @@ function App() {
   async function finishMagic() {
     const result = await run(
       () => client.finishMagic(magicToken),
-      "Signed in with magic link",
+      t("signedInMagic"),
     );
     if (result) {
       setUser(result.user);
       setVerificationToken("");
       setProfileDraft({
         displayName: result.user.displayName,
-        language: result.user.language || "en",
+        language: localeFor(result.user.language),
       });
       await refreshAuthed();
     }
   }
 
   async function logout() {
-    await run(() => client.logout(), "Signed out");
+    await run(() => client.logout(), t("signedOut"));
     setUser(null);
     setPastes([]);
     setShares([]);
@@ -1472,7 +2237,7 @@ function App() {
   }
 
   async function logoutAll() {
-    await run(() => client.logoutAll(), "All sessions signed out");
+    await run(() => client.logoutAll(), t("allSessionsSignedOut"));
     setUser(null);
     setPastes([]);
     setShares([]);
@@ -1482,7 +2247,7 @@ function App() {
   async function passwordReset() {
     const result = await run(
       () => client.passwordReset(auth.email),
-      "Password reset issued",
+      t("passwordResetIssued"),
     );
     if (result) setResetToken(result.devToken ?? "");
   }
@@ -1490,7 +2255,7 @@ function App() {
   async function finishPasswordReset() {
     const result = await run(
       () => client.finishPasswordReset(resetToken, auth.password),
-      "Password updated",
+      t("passwordUpdated"),
     );
     if (result) {
       setResetToken("");
@@ -1501,7 +2266,7 @@ function App() {
   async function submitReport(target = reportDraft.target) {
     const report = await run(
       () => client.report({ target, reason: reportDraft.reason || "abuse" }),
-      "Report submitted",
+      t("reportSubmitted"),
     );
     if (report) {
       setReportDraft({ target: "", reason: "" });
@@ -1523,7 +2288,7 @@ function App() {
           favorite: draft.favorite,
           expiresInSeconds: draft.expiresInSeconds,
         }),
-      "Paste created",
+      t("pasteCreated"),
     );
     if (paste) {
       setDraft(defaultDraft);
@@ -1545,7 +2310,7 @@ function App() {
             favorite: false,
             expiresInSeconds: draft.expiresInSeconds,
           }),
-        "Paste created",
+        t("pasteCreated"),
       );
       if (!createdPaste) return;
       targetPaste = createdPaste;
@@ -1554,7 +2319,7 @@ function App() {
 
     const uploaded = await run(
       () => client.uploadAttachment(targetPaste.id, file),
-      "Attachment uploaded",
+      t("attachmentUploaded"),
     );
     if (uploaded) await refreshAuthed();
   }
@@ -1570,7 +2335,7 @@ function App() {
           maxDownloads: shareDraft.maxDownloads,
           expiresInSeconds: shareDraft.expiresInSeconds,
         }),
-      "Share link created",
+      t("shareLinkCreated"),
     );
     if (share) {
       setShareToken(share.token);
@@ -1581,7 +2346,7 @@ function App() {
   async function openShare(token = shareToken) {
     const result = await run(
       () => client.accessShare(token, shareDraft.password),
-      "Share opened",
+      t("shareOpened"),
     );
     if (result) setShareAccess(result);
   }
@@ -1589,7 +2354,7 @@ function App() {
   async function openPublicShare() {
     const result = await run(
       () => client.accessShare(publicShareToken, publicSharePassword),
-      "Share opened",
+      t("shareOpened"),
     );
     if (result) setShareAccess(result);
   }
@@ -1606,7 +2371,7 @@ function App() {
             .map((tag) => tag.trim())
             .filter(Boolean),
         }),
-      "Paste updated",
+      t("pasteUpdated"),
     );
     if (updated) {
       setPastes((items) =>
@@ -1619,7 +2384,7 @@ function App() {
   async function updatePasteFlag(paste: Paste, field: "pinned" | "favorite") {
     const updated = await run(
       () => client.updatePaste(paste.id, { [field]: !paste[field] }),
-      field === "pinned" ? "Pin updated" : "Favorite updated",
+      field === "pinned" ? t("pinUpdated") : t("favoriteUpdated"),
     );
     if (updated) {
       setPastes((items) =>
@@ -1632,7 +2397,7 @@ function App() {
   async function extendPaste(paste: Paste, expiresInSeconds: number) {
     const updated = await run(
       () => client.extendPaste(paste.id, expiresInSeconds),
-      "Expiration extended",
+      t("expirationExtended"),
     );
     if (updated) {
       setPastes((items) =>
@@ -1649,13 +2414,13 @@ function App() {
   ) {
     const order = await run(
       () => client.createOrder({ provider, planId, period }),
-      "Order created",
+      t("orderCreated"),
     );
     if (order) await refreshAuthed();
   }
 
   async function exportData() {
-    const payload = await run(() => client.exportMe(), "Export generated");
+    const payload = await run(() => client.exportMe(), t("exportGenerated"));
     if (payload) {
       const url = URL.createObjectURL(
         new Blob([JSON.stringify(payload, null, 2)], {
@@ -1673,18 +2438,18 @@ function App() {
   async function requestDelete() {
     const updated = await run(
       () => client.requestDelete(),
-      "Deletion scheduled",
+      t("deletionScheduled"),
     );
     if (updated) setUser(updated);
   }
 
   async function cancelDelete() {
-    const updated = await run(() => client.cancelDelete(), "Deletion canceled");
+    const updated = await run(() => client.cancelDelete(), t("deletionCanceled"));
     if (updated) setUser(updated);
   }
 
   async function executeDelete() {
-    const result = await run(() => client.executeDelete(), "Account deleted");
+    const result = await run(() => client.executeDelete(), t("accountDeleted"));
     if (result) {
       setUser(null);
       setPastes([]);
@@ -1696,7 +2461,7 @@ function App() {
   async function updateProfile() {
     const updated = await run(
       () => client.updateMe(profileDraft),
-      "Profile updated",
+      t("profileUpdated"),
     );
     if (updated) setUser(updated);
   }
@@ -1710,7 +2475,7 @@ function App() {
   }
 
   async function runCleanup() {
-    await run(() => client.runCleanup(), "Cleanup completed");
+    await run(() => client.runCleanup(), t("cleanupCompleted"));
     await refreshAuthed();
     await refreshAdmin();
   }
@@ -1722,20 +2487,20 @@ function App() {
   }
 
   async function adminRetryScan(attachmentId: string) {
-    await run(() => client.adminRetryScan(attachmentId), "Scan retried");
+    await run(() => client.adminRetryScan(attachmentId), t("scanRetried"));
     await refreshAdmin();
   }
 
   async function adminFreezeAttachment(attachmentId: string, frozen: boolean) {
     await run(
       () => client.adminFreezeAttachment(attachmentId, frozen),
-      frozen ? "Attachment frozen" : "Attachment released",
+      frozen ? t("attachmentFrozen") : t("attachmentReleased"),
     );
     await refreshAdmin();
   }
 
   async function adminRevokeShare(shareId: string) {
-    await run(() => client.adminRevokeShare(shareId), "Share revoked");
+    await run(() => client.adminRevokeShare(shareId), t("shareRevoked"));
     await refreshAdmin();
     await refreshAuthed();
   }
@@ -1762,7 +2527,7 @@ function App() {
   async function adminReplayWebhook(eventId: string) {
     await run(
       () => client.adminReplayWebhookEvent(eventId),
-      "Webhook replayed",
+      t("webhookReplayed"),
     );
     await refreshAdmin();
   }
@@ -1773,13 +2538,19 @@ function App() {
   ) {
     await run(
       () => client.adminResolveReport(report.id, status),
-      "Report updated",
+      t("reportUpdated"),
     );
     await refreshAdmin();
   }
 
   if (publicPage) {
-    return <PublicPageScreen page={publicPage} contacts={supportContacts} />;
+    return (
+      <PublicPageScreen
+        page={publicPage}
+        contacts={supportContacts}
+        locale={browserLocale}
+      />
+    );
   }
 
   if (publicShareToken) {
@@ -1808,12 +2579,12 @@ function App() {
             </div>
             <div>
               <strong>PasteBox</strong>
-              <span>Private cloud clipboard</span>
+              <span>{t("privateCloudClipboard")}</span>
             </div>
           </div>
           <div className="auth-grid">
             <label>
-              Email
+              {t("email")}
               <input
                 value={auth.email}
                 onChange={(event) =>
@@ -1822,7 +2593,7 @@ function App() {
               />
             </label>
             <label>
-              Password
+              {t("password")}
               <input
                 value={auth.password}
                 type="password"
@@ -1832,7 +2603,7 @@ function App() {
               />
             </label>
             <label>
-              Display name
+              {t("displayName")}
               <input
                 value={auth.displayName}
                 onChange={(event) =>
@@ -1911,7 +2682,7 @@ function App() {
             </div>
           </div>
           {message ? <p className="status-line">{message}</p> : null}
-          <PublicFooter />
+          <PublicFooter locale={locale} />
         </section>
       </main>
     );
@@ -1937,7 +2708,7 @@ function App() {
             onClick={() => setView("inbox")}
           >
             <Archive size={18} aria-hidden="true" />
-            Inbox
+            {t("inbox")}
           </button>
           <button
             className={navClass(view, "shared")}
@@ -1945,7 +2716,7 @@ function App() {
             onClick={() => setView("shared")}
           >
             <Link2 size={18} aria-hidden="true" />
-            Shares
+            {t("shares")}
           </button>
           <button
             className={navClass(view, "billing")}
@@ -1953,7 +2724,7 @@ function App() {
             onClick={() => setView("billing")}
           >
             <CreditCard size={18} aria-hidden="true" />
-            Billing
+            {t("billing")}
           </button>
           <button
             className={navClass(view, "settings")}
@@ -1961,7 +2732,7 @@ function App() {
             onClick={() => setView("settings")}
           >
             <UserRound size={18} aria-hidden="true" />
-            Settings
+            {t("settings")}
           </button>
           {user.role === "admin" ? (
             <button
@@ -1973,14 +2744,14 @@ function App() {
               }}
             >
               <ShieldCheck size={18} aria-hidden="true" />
-              Admin
+              {t("admin")}
             </button>
           ) : null}
         </nav>
 
-        <section className="quota-panel" aria-label="Current quota">
+        <section className="quota-panel" aria-label={t("currentPlan")}>
           <div>
-            <span className="eyebrow">Current plan</span>
+            <span className="eyebrow">{t("currentPlan")}</span>
             <strong>{activePlan?.name ?? user.planId}</strong>
           </div>
           <div className="quota-bar">
@@ -1993,19 +2764,19 @@ function App() {
           <p>
             {formatBytes(storageUsed)} / {formatBytes(storageLimit)} ·{" "}
             {quota?.activePasteCount ?? 0}/{activePlan?.activePasteLimit ?? 0}{" "}
-            pastes
+            {t("pastes")}
           </p>
         </section>
 
         <button className="ghost-button" type="button" onClick={logout}>
           <LogOut size={16} aria-hidden="true" />
-          Logout
+          {t("logout")}
         </button>
         <button className="ghost-button" type="button" onClick={logoutAll}>
           <LogOut size={16} aria-hidden="true" />
-          Logout all
+          {t("logoutAll")}
         </button>
-        <PublicFooter compact />
+        <PublicFooter compact locale={locale} />
       </aside>
 
       <section className="workspace">
@@ -2016,7 +2787,7 @@ function App() {
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               type="search"
-              placeholder="Search"
+              placeholder={t("search")}
             />
           </label>
           <label className="select-box">
@@ -2025,13 +2796,13 @@ function App() {
               value={filter}
               onChange={(event) => setFilter(event.target.value)}
             >
-              <option value="all">All</option>
-              <option value="text">Text</option>
-              <option value="image">Images</option>
-              <option value="file">Files</option>
-              <option value="expiring">Expiring</option>
-              <option value="shared">Shared</option>
-              <option value="favorite">Favorites</option>
+              <option value="all">{t("all")}</option>
+              <option value="text">{t("text")}</option>
+              <option value="image">{t("images")}</option>
+              <option value="file">{t("files")}</option>
+              <option value="expiring">{t("expiring")}</option>
+              <option value="shared">{t("shared")}</option>
+              <option value="favorite">{t("favorites")}</option>
             </select>
           </label>
           {message ? <span className="status-pill">{message}</span> : null}
@@ -2060,17 +2831,17 @@ function App() {
         {!user.emailVerified ? (
           <section className="verify-banner">
             <div>
-              <strong>Email verification required</strong>
+              <strong>{t("emailVerificationRequired")}</strong>
               <span>{user.email}</span>
             </div>
             <input
               value={verificationToken}
               onChange={(event) => setVerificationToken(event.target.value)}
-              placeholder="verification token"
+              placeholder={t("verificationToken")}
             />
             <button type="button" onClick={startVerification} disabled={busy}>
               <Send size={16} aria-hidden="true" />
-              Send
+              {t("send")}
             </button>
             <button
               type="button"
@@ -2078,7 +2849,7 @@ function App() {
               disabled={busy || !verificationToken}
             >
               <MailCheck size={16} aria-hidden="true" />
-              Verify
+              {t("verify")}
             </button>
           </section>
         ) : null}
@@ -2088,12 +2859,12 @@ function App() {
             <section className="composer" aria-labelledby="new-paste-title">
               <div className="composer-heading">
                 <div>
-                  <span className="eyebrow">New private paste</span>
-                  <h1 id="new-paste-title">Create a secure drop.</h1>
+                  <span className="eyebrow">{t("newPrivatePaste")}</span>
+                  <h1 id="new-paste-title">{t("createSecureDrop")}</h1>
                 </div>
                 <div className="privacy-badge">
                   <LockKeyhole size={16} aria-hidden="true" />
-                  Private
+                  {t("private")}
                 </div>
               </div>
               <input
@@ -2102,7 +2873,7 @@ function App() {
                 onChange={(event) =>
                   setDraft({ ...draft, title: event.target.value })
                 }
-                placeholder="Title this paste"
+                placeholder={t("titleThisPaste")}
               />
               <textarea
                 value={draft.text}
@@ -2113,7 +2884,7 @@ function App() {
                   const file = event.clipboardData.files.item(0);
                   if (file) void uploadFile(file);
                 }}
-                placeholder="Paste text, notes, credentials, or transfer context here."
+                placeholder={t("pasteTextPlaceholder")}
               />
               <div className="composer-controls">
                 <label>
@@ -2127,10 +2898,14 @@ function App() {
                       })
                     }
                   >
-                    <option value={24 * 60 * 60}>24 hours</option>
-                    <option value={7 * 24 * 60 * 60}>7 days</option>
-                    <option value={30 * 24 * 60 * 60}>30 days</option>
-                    <option value={180 * 24 * 60 * 60}>180 days</option>
+                    <option value={24 * 60 * 60}>{t("duration24Hours")}</option>
+                    <option value={7 * 24 * 60 * 60}>{t("duration7Days")}</option>
+                    <option value={30 * 24 * 60 * 60}>
+                      {t("duration30Days")}
+                    </option>
+                    <option value={180 * 24 * 60 * 60}>
+                      {t("duration180Days")}
+                    </option>
                   </select>
                 </label>
                 <input
@@ -2138,11 +2913,11 @@ function App() {
                   onChange={(event) =>
                     setDraft({ ...draft, tags: event.target.value })
                   }
-                  placeholder="tags separated by comma"
+                  placeholder={t("tagsSeparatedByComma")}
                 />
                 <button type="button" onClick={createPaste} disabled={busy}>
                   <Sparkles size={16} aria-hidden="true" />
-                  Create
+                  {t("create")}
                 </button>
               </div>
               <label
@@ -2162,7 +2937,7 @@ function App() {
                     void uploadFile(event.target.files[0])
                   }
                 />
-                Drop or choose a file
+                {t("dropOrChooseFile")}
               </label>
             </section>
 
@@ -2173,7 +2948,7 @@ function App() {
                 onSelect={setSelectedPasteId}
                 onCopy={(text) => void navigator.clipboard?.writeText(text)}
                 onDelete={async (id) => {
-                  await run(() => client.deletePaste(id), "Paste deleted");
+                  await run(() => client.deletePaste(id), t("pasteDeleted"));
                   await refreshAuthed();
                 }}
                 onExtend={(paste, seconds) => void extendPaste(paste, seconds)}
@@ -2188,6 +2963,7 @@ function App() {
                   draft={editDraft}
                   onDraft={setEditDraft}
                   onSave={saveSelectedPaste}
+                  locale={locale}
                 />
                 <ShareBox
                   paste={selectedPaste}
@@ -2206,18 +2982,19 @@ function App() {
         ) : null}
 
         {view === "shared" ? (
-          <Panel title="Shares" meta={`${shares.length} links`}>
+          <Panel title={t("shares")} meta={`${shares.length} ${t("sharedLinks")}`}>
             {shares.map((share) => (
               <article className="list-card" key={share.id}>
                 <div>
                   <strong>{share.url}</strong>
                   <span>
-                    {share.visitCount}/{share.maxVisits || "∞"} visits ·{" "}
-                    {share.downloadCount}/{share.maxDownloads || "∞"} downloads
+                    {share.visitCount}/{share.maxVisits || "∞"} {t("visits")} ·{" "}
+                    {share.downloadCount}/{share.maxDownloads || "∞"}{" "}
+                    {t("downloads")}
                   </span>
                   <span>
-                    {share.loginRequired ? "login required" : "anonymous"} ·
-                    expires {new Date(share.expiresAt).toLocaleString()}
+                    {share.loginRequired ? t("loginRequired") : t("anonymous")} ·
+                    {t("expires")} {new Date(share.expiresAt).toLocaleString()}
                   </span>
                 </div>
                 <button
@@ -2230,7 +3007,7 @@ function App() {
                   }}
                   disabled={Boolean(share.revokedAt)}
                 >
-                  Revoke
+                  {t("revoke")}
                 </button>
                 <button
                   type="button"
@@ -2242,7 +3019,7 @@ function App() {
                     void submitReport(`share:${share.id}`);
                   }}
                 >
-                  Report
+                  {t("report")}
                 </button>
               </article>
             ))}
@@ -2365,21 +3142,21 @@ function App() {
 
         {view === "settings" ? (
           <Panel
-            title="Settings"
+            title={t("settings")}
             meta={
-              user.deleteScheduledAt ? "Deletion scheduled" : "Account active"
+              user.deleteScheduledAt ? t("deletionScheduled") : t("accountActive")
             }
           >
             <section className="notice-card">
               <FileText size={18} aria-hidden="true" />
               <div>
-                <strong>Account rights</strong>
+                <strong>{t("accountRights")}</strong>
                 <span>
-                  Review <a href="/legal/data-export">data export</a>,{" "}
-                  <a href="/legal/account-deletion">account deletion</a>,{" "}
-                  <a href="/legal/privacy">privacy</a>, and{" "}
-                  <a href="/support">support intake</a> before submitting
-                  sensitive requests.
+                  {t("accountRightsBody")}{" "}
+                  <a href="/legal/data-export">{t("dataExport")}</a>{" "}
+                  <a href="/legal/account-deletion">{t("accountDeletion")}</a>{" "}
+                  <a href="/legal/privacy">{t("privacy")}</a>{" "}
+                  <a href="/support">{t("supportIntake")}</a>
                 </span>
               </div>
             </section>
@@ -2418,46 +3195,49 @@ function App() {
                     displayName: event.target.value,
                   })
                 }
-                placeholder="Display name"
+                placeholder={t("displayName")}
               />
               <select
                 value={profileDraft.language}
                 onChange={(event) =>
                   setProfileDraft({
                     ...profileDraft,
-                    language: event.target.value,
+                    language: localeFor(event.target.value),
                   })
                 }
               >
-                <option value="en">English</option>
-                <option value="zh">中文</option>
+                {supportedLocales.map((option) => (
+                  <option value={option.value} key={option.value}>
+                    {option.label}
+                  </option>
+                ))}
               </select>
               <button type="button" onClick={updateProfile}>
-                Save profile
+                {t("saveProfile")}
               </button>
             </div>
             <div className="button-row">
               <button type="button" onClick={exportData}>
                 <Download size={16} aria-hidden="true" />
-                Export
+                {t("export")}
               </button>
               <button type="button" onClick={requestDelete}>
                 <Trash2 size={16} aria-hidden="true" />
-                Delete request
+                {t("deleteRequest")}
               </button>
               <button
                 type="button"
                 onClick={cancelDelete}
                 disabled={!user.deleteScheduledAt}
               >
-                Cancel delete
+                {t("cancelDelete")}
               </button>
               <button
                 type="button"
                 onClick={executeDelete}
                 disabled={!user.deleteScheduledAt}
               >
-                Delete now
+                {t("deleteNow")}
               </button>
             </div>
             <div className="form-grid">
@@ -2469,7 +3249,7 @@ function App() {
                     target: event.target.value,
                   })
                 }
-                placeholder="report target"
+                placeholder={t("reportTarget")}
               />
               <input
                 value={reportDraft.reason}
@@ -2479,7 +3259,7 @@ function App() {
                     reason: event.target.value,
                   })
                 }
-                placeholder="report reason"
+                placeholder={t("reportReason")}
               />
               <button
                 type="button"
@@ -2487,14 +3267,14 @@ function App() {
                 disabled={!reportDraft.target}
               >
                 <Send size={16} aria-hidden="true" />
-                Report
+                {t("report")}
               </button>
             </div>
           </Panel>
         ) : null}
 
         {view === "admin" ? (
-          <Panel title="Admin" meta="Audit, queues, cleanup">
+          <Panel title={t("admin")} meta={t("auditQueuesCleanup")}>
             <div className="metric-grid">
               {Object.entries(adminStats ?? {}).map(([key, value]) => (
                 <div className="metric" key={key}>
@@ -2504,25 +3284,25 @@ function App() {
               ))}
             </div>
             <button type="button" onClick={runCleanup}>
-              Run cleanup
+              {t("runCleanup")}
             </button>
             <button type="button" onClick={runBillingReconciliation}>
               {t("runBillingReconcile")}
             </button>
             <div className="admin-grid">
               <section>
-                <h3>Users</h3>
+                <h3>{t("users")}</h3>
                 {adminData.users.slice(0, 5).map((item) => (
                   <article className="list-card" key={item.id}>
                     <strong>{item.email}</strong>
                     <span>
-                      {item.planId} · {item.frozen ? "frozen" : "active"}
+                      {item.planId} · {item.frozen ? t("frozen") : t("active")}
                     </span>
                   </article>
                 ))}
               </section>
               <section>
-                <h3>Attachments</h3>
+                <h3>{t("attachments")}</h3>
                 {adminData.attachments.slice(0, 5).map((attachment) => (
                   <article className="list-card" key={attachment.id}>
                     <div>
@@ -2537,7 +3317,7 @@ function App() {
                         type="button"
                         onClick={() => void adminRetryScan(attachment.id)}
                       >
-                        Retry
+                        {t("retry")}
                       </button>
                       <button
                         type="button"
@@ -2548,21 +3328,21 @@ function App() {
                           )
                         }
                       >
-                        {attachment.status === "frozen" ? "Release" : "Freeze"}
+                        {attachment.status === "frozen" ? t("release") : t("freeze")}
                       </button>
                     </div>
                   </article>
                 ))}
               </section>
               <section>
-                <h3>Shares</h3>
+                <h3>{t("shares")}</h3>
                 {adminData.shares.slice(0, 5).map((share) => (
                   <article className="list-card" key={share.id}>
                     <div>
                       <strong>{share.id}</strong>
                       <span>
-                        {share.visitCount} visits · {share.downloadCount}{" "}
-                        downloads
+                        {share.visitCount} {t("visits")} ·{" "}
+                        {share.downloadCount} {t("downloads")}
                       </span>
                     </div>
                     <button
@@ -2570,13 +3350,13 @@ function App() {
                       onClick={() => void adminRevokeShare(share.id)}
                       disabled={Boolean(share.revokedAt)}
                     >
-                      Revoke
+                      {t("revoke")}
                     </button>
                   </article>
                 ))}
               </section>
               <section>
-                <h3>Orders</h3>
+                <h3>{t("orders")}</h3>
                 {adminData.orders.slice(0, 5).map((order) => {
                   const status = orderStatusDetail(order.status, locale);
                   return (
@@ -2625,29 +3405,29 @@ function App() {
                 })}
               </section>
               <section>
-                <h3>Queues</h3>
+                <h3>{t("queues")}</h3>
                 <article className="list-card">
-                  <strong>Scan failures</strong>
+                  <strong>{t("scanFailures")}</strong>
                   <span>{adminData.queues?.scanFailures.length ?? 0}</span>
                 </article>
                 <article className="list-card">
-                  <strong>Cleanup jobs</strong>
+                  <strong>{t("cleanupJobs")}</strong>
                   <span>{adminData.queues?.cleanupJobs.length ?? 0}</span>
                 </article>
                 <article className="list-card">
-                  <strong>Cleanup failures</strong>
+                  <strong>{t("cleanupFailures")}</strong>
                   <span>{adminData.queues?.cleanupFailures.length ?? 0}</span>
                 </article>
                 <article className="list-card">
-                  <strong>Failed jobs</strong>
+                  <strong>{t("failedJobs")}</strong>
                   <span>{adminData.queues?.failedJobs.length ?? 0}</span>
                 </article>
                 <article className="list-card">
-                  <strong>Queued mails</strong>
+                  <strong>{t("queuedMails")}</strong>
                   <span>{adminData.queues?.queuedMails.length ?? 0}</span>
                 </article>
                 <article className="list-card">
-                  <strong>Failed mails</strong>
+                  <strong>{t("failedMails")}</strong>
                   <span>{adminData.queues?.failedMails.length ?? 0}</span>
                 </article>
                 {(adminData.queues?.failedMails ?? [])
@@ -2657,7 +3437,8 @@ function App() {
                       <div>
                         <strong>{mail.subject}</strong>
                         <span>
-                          {mail.to} · {mail.status} · {mail.attempts} attempts
+                          {mail.to} · {mail.status} · {mail.attempts}{" "}
+                          {t("attempts")}
                         </span>
                         {mail.lastError ? <span>{mail.lastError}</span> : null}
                       </div>
@@ -2679,7 +3460,7 @@ function App() {
                         }
                         disabled={report.status === "resolved"}
                       >
-                        Resolve
+                        {t("resolve")}
                       </button>
                       <button
                         type="button"
@@ -2688,14 +3469,14 @@ function App() {
                         }
                         disabled={report.status === "dismissed"}
                       >
-                        Dismiss
+                        {t("dismiss")}
                       </button>
                     </div>
                   </article>
                 ))}
               </section>
               <section>
-                <h3>Webhooks</h3>
+                <h3>{t("webhooks")}</h3>
                 {adminData.webhookEvents.slice(0, 5).map((event) => (
                   <article className="list-card" key={event.id}>
                     <div>
@@ -2709,7 +3490,7 @@ function App() {
                       onClick={() => void adminReplayWebhook(event.id)}
                     >
                       <RotateCcw size={16} aria-hidden="true" />
-                      Replay
+                      {t("replay")}
                     </button>
                   </article>
                 ))}
@@ -2749,11 +3530,14 @@ function PasteList({
   onToggleFlag: (paste: Paste, field: "pinned" | "favorite") => void;
   locale: Locale;
 }) {
+  const t = copyFor(locale);
   return (
     <section className="paste-list">
       <div className="section-heading">
-        <h2>Recent pastes</h2>
-        <span>{pastes.length} active</span>
+        <h2>{t("recentPastes")}</h2>
+        <span>
+          {pastes.length} {t("active")}
+        </span>
       </div>
       {pastes.map((paste) => (
         <article
@@ -2765,9 +3549,10 @@ function PasteList({
             type="button"
             onClick={() => onSelect(paste.id)}
           >
-            <h3>{paste.title || "Untitled paste"}</h3>
+            <h3>{paste.title || t("untitledPaste")}</h3>
             <p>
-              {paste.textPreview || `${paste.attachments.length} attachments`}
+              {paste.textPreview ||
+                `${paste.attachments.length} ${t("attachmentsCount")}`}
             </p>
             <span>
               {formatBytes(paste.sizeBytes)} ·{" "}
@@ -2779,7 +3564,7 @@ function PasteList({
               className={`icon-button small ${paste.pinned ? "active" : ""}`}
               type="button"
               onClick={() => onToggleFlag(paste, "pinned")}
-              aria-label={paste.pinned ? "Unpin paste" : "Pin paste"}
+              aria-label={paste.pinned ? t("unpinPaste") : t("pinPaste")}
             >
               <Pin size={17} aria-hidden="true" />
             </button>
@@ -2787,7 +3572,9 @@ function PasteList({
               className={`icon-button small ${paste.favorite ? "active" : ""}`}
               type="button"
               onClick={() => onToggleFlag(paste, "favorite")}
-              aria-label={paste.favorite ? "Remove favorite" : "Favorite paste"}
+              aria-label={
+                paste.favorite ? t("removeFavorite") : t("favoritePaste")
+              }
             >
               <Star size={17} aria-hidden="true" />
             </button>
@@ -2795,7 +3582,7 @@ function PasteList({
               className="icon-button small"
               type="button"
               onClick={() => onCopy(paste.text)}
-              aria-label="Copy text"
+              aria-label={t("copyText")}
             >
               <ClipboardCopy size={17} aria-hidden="true" />
             </button>
@@ -2803,7 +3590,7 @@ function PasteList({
               className="icon-button small"
               type="button"
               onClick={() => onExtend(paste, 7 * 24 * 60 * 60)}
-              aria-label="Extend paste"
+              aria-label={t("extendPaste")}
             >
               <TimerReset size={17} aria-hidden="true" />
             </button>
@@ -2811,12 +3598,14 @@ function PasteList({
               className="icon-button small danger"
               type="button"
               onClick={() => onDelete(paste.id)}
-              aria-label="Delete paste"
+              aria-label={t("deletePaste")}
             >
               <Trash2 size={17} aria-hidden="true" />
             </button>
           </div>
-          {paste.shareCount ? <span className="share-chip">Shared</span> : null}
+          {paste.shareCount ? (
+            <span className="share-chip">{t("shared")}</span>
+          ) : null}
           {paste.attachments.map((attachment) => (
             <AttachmentDownloadItem
               attachment={attachment}
@@ -2854,6 +3643,7 @@ function PublicShareScreen({
   onOpen: () => void;
   locale: Locale;
 }) {
+  const t = copyFor(locale);
   return (
     <main className="auth-screen public-share-screen">
       <section className="auth-panel">
@@ -2863,33 +3653,33 @@ function PublicShareScreen({
           </div>
           <div>
             <strong>PasteBox</strong>
-            <span>Shared paste</span>
+            <span>{t("sharedPaste")}</span>
           </div>
         </div>
         <div className="magic-row">
           <input
             value={token}
             onChange={(event) => onToken(event.target.value)}
-            placeholder="share token"
+            placeholder={t("shareToken")}
           />
           <input
             value={password}
             onChange={(event) => onPassword(event.target.value)}
-            placeholder="password"
+            placeholder={t("password")}
             type="password"
           />
           <button type="button" onClick={onOpen} disabled={busy || !token}>
-            Open
+            {t("open")}
           </button>
         </div>
         {access ? (
           <section className="shared-document">
             <div className="section-heading">
               <div>
-                <h1>{access.paste.title || "Shared paste"}</h1>
+                <h1>{access.paste.title || t("sharedPaste")}</h1>
                 <span>
                   {access.share.visitCount}/{access.share.maxVisits || "∞"}{" "}
-                  visits · {formatDuration(access.paste.secondsToLive)}
+                  {t("visits")} · {formatDuration(access.paste.secondsToLive)}
                 </span>
               </div>
               <button
@@ -2900,7 +3690,7 @@ function PublicShareScreen({
                 disabled={!access.paste.text}
               >
                 <ClipboardCopy size={16} aria-hidden="true" />
-                Copy
+                {t("copy")}
               </button>
             </div>
             {access.paste.text ? <pre>{access.paste.text}</pre> : null}
@@ -2923,7 +3713,7 @@ function PublicShareScreen({
           </section>
         ) : null}
         {message ? <p className="status-line">{message}</p> : null}
-        <PublicFooter />
+        <PublicFooter locale={locale} />
       </section>
     </main>
   );
@@ -2932,10 +3722,13 @@ function PublicShareScreen({
 function PublicPageScreen({
   page,
   contacts,
+  locale,
 }: {
   page: PublicPage;
   contacts: SupportContacts | null;
+  locale: Locale;
 }) {
+  const t = copyFor(locale);
   return (
     <main className="public-page">
       <header className="public-hero">
@@ -2956,21 +3749,21 @@ function PublicPageScreen({
         <div className="public-hero-actions">
           <a className="ghost-button" href="/">
             <ClipboardCopy size={16} aria-hidden="true" />
-            Open app
+            {t("openApp")}
           </a>
           <a className="ghost-button" href="/support">
             <LifeBuoy size={16} aria-hidden="true" />
-            Support
+            {t("support")}
           </a>
         </div>
       </header>
 
       <section className="public-layout">
-        <aside className="public-sidebar" aria-label="Legal navigation">
-          <strong>Launch documents</strong>
+        <aside className="public-sidebar" aria-label={t("legalNavigation")}>
+          <strong>{t("launchDocuments")}</strong>
           <nav>
             <a className={page.path === "/legal" ? "active" : ""} href="/legal">
-              Legal hub
+              {t("legalHub")}
             </a>
             {publicLinks.map((link) => (
               <a
@@ -2978,7 +3771,7 @@ function PublicPageScreen({
                 href={link.href}
                 key={link.href}
               >
-                {link.label}
+                {t(link.labelKey)}
               </a>
             ))}
           </nav>
@@ -2987,30 +3780,32 @@ function PublicPageScreen({
         <article className="public-doc">
           <div className="public-doc-meta">
             <Megaphone size={16} aria-hidden="true" />
-            <span>Last updated {page.updated}</span>
+            <span>
+              {t("lastUpdated")} {page.updated}
+            </span>
           </div>
           {page.path === "/support" ? (
             <section className="support-contact-card">
               <div>
                 <span>
-                  Account, billing, privacy, DPA, and data-subject requests
+                  {t("supportRequests")}
                 </span>
                 {contacts?.supportEmail ? (
                   <a href={`mailto:${contacts.supportEmail}`}>
                     {contacts.supportEmail}
                   </a>
                 ) : (
-                  <strong>Support contact is loading</strong>
+                  <strong>{t("supportContactLoading")}</strong>
                 )}
               </div>
               <div>
-                <span>Abuse, malware, DMCA, and urgent takedown requests</span>
+                <span>{t("abuseRequests")}</span>
                 {contacts?.abuseEmail ? (
                   <a href={`mailto:${contacts.abuseEmail}`}>
                     {contacts.abuseEmail}
                   </a>
                 ) : (
-                  <strong>Abuse contact is loading</strong>
+                  <strong>{t("abuseContactLoading")}</strong>
                 )}
               </div>
             </section>
@@ -3032,11 +3827,7 @@ function PublicPageScreen({
           ))}
           <footer className="public-doc-footer">
             <FileText size={16} aria-hidden="true" />
-            <span>
-              This page reflects the confirmed public-beta launch architecture
-              and must be updated when providers, retention, or request
-              workflows change.
-            </span>
+            <span>{t("publicDocFooter")}</span>
           </footer>
         </article>
       </section>
@@ -3044,17 +3835,24 @@ function PublicPageScreen({
   );
 }
 
-function PublicFooter({ compact = false }: { compact?: boolean }) {
+function PublicFooter({
+  compact = false,
+  locale,
+}: {
+  compact?: boolean;
+  locale: Locale;
+}) {
+  const t = copyFor(locale);
   return (
     <footer className={compact ? "public-footer compact" : "public-footer"}>
-      <a href="/legal">Legal hub</a>
-      <a href="/legal/terms">Terms</a>
-      <a href="/legal/privacy">Privacy</a>
-      <a href="/legal/refund">Refund</a>
-      <a href="/legal/abuse">Abuse/DMCA</a>
-      <a href="/legal/cookies">Cookies</a>
-      <a href="/support">Support</a>
-      <a href="/status">Status</a>
+      <a href="/legal">{t("legalHub")}</a>
+      <a href="/legal/terms">{t("terms")}</a>
+      <a href="/legal/privacy">{t("privacy")}</a>
+      <a href="/legal/refund">{t("refund")}</a>
+      <a href="/legal/abuse">{t("abuseDmca")}</a>
+      <a href="/legal/cookies">{t("cookies")}</a>
+      <a href="/support">{t("support")}</a>
+      <a href="/status">{t("status")}</a>
     </footer>
   );
 }
@@ -3064,6 +3862,7 @@ function PasteEditor({
   draft,
   onDraft,
   onSave,
+  locale,
 }: {
   paste?: Paste;
   draft: { id: string; title: string; text: string; tags: string };
@@ -3074,34 +3873,36 @@ function PasteEditor({
     tags: string;
   }) => void;
   onSave: () => void;
+  locale: Locale;
 }) {
+  const t = copyFor(locale);
   return (
     <Panel
-      title="Edit"
-      meta={paste ? paste.title || paste.id : "No paste selected"}
+      title={t("edit")}
+      meta={paste ? paste.title || paste.id : t("noPasteSelected")}
     >
       <div className="form-grid single">
         <input
           value={draft.title}
           onChange={(event) => onDraft({ ...draft, title: event.target.value })}
-          placeholder="title"
+          placeholder={t("title")}
           disabled={!paste}
         />
         <textarea
           value={draft.text}
           onChange={(event) => onDraft({ ...draft, text: event.target.value })}
-          placeholder="text"
+          placeholder={t("text")}
           disabled={!paste}
         />
         <input
           value={draft.tags}
           onChange={(event) => onDraft({ ...draft, tags: event.target.value })}
-          placeholder="tags"
+          placeholder={t("tags")}
           disabled={!paste}
         />
       </div>
       <button type="button" onClick={onSave} disabled={!paste}>
-        Save
+        {t("save")}
       </button>
     </Panel>
   );
@@ -3128,10 +3929,11 @@ function ShareBox({
   sharePassword: string;
   locale: Locale;
 }) {
+  const t = copyFor(locale);
   return (
     <Panel
-      title="Share"
-      meta={paste ? paste.title || paste.id : "No paste selected"}
+      title={t("share")}
+      meta={paste ? paste.title || paste.id : t("noPasteSelected")}
     >
       <div className="form-grid single">
         <input
@@ -3139,7 +3941,7 @@ function ShareBox({
           onChange={(event) =>
             onDraft({ ...draft, password: event.target.value })
           }
-          placeholder="password"
+          placeholder={t("password")}
         />
         <label className="check-row">
           <input
@@ -3149,7 +3951,7 @@ function ShareBox({
               onDraft({ ...draft, loginRequired: event.target.checked })
             }
           />
-          Login required
+          {t("loginRequired")}
         </label>
         <input
           value={draft.maxVisits}
@@ -3158,7 +3960,7 @@ function ShareBox({
           onChange={(event) =>
             onDraft({ ...draft, maxVisits: Number(event.target.value) })
           }
-          placeholder="max visits"
+          placeholder={t("maxVisits")}
         />
         <input
           value={draft.maxDownloads}
@@ -3167,7 +3969,7 @@ function ShareBox({
           onChange={(event) =>
             onDraft({ ...draft, maxDownloads: Number(event.target.value) })
           }
-          placeholder="max downloads"
+          placeholder={t("maxDownloads")}
         />
         <select
           value={draft.expiresInSeconds}
@@ -3175,18 +3977,18 @@ function ShareBox({
             onDraft({ ...draft, expiresInSeconds: Number(event.target.value) })
           }
         >
-          <option value={24 * 60 * 60}>24 hours</option>
-          <option value={7 * 24 * 60 * 60}>7 days</option>
-          <option value={30 * 24 * 60 * 60}>30 days</option>
+          <option value={24 * 60 * 60}>{t("duration24Hours")}</option>
+          <option value={7 * 24 * 60 * 60}>{t("duration7Days")}</option>
+          <option value={30 * 24 * 60 * 60}>{t("duration30Days")}</option>
         </select>
       </div>
       <div className="button-row">
         <button type="button" onClick={onCreate} disabled={!paste}>
           <Link2 size={16} aria-hidden="true" />
-          Create
+          {t("create")}
         </button>
         <button type="button" onClick={onOpen} disabled={!token}>
-          Open
+          {t("open")}
         </button>
       </div>
       {token ? <code>{token}</code> : null}
@@ -3194,14 +3996,14 @@ function ShareBox({
         <div className="share-preview">
           <article className="list-card">
             <div>
-              <strong>{access.paste.title || "Shared paste"}</strong>
+              <strong>{access.paste.title || t("sharedPaste")}</strong>
               <span>
-                {access.share.visitCount} visits · {access.share.downloadCount}{" "}
-                downloads
+                {access.share.visitCount} {t("visits")} ·{" "}
+                {access.share.downloadCount} {t("downloads")}
               </span>
               <span>
                 {access.paste.textPreview ||
-                  `${access.paste.attachments.length} attachments`}
+                  `${access.paste.attachments.length} ${t("attachmentsCount")}`}
               </span>
             </div>
           </article>

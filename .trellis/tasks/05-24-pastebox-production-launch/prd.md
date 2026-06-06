@@ -31,6 +31,11 @@ launch gate.
   Stripe/Epusdt provider smoke tests, ClamAV smoke tests, backup/PITR restore
   drills, rollback rehearsal, monitoring/alert targets, support readiness, and
   release approval recorded through `docs/production-launch-evidence-checklist.md`.
+- On 2026-06-06, the user requested multilingual product support including
+  Simplified Chinese, Traditional Chinese, Spanish, and other future languages.
+  The current app already stores a user `language` preference and has partial
+  English/Chinese frontend copy, so the first implementation slice should
+  expand that existing mechanism instead of introducing a new i18n dependency.
 
 ## Source Context
 
@@ -72,6 +77,12 @@ launch gate.
   test gates, rollback strategy, and launch checklist.
 - Continue development under the active Codex goal until the launch objective is
   complete or explicitly paused/blocked by user decision.
+- Expand frontend locale support to at least English, Simplified Chinese,
+  Traditional Chinese, and Spanish through the existing user language preference
+  field, with browser-language fallback for anonymous/public views.
+- Keep status, attachment scan, billing, profile, navigation, workspace, public
+  share, support/legal navigation, and primary action copy localized with safe
+  English fallback for missing keys.
 
 ## Acceptance Criteria
 
@@ -80,6 +91,8 @@ launch gate.
 - [x] Implementation roadmap is saved in the repository.
 - [x] Trellis task can be activated with enough context to implement.
 - [x] Follow-up implementation phases can be executed and verified locally.
+- [x] Multilingual UI supports English, Simplified Chinese, Traditional Chinese,
+  and Spanish without breaking TypeScript build or primary launch-surface checks.
 - [ ] Operator-owned external release evidence is complete for a public beta
   release candidate.
 

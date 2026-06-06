@@ -120,6 +120,14 @@ for (const link of criticalLinks) {
 
 requireIncludes("web/src/api.ts support contact client", apiSource, 'supportContacts: () => api<SupportContacts>("/support/contacts")');
 requireIncludes("web/src/App.tsx support contacts load", appSource, "client.supportContacts()");
+requireIncludes("web/src/App.tsx supported locale type", appSource, 'type Locale = "en" | "zh-CN" | "zh-TW" | "es"');
+for (const locale of ['value: "zh-CN"', 'value: "zh-TW"', 'value: "es"']) {
+  requireIncludes("web/src/App.tsx locale selector option", appSource, locale);
+}
+requireIncludes("web/src/App.tsx registration language payload", appSource, "client.register({ ...auth, language: locale })");
+for (const copy of ["简体中文", "繁體中文", "Español", "Crea una entrega segura."]) {
+  requireIncludes("production JS bundle multilingual copy", bundle, copy);
+}
 requireIncludes("web/src/App.tsx public share route priority", appSource, "if (publicShareToken)");
 if (appSource.includes("if (!user && publicShareToken)")) {
   fail("web/src/App.tsx only renders public share routes for anonymous users");

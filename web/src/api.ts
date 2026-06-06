@@ -310,7 +310,12 @@ export const client = {
   plans: () => api<PlanCatalog>("/plans"),
   supportContacts: () => api<SupportContacts>("/support/contacts"),
   me: () => api<User>("/me"),
-  register: (body: { email: string; password: string; displayName: string }) =>
+  register: (body: {
+    email: string;
+    password: string;
+    displayName: string;
+    language: string;
+  }) =>
     api<AuthResult>("/auth/register", {
       method: "POST",
       body: JSON.stringify(body),

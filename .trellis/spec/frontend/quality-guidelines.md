@@ -198,6 +198,89 @@ return scan.canDownload ? (
 
 ---
 
+## Scenario: Frontend Locale Preference And Copy Coverage
+
+### 1. Scope / Trigger
+
+- Trigger: Any frontend change that adds user-visible copy, changes the
+  language selector, alters registration/profile payloads, or renders anonymous
+  public pages/shares.
+
+### 2. Signatures
+
+- Type: `Locale = "en" | "zh-CN" | "zh-TW" | "es"` in `web/src/App.tsx`.
+- Helper: `localeFor(language?: string)`.
+- User setting: `client.updateMe({displayName, language})`.
+- Registration payload:
+  `client.register({email, password, displayName, language})`.
+- Launch check: `node scripts/check-web-launch-surfaces.mjs`.
+
+### 3. Contracts
+
+- The supported launch locales are English, Simplified Chinese, Traditional
+  Chinese, and Spanish.
+- Browser language fallback maps `zh-CN`, `zh-SG`, and bare `zh` to
+  Simplified Chinese; `zh-TW`, `zh-HK`, `zh-MO`, and `zh-Hant` to Traditional
+  Chinese; `es-*` to Spanish; all other values to English.
+- Authenticated UI language follows `user.language`; anonymous auth, public
+  share, and public legal/support chrome follow browser locale.
+- New registrations must send the current locale in the `language` field so
+  first-session users keep their selected language after account creation.
+- `copyFor(locale)` must keep English fallback behavior so missing optional copy
+  renders a safe label instead of crashing.
+- Status helpers such as `orderStatusDetail` and `attachmentScanDetail` must
+  localize known statuses and safely describe unknown provider/scanner strings.
+
+### 4. Validation & Error Matrix
+
+- Unsupported browser language -> English UI fallback.
+- Legacy stored language `zh` -> Simplified Chinese UI.
+- Traditional Chinese browser or stored language -> Traditional Chinese UI.
+- Spanish browser or stored language -> Spanish UI.
+- Missing copy key -> English fallback, then key name as last resort.
+- Unknown order or scan status -> neutral provider/scanner status copy; no
+  crash or hidden action.
+
+### 5. Good/Base/Bad Cases
+
+- Good: A Spanish browser lands on the auth screen, sees Spanish primary copy,
+  registers, and the registration request persists `language: "es"`.
+- Good: A user can switch between English, Simplified Chinese, Traditional
+  Chinese, and Spanish from Settings without changing backend schemas.
+- Base: Public legal document body can remain the existing launch source text,
+  but public navigation, support contact chrome, and footer labels must follow
+  locale.
+- Bad: Add a new visible button label only in English while the rest of the
+  screen is localized.
+- Bad: Store bare `zh` from the new selector; use `zh-CN` or `zh-TW` instead.
+
+### 6. Tests Required
+
+- Run `make test-web` after locale or copy changes.
+- Run `node scripts/check-web-launch-surfaces.mjs` after building so the
+  production bundle is checked for supported locale selectors and multilingual
+  launch copy.
+- Run full `make test` when backend language payload handling changes.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+<option value="zh">中文</option>
+client.register(auth)
+```
+
+#### Correct
+
+```tsx
+<option value="zh-CN">简体中文</option>
+<option value="zh-TW">繁體中文</option>
+client.register({ ...auth, language: locale })
+```
+
+---
+
 ## Code Review Checklist
 
 - Does the UI still present a functional PasteBox workspace as the first
