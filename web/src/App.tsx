@@ -240,6 +240,9 @@ const supportedLocales: Array<{ value: Locale; label: string }> = [
   { value: "es", label: "Español" },
 ];
 
+const clayHeroAsset = "/assets/clay-hero-ai.png";
+const clayFooterAsset = "/assets/clay-footer-ai.png";
+
 const viewSummaries: Record<Locale, Record<View, ViewSummary>> = {
   en: {
     inbox: {
@@ -2404,9 +2407,7 @@ function App() {
   const publicShareRoute = Boolean(publicShareToken);
   const authRoute = authModeForPath(currentPath);
   const workspaceRoute = isWorkspacePath(currentPath);
-  const shouldProbeSession = Boolean(
-    authLink || publicShareRoute || workspaceRoute,
-  );
+  const shouldProbeSession = Boolean(authLink || workspaceRoute);
 
   const activePlan = useMemo(() => {
     const planId = user?.planId ?? "free";
@@ -5026,8 +5027,8 @@ function App() {
             </div>
           </Panel>
         ) : null}
+        <WorkspaceFooter locale={locale} />
       </section>
-      <PublicFooter compact locale={locale} />
     </main>
   );
 }
@@ -5217,43 +5218,51 @@ function LandingPage({
           </div>
         </div>
 
-        <div
-          className="landing-clipboard-card"
-          aria-label={content.workspaceLabel}
-        >
-          <div className="clipboard-window-bar">
-            <span />
-            <span />
-            <span />
-            <strong>{content.workspaceLabel}</strong>
-          </div>
-          <div className="clipboard-tabs" aria-hidden="true">
-            <span className="active">{t("text")}</span>
-            <span>{t("files")}</span>
-            <span>{t("shared")}</span>
-          </div>
-          <label className="clipboard-field">
-            <span>{t("title")}</span>
-            <input readOnly value="Launch notes, API keys, or handoff text" />
-          </label>
-          <label className="clipboard-field">
-            <span>{t("text")}</span>
-            <textarea
-              readOnly
-              value={
-                "Paste once, open anywhere.\nSet expiry, attach files, and revoke links without leaving the clipboard."
-              }
-            />
-          </label>
-          <div className="clipboard-button-row">
-            <button type="button">
-              <UploadCloud size={16} aria-hidden="true" />
-              {t("upload")}
-            </button>
-            <button type="button">
-              <Link2 size={16} aria-hidden="true" />
-              {t("share")}
-            </button>
+        <div className="landing-hero-art">
+          <img
+            alt=""
+            aria-hidden="true"
+            className="clay-scene landing-clay-scene"
+            src={clayHeroAsset}
+          />
+          <div
+            className="landing-clipboard-card"
+            aria-label={content.workspaceLabel}
+          >
+            <div className="clipboard-window-bar">
+              <span />
+              <span />
+              <span />
+              <strong>{content.workspaceLabel}</strong>
+            </div>
+            <div className="clipboard-tabs" aria-hidden="true">
+              <span className="active">{t("text")}</span>
+              <span>{t("files")}</span>
+              <span>{t("shared")}</span>
+            </div>
+            <label className="clipboard-field">
+              <span>{t("title")}</span>
+              <input readOnly value="Launch notes, API keys, or handoff text" />
+            </label>
+            <label className="clipboard-field">
+              <span>{t("text")}</span>
+              <textarea
+                readOnly
+                value={
+                  "Paste once, open anywhere.\nSet expiry, attach files, and revoke links without leaving the clipboard."
+                }
+              />
+            </label>
+            <div className="clipboard-button-row">
+              <button type="button">
+                <UploadCloud size={16} aria-hidden="true" />
+                {t("upload")}
+              </button>
+              <button type="button">
+                <Link2 size={16} aria-hidden="true" />
+                {t("share")}
+              </button>
+            </div>
           </div>
         </div>
       </section>
@@ -5386,6 +5395,12 @@ function AuthScreen({
           <h1>{isRegister ? content.primaryCta : content.secondaryCta}</h1>
           <p>{content.subtitle}</p>
         </div>
+        <img
+          alt=""
+          aria-hidden="true"
+          className="clay-scene auth-clay-scene"
+          src={clayHeroAsset}
+        />
         <div className="auth-preview-card">
           {content.features.map((feature) => (
             <article key={feature.title}>
@@ -5573,6 +5588,12 @@ function PublicShareScreen({
             <span>{t("sharedPaste")}</span>
           </div>
         </div>
+        <img
+          alt=""
+          aria-hidden="true"
+          className="clay-scene share-clay-scene"
+          src={clayHeroAsset}
+        />
         <div className="magic-row">
           <input
             value={token}
@@ -5673,6 +5694,12 @@ function PublicPageScreen({
             {t("support")}
           </a>
         </div>
+        <img
+          alt=""
+          aria-hidden="true"
+          className="clay-scene public-clay-scene"
+          src={clayFooterAsset}
+        />
       </header>
 
       <section className="public-layout">
@@ -5750,15 +5777,9 @@ function PublicPageScreen({
   );
 }
 
-function PublicFooter({
-  compact = false,
-  locale,
-}: {
-  compact?: boolean;
-  locale: Locale;
-}) {
+function footerGroupsFor(locale: Locale) {
   const t = copyFor(locale);
-  const groups = [
+  return [
     {
       title: t("footerLegal"),
       links: [
@@ -5781,8 +5802,48 @@ function PublicFooter({
       links: [{ href: "/support", label: t("support") }],
     },
   ];
+}
+
+function WorkspaceFooter({ locale }: { locale: Locale }) {
+  const t = copyFor(locale);
+  const groups = footerGroupsFor(locale);
+  return (
+    <footer className="workspace-footer">
+      <nav aria-label={t("legalNavigation")}>
+        {groups.map((group) => (
+          <section className="workspace-footer-group" key={group.title}>
+            <strong>{group.title}</strong>
+            <div>
+              {group.links.map((link) => (
+                <a href={link.href} key={link.href}>
+                  {link.label}
+                </a>
+              ))}
+            </div>
+          </section>
+        ))}
+      </nav>
+    </footer>
+  );
+}
+
+function PublicFooter({
+  compact = false,
+  locale,
+}: {
+  compact?: boolean;
+  locale: Locale;
+}) {
+  const t = copyFor(locale);
+  const groups = footerGroupsFor(locale);
   return (
     <footer className={compact ? "public-footer compact" : "public-footer"}>
+      <img
+        alt=""
+        aria-hidden="true"
+        className="clay-footer-art"
+        src={clayFooterAsset}
+      />
       <nav aria-label={t("legalNavigation")}>
         {groups.map((group) => (
           <section className="public-footer-group" key={group.title}>
