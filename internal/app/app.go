@@ -682,19 +682,30 @@ func (s *Service) Login(_ context.Context, email string, password string) (AuthR
 	return s.newSessionLocked(user)
 }
 
-func (s *Service) GoogleOAuth(_ context.Context, email string, displayName string, googleSubject string) (AuthResult, error) {
+func (s *Service) GoogleOAuth(ctx context.Context, email string, displayName string, googleSubject string) (AuthResult, error) {
+	return s.OAuthLogin(ctx, "google", email, displayName, googleSubject)
+}
+
+func (s *Service) GitHubOAuth(ctx context.Context, email string, displayName string, githubSubject string) (AuthResult, error) {
+	return s.OAuthLogin(ctx, "github", email, displayName, githubSubject)
+}
+
+func (s *Service) OAuthLogin(_ context.Context, provider string, email string, displayName string, subject string) (AuthResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return AuthResult{}, E(http.StatusBadRequest, "invalid_oauth_provider", "oauth provider is required")
+	}
 	email = normalizeEmail(email)
 	if email == "" || !strings.Contains(email, "@") {
 		return AuthResult{}, E(http.StatusBadRequest, "invalid_email", "valid email is required")
 	}
-	subject := strings.TrimSpace(googleSubject)
+	subject = strings.TrimSpace(subject)
 	if subject == "" {
-		return AuthResult{}, E(http.StatusBadRequest, "missing_oauth_subject", "google subject is required")
+		return AuthResult{}, E(http.StatusBadRequest, "missing_oauth_subject", "oauth subject is required")
 	}
-	const provider = "google"
 
 	if identity, ok, err := s.oauthIdentityByProviderSubjectLocked(provider, subject); err != nil {
 		return AuthResult{}, err
@@ -711,7 +722,7 @@ func (s *Service) GoogleOAuth(_ context.Context, email string, displayName strin
 				return AuthResult{}, err
 			}
 		}
-		if err := s.auditLocked(user.ID, "auth.google_oauth", user.ID, map[string]any{"provider": provider}); err != nil {
+		if err := s.auditLocked(user.ID, "auth."+provider+"_oauth", user.ID, map[string]any{"provider": provider}); err != nil {
 			return AuthResult{}, err
 		}
 		return s.newSessionLocked(user)
@@ -724,7 +735,7 @@ func (s *Service) GoogleOAuth(_ context.Context, email string, displayName strin
 		if identities, err := s.oauthIdentitiesByUserLocked(user.ID); err != nil {
 			return AuthResult{}, err
 		} else if hasOAuthProvider(identities, provider) {
-			return AuthResult{}, E(http.StatusConflict, "oauth_identity_conflict", "google account is already linked to a different identity")
+			return AuthResult{}, E(http.StatusConflict, "oauth_identity_conflict", "oauth account is already linked to a different identity")
 		}
 		user.EmailVerified = true
 		if strings.TrimSpace(displayName) != "" {
@@ -741,7 +752,7 @@ func (s *Service) GoogleOAuth(_ context.Context, email string, displayName strin
 		if err := s.auditLocked(user.ID, "auth.oauth_linked", user.ID, map[string]any{"provider": provider}); err != nil {
 			return AuthResult{}, err
 		}
-		if err := s.auditLocked(user.ID, "auth.google_oauth", user.ID, map[string]any{"provider": provider}); err != nil {
+		if err := s.auditLocked(user.ID, "auth."+provider+"_oauth", user.ID, map[string]any{"provider": provider}); err != nil {
 			return AuthResult{}, err
 		}
 		return s.newSessionLocked(user)
@@ -778,10 +789,10 @@ func (s *Service) GoogleOAuth(_ context.Context, email string, displayName strin
 	if err := s.auditLocked(user.ID, "auth.oauth_linked", user.ID, map[string]any{"provider": provider}); err != nil {
 		return AuthResult{}, err
 	}
-	if err := s.auditLocked(user.ID, "auth.google_oauth", user.ID, map[string]any{"provider": provider}); err != nil {
+	if err := s.auditLocked(user.ID, "auth."+provider+"_oauth", user.ID, map[string]any{"provider": provider}); err != nil {
 		return AuthResult{}, err
 	}
-	if err := s.mail(user.Email, "Welcome to PasteBox", "Your Google-authenticated PasteBox account is ready."); err != nil {
+	if err := s.mail(user.Email, "Welcome to PasteBox", "Your "+provider+"-authenticated PasteBox account is ready."); err != nil {
 		return AuthResult{}, err
 	}
 	return s.newSessionLocked(user)
@@ -1433,6 +1444,10 @@ func (s *Service) CreateShare(userID string, pasteID string, input ShareInput) (
 	if err != nil {
 		return ShareView{}, err
 	}
+	return s.createShareForPasteLocked(userID, paste, input)
+}
+
+func (s *Service) createShareForPasteLocked(userID string, paste *Paste, input ShareInput) (ShareView, error) {
 	if !s.isPasteVisibleLocked(paste) {
 		return ShareView{}, E(http.StatusGone, "paste_expired", "cannot share expired paste")
 	}
@@ -1580,7 +1595,10 @@ func (s *Service) PlanCatalog() plans.Catalog {
 	return cloneCatalog(s.catalog)
 }
 
-func (s *Service) Prices() map[string]any {
+func (s *Service) Prices() struct {
+	Plans  []plans.Plan   `json:"plans"`
+	Prices []BillingPrice `json:"prices"`
+} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1598,9 +1616,12 @@ func (s *Service) Prices() map[string]any {
 			EpusdtEnabled:   s.cfg.EpusdtEnabled,
 		})
 	}
-	return map[string]any{
-		"plans":  cloneCatalog(s.catalog).Plans,
-		"prices": prices,
+	return struct {
+		Plans  []plans.Plan   `json:"plans"`
+		Prices []BillingPrice `json:"prices"`
+	}{
+		Plans:  cloneCatalog(s.catalog).Plans,
+		Prices: prices,
 	}
 }
 

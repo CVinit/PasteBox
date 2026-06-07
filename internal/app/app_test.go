@@ -1016,6 +1016,24 @@ func TestGoogleOAuthCreatesVerifiedAccount(t *testing.T) {
 	}
 }
 
+func TestGitHubOAuthCreatesVerifiedAccount(t *testing.T) {
+	now := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	result, err := svc.GitHubOAuth(context.Background(), "github@example.com", "GitHub User", "12345")
+	if err != nil {
+		t.Fatalf("github oauth: %v", err)
+	}
+	if !result.User.EmailVerified || result.User.DisplayName != "GitHub User" {
+		t.Fatalf("expected verified github user, got %#v", result.User)
+	}
+	if got := result.User.OAuthProviders; len(got) != 1 || got[0] != "github" {
+		t.Fatalf("expected github provider, got %#v", got)
+	}
+	if _, err := svc.CreatePaste(result.User.ID, PasteInput{Text: "github write", ExpiresInSeconds: 60}); err != nil {
+		t.Fatalf("github oauth user should be able to write: %v", err)
+	}
+}
+
 func TestGoogleOAuthIdentityPersistsAcrossServiceRestart(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	authStores := newMemoryAuthStores()
@@ -1718,6 +1736,13 @@ func TestGuestUploadsRespectRuntimeConfigAndTurnstile(t *testing.T) {
 	verifier := &fakeTurnstileVerifier{}
 	svc.SetTurnstileVerifier(verifier)
 
+	defaultToken, defaultPaste, err := svc.CreateGuestPaste(GuestCreatePasteInput{Title: "open", Text: "x"})
+	if err != nil || defaultToken == "" || defaultPaste.ID == "" {
+		t.Fatalf("expected default guest uploads to be available, token=%q paste=%#v err=%v", defaultToken, defaultPaste, err)
+	}
+	if _, err := svc.AdminUpdateRuntimeConfig(admin.ID, RuntimeConfigPatch{GuestUploads: &GuestUploadConfig{Enabled: false}}); err != nil {
+		t.Fatalf("disable guest uploads: %v", err)
+	}
 	if _, _, err := svc.CreateGuestPaste(GuestCreatePasteInput{Title: "closed", Text: "x", TurnstileToken: "closed-token"}); !hasAppCode(err, "guest_uploads_disabled") {
 		t.Fatalf("expected guest uploads disabled, got %v", err)
 	}

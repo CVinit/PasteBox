@@ -48,6 +48,8 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	t.Setenv("PASTEBOX_METRICS_TOKEN", "metrics-token")
 	t.Setenv("PASTEBOX_GOOGLE_OAUTH_CLIENT_ID", "google-client-id")
 	t.Setenv("PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET", "google-client-secret")
+	t.Setenv("PASTEBOX_GITHUB_OAUTH_CLIENT_ID", "github-client-id")
+	t.Setenv("PASTEBOX_GITHUB_OAUTH_CLIENT_SECRET", "github-client-secret")
 	t.Setenv("PASTEBOX_MAILER_PROVIDER", "smtp")
 	t.Setenv("PASTEBOX_SMTP_HOST", "smtp.example.com")
 	t.Setenv("PASTEBOX_SMTP_PORT", "587")
@@ -96,6 +98,12 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	}
 	if cfg.GoogleOAuth.RedirectURL != "https://pastebox.example.com/api/v1/auth/google/callback" {
 		t.Fatalf("expected default Google OAuth redirect URL from public URL, got %q", cfg.GoogleOAuth.RedirectURL)
+	}
+	if cfg.GitHubOAuth.ClientID != "github-client-id" || cfg.GitHubOAuth.ClientSecret != "github-client-secret" {
+		t.Fatalf("expected GitHub OAuth credentials from env, got %#v", cfg.GitHubOAuth)
+	}
+	if cfg.GitHubOAuth.RedirectURL != "https://pastebox.example.com/api/v1/auth/github/callback" {
+		t.Fatalf("expected default GitHub OAuth redirect URL from public URL, got %q", cfg.GitHubOAuth.RedirectURL)
 	}
 	if len(cfg.CORSAllowedOrigins) != 2 || cfg.CORSAllowedOrigins[0] != "https://pastebox.example.com" || cfg.CORSAllowedOrigins[1] != "https://admin.pastebox.example.com" {
 		t.Fatalf("expected parsed CORS origins from env, got %#v", cfg.CORSAllowedOrigins)

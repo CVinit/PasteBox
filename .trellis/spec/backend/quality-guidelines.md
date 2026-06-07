@@ -302,7 +302,9 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
 - API response fields consumed as arrays by the frontend must encode empty
   collections as `[]`, never `null`. This includes top-level list fields such
   as `pastes`, `shares`, `orders`, admin queue arrays, and nested paste fields
-  such as `tags` and `attachments`.
+  such as `tags` and `attachments`. Admin provider status arrays such as
+  `requiredEnv` and `missingEnv` must follow the same contract because the
+  admin UI renders them with array methods.
 - Attachments are uploaded as multipart form field `file`; download responses
   must set `Content-Type`, `Content-Disposition`, `Content-Length`, and
   `X-Content-Type-Options: nosniff`.
@@ -373,6 +375,93 @@ Initialize empty response collections before encoding:
 ```go
 out := []PasteView{}
 writeJSON(w, http.StatusOK, map[string]any{"pastes": out})
+```
+
+## Scenario: OAuth Deployment Env Wiring
+
+### 1. Scope / Trigger
+
+- Trigger: Any backend or deployment change that adds, renames, or changes
+  OAuth providers, OAuth callback routes, OAuth env keys, or local/demo
+  Compose deployment templates.
+
+### 2. Signatures
+
+- Google start/callback routes:
+  `GET /api/v1/auth/google/start` and
+  `GET /api/v1/auth/google/callback`.
+- GitHub start/callback routes:
+  `GET /api/v1/auth/github/start` and
+  `GET /api/v1/auth/github/callback`.
+- Config fields: `Config.GoogleOAuth` and `Config.GitHubOAuth`.
+- Demo deployment file: `compose.deploy.yaml`.
+- Production env template: `deploy/production.env.example`.
+
+### 3. Contracts
+
+- Google OAuth uses `PASTEBOX_GOOGLE_OAUTH_CLIENT_ID`,
+  `PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET`, and
+  `PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL`.
+- GitHub OAuth uses `PASTEBOX_GITHUB_OAUTH_CLIENT_ID`,
+  `PASTEBOX_GITHUB_OAUTH_CLIENT_SECRET`, and
+  `PASTEBOX_GITHUB_OAUTH_REDIRECT_URL`.
+- Default redirect URLs must derive from `PASTEBOX_PUBLIC_URL` and end with
+  `/api/v1/auth/<provider>/callback`.
+- Compose deployment templates that run the API or worker must pass through
+  the OAuth env keys so local/demo deployments do not silently disable a
+  configured provider.
+- Frontend login UI may add OAuth providers, but must not remove existing
+  supported provider entrypoints unless the backend routes and docs are also
+  intentionally removed.
+
+### 4. Validation & Error Matrix
+
+- Provider client ID/secret missing in runtime config ->
+  `503 <provider>_oauth_not_configured`.
+- Provider env keys set on the host but omitted from Compose service
+  environment -> deployment bug; the OAuth start route behaves unconfigured.
+- Wrong redirect URL in env -> provider callback fails outside PasteBox.
+- Unsupported OAuth callback state -> redirect to the app with provider-scoped
+  error query state, without creating a session.
+
+### 5. Good/Base/Bad Cases
+
+- Good: `docker compose config` shows both Google and GitHub OAuth env keys on
+  API, worker, and migration services when the host env is set.
+- Base: With local fake client IDs and secrets, `GET
+  /api/v1/auth/google/start` and `/github/start` both return `303` to their
+  provider authorization URL.
+- Bad: Adding GitHub OAuth to `internal/config` while leaving
+  `compose.deploy.yaml` unaware of the new env keys.
+
+### 6. Tests Required
+
+- Config tests must assert both provider env parsing and default redirect URL
+  derivation from `PASTEBOX_PUBLIC_URL`.
+- Handler tests must cover OAuth start redirects and callback state handling
+  for each supported provider.
+- Deployment changes must run `docker compose -f compose.deploy.yaml config`
+  with representative OAuth env values and assert the rendered services carry
+  those values.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+Add a provider only to `internal/config`:
+
+```go
+GitHubOAuth: OAuthConfig{ClientID: envString("PASTEBOX_GITHUB_OAUTH_CLIENT_ID", "")}
+```
+
+#### Correct
+
+Wire the provider through config, routes, frontend entrypoints, tests, and
+deployment env templates:
+
+```yaml
+PASTEBOX_GITHUB_OAUTH_CLIENT_ID: ${PASTEBOX_GITHUB_OAUTH_CLIENT_ID:-}
+PASTEBOX_GITHUB_OAUTH_CLIENT_SECRET: ${PASTEBOX_GITHUB_OAUTH_CLIENT_SECRET:-}
 ```
 
 ## Scenario: Attachment Scan Sharing Gates

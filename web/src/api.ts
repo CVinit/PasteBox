@@ -15,6 +15,7 @@ export type Plan = {
 export type PlanCatalog = {
   plans: Plan[];
   prices: Price[];
+  guestUploads?: GuestUploadConfig;
 };
 
 export type Price = {
@@ -253,6 +254,7 @@ export type ProviderConfigStatus = {
 export type ProviderStatus = {
   mailer: ProviderConfigStatus;
   google: ProviderConfigStatus;
+  github: ProviderConfigStatus;
   turnstile: ProviderConfigStatus;
   telegram: ProviderConfigStatus;
   s3: ProviderConfigStatus;
@@ -473,6 +475,8 @@ export const client = {
     }),
   googleOAuthStartPath: (returnTo = "/") =>
     `/api/v1/auth/google/start?${new URLSearchParams({ returnTo }).toString()}`,
+  githubOAuthStartPath: (returnTo = "/") =>
+    `/api/v1/auth/github/start?${new URLSearchParams({ returnTo }).toString()}`,
   logout: () => api<{ status: string }>("/auth/logout", { method: "POST" }),
   logoutAll: () =>
     api<{ status: string }>("/auth/logout-all", { method: "POST" }),
@@ -589,6 +593,20 @@ export const client = {
       body: form,
     });
   },
+  createGuestShare: (
+    pasteId: string,
+    guestToken: string,
+    body: {
+      password?: string;
+      maxVisits?: number;
+      maxDownloads?: number;
+      expiresInSeconds: number;
+    },
+  ) =>
+    api<Share>(`/guest/pastes/${pasteId}/shares`, {
+      method: "POST",
+      body: JSON.stringify({ ...body, guestToken }),
+    }),
   shares: () => api<{ shares: Share[] }>("/shares"),
   createShare: (
     pasteId: string,

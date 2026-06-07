@@ -27,7 +27,8 @@ type Config struct {
 
 	S3          S3Config
 	Scanner     ScannerConfig
-	GoogleOAuth GoogleOAuthConfig
+	GoogleOAuth OAuthConfig
+	GitHubOAuth OAuthConfig
 	Turnstile   TurnstileConfig
 	Telegram    TelegramConfig
 
@@ -62,7 +63,7 @@ type ClamAVConfig struct {
 	Timeout int
 }
 
-type GoogleOAuthConfig struct {
+type OAuthConfig struct {
 	ClientID     string
 	ClientSecret string
 	RedirectURL  string
@@ -156,10 +157,15 @@ func FromEnv() Config {
 				Timeout: envInt("PASTEBOX_CLAMAV_TIMEOUT_SECONDS", 30),
 			},
 		},
-		GoogleOAuth: GoogleOAuthConfig{
+		GoogleOAuth: OAuthConfig{
 			ClientID:     envString("PASTEBOX_GOOGLE_OAUTH_CLIENT_ID", ""),
 			ClientSecret: envString("PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET", ""),
 			RedirectURL:  envString("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL", strings.TrimRight(publicURL, "/")+"/api/v1/auth/google/callback"),
+		},
+		GitHubOAuth: OAuthConfig{
+			ClientID:     envString("PASTEBOX_GITHUB_OAUTH_CLIENT_ID", ""),
+			ClientSecret: envString("PASTEBOX_GITHUB_OAUTH_CLIENT_SECRET", ""),
+			RedirectURL:  envString("PASTEBOX_GITHUB_OAUTH_REDIRECT_URL", strings.TrimRight(publicURL, "/")+"/api/v1/auth/github/callback"),
 		},
 		Turnstile: TurnstileConfig{
 			SiteKey:   envString("PASTEBOX_TURNSTILE_SITE_KEY", ""),

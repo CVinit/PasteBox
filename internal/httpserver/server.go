@@ -34,11 +34,13 @@ import (
 
 	"pastebox/internal/app"
 	"pastebox/internal/config"
+	"pastebox/internal/plans"
 )
 
 const (
 	sessionCookieName          = "pastebox_session"
 	googleOAuthStateCookieName = "pastebox_google_oauth_state"
+	githubOAuthStateCookieName = "pastebox_github_oauth_state"
 	csrfCookieName             = "pastebox_csrf"
 	csrfHeaderName             = "X-CSRF-Token"
 )
@@ -48,6 +50,11 @@ var (
 	googleOAuthTokenURL     = "https://oauth2.googleapis.com/token"
 	googleOAuthJWKSURL      = "https://www.googleapis.com/oauth2/v3/certs"
 	googleOAuthHTTPClient   = &http.Client{Timeout: 10 * time.Second}
+	githubOAuthAuthorizeURL = "https://github.com/login/oauth/authorize"
+	githubOAuthTokenURL     = "https://github.com/login/oauth/access_token"
+	githubOAuthUserURL      = "https://api.github.com/user"
+	githubOAuthEmailsURL    = "https://api.github.com/user/emails"
+	githubOAuthHTTPClient   = &http.Client{Timeout: 10 * time.Second}
 )
 
 //go:embed static
@@ -104,6 +111,12 @@ type ReadinessReport struct {
 type PublicSupportContacts struct {
 	SupportEmail string `json:"supportEmail"`
 	AbuseEmail   string `json:"abuseEmail"`
+}
+
+type PublicPlanCatalog struct {
+	Plans        []plans.Plan          `json:"plans"`
+	Prices       []app.BillingPrice    `json:"prices"`
+	GuestUploads app.GuestUploadConfig `json:"guestUploads"`
 }
 
 func New(cfg config.Config, logger *slog.Logger) http.Handler {
@@ -163,6 +176,7 @@ func (s *Server) routes() http.Handler {
 		r.Route("/guest", func(r chi.Router) {
 			r.Post("/pastes", s.createGuestPaste)
 			r.Post("/pastes/{pasteID}/attachments", s.uploadGuestAttachment)
+			r.Post("/pastes/{pasteID}/shares", s.createGuestShare)
 		})
 
 		r.Route("/auth", func(r chi.Router) {
@@ -173,6 +187,8 @@ func (s *Server) routes() http.Handler {
 			r.Get("/google/start", s.googleOAuthStart)
 			r.Get("/google/callback", s.googleOAuthCallback)
 			r.Post("/google", s.googleOAuth)
+			r.Get("/github/start", s.githubOAuthStart)
+			r.Get("/github/callback", s.githubOAuthCallback)
 			r.Post("/email-verification/start", s.startEmailVerification)
 			r.Post("/email-verification/finish", s.finishEmailVerification)
 			r.Post("/magic/start", s.startMagic)
@@ -478,7 +494,12 @@ func writeMetric(b *strings.Builder, name string, labels map[string]string, valu
 }
 
 func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.app.PlanCatalog())
+	catalog := s.app.Prices()
+	writeJSON(w, http.StatusOK, PublicPlanCatalog{
+		Plans:        catalog.Plans,
+		Prices:       catalog.Prices,
+		GuestUploads: s.app.PublicGuestUploadsConfig(),
+	})
 }
 
 func (s *Server) supportContacts(w http.ResponseWriter, _ *http.Request) {
@@ -632,6 +653,78 @@ func (s *Server) googleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	result, err := s.app.GoogleOAuth(r.Context(), identity.Email, identity.Name, identity.Subject)
 	if err != nil {
 		s.redirectGoogleOAuthError(w, r, "google_account_failed")
+		return
+	}
+	s.setSessionCookie(w, r, result.SessionID, result.ExpiresAt)
+	http.Redirect(w, r, statePayload.ReturnTo, http.StatusSeeOther)
+}
+
+func (s *Server) githubOAuthStart(w http.ResponseWriter, r *http.Request) {
+	if !s.githubOAuthConfigured() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "github_oauth_not_configured", "message": "GitHub OAuth is not configured"})
+		return
+	}
+	state, err := randomURLToken(32)
+	if err != nil {
+		s.handleErr(w, err)
+		return
+	}
+	returnTo := sanitizeOAuthReturnTo(r.URL.Query().Get("returnTo"))
+	cookieValue, err := s.signOAuthState(googleOAuthState{
+		State:    state,
+		Nonce:    "-",
+		ReturnTo: returnTo,
+		IssuedAt: time.Now().UTC().Unix(),
+	}, s.cfg.GitHubOAuth.ClientSecret)
+	if err != nil {
+		s.handleErr(w, err)
+		return
+	}
+	s.setOAuthStateCookie(w, r, githubOAuthStateCookieName, "/api/v1/auth/github", cookieValue, 10*time.Minute)
+
+	params := url.Values{}
+	params.Set("client_id", s.cfg.GitHubOAuth.ClientID)
+	params.Set("redirect_uri", s.cfg.GitHubOAuth.RedirectURL)
+	params.Set("scope", "read:user user:email")
+	params.Set("state", state)
+	http.Redirect(w, r, githubOAuthAuthorizeURL+"?"+params.Encode(), http.StatusSeeOther)
+}
+
+func (s *Server) githubOAuthCallback(w http.ResponseWriter, r *http.Request) {
+	if !s.githubOAuthConfigured() {
+		s.redirectGitHubOAuthError(w, r, "github_oauth_not_configured")
+		return
+	}
+	if providerErr := strings.TrimSpace(r.URL.Query().Get("error")); providerErr != "" {
+		s.redirectGitHubOAuthError(w, r, "github_"+providerErr)
+		return
+	}
+	code := strings.TrimSpace(r.URL.Query().Get("code"))
+	state := strings.TrimSpace(r.URL.Query().Get("state"))
+	if code == "" || state == "" {
+		s.redirectGitHubOAuthError(w, r, "invalid_github_callback")
+		return
+	}
+	statePayload, err := s.oauthStateFromRequest(r, githubOAuthStateCookieName, s.cfg.GitHubOAuth.ClientSecret)
+	if err != nil || subtle.ConstantTimeCompare([]byte(statePayload.State), []byte(state)) != 1 {
+		s.redirectGitHubOAuthError(w, r, "invalid_github_state")
+		return
+	}
+	s.clearOAuthStateCookie(w, r, githubOAuthStateCookieName, "/api/v1/auth/github")
+
+	accessToken, err := exchangeGitHubOAuthCode(r.Context(), s.cfg.GitHubOAuth, code)
+	if err != nil {
+		s.redirectGitHubOAuthError(w, r, "github_token_exchange_failed")
+		return
+	}
+	identity, err := fetchGitHubIdentity(r.Context(), accessToken)
+	if err != nil {
+		s.redirectGitHubOAuthError(w, r, "github_identity_failed")
+		return
+	}
+	result, err := s.app.GitHubOAuth(r.Context(), identity.Email, identity.Name, identity.Subject)
+	if err != nil {
+		s.redirectGitHubOAuthError(w, r, "github_account_failed")
 		return
 	}
 	s.setSessionCookie(w, r, result.SessionID, result.ExpiresAt)
@@ -1045,6 +1138,34 @@ func (s *Server) uploadGuestAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, attachment)
+}
+
+func (s *Server) createGuestShare(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		GuestToken       string `json:"guestToken"`
+		Password         string `json:"password"`
+		MaxVisits        int    `json:"maxVisits"`
+		MaxDownloads     int    `json:"maxDownloads"`
+		ExpiresInSeconds int64  `json:"expiresInSeconds"`
+	}
+	if !s.decode(w, r, &req) {
+		return
+	}
+	share, err := s.app.CreateGuestShare(
+		firstNonEmpty(req.GuestToken, guestTokenFromRequest(r)),
+		chi.URLParam(r, "pasteID"),
+		app.ShareInput{
+			Password:         req.Password,
+			LoginRequired:    false,
+			MaxVisits:        req.MaxVisits,
+			MaxDownloads:     req.MaxDownloads,
+			ExpiresInSeconds: req.ExpiresInSeconds,
+		},
+	)
+	if s.handleErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusCreated, share)
 }
 
 func (s *Server) downloadAttachment(w http.ResponseWriter, r *http.Request) {
@@ -2026,6 +2147,24 @@ type googleIdentity struct {
 	Name    string
 }
 
+type githubTokenResponse struct {
+	AccessToken string `json:"access_token"`
+	Error       string `json:"error"`
+}
+
+type githubUserResponse struct {
+	ID    int64  `json:"id"`
+	Login string `json:"login"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
+type githubEmailResponse struct {
+	Email    string `json:"email"`
+	Primary  bool   `json:"primary"`
+	Verified bool   `json:"verified"`
+}
+
 type googleIDTokenHeader struct {
 	Algorithm string `json:"alg"`
 	KeyID     string `json:"kid"`
@@ -2080,6 +2219,12 @@ func (s *Server) googleOAuthConfigured() bool {
 	return strings.TrimSpace(s.cfg.GoogleOAuth.ClientID) != "" &&
 		strings.TrimSpace(s.cfg.GoogleOAuth.ClientSecret) != "" &&
 		strings.TrimSpace(s.cfg.GoogleOAuth.RedirectURL) != ""
+}
+
+func (s *Server) githubOAuthConfigured() bool {
+	return strings.TrimSpace(s.cfg.GitHubOAuth.ClientID) != "" &&
+		strings.TrimSpace(s.cfg.GitHubOAuth.ClientSecret) != "" &&
+		strings.TrimSpace(s.cfg.GitHubOAuth.RedirectURL) != ""
 }
 
 func (s *Server) verifiedBillingWebhookInput(provider string, raw []byte, header http.Header) (app.BillingWebhookInput, error) {
@@ -2302,19 +2447,27 @@ func randomURLToken(bytesN int) (string, error) {
 }
 
 func (s *Server) signGoogleOAuthState(state googleOAuthState) (string, error) {
+	return s.signOAuthState(state, s.cfg.GoogleOAuth.ClientSecret)
+}
+
+func (s *Server) signOAuthState(state googleOAuthState, secret string) (string, error) {
 	payload, err := json.Marshal(state)
 	if err != nil {
 		return "", fmt.Errorf("marshal oauth state: %w", err)
 	}
 	encodedPayload := base64.RawURLEncoding.EncodeToString(payload)
-	mac := hmac.New(sha256.New, []byte(s.cfg.GoogleOAuth.ClientSecret))
+	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(encodedPayload))
 	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	return encodedPayload + "." + signature, nil
 }
 
 func (s *Server) googleOAuthStateFromRequest(r *http.Request) (googleOAuthState, error) {
-	cookie, err := r.Cookie(googleOAuthStateCookieName)
+	return s.oauthStateFromRequest(r, googleOAuthStateCookieName, s.cfg.GoogleOAuth.ClientSecret)
+}
+
+func (s *Server) oauthStateFromRequest(r *http.Request, cookieName string, secret string) (googleOAuthState, error) {
+	cookie, err := r.Cookie(cookieName)
 	if err != nil || cookie.Value == "" {
 		return googleOAuthState{}, fmt.Errorf("missing oauth state cookie")
 	}
@@ -2322,7 +2475,7 @@ func (s *Server) googleOAuthStateFromRequest(r *http.Request) (googleOAuthState,
 	if !ok || payload == "" || signature == "" {
 		return googleOAuthState{}, fmt.Errorf("invalid oauth state cookie")
 	}
-	mac := hmac.New(sha256.New, []byte(s.cfg.GoogleOAuth.ClientSecret))
+	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(payload))
 	want := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	if subtle.ConstantTimeCompare([]byte(signature), []byte(want)) != 1 {
@@ -2360,10 +2513,14 @@ func sanitizeOAuthReturnTo(value string) string {
 }
 
 func (s *Server) setGoogleOAuthStateCookie(w http.ResponseWriter, r *http.Request, value string, ttl time.Duration) {
+	s.setOAuthStateCookie(w, r, googleOAuthStateCookieName, "/api/v1/auth/google", value, ttl)
+}
+
+func (s *Server) setOAuthStateCookie(w http.ResponseWriter, r *http.Request, name string, path string, value string, ttl time.Duration) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     googleOAuthStateCookieName,
+		Name:     name,
 		Value:    value,
-		Path:     "/api/v1/auth/google",
+		Path:     path,
 		Expires:  time.Now().UTC().Add(ttl),
 		HttpOnly: true,
 		Secure:   s.secureSessionCookie(r),
@@ -2419,10 +2576,14 @@ func (s *Server) setCSRFCookie(w http.ResponseWriter, r *http.Request, value str
 }
 
 func (s *Server) clearGoogleOAuthStateCookie(w http.ResponseWriter, r *http.Request) {
+	s.clearOAuthStateCookie(w, r, googleOAuthStateCookieName, "/api/v1/auth/google")
+}
+
+func (s *Server) clearOAuthStateCookie(w http.ResponseWriter, r *http.Request, name string, path string) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     googleOAuthStateCookieName,
+		Name:     name,
 		Value:    "",
-		Path:     "/api/v1/auth/google",
+		Path:     path,
 		Expires:  time.Unix(0, 0),
 		MaxAge:   -1,
 		HttpOnly: true,
@@ -2436,7 +2597,12 @@ func (s *Server) redirectGoogleOAuthError(w http.ResponseWriter, r *http.Request
 	http.Redirect(w, r, "/?authError="+url.QueryEscape(code), http.StatusSeeOther)
 }
 
-func exchangeGoogleOAuthCode(ctx context.Context, cfg config.GoogleOAuthConfig, code string) (string, error) {
+func (s *Server) redirectGitHubOAuthError(w http.ResponseWriter, r *http.Request, code string) {
+	s.clearOAuthStateCookie(w, r, githubOAuthStateCookieName, "/api/v1/auth/github")
+	http.Redirect(w, r, "/?authError="+url.QueryEscape(code), http.StatusSeeOther)
+}
+
+func exchangeGoogleOAuthCode(ctx context.Context, cfg config.OAuthConfig, code string) (string, error) {
 	body := url.Values{}
 	body.Set("client_id", cfg.ClientID)
 	body.Set("client_secret", cfg.ClientSecret)
@@ -2465,6 +2631,100 @@ func exchangeGoogleOAuthCode(ctx context.Context, cfg config.GoogleOAuthConfig, 
 		return "", fmt.Errorf("google token exchange failed")
 	}
 	return token.IDToken, nil
+}
+
+func exchangeGitHubOAuthCode(ctx context.Context, cfg config.OAuthConfig, code string) (string, error) {
+	body := url.Values{}
+	body.Set("client_id", cfg.ClientID)
+	body.Set("client_secret", cfg.ClientSecret)
+	body.Set("code", code)
+	body.Set("redirect_uri", cfg.RedirectURL)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, githubOAuthTokenURL, strings.NewReader(body.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("create github token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	res, err := githubOAuthHTTPClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("exchange github code: %w", err)
+	}
+	defer res.Body.Close()
+
+	var token githubTokenResponse
+	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&token); err != nil {
+		return "", fmt.Errorf("decode github token response: %w", err)
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 || token.Error != "" || token.AccessToken == "" {
+		return "", fmt.Errorf("github token exchange failed")
+	}
+	return token.AccessToken, nil
+}
+
+func fetchGitHubIdentity(ctx context.Context, accessToken string) (googleIdentity, error) {
+	var user githubUserResponse
+	if err := githubJSON(ctx, githubOAuthUserURL, accessToken, &user); err != nil {
+		return googleIdentity{}, err
+	}
+	if user.ID <= 0 {
+		return googleIdentity{}, fmt.Errorf("github user response is missing id")
+	}
+	email := strings.TrimSpace(user.Email)
+	if email == "" {
+		var emails []githubEmailResponse
+		if err := githubJSON(ctx, githubOAuthEmailsURL, accessToken, &emails); err != nil {
+			return googleIdentity{}, err
+		}
+		email = githubPrimaryEmail(emails)
+	}
+	if email == "" {
+		return googleIdentity{}, fmt.Errorf("github account has no verified email")
+	}
+	return googleIdentity{
+		Subject: strconv.FormatInt(user.ID, 10),
+		Email:   email,
+		Name:    firstNonEmpty(user.Name, user.Login, email),
+	}, nil
+}
+
+func githubJSON(ctx context.Context, targetURL string, accessToken string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	if err != nil {
+		return fmt.Errorf("create github request: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("User-Agent", "PasteBox")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	res, err := githubOAuthHTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("fetch github profile: %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return fmt.Errorf("github profile request failed")
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(out); err != nil {
+		return fmt.Errorf("decode github profile response: %w", err)
+	}
+	return nil
+}
+
+func githubPrimaryEmail(emails []githubEmailResponse) string {
+	for _, candidate := range emails {
+		if candidate.Primary && candidate.Verified && strings.TrimSpace(candidate.Email) != "" {
+			return strings.TrimSpace(candidate.Email)
+		}
+	}
+	for _, candidate := range emails {
+		if candidate.Verified && strings.TrimSpace(candidate.Email) != "" {
+			return strings.TrimSpace(candidate.Email)
+		}
+	}
+	return ""
 }
 
 func verifyGoogleIDToken(ctx context.Context, clientID string, nonce string, idToken string) (googleIdentity, error) {

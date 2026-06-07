@@ -16,6 +16,8 @@ import {
   FileText,
   FileUp,
   Filter,
+  Github,
+  Image as ImageIcon,
   KeyRound,
   LifeBuoy,
   Link2,
@@ -52,6 +54,7 @@ import {
   type AlertEvent,
   type ApiError,
   type AuditLog,
+  type GuestUploadConfig,
   type ManualWorkItem,
   type Order,
   type Paste,
@@ -157,7 +160,7 @@ type PublicPageSection = {
   items?: string[];
 };
 
-type AuthLinkKind = "email-verification" | "magic" | "password-reset";
+type AuthLinkKind = "email-verification" | "password-reset";
 
 type AuthLink = {
   kind: AuthLinkKind;
@@ -383,8 +386,6 @@ function authLinkFromLocation(): AuthLink | null {
   switch (path) {
     case "/email-verification":
       return { kind: "email-verification", token };
-    case "/magic":
-      return { kind: "magic", token };
     case "/password-reset":
       return { kind: "password-reset", token };
     default:
@@ -769,7 +770,6 @@ function authModeForPath(pathname: string): AuthMode | null {
   if (normalized === "/register") return "register";
   if (
     normalized === "/login" ||
-    normalized === "/magic" ||
     normalized === "/password-reset" ||
     normalized === "/email-verification"
   ) {
@@ -799,6 +799,7 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     login: "Login",
     register: "Register",
     google: "Google",
+    github: "GitHub",
     verificationToken: "verification token",
     verify: "Verify",
     magicLink: "Magic link",
@@ -863,7 +864,8 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     maxVisits: "max visits",
     maxDownloads: "max downloads",
     attachmentsCount: "attachments",
-    stripeUsdtPayments: "Stripe and USDT payment lifecycle",
+    stripeUsdtPayments: "Plans for every transfer size",
+    billingStatusTitle: "Payment status and membership",
     billingSupport: "Billing support",
     billingSupportBody:
       "Refunds, duplicate charges, stuck Epusdt payments, and manual review requests are handled through the refund policy and support intake.",
@@ -1075,6 +1077,7 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     login: "登录",
     register: "注册",
     google: "Google",
+    github: "GitHub",
     verificationToken: "邮箱验证码",
     verify: "验证",
     magicLink: "魔法链接",
@@ -1138,7 +1141,8 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     maxVisits: "最大访问次数",
     maxDownloads: "最大下载次数",
     attachmentsCount: "个附件",
-    stripeUsdtPayments: "Stripe 和 USDT 支付状态",
+    stripeUsdtPayments: "按传输规模选择套餐",
+    billingStatusTitle: "支付状态和会员权益",
     billingSupport: "支付支持",
     billingSupportBody:
       "退款、重复扣款、卡住的 Epusdt 支付和人工审核请求会通过退款政策和支持入口处理。",
@@ -1902,29 +1906,29 @@ function landingContentFor(locale: Locale): LandingContent {
       navSecurity: "安全",
       navPricing: "方案",
       eyebrow: "跨裝置線上剪貼簿",
-      title: "把文字、檔案和分享控制放進同一個乾淨工作台。",
+      title: "一個即開即用的私有線上剪貼簿。",
       subtitle:
-        "PasteBox 結合線上剪貼簿的快速輸入體驗與產品級分享、掃描、到期和帳號控制。",
+        "打開就能貼上文字、圖片或檔案，生成可撤銷的限時分享，登入後管理全部內容。",
       primaryCta: "免費註冊",
       secondaryCta: "登入",
       workspaceLabel: "PasteBox 工作台",
-      workspaceTitle: "貼上內容，設定期限，生成可控分享。",
+      workspaceTitle: "先用起來，再決定是否註冊。",
       workspaceBody:
-        "緊湊卡片、明確輸入框、掃描狀態和分享限制都在同一屏，適合快速跨設備傳輸。",
+        "首頁工作台支援遊客試用；超過免費額度時，再登入使用完整容量和歷史記錄。",
       features: [
         {
           title: "快速貼上",
-          body: "像 online clipboard 一樣直接輸入，但保留私有帳號空間。",
+          body: "文字、圖片和檔案都從同一個入口建立分享。",
           stat: "6s",
         },
         {
           title: "可控分享",
-          body: "密碼、訪問次數、下載上限和過期時間都可在建立時設定。",
+          body: "連結有期限，可撤銷，適合臨時交付和跨設備傳輸。",
           stat: "4x",
         },
         {
           title: "檔案掃描",
-          body: "附件在公開下載前顯示掃描狀態，降低誤分享風險。",
+          body: "附件會保留掃描狀態，公開下載前風險更清楚。",
           stat: "safe",
         },
       ],
@@ -1942,29 +1946,29 @@ function landingContentFor(locale: Locale): LandingContent {
       navSecurity: "安全",
       navPricing: "套餐",
       eyebrow: "跨设备在线剪切板",
-      title: "把文字、文件和分享控制放进同一个清爽工作台。",
+      title: "一个即开即用的私有在线剪切板。",
       subtitle:
-        "PasteBox 结合在线剪切板的快速输入体验与产品级分享、扫描、到期和账号控制。",
+        "打开就能粘贴文字、图片或文件，生成可撤销的限时分享，登录后管理全部内容。",
       primaryCta: "免费注册",
       secondaryCta: "登录",
       workspaceLabel: "PasteBox 工作台",
-      workspaceTitle: "粘贴内容，设置期限，生成可控分享。",
+      workspaceTitle: "先用起来，再决定是否注册。",
       workspaceBody:
-        "紧凑卡片、清晰输入框、扫描状态和分享限制都在同一屏，适合快速跨设备传输。",
+        "首页工作台支持游客试用；超过免费额度时，再登录使用完整容量和历史记录。",
       features: [
         {
           title: "快速粘贴",
-          body: "像 online clipboard 一样直接输入，但保留私有账号空间。",
+          body: "文字、图片和文件都从同一个入口创建分享。",
           stat: "6s",
         },
         {
           title: "可控分享",
-          body: "密码、访问次数、下载上限和过期时间都可在创建时设置。",
+          body: "链接有期限，可撤销，适合临时交付和跨设备传输。",
           stat: "4x",
         },
         {
           title: "文件扫描",
-          body: "附件在公开下载前展示扫描状态，降低误分享风险。",
+          body: "附件会保留扫描状态，公开下载前风险更清楚。",
           stat: "safe",
         },
       ],
@@ -2029,29 +2033,29 @@ function landingContentFor(locale: Locale): LandingContent {
     navSecurity: "Security",
     navPricing: "Pricing",
     eyebrow: "Cross-device online clipboard",
-    title: "Put text, files, and share controls in one clean workspace.",
+    title: "A private online clipboard you can use immediately.",
     subtitle:
-      "PasteBox blends the speed of an online clipboard with product-grade sharing, scanning, expiry, and account controls.",
+      "Paste text, images, or files, create a revocable expiring link, then sign in when you need history and larger limits.",
     primaryCta: "Register free",
     secondaryCta: "Login",
     workspaceLabel: "PasteBox workspace",
-    workspaceTitle: "Paste content, set expiry, and share with control.",
+    workspaceTitle: "Try the workspace before signing up.",
     workspaceBody:
-      "Compact cards, clear inputs, scan state, and link limits stay visible on one screen for quick cross-device transfer.",
+      "Guest mode covers quick transfers. Sign in when you need larger capacity, history, and account controls.",
     features: [
       {
         title: "Fast paste",
-        body: "Direct entry like an online clipboard, backed by private account space.",
+        body: "Text, images, and files start from the same sharing workspace.",
         stat: "6s",
       },
       {
         title: "Controlled links",
-        body: "Set password, visit caps, download caps, and expiry before sharing.",
+        body: "Links expire and can be revoked, making quick handoffs less messy.",
         stat: "4x",
       },
       {
         title: "File scanning",
-        body: "Show attachment scan state before public downloads are available.",
+        body: "Attachments keep scan state visible before public downloads.",
         stat: "safe",
       },
     ],
@@ -2381,7 +2385,6 @@ function App() {
     password: "",
     displayName: "",
   });
-  const [magicToken, setMagicToken] = useState("");
   const [resetToken, setResetToken] = useState("");
   const [profileDraft, setProfileDraft] = useState({
     displayName: "",
@@ -2607,6 +2610,14 @@ function App() {
   }, [user?.role]);
 
   useEffect(() => {
+    if (publicPage || catalog) return;
+    void client
+      .plans()
+      .then(setCatalog)
+      .catch(() => undefined);
+  }, [catalog, publicPage]);
+
+  useEffect(() => {
     if (!publicPage) return;
     void loadSupportContacts();
   }, [loadSupportContacts, publicPage]);
@@ -2637,31 +2648,12 @@ function App() {
     }
 
     async function completeAuthLink() {
-      if (link.kind === "email-verification") {
-        const updated = await run(
-          () => client.finishEmailVerification(link.token),
-          t("emailVerified"),
-        );
-        if (updated) {
-          await applyVerifiedEmail(updated);
-        }
-        return;
-      }
-
-      const result = await run(
-        () => client.finishMagic(link.token),
-        t("signedInMagic"),
+      const updated = await run(
+        () => client.finishEmailVerification(link.token),
+        t("emailVerified"),
       );
-      if (result) {
-        setUser(result.user);
-        setMagicToken("");
-        setVerificationToken("");
-        setProfileDraft({
-          displayName: result.user.displayName,
-          language: localeFor(result.user.language),
-        });
-        moveToWorkspacePath();
-        await refreshAuthed();
+      if (updated) {
+        await applyVerifiedEmail(updated);
       }
     }
 
@@ -2758,6 +2750,10 @@ function App() {
     window.location.assign(client.googleOAuthStartPath("/app"));
   }
 
+  function githubOAuth() {
+    window.location.assign(client.githubOAuthStartPath("/app"));
+  }
+
   async function startVerification() {
     const result = await run(
       () => client.startEmailVerification(),
@@ -2773,31 +2769,6 @@ function App() {
     );
     if (updated) {
       await applyVerifiedEmail(updated);
-    }
-  }
-
-  async function startMagic() {
-    const result = await run(
-      () => client.startMagic(auth.email),
-      t("magicLinkIssued"),
-    );
-    if (result) setMagicToken(result.devToken ?? "");
-  }
-
-  async function finishMagic() {
-    const result = await run(
-      () => client.finishMagic(magicToken),
-      t("signedInMagic"),
-    );
-    if (result) {
-      setUser(result.user);
-      setVerificationToken("");
-      setProfileDraft({
-        displayName: result.user.displayName,
-        language: localeFor(result.user.language),
-      });
-      moveToWorkspacePath();
-      await refreshAuthed();
     }
   }
 
@@ -3191,7 +3162,29 @@ function App() {
   async function saveAdminCatalog() {
     if (!catalog) return;
     const updated = await run(
-      () => client.adminUpdateCatalog(catalog),
+      () =>
+        client.adminUpdateCatalog({
+          plans: catalog.plans,
+          prices: catalog.prices.map(
+            ({
+              id,
+              planId,
+              period,
+              amountCents,
+              currency,
+              visible,
+              purchaseEnabled,
+            }) => ({
+              id,
+              planId,
+              period,
+              amountCents,
+              currency,
+              visible,
+              purchaseEnabled,
+            }),
+          ),
+        }),
       t("catalogSaved"),
     );
     if (updated) {
@@ -3315,7 +3308,6 @@ function App() {
           auth={auth}
           busy={busy}
           message={message}
-          magicToken={magicToken}
           resetToken={resetToken}
           verificationToken={verificationToken}
           passwordResetLinkActive={passwordResetLinkActive}
@@ -3323,9 +3315,7 @@ function App() {
           onLogin={() => void login()}
           onRegister={() => void register()}
           onGoogle={googleOAuth}
-          onStartMagic={() => void startMagic()}
-          onFinishMagic={() => void finishMagic()}
-          onMagicToken={setMagicToken}
+          onGithub={githubOAuth}
           onPasswordReset={() => void passwordReset()}
           onFinishPasswordReset={() => void finishPasswordReset()}
           onResetToken={setResetToken}
@@ -3336,7 +3326,7 @@ function App() {
       );
     }
 
-    return <LandingPage locale={browserLocale} plans={catalog?.plans ?? []} />;
+    return <LandingPage catalog={catalog} locale={browserLocale} />;
   }
 
   return (
@@ -3678,7 +3668,7 @@ function App() {
         ) : null}
 
         {view === "billing" ? (
-          <Panel title={t("billing")} meta={t("stripeUsdtPayments")}>
+          <Panel title={t("billing")} meta={t("billingStatusTitle")}>
             <section className="notice-card">
               <LifeBuoy size={18} aria-hidden="true" />
               <div>
@@ -5144,35 +5134,201 @@ function PasteList({
   );
 }
 
+type GuestWorkbenchMode = "text" | "image" | "file";
+
+type GuestWorkbenchCopy = {
+  modeText: string;
+  modeImage: string;
+  modeFile: string;
+  hint: string;
+  titlePlaceholder: string;
+  textPlaceholder: string;
+  chooseImage: string;
+  chooseFile: string;
+  textLimit: string;
+  fileLimit: string;
+  imageOnly: string;
+  create: string;
+  creating: string;
+  linkReady: string;
+  copyLink: string;
+  copied: string;
+  missingText: string;
+  missingFile: string;
+  imageTypeError: string;
+  disabled: string;
+  overText: string;
+  overFile: string;
+  overTotal: string;
+  modalEyebrow: string;
+  modalTitle: string;
+  cancel: string;
+  login: string;
+};
+
+const fallbackGuestUploads: GuestUploadConfig = {
+  enabled: true,
+  requireTurnstile: false,
+  retentionSeconds: 6 * 60 * 60,
+  activePasteLimit: 5,
+  activeStorageBytes: 50 * 1024 * 1024,
+  singleTextBytes: 64 * 1024,
+  singleFileBytes: 10 * 1024 * 1024,
+  singlePasteBytes: 15 * 1024 * 1024,
+  attachmentsPerPasteLimit: 3,
+  dailyUploadBytes: 100 * 1024 * 1024,
+  dailyShareDownloadBytes: 100 * 1024 * 1024,
+  shareDownloadsEnabled: true,
+};
+
+const guestWorkbenchCopy: Record<Locale, GuestWorkbenchCopy> = {
+  en: {
+    modeText: "Text",
+    modeImage: "Image",
+    modeFile: "File",
+    hint: "Guest mode creates a temporary share link.",
+    titlePlaceholder: "Optional title",
+    textPlaceholder: "Paste text here",
+    chooseImage: "Choose image",
+    chooseFile: "Choose file",
+    textLimit: "Guest text limit",
+    fileLimit: "Guest file limit",
+    imageOnly: "Images only",
+    create: "Create share",
+    creating: "Creating...",
+    linkReady: "Share link is ready.",
+    copyLink: "Copy link",
+    copied: "Link copied.",
+    missingText: "Enter text before creating a share.",
+    missingFile: "Choose a file before creating a share.",
+    imageTypeError: "Choose an image file.",
+    disabled: "Guest workspace is closed. Sign in to use PasteBox.",
+    overText: "This text is over the guest limit. Sign in for larger text.",
+    overFile: "This file is over the guest limit. Sign in for larger files.",
+    overTotal:
+      "This share is over the guest total size limit. Sign in for larger transfers.",
+    modalEyebrow: "Guest limit",
+    modalTitle: "Sign in for the full workspace",
+    cancel: "Cancel",
+    login: "Go login",
+  },
+  "zh-CN": {
+    modeText: "文本",
+    modeImage: "图片",
+    modeFile: "文件",
+    hint: "游客模式会生成一个临时分享链接。",
+    titlePlaceholder: "可选标题",
+    textPlaceholder: "把要分享的文字粘贴到这里",
+    chooseImage: "选择图片",
+    chooseFile: "选择文件",
+    textLimit: "游客文本上限",
+    fileLimit: "游客文件上限",
+    imageOnly: "仅限图片",
+    create: "生成分享",
+    creating: "生成中...",
+    linkReady: "分享链接已生成。",
+    copyLink: "复制链接",
+    copied: "链接已复制。",
+    missingText: "先输入要分享的文字。",
+    missingFile: "先选择要分享的文件。",
+    imageTypeError: "请选择图片文件。",
+    disabled: "游客工作台暂未开放，登录后可以使用 PasteBox。",
+    overText: "这段文字超过游客上限，注册后可以使用更大容量。",
+    overFile: "这个文件超过游客上限，注册后可以上传更大文件。",
+    overTotal: "这次分享超过游客总大小上限，注册后可以传输更大内容。",
+    modalEyebrow: "游客额度",
+    modalTitle: "登录后使用完整工作台",
+    cancel: "取消",
+    login: "去登录",
+  },
+  "zh-TW": {
+    modeText: "文字",
+    modeImage: "圖片",
+    modeFile: "檔案",
+    hint: "訪客模式會產生一個臨時分享連結。",
+    titlePlaceholder: "可選標題",
+    textPlaceholder: "把要分享的文字貼到這裡",
+    chooseImage: "選擇圖片",
+    chooseFile: "選擇檔案",
+    textLimit: "訪客文字上限",
+    fileLimit: "訪客檔案上限",
+    imageOnly: "僅限圖片",
+    create: "產生分享",
+    creating: "產生中...",
+    linkReady: "分享連結已產生。",
+    copyLink: "複製連結",
+    copied: "連結已複製。",
+    missingText: "先輸入要分享的文字。",
+    missingFile: "先選擇要分享的檔案。",
+    imageTypeError: "請選擇圖片檔案。",
+    disabled: "訪客工作台暫未開放，登入後可以使用 PasteBox。",
+    overText: "這段文字超過訪客上限，註冊後可以使用更大容量。",
+    overFile: "這個檔案超過訪客上限，註冊後可以上傳更大檔案。",
+    overTotal: "這次分享超過訪客總大小上限，註冊後可以傳輸更大內容。",
+    modalEyebrow: "訪客額度",
+    modalTitle: "登入後使用完整工作台",
+    cancel: "取消",
+    login: "去登入",
+  },
+  es: {
+    modeText: "Texto",
+    modeImage: "Imagen",
+    modeFile: "Archivo",
+    hint: "El modo invitado crea un enlace temporal.",
+    titlePlaceholder: "Título opcional",
+    textPlaceholder: "Pega el texto aquí",
+    chooseImage: "Elegir imagen",
+    chooseFile: "Elegir archivo",
+    textLimit: "Límite de texto invitado",
+    fileLimit: "Límite de archivo invitado",
+    imageOnly: "Solo imágenes",
+    create: "Crear enlace",
+    creating: "Creando...",
+    linkReady: "Enlace listo.",
+    copyLink: "Copiar enlace",
+    copied: "Enlace copiado.",
+    missingText: "Ingresa texto antes de compartir.",
+    missingFile: "Elige un archivo antes de compartir.",
+    imageTypeError: "Elige una imagen.",
+    disabled: "El espacio invitado está cerrado. Inicia sesión para usarlo.",
+    overText: "Este texto supera el límite invitado. Inicia sesión.",
+    overFile: "Este archivo supera el límite invitado. Inicia sesión.",
+    overTotal: "Esta transferencia supera el límite invitado. Inicia sesión.",
+    modalEyebrow: "Límite invitado",
+    modalTitle: "Inicia sesión para el espacio completo",
+    cancel: "Cancelar",
+    login: "Ir a login",
+  },
+};
+
+function byteSize(value: string): number {
+  return new Blob([value]).size;
+}
+
 function LandingPage({
+  catalog,
   locale,
-  plans,
 }: {
+  catalog: PlanCatalog | null;
   locale: Locale;
-  plans: PlanCatalog["plans"];
 }) {
   const t = copyFor(locale);
   const content = landingContentFor(locale);
-  const showcasePlan = plans[0];
-  const priceCards =
-    plans.length > 0
-      ? plans.slice(0, 3)
-      : [
-          {
-            id: "free",
-            name: "Free",
-            activePasteLimit: 25,
-            activeStorageBytes: 256 * 1024 * 1024,
-            maxRetentionSeconds: 7 * 24 * 60 * 60,
-          },
-          {
-            id: "pro",
-            name: "Pro",
-            activePasteLimit: 500,
-            activeStorageBytes: 10 * 1024 * 1024 * 1024,
-            maxRetentionSeconds: 180 * 24 * 60 * 60,
-          },
-        ];
+  const plans = catalog?.plans ?? [];
+  const visiblePaidPlanIds = new Set(
+    (catalog?.prices ?? [])
+      .filter(
+        (price) =>
+          price.visible && price.purchaseEnabled && price.planId !== "free",
+      )
+      .map((price) => price.planId),
+  );
+  const priceCards = plans.filter(
+    (plan) => plan.id === "free" || visiblePaidPlanIds.has(plan.id),
+  );
+  const showPricing = visiblePaidPlanIds.size > 0 && priceCards.length > 0;
+  const showcasePlan = priceCards[0];
+  const guestUploads = catalog?.guestUploads ?? fallbackGuestUploads;
 
   return (
     <main className="landing-page">
@@ -5189,7 +5345,7 @@ function LandingPage({
         <nav className="landing-links" aria-label="Product navigation">
           <a href="#product">{content.navProduct}</a>
           <a href="#security">{content.navSecurity}</a>
-          <a href="#pricing">{content.navPricing}</a>
+          {showPricing ? <a href="#pricing">{content.navPricing}</a> : null}
         </nav>
         <div className="landing-actions">
           <a className="landing-link-button" href="/login">
@@ -5225,45 +5381,7 @@ function LandingPage({
             className="clay-scene landing-clay-scene"
             src={clayHeroAsset}
           />
-          <div
-            className="landing-clipboard-card"
-            aria-label={content.workspaceLabel}
-          >
-            <div className="clipboard-window-bar">
-              <span />
-              <span />
-              <span />
-              <strong>{content.workspaceLabel}</strong>
-            </div>
-            <div className="clipboard-tabs" aria-hidden="true">
-              <span className="active">{t("text")}</span>
-              <span>{t("files")}</span>
-              <span>{t("shared")}</span>
-            </div>
-            <label className="clipboard-field">
-              <span>{t("title")}</span>
-              <input readOnly value="Launch notes, API keys, or handoff text" />
-            </label>
-            <label className="clipboard-field">
-              <span>{t("text")}</span>
-              <textarea
-                readOnly
-                value={
-                  "Paste once, open anywhere.\nSet expiry, attach files, and revoke links without leaving the clipboard."
-                }
-              />
-            </label>
-            <div className="clipboard-button-row">
-              <button type="button">
-                <UploadCloud size={16} aria-hidden="true" />
-                {t("upload")}
-              </button>
-              <button type="button">
-                <Link2 size={16} aria-hidden="true" />
-                {t("share")}
-              </button>
-            </div>
-          </div>
+          <GuestWorkbench config={guestUploads} locale={locale} />
         </div>
       </section>
 
@@ -5291,41 +5409,287 @@ function LandingPage({
         ))}
       </section>
 
-      <section className="landing-pricing" id="pricing">
-        <div className="landing-section-heading">
-          <span className="eyebrow">{t("currentPlan")}</span>
-          <h2>{t("stripeUsdtPayments")}</h2>
-        </div>
-        <div className="landing-plan-grid">
-          {priceCards.map((plan) => (
-            <article className="landing-plan-card" key={plan.id}>
-              <strong>{plan.name}</strong>
-              <span>
-                {plan.activePasteLimit.toLocaleString()} {t("activePastes")}
-              </span>
-              <dl>
-                <div>
-                  <dt>{t("storage")}</dt>
-                  <dd>{formatBytes(plan.activeStorageBytes)}</dd>
-                </div>
-                <div>
-                  <dt>{t("retention")}</dt>
-                  <dd>{formatDuration(plan.maxRetentionSeconds)}</dd>
-                </div>
-              </dl>
-            </article>
-          ))}
-        </div>
-        {showcasePlan ? (
-          <p className="landing-footnote">
-            {showcasePlan.name} · {formatBytes(showcasePlan.activeStorageBytes)}{" "}
-            · {formatDuration(showcasePlan.maxRetentionSeconds)}
-          </p>
-        ) : null}
-      </section>
+      {showPricing ? (
+        <section className="landing-pricing" id="pricing">
+          <div className="landing-section-heading">
+            <span className="eyebrow">{content.navPricing}</span>
+            <h2>{t("stripeUsdtPayments")}</h2>
+          </div>
+          <div className="landing-plan-grid">
+            {priceCards.map((plan) => (
+              <article
+                className={`landing-plan-card landing-plan-card--${plan.id}`}
+                key={plan.id}
+              >
+                <strong>{plan.name}</strong>
+                <span>
+                  {plan.activePasteLimit.toLocaleString()} {t("activePastes")}
+                </span>
+                <dl>
+                  <div>
+                    <dt>{t("storage")}</dt>
+                    <dd>{formatBytes(plan.activeStorageBytes)}</dd>
+                  </div>
+                  <div>
+                    <dt>{t("retention")}</dt>
+                    <dd>{formatDuration(plan.maxRetentionSeconds)}</dd>
+                  </div>
+                </dl>
+              </article>
+            ))}
+          </div>
+          {showcasePlan ? (
+            <p className="landing-footnote">
+              {showcasePlan.name} ·{" "}
+              {formatBytes(showcasePlan.activeStorageBytes)} ·{" "}
+              {formatDuration(showcasePlan.maxRetentionSeconds)}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
 
       <PublicFooter locale={locale} />
     </main>
+  );
+}
+
+function GuestWorkbench({
+  config,
+  locale,
+}: {
+  config: GuestUploadConfig;
+  locale: Locale;
+}) {
+  const labels = guestWorkbenchCopy[locale] ?? guestWorkbenchCopy.en;
+  const [mode, setMode] = useState<GuestWorkbenchMode>("text");
+  const [title, setTitle] = useState("");
+  const [text, setText] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [guestToken, setGuestToken] = useState("");
+  const [shareUrl, setShareUrl] = useState("");
+  const [status, setStatus] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [limitMessage, setLimitMessage] = useState("");
+  const textBytes = byteSize(text);
+  const fileBytes = file?.size ?? 0;
+  const totalBytes = textBytes + fileBytes;
+  const isUploadMode = mode === "image" || mode === "file";
+  const modeLabels: Array<{
+    mode: GuestWorkbenchMode;
+    label: string;
+    icon: ReactNode;
+  }> = [
+    { mode: "text", label: labels.modeText, icon: <FileText size={16} /> },
+    { mode: "image", label: labels.modeImage, icon: <ImageIcon size={16} /> },
+    { mode: "file", label: labels.modeFile, icon: <FileUp size={16} /> },
+  ];
+
+  function switchMode(nextMode: GuestWorkbenchMode) {
+    setMode(nextMode);
+    setFile(null);
+    if (nextMode !== "text") {
+      setText("");
+    }
+    setShareUrl("");
+    setStatus("");
+  }
+
+  function showLimit(message: string) {
+    setLimitMessage(message);
+  }
+
+  function validateDraft() {
+    if (!config.enabled) {
+      setStatus(labels.disabled);
+      return false;
+    }
+    if (mode === "text" && text.trim() === "") {
+      setStatus(labels.missingText);
+      return false;
+    }
+    if (isUploadMode && !file) {
+      setStatus(labels.missingFile);
+      return false;
+    }
+    if (mode === "image" && file && !file.type.startsWith("image/")) {
+      setStatus(labels.imageTypeError);
+      return false;
+    }
+    if (textBytes > config.singleTextBytes) {
+      showLimit(labels.overText);
+      return false;
+    }
+    if (file && file.size > config.singleFileBytes) {
+      showLimit(labels.overFile);
+      return false;
+    }
+    if (totalBytes > config.singlePasteBytes) {
+      showLimit(labels.overTotal);
+      return false;
+    }
+    return true;
+  }
+
+  async function createGuestShare() {
+    if (!validateDraft()) return;
+    setBusy(true);
+    setStatus("");
+    setShareUrl("");
+    try {
+      const nextTitle = title.trim() || file?.name || labels.modeText;
+      const pasteResult = await client.createGuestPaste({
+        guestToken: guestToken || undefined,
+        title: nextTitle,
+        text: mode === "text" ? text : "",
+        tags: [],
+        expiresInSeconds: config.retentionSeconds,
+      });
+      const token = pasteResult.guestToken;
+      setGuestToken(token);
+      if (file) {
+        await client.uploadGuestAttachment(pasteResult.paste.id, file, token);
+      }
+      const share = await client.createGuestShare(pasteResult.paste.id, token, {
+        expiresInSeconds: config.retentionSeconds,
+      });
+      setShareUrl(share.url);
+      setStatus(labels.linkReady);
+    } catch (error) {
+      const apiError = error as ApiError;
+      setStatus(apiError.message || labels.disabled);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyShareLink() {
+    if (!shareUrl) return;
+    try {
+      await navigator.clipboard?.writeText(shareUrl);
+      setStatus(labels.copied);
+    } catch {
+      setStatus(shareUrl);
+    }
+  }
+
+  return (
+    <div className="guest-workbench" aria-label={labels.hint}>
+      <div className="clipboard-window-bar guest-workbench-bar">
+        <span />
+        <span />
+        <span />
+        <strong>PasteBox</strong>
+      </div>
+      <div className="guest-workbench-tabs" role="tablist">
+        {modeLabels.map((item) => (
+          <button
+            className={mode === item.mode ? "active" : ""}
+            key={item.mode}
+            type="button"
+            onClick={() => switchMode(item.mode)}
+          >
+            {item.icon}
+            {item.label}
+          </button>
+        ))}
+      </div>
+      <label className="guest-field">
+        <span>{labels.titlePlaceholder}</span>
+        <input
+          value={title}
+          onChange={(event) => setTitle(event.target.value)}
+          placeholder={labels.titlePlaceholder}
+        />
+      </label>
+      {mode === "text" ? (
+        <label className="guest-field guest-field--text">
+          <span>{labels.modeText}</span>
+          <textarea
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            placeholder={labels.textPlaceholder}
+          />
+          <small className="guest-limit-note">
+            {labels.textLimit}: {formatBytes(config.singleTextBytes)}
+          </small>
+        </label>
+      ) : (
+        <label className="guest-upload-box">
+          <UploadCloud size={22} aria-hidden="true" />
+          <strong>
+            {file?.name ??
+              (mode === "image" ? labels.chooseImage : labels.chooseFile)}
+          </strong>
+          <span>
+            {file
+              ? formatBytes(file.size)
+              : mode === "image"
+                ? labels.imageOnly
+                : labels.chooseFile}
+          </span>
+          <input
+            accept={mode === "image" ? "image/*" : undefined}
+            type="file"
+            onChange={(event) => {
+              const nextFile = event.target.files?.[0] ?? null;
+              if (
+                mode === "image" &&
+                nextFile &&
+                !nextFile.type.startsWith("image/")
+              ) {
+                setFile(null);
+                setStatus(labels.imageTypeError);
+                return;
+              }
+              setFile(nextFile);
+              setStatus("");
+            }}
+          />
+          <small className="guest-limit-note">
+            {labels.fileLimit}: {formatBytes(config.singleFileBytes)}
+          </small>
+        </label>
+      )}
+      <div className="guest-workbench-actions">
+        <span>
+          {labels.hint} · {formatBytes(totalBytes)} /{" "}
+          {formatBytes(config.singlePasteBytes)}
+        </span>
+        <button type="button" onClick={() => void createGuestShare()} disabled={busy}>
+          <Link2 size={16} aria-hidden="true" />
+          {busy ? labels.creating : labels.create}
+        </button>
+      </div>
+      {shareUrl ? (
+        <div className="guest-share-result">
+          <input readOnly value={shareUrl} />
+          <button type="button" onClick={() => void copyShareLink()}>
+            <ClipboardCopy size={16} aria-hidden="true" />
+            {labels.copyLink}
+          </button>
+        </div>
+      ) : null}
+      {status ? <p className="guest-status">{status}</p> : null}
+      {limitMessage ? (
+        <div className="guest-limit-backdrop" role="presentation">
+          <section
+            aria-modal="true"
+            className="guest-limit-modal"
+            role="dialog"
+          >
+            <span className="eyebrow">{labels.modalEyebrow}</span>
+            <h3>{labels.modalTitle}</h3>
+            <p>{limitMessage}</p>
+            <div>
+              <button type="button" onClick={() => setLimitMessage("")}>
+                {labels.cancel}
+              </button>
+              <a href="/login">{labels.login}</a>
+            </div>
+          </section>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -5334,7 +5698,6 @@ function AuthScreen({
   auth,
   busy,
   message,
-  magicToken,
   resetToken,
   verificationToken,
   passwordResetLinkActive,
@@ -5342,9 +5705,7 @@ function AuthScreen({
   onLogin,
   onRegister,
   onGoogle,
-  onStartMagic,
-  onFinishMagic,
-  onMagicToken,
+  onGithub,
   onPasswordReset,
   onFinishPasswordReset,
   onResetToken,
@@ -5356,7 +5717,6 @@ function AuthScreen({
   auth: AuthFormState;
   busy: boolean;
   message: string;
-  magicToken: string;
   resetToken: string;
   verificationToken: string;
   passwordResetLinkActive: boolean;
@@ -5364,9 +5724,7 @@ function AuthScreen({
   onLogin: () => void;
   onRegister: () => void;
   onGoogle: () => void;
-  onStartMagic: () => void;
-  onFinishMagic: () => void;
-  onMagicToken: (value: string) => void;
+  onGithub: () => void;
   onPasswordReset: () => void;
   onFinishPasswordReset: () => void;
   onResetToken: (value: string) => void;
@@ -5486,6 +5844,15 @@ function AuthScreen({
           <ShieldCheck size={16} aria-hidden="true" />
           {t("google")}
         </button>
+        <button
+          className="auth-oauth-button"
+          type="button"
+          onClick={onGithub}
+          disabled={busy}
+        >
+          <Github size={16} aria-hidden="true" />
+          {t("github")}
+        </button>
 
         {passwordResetLinkActive ? (
           <div className="auth-link-callout">
@@ -5495,24 +5862,7 @@ function AuthScreen({
         ) : null}
 
         <details className="auth-advanced">
-          <summary>{t("magicLink")}</summary>
-          <div className="magic-row">
-            <button type="button" onClick={onStartMagic} disabled={busy}>
-              {t("magicLink")}
-            </button>
-            <input
-              value={magicToken}
-              onChange={(event) => onMagicToken(event.target.value)}
-              placeholder={t("magicToken")}
-            />
-            <button
-              type="button"
-              onClick={onFinishMagic}
-              disabled={busy || !magicToken}
-            >
-              {t("useToken")}
-            </button>
-          </div>
+          <summary>{t("reset")}</summary>
           <div className="magic-row">
             <button type="button" onClick={onPasswordReset} disabled={busy}>
               {t("reset")}

@@ -728,6 +728,107 @@ func TestGoogleOAuthRedirectFlowCreatesSession(t *testing.T) {
 	}
 }
 
+func TestGitHubOAuthRedirectFlowCreatesSession(t *testing.T) {
+	cfg := config.FromEnv()
+	cfg.AppEnv = "production"
+	cfg.GitHubOAuth.ClientID = "github-client-id"
+	cfg.GitHubOAuth.ClientSecret = "github-client-secret"
+	cfg.GitHubOAuth.RedirectURL = "https://pastebox.example.com/api/v1/auth/github/callback"
+	service := app.New(cfg)
+	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), service)
+
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse github token form: %v", err)
+			}
+			if r.Form.Get("client_id") != cfg.GitHubOAuth.ClientID ||
+				r.Form.Get("client_secret") != cfg.GitHubOAuth.ClientSecret ||
+				r.Form.Get("redirect_uri") != cfg.GitHubOAuth.RedirectURL ||
+				r.Form.Get("code") != "github-code" {
+				t.Fatalf("unexpected github token form: %#v", r.Form)
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"access_token": "github-access-token"})
+		case "/user":
+			if r.Header.Get("Authorization") != "Bearer github-access-token" {
+				t.Fatalf("expected bearer token, got %q", r.Header.Get("Authorization"))
+			}
+			writeJSON(w, http.StatusOK, githubUserResponse{ID: 12345, Login: "octo", Name: "GitHub Redirect"})
+		case "/emails":
+			writeJSON(w, http.StatusOK, []githubEmailResponse{
+				{Email: "secondary@example.com", Verified: true},
+				{Email: "github-redirect@example.com", Primary: true, Verified: true},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer github.Close()
+	oldTokenURL := githubOAuthTokenURL
+	oldUserURL := githubOAuthUserURL
+	oldEmailsURL := githubOAuthEmailsURL
+	oldHTTPClient := githubOAuthHTTPClient
+	githubOAuthTokenURL = github.URL + "/token"
+	githubOAuthUserURL = github.URL + "/user"
+	githubOAuthEmailsURL = github.URL + "/emails"
+	githubOAuthHTTPClient = github.Client()
+	t.Cleanup(func() {
+		githubOAuthTokenURL = oldTokenURL
+		githubOAuthUserURL = oldUserURL
+		githubOAuthEmailsURL = oldEmailsURL
+		githubOAuthHTTPClient = oldHTTPClient
+	})
+
+	start := httptest.NewRecorder()
+	startReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/github/start?returnTo=%2Fapp", nil)
+	handler.ServeHTTP(start, startReq)
+	assertStatus(t, start, http.StatusSeeOther)
+	location, err := url.Parse(start.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse github redirect location: %v", err)
+	}
+	if location.Host != "github.com" || location.Query().Get("client_id") != cfg.GitHubOAuth.ClientID {
+		t.Fatalf("unexpected github redirect: %s", location.String())
+	}
+	state := location.Query().Get("state")
+	if state == "" {
+		t.Fatalf("expected state in redirect: %s", location.String())
+	}
+	oauthCookie := cookieFromResponse(t, start, githubOAuthStateCookieName)
+	if !oauthCookie.HttpOnly || oauthCookie.Value == "" {
+		t.Fatalf("expected signed HttpOnly github state cookie, got %#v", oauthCookie)
+	}
+
+	callback := httptest.NewRecorder()
+	callbackReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/github/callback?code=github-code&state="+url.QueryEscape(state), nil)
+	callbackReq.AddCookie(oauthCookie)
+	handler.ServeHTTP(callback, callbackReq)
+	assertStatus(t, callback, http.StatusSeeOther)
+	if got := callback.Header().Get("Location"); got != "/app" {
+		t.Fatalf("expected return redirect to /app, got %q", got)
+	}
+	sessionCookie := sessionCookieFromResponse(t, callback)
+	clearedState := cookieFromResponse(t, callback, githubOAuthStateCookieName)
+	if sessionCookie.Value == "" || clearedState.MaxAge >= 0 {
+		t.Fatalf("expected session and cleared github state cookies, session=%#v state=%#v", sessionCookie, clearedState)
+	}
+
+	me := httptest.NewRecorder()
+	meReq := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	meReq.AddCookie(sessionCookie)
+	handler.ServeHTTP(me, meReq)
+	assertStatus(t, me, http.StatusOK)
+	var user app.UserView
+	decodeResponse(t, me, &user)
+	if user.Email != "github-redirect@example.com" || !user.EmailVerified || user.DisplayName != "GitHub Redirect" {
+		t.Fatalf("unexpected github oauth user: %#v", user)
+	}
+	if got := user.OAuthProviders; len(got) != 1 || got[0] != "github" {
+		t.Fatalf("expected github provider, got %#v", got)
+	}
+}
+
 func TestGoogleOAuthCallbackRejectsStateMismatch(t *testing.T) {
 	cfg := config.FromEnv()
 	cfg.AppEnv = "production"
@@ -1016,6 +1117,9 @@ func TestAdminRuntimeGuestRedemptionAndAlertHTTPContracts(t *testing.T) {
 	if !runtimeCfg.GuestUploads.Enabled || runtimeCfg.GuestUploads.RequireTurnstile {
 		t.Fatalf("expected guest uploads enabled without turnstile, got %#v", runtimeCfg.GuestUploads)
 	}
+	if bytes.Contains(updateRuntime.Body.Bytes(), []byte(`"missingEnv":null`)) {
+		t.Fatalf("admin runtime config must encode empty missingEnv arrays as []: %s", updateRuntime.Body.String())
+	}
 
 	catalog := service.PlanCatalog()
 	if len(catalog.Plans) == 0 {
@@ -1035,10 +1139,14 @@ func TestAdminRuntimeGuestRedemptionAndAlertHTTPContracts(t *testing.T) {
 			ID               string `json:"id"`
 			ActivePasteLimit int    `json:"activePasteLimit"`
 		} `json:"plans"`
+		GuestUploads app.GuestUploadConfig `json:"guestUploads"`
 	}
 	decodeResponse(t, publicPlans, &publicCatalog)
 	if len(publicCatalog.Plans) == 0 || publicCatalog.Plans[0].ActivePasteLimit != 7 {
 		t.Fatalf("expected public plans to use updated catalog, got %#v", publicCatalog.Plans)
+	}
+	if !publicCatalog.GuestUploads.Enabled || publicCatalog.GuestUploads.SingleTextBytes == 0 {
+		t.Fatalf("expected public guest upload limits, got %#v", publicCatalog.GuestUploads)
 	}
 
 	createBatch := admin.json(http.MethodPost, "/api/v1/admin/redemption-batches", `{"planId":"plus","durationDays":30,"quantity":1,"note":"HTTP contract"}`)
@@ -1074,6 +1182,15 @@ func TestAdminRuntimeGuestRedemptionAndAlertHTTPContracts(t *testing.T) {
 	if guestAttachment.PasteID != guestBody.Paste.ID {
 		t.Fatalf("expected guest attachment on paste, got %#v", guestAttachment)
 	}
+	guestShare := guest.json(http.MethodPost, "/api/v1/guest/pastes/"+guestBody.Paste.ID+"/shares", `{"guestToken":"`+guestBody.GuestToken+`","expiresInSeconds":600}`)
+	assertStatus(t, guestShare, http.StatusCreated)
+	var guestShareBody app.ShareView
+	decodeResponse(t, guestShare, &guestShareBody)
+	if guestShareBody.Token == "" || !strings.Contains(guestShareBody.URL, "/s/") {
+		t.Fatalf("expected guest share link, got %#v", guestShareBody)
+	}
+	guestShareAccess := guest.json(http.MethodPost, "/api/v1/shares/"+guestShareBody.Token+"/access", `{}`)
+	assertStatus(t, guestShareAccess, http.StatusOK)
 
 	freeze := admin.json(http.MethodPatch, "/api/v1/admin/attachments/"+guestAttachment.ID+"/freeze", `{"frozen":true}`)
 	assertStatus(t, freeze, http.StatusOK)

@@ -62,6 +62,7 @@ type LimitConfig struct {
 type ProviderStatus struct {
 	Mailer    ProviderConfigStatus `json:"mailer"`
 	Google    ProviderConfigStatus `json:"google"`
+	GitHub    ProviderConfigStatus `json:"github"`
 	Turnstile ProviderConfigStatus `json:"turnstile"`
 	Telegram  ProviderConfigStatus `json:"telegram"`
 	S3        ProviderConfigStatus `json:"s3"`
@@ -300,8 +301,8 @@ func defaultRuntimeConfig(cfg config.Config) RuntimeConfig {
 	return RuntimeConfig{
 		ID: runtimeConfigID,
 		GuestUploads: GuestUploadConfig{
-			Enabled:                  false,
-			RequireTurnstile:         true,
+			Enabled:                  true,
+			RequireTurnstile:         false,
 			RetentionSeconds:         6 * 60 * 60,
 			ActivePasteLimit:         5,
 			ActiveStorageBytes:       50 * 1024 * 1024,
@@ -310,8 +311,8 @@ func defaultRuntimeConfig(cfg config.Config) RuntimeConfig {
 			SinglePasteBytes:         15 * 1024 * 1024,
 			AttachmentsPerPasteLimit: 3,
 			DailyUploadBytes:         100 * 1024 * 1024,
-			DailyShareDownloadBytes:  0,
-			ShareDownloadsEnabled:    false,
+			DailyShareDownloadBytes:  100 * 1024 * 1024,
+			ShareDownloadsEnabled:    true,
 		},
 		Limits:         LimitConfig{FreePlanID: "free", PaidPlanIDs: []string{"plus", "pro"}},
 		ProviderStatus: providerStatusFromConfig(cfg, map[string]string{}),
@@ -347,6 +348,12 @@ func providerStatusFromConfig(cfg config.Config, tests map[string]string) Provid
 			RequiredEnv:   []string{"PASTEBOX_GOOGLE_OAUTH_CLIENT_ID", "PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET", "PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL"},
 			NonSensitive:  map[string]string{"clientIdConfigured": strconv.FormatBool(strings.TrimSpace(cfg.GoogleOAuth.ClientID) != ""), "redirectUrl": cfg.GoogleOAuth.RedirectURL},
 		},
+		GitHub: ProviderConfigStatus{
+			Provider:      "github",
+			SecretManaged: true,
+			RequiredEnv:   []string{"PASTEBOX_GITHUB_OAUTH_CLIENT_ID", "PASTEBOX_GITHUB_OAUTH_CLIENT_SECRET", "PASTEBOX_GITHUB_OAUTH_REDIRECT_URL"},
+			NonSensitive:  map[string]string{"clientIdConfigured": strconv.FormatBool(strings.TrimSpace(cfg.GitHubOAuth.ClientID) != ""), "redirectUrl": cfg.GitHubOAuth.RedirectURL},
+		},
 		Turnstile: ProviderConfigStatus{
 			Provider:      "cloudflare_turnstile",
 			SecretManaged: true,
@@ -376,6 +383,11 @@ func providerStatusFromConfig(cfg config.Config, tests map[string]string) Provid
 		"PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET": cfg.GoogleOAuth.ClientSecret,
 		"PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL":  cfg.GoogleOAuth.RedirectURL,
 	})
+	fillProviderConfigured(&status.GitHub, map[string]string{
+		"PASTEBOX_GITHUB_OAUTH_CLIENT_ID":     cfg.GitHubOAuth.ClientID,
+		"PASTEBOX_GITHUB_OAUTH_CLIENT_SECRET": cfg.GitHubOAuth.ClientSecret,
+		"PASTEBOX_GITHUB_OAUTH_REDIRECT_URL":  cfg.GitHubOAuth.RedirectURL,
+	})
 	fillProviderConfigured(&status.Turnstile, map[string]string{
 		"PASTEBOX_TURNSTILE_SITE_KEY":   cfg.Turnstile.SiteKey,
 		"PASTEBOX_TURNSTILE_SECRET_KEY": cfg.Turnstile.SecretKey,
@@ -392,6 +404,7 @@ func providerStatusFromConfig(cfg config.Config, tests map[string]string) Provid
 	})
 	applyProviderTestStatus(&status.Mailer, tests["mailer"])
 	applyProviderTestStatus(&status.Google, tests["google"])
+	applyProviderTestStatus(&status.GitHub, tests["github"])
 	applyProviderTestStatus(&status.Turnstile, tests["turnstile"])
 	applyProviderTestStatus(&status.Telegram, tests["telegram"])
 	applyProviderTestStatus(&status.S3, tests["s3"])
@@ -399,7 +412,7 @@ func providerStatusFromConfig(cfg config.Config, tests map[string]string) Provid
 }
 
 func fillProviderConfigured(status *ProviderConfigStatus, values map[string]string) {
-	status.MissingEnv = status.MissingEnv[:0]
+	status.MissingEnv = make([]string, 0, len(status.RequiredEnv))
 	for _, key := range status.RequiredEnv {
 		if strings.TrimSpace(values[key]) == "" {
 			status.MissingEnv = append(status.MissingEnv, key)
@@ -426,6 +439,7 @@ func cloneRuntimeConfig(cfg RuntimeConfig) RuntimeConfig {
 func cloneProviderStatus(status ProviderStatus) ProviderStatus {
 	status.Mailer = cloneProviderConfigStatus(status.Mailer)
 	status.Google = cloneProviderConfigStatus(status.Google)
+	status.GitHub = cloneProviderConfigStatus(status.GitHub)
 	status.Turnstile = cloneProviderConfigStatus(status.Turnstile)
 	status.Telegram = cloneProviderConfigStatus(status.Telegram)
 	status.S3 = cloneProviderConfigStatus(status.S3)
@@ -433,8 +447,8 @@ func cloneProviderStatus(status ProviderStatus) ProviderStatus {
 }
 
 func cloneProviderConfigStatus(status ProviderConfigStatus) ProviderConfigStatus {
-	status.RequiredEnv = append([]string(nil), status.RequiredEnv...)
-	status.MissingEnv = append([]string(nil), status.MissingEnv...)
+	status.RequiredEnv = append([]string{}, status.RequiredEnv...)
+	status.MissingEnv = append([]string{}, status.MissingEnv...)
 	if status.NonSensitive != nil {
 		out := map[string]string{}
 		for k, v := range status.NonSensitive {
@@ -482,6 +496,12 @@ func percentFloat(value float64, total float64) float64 {
 	return math.Round((value/total)*1000) / 10
 }
 
+func (s *Service) PublicGuestUploadsConfig() GuestUploadConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.runtimeConfig.GuestUploads
+}
+
 func (s *Service) loadRuntimeConfig(ctx context.Context) error {
 	if s.runtime == nil {
 		return nil
@@ -501,6 +521,7 @@ func providerTestStatuses(status ProviderStatus) map[string]string {
 	return map[string]string{
 		"mailer":    status.Mailer.LastTestStatus,
 		"google":    status.Google.LastTestStatus,
+		"github":    status.GitHub.LastTestStatus,
 		"turnstile": status.Turnstile.LastTestStatus,
 		"telegram":  status.Telegram.LastTestStatus,
 		"s3":        status.S3.LastTestStatus,
@@ -912,6 +933,30 @@ func (s *Service) AddGuestAttachment(token string, pasteID string, fileName stri
 	}
 	plan := guestPlan(cfg)
 	return s.addAttachmentLocked(user, paste, plan, fileName, contentType, content)
+}
+
+func (s *Service) CreateGuestShare(token string, pasteID string, input ShareInput) (ShareView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cfg := s.runtimeConfig.GuestUploads
+	if !cfg.Enabled {
+		return ShareView{}, E(http.StatusForbidden, "guest_uploads_disabled", "guest uploads are disabled")
+	}
+	if input.LoginRequired {
+		return ShareView{}, E(http.StatusBadRequest, "guest_share_login_required", "guest shares cannot require login")
+	}
+	user, err := s.guestUserForTokenLocked(strings.TrimSpace(token))
+	if err != nil {
+		return ShareView{}, err
+	}
+	paste, err := s.pasteByIDLocked(pasteID)
+	if err != nil || paste.UserID != user.ID {
+		return ShareView{}, E(http.StatusNotFound, "paste_not_found", "paste not found")
+	}
+	if !s.isPasteVisibleLocked(paste) {
+		return ShareView{}, E(http.StatusGone, "paste_expired", "paste has expired")
+	}
+	return s.createShareForPasteLocked(user.ID, paste, input)
 }
 
 func guestPlan(cfg GuestUploadConfig) plans.Plan {
