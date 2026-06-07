@@ -15,6 +15,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . ./
+RUN rm -rf ./internal/httpserver/static
 COPY --from=web-builder /src/web/dist/ ./internal/httpserver/static/
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/pastebox ./cmd/pastebox
 

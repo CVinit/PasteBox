@@ -384,8 +384,11 @@ return scan.canDownload ? (
 - Browser language fallback maps `zh-CN`, `zh-SG`, and bare `zh` to
   Simplified Chinese; `zh-TW`, `zh-HK`, `zh-MO`, and `zh-Hant` to Traditional
   Chinese; `es-*` to Spanish; all other values to English.
-- Authenticated UI language follows `user.language`; anonymous auth, public
-  share, and public legal/support chrome follow browser locale.
+- UI locale priority is request parameter (`lang`, `locale`, or `hl`), then
+  authenticated `user.language`, then browser locale, then Simplified Chinese
+  for non-browser renders.
+- Anonymous auth, public share, public legal/support chrome, and landing
+  workbench must use the same current locale as the registration request.
 - New registrations must send the current locale in the `language` field so
   first-session users keep their selected language after account creation.
 - `copyFor(locale)` must keep English fallback behavior so missing optional copy
@@ -397,6 +400,10 @@ return scan.canDownload ? (
   names such as `PasteBox` unchanged.
 - Public footer/legal links must render as an explicit navigation list with
   stable alignment instead of relying on arbitrary flex wrapping.
+- Admin numeric configuration fields that store bytes or seconds must expose a
+  nearby unit control in the UI while still sending the backend canonical
+  bytes/seconds payload. Count and percentage fields should show an explicit
+  fixed suffix.
 
 ### 4. Validation & Error Matrix
 

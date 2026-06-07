@@ -168,6 +168,9 @@ type AuthLink = {
 };
 
 type AuthMode = "login" | "register";
+type AdminTab = "overview" | "plans" | "guest" | "services" | "queues";
+type SizeUnit = "KB" | "MB" | "GB";
+type TimeUnit = "seconds" | "minutes" | "hours" | "days";
 
 type AuthFormState = {
   email: string;
@@ -241,6 +244,14 @@ const supportedLocales: Array<{ value: Locale; label: string }> = [
   { value: "zh-CN", label: "简体中文" },
   { value: "zh-TW", label: "繁體中文" },
   { value: "es", label: "Español" },
+];
+
+const adminTabOptions: Array<{ value: AdminTab; labelKey: string }> = [
+  { value: "overview", labelKey: "adminTabOverview" },
+  { value: "plans", labelKey: "adminTabPlans" },
+  { value: "guest", labelKey: "adminTabGuest" },
+  { value: "services", labelKey: "adminTabServices" },
+  { value: "queues", labelKey: "adminTabQueues" },
 ];
 
 const clayHeroAsset = "/assets/clay-hero-ai.png";
@@ -426,12 +437,21 @@ function localeFor(language?: string): Locale {
   return "en";
 }
 
+function localeFromRequestParams(): Locale | null {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  const requested =
+    params.get("lang") ?? params.get("locale") ?? params.get("hl") ?? "";
+  if (!requested.trim()) return null;
+  return localeFor(requested);
+}
+
 function isChineseLocale(locale: Locale): boolean {
   return locale.startsWith("zh");
 }
 
 function browserPreferredLocale(): Locale {
-  if (typeof navigator === "undefined") return "en";
+  if (typeof navigator === "undefined") return "zh-CN";
   const languages = navigator.languages?.length
     ? navigator.languages
     : [navigator.language];
@@ -935,6 +955,11 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     reportTarget: "report target",
     reportReason: "report reason",
     auditQueuesCleanup: "Audit, queues, cleanup",
+    adminTabOverview: "Overview",
+    adminTabPlans: "Plans",
+    adminTabGuest: "Guest limits",
+    adminTabServices: "Services",
+    adminTabQueues: "Queues & audit",
     adminControlPanel: "Control panel",
     runtimeConfig: "Runtime config",
     resourcePanel: "Resources",
@@ -1071,6 +1096,17 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     copyText: "Copy text",
     extendPaste: "Extend paste",
     deletePaste: "Delete paste",
+    unit: "unit",
+    unitKB: "KB",
+    unitMB: "MB",
+    unitGB: "GB",
+    unitseconds: "Seconds",
+    unitminutes: "Minutes",
+    unithours: "Hours",
+    unitdays: "Days",
+    unitItems: "items",
+    unitFiles: "files",
+    unitPercent: "%",
   },
   "zh-CN": {
     privateCloudClipboard: "私有云剪切板",
@@ -1215,6 +1251,11 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     reportTarget: "举报目标",
     reportReason: "举报原因",
     auditQueuesCleanup: "审计、队列、清理",
+    adminTabOverview: "概览",
+    adminTabPlans: "套餐/价格",
+    adminTabGuest: "游客限制",
+    adminTabServices: "服务配置",
+    adminTabQueues: "队列/审计",
     adminControlPanel: "控制面板",
     runtimeConfig: "运行配置",
     resourcePanel: "资源面板",
@@ -1350,6 +1391,17 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     copyText: "复制文本",
     extendPaste: "延长内容",
     deletePaste: "删除内容",
+    unit: "单位",
+    unitKB: "KB",
+    unitMB: "MB",
+    unitGB: "GB",
+    unitseconds: "秒",
+    unitminutes: "分钟",
+    unithours: "小时",
+    unitdays: "天",
+    unitItems: "条",
+    unitFiles: "个文件",
+    unitPercent: "%",
   },
 };
 
@@ -1916,6 +1968,187 @@ function copyFor(language?: string) {
   return (key: string) => copy[locale][key] ?? copy.en[key] ?? key;
 }
 
+const sizeUnits: SizeUnit[] = ["KB", "MB", "GB"];
+const timeUnits: TimeUnit[] = ["seconds", "minutes", "hours", "days"];
+
+function sizeUnitFactor(unit: SizeUnit): number {
+  switch (unit) {
+    case "GB":
+      return 1024 * 1024 * 1024;
+    case "MB":
+      return 1024 * 1024;
+    case "KB":
+    default:
+      return 1024;
+  }
+}
+
+function timeUnitFactor(unit: TimeUnit): number {
+  switch (unit) {
+    case "days":
+      return 24 * 60 * 60;
+    case "hours":
+      return 60 * 60;
+    case "minutes":
+      return 60;
+    case "seconds":
+    default:
+      return 1;
+  }
+}
+
+function preferredSizeUnit(bytes: number): SizeUnit {
+  const gb = sizeUnitFactor("GB");
+  const mb = sizeUnitFactor("MB");
+  if (bytes >= gb && bytes % gb === 0) return "GB";
+  if (bytes >= mb && bytes % mb === 0) return "MB";
+  return "KB";
+}
+
+function preferredTimeUnit(seconds: number): TimeUnit {
+  const day = timeUnitFactor("days");
+  const hour = timeUnitFactor("hours");
+  const minute = timeUnitFactor("minutes");
+  if (seconds >= day && seconds % day === 0) return "days";
+  if (seconds >= hour && seconds % hour === 0) return "hours";
+  if (seconds >= minute && seconds % minute === 0) return "minutes";
+  return "seconds";
+}
+
+function formatUnitValue(value: number, factor: number): string {
+  const converted = value / factor;
+  if (Number.isInteger(converted)) return String(converted);
+  return converted.toFixed(2).replace(/\.?0+$/, "");
+}
+
+function AdminSizeField({
+  label,
+  valueBytes,
+  minBytes,
+  unit,
+  t,
+  onChangeBytes,
+  onUnitChange,
+}: {
+  label: string;
+  valueBytes: number;
+  minBytes: number;
+  unit: SizeUnit;
+  t: (key: string) => string;
+  onChangeBytes: (value: number) => void;
+  onUnitChange: (unit: SizeUnit) => void;
+}) {
+  const factor = sizeUnitFactor(unit);
+  const min = minBytes > 0 ? minBytes / factor : 0;
+  return (
+    <label className="field-row field-row--unit">
+      <span>{label}</span>
+      <div className="unit-input">
+        <input
+          min={min}
+          step={unit === "KB" ? 1 : 0.01}
+          type="number"
+          value={formatUnitValue(valueBytes, factor)}
+          onChange={(event) =>
+            onChangeBytes(Math.round(Number(event.target.value) * factor))
+          }
+        />
+        <select
+          aria-label={`${label} ${t("unit")}`}
+          value={unit}
+          onChange={(event) => onUnitChange(event.target.value as SizeUnit)}
+        >
+          {sizeUnits.map((item) => (
+            <option key={item} value={item}>
+              {t(`unit${item}`)}
+            </option>
+          ))}
+        </select>
+      </div>
+    </label>
+  );
+}
+
+function AdminTimeField({
+  label,
+  valueSeconds,
+  minSeconds,
+  unit,
+  t,
+  onChangeSeconds,
+  onUnitChange,
+}: {
+  label: string;
+  valueSeconds: number;
+  minSeconds: number;
+  unit: TimeUnit;
+  t: (key: string) => string;
+  onChangeSeconds: (value: number) => void;
+  onUnitChange: (unit: TimeUnit) => void;
+}) {
+  const factor = timeUnitFactor(unit);
+  const min = minSeconds > 0 ? minSeconds / factor : 0;
+  return (
+    <label className="field-row field-row--unit">
+      <span>{label}</span>
+      <div className="unit-input">
+        <input
+          min={min}
+          step={unit === "seconds" ? 1 : 0.1}
+          type="number"
+          value={formatUnitValue(valueSeconds, factor)}
+          onChange={(event) =>
+            onChangeSeconds(Math.round(Number(event.target.value) * factor))
+          }
+        />
+        <select
+          aria-label={`${label} ${t("unit")}`}
+          value={unit}
+          onChange={(event) => onUnitChange(event.target.value as TimeUnit)}
+        >
+          {timeUnits.map((item) => (
+            <option key={item} value={item}>
+              {t(`unit${item}`)}
+            </option>
+          ))}
+        </select>
+      </div>
+    </label>
+  );
+}
+
+function AdminNumberField({
+  label,
+  value,
+  min,
+  step,
+  unitLabel,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  step?: number;
+  unitLabel: string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="field-row field-row--unit">
+      <span>{label}</span>
+      <div className="unit-input unit-input--suffix">
+        <input
+          min={min}
+          step={step}
+          type="number"
+          value={value}
+          onChange={(event) => onChange(Number(event.target.value))}
+        />
+        <span className="field-unit-label">{unitLabel}</span>
+      </div>
+    </label>
+  );
+}
+
 function landingContentFor(locale: Locale): LandingContent {
   if (locale === "zh-TW") {
     return {
@@ -2349,6 +2582,10 @@ function paymentProviderOptions(price: Price): Array<{
 }
 
 function App() {
+  const requestLocale = useMemo(
+    () => localeFromRequestParams() ?? browserLocale,
+    [],
+  );
   const [user, setUser] = useState<User | null>(null);
   const [catalog, setCatalog] = useState<PlanCatalog | null>(null);
   const [quota, setQuota] = useState<Quota | null>(null);
@@ -2366,6 +2603,13 @@ function App() {
   const [redemptionDraft, setRedemptionDraft] = useState<RedemptionDraft>(
     defaultRedemptionDraft,
   );
+  const [adminTab, setAdminTab] = useState<AdminTab>("overview");
+  const [adminSizeUnits, setAdminSizeUnits] = useState<
+    Record<string, SizeUnit>
+  >({});
+  const [adminTimeUnits, setAdminTimeUnits] = useState<
+    Record<string, TimeUnit>
+  >({});
   const [alertTestMessage, setAlertTestMessage] = useState(
     "PasteBox alert test",
   );
@@ -2405,15 +2649,15 @@ function App() {
   const [resetToken, setResetToken] = useState("");
   const [profileDraft, setProfileDraft] = useState({
     displayName: "",
-    language: browserLocale,
+    language: requestLocale,
   });
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [supportContacts, setSupportContacts] =
     useState<SupportContacts | null>(null);
   const locale = useMemo(
-    () => localeFor(user?.language ?? browserLocale),
-    [user?.language],
+    () => localeFor(user?.language ?? requestLocale),
+    [requestLocale, user?.language],
   );
   const t = useMemo(() => copyFor(locale), [locale]);
   const publicPage = useMemo(
@@ -2828,7 +3072,10 @@ function App() {
       setResetToken("");
       setPasswordResetLinkActive(false);
       setAuth((current) => ({ ...current, password: "" }));
-      if (typeof window !== "undefined" && normalizedPathname() === "/password-reset") {
+      if (
+        typeof window !== "undefined" &&
+        normalizedPathname() === "/password-reset"
+      ) {
         window.history.replaceState(null, "", "/login");
       }
     }
@@ -2838,7 +3085,10 @@ function App() {
     setResetToken("");
     setPasswordResetLinkActive(false);
     setMessage("");
-    if (typeof window !== "undefined" && normalizedPathname() === "/password-reset") {
+    if (
+      typeof window !== "undefined" &&
+      normalizedPathname() === "/password-reset"
+    ) {
       window.history.replaceState(null, "", "/login");
     }
   }
@@ -3195,6 +3445,22 @@ function App() {
     });
   }
 
+  function adminSizeUnitFor(key: string, valueBytes: number): SizeUnit {
+    return adminSizeUnits[key] ?? preferredSizeUnit(valueBytes);
+  }
+
+  function setAdminSizeUnit(key: string, unit: SizeUnit) {
+    setAdminSizeUnits((previous) => ({ ...previous, [key]: unit }));
+  }
+
+  function adminTimeUnitFor(key: string, valueSeconds: number): TimeUnit {
+    return adminTimeUnits[key] ?? preferredTimeUnit(valueSeconds);
+  }
+
+  function setAdminTimeUnit(key: string, unit: TimeUnit) {
+    setAdminTimeUnits((previous) => ({ ...previous, [key]: unit }));
+  }
+
   async function saveAdminCatalog() {
     if (!catalog) return;
     const updated = await run(
@@ -3315,7 +3581,7 @@ function App() {
       <PublicPageScreen
         page={publicPage}
         contacts={supportContacts}
-        locale={browserLocale}
+        locale={locale}
       />
     );
   }
@@ -3331,7 +3597,7 @@ function App() {
         onToken={setPublicShareToken}
         onPassword={setPublicSharePassword}
         onOpen={() => void openPublicShare()}
-        locale={browserLocale}
+        locale={locale}
       />
     );
   }
@@ -3352,13 +3618,13 @@ function App() {
         onPasswordReset={() => void passwordReset()}
         onFinishPasswordReset={() => void finishPasswordReset()}
         onCancelPasswordReset={cancelPasswordReset}
-        locale={browserLocale}
+        locale={locale}
       />
     );
   }
 
   if (!user) {
-    return <LandingPage catalog={catalog} locale={browserLocale} />;
+    return <LandingPage catalog={catalog} locale={locale} />;
   }
 
   return (
@@ -3984,1068 +4250,1209 @@ function App() {
                   {t("runBillingReconcile")}
                 </button>
               </div>
+              <div
+                className="admin-tabs"
+                role="tablist"
+                aria-label={t("admin")}
+              >
+                {adminTabOptions.map((tab) => (
+                  <button
+                    key={tab.value}
+                    type="button"
+                    role="tab"
+                    aria-selected={adminTab === tab.value}
+                    className={adminTab === tab.value ? "active" : ""}
+                    onClick={() => setAdminTab(tab.value)}
+                  >
+                    {t(tab.labelKey)}
+                  </button>
+                ))}
+              </div>
               <div className="admin-grid">
-                <section className="admin-section admin-section--wide">
-                  <h3>{t("runtimeConfig")}</h3>
-                  <article className="list-card">
-                    <strong>{t("guestUploads")}</strong>
-                    <div className="form-grid">
-                      <label className="check-row">
-                        <input
-                          checked={
-                            adminData.runtimeConfig?.guestUploads.enabled ??
-                            false
-                          }
-                          type="checkbox"
-                          onChange={() => void toggleGuestUploads()}
-                        />
-                        {t("enabled")}
-                      </label>
-                      <label className="check-row">
-                        <input
-                          checked={
-                            adminData.runtimeConfig?.guestUploads
-                              .requireTurnstile ?? false
-                          }
-                          type="checkbox"
-                          onChange={(event) =>
-                            updateRuntimeGuestConfig({
-                              requireTurnstile: event.target.checked,
-                            })
-                          }
-                        />
-                        {t("requireTurnstile")}
-                      </label>
-                      <label className="field-row">
-                        <span>{t("retentionSeconds")}</span>
-                        <input
-                          min={1}
-                          type="number"
-                          value={
-                            adminData.runtimeConfig?.guestUploads
-                              .retentionSeconds ?? 0
-                          }
-                          onChange={(event) =>
-                            updateRuntimeGuestConfig({
-                              retentionSeconds: Number(event.target.value),
-                            })
-                          }
-                        />
-                      </label>
-                      <label className="field-row">
-                        <span>{t("activePasteLimitShort")}</span>
-                        <input
-                          min={1}
-                          type="number"
-                          value={
-                            adminData.runtimeConfig?.guestUploads
-                              .activePasteLimit ?? 0
-                          }
-                          onChange={(event) =>
-                            updateRuntimeGuestConfig({
-                              activePasteLimit: Number(event.target.value),
-                            })
-                          }
-                        />
-                      </label>
-                      <label className="field-row">
-                        <span>{t("activeStorageLimit")}</span>
-                        <input
-                          min={1}
-                          type="number"
-                          value={
-                            adminData.runtimeConfig?.guestUploads
-                              .activeStorageBytes ?? 0
-                          }
-                          onChange={(event) =>
-                            updateRuntimeGuestConfig({
-                              activeStorageBytes: Number(event.target.value),
-                            })
-                          }
-                        />
-                      </label>
-                      <label className="field-row">
-                        <span>{t("singleTextLimit")}</span>
-                        <input
-                          min={1}
-                          type="number"
-                          value={
-                            adminData.runtimeConfig?.guestUploads
-                              .singleTextBytes ?? 0
-                          }
-                          onChange={(event) =>
-                            updateRuntimeGuestConfig({
-                              singleTextBytes: Number(event.target.value),
-                            })
-                          }
-                        />
-                      </label>
-                      <label className="field-row">
-                        <span>{t("singleFileLimit")}</span>
-                        <input
-                          min={1}
-                          type="number"
-                          value={
-                            adminData.runtimeConfig?.guestUploads
-                              .singleFileBytes ?? 0
-                          }
-                          onChange={(event) =>
-                            updateRuntimeGuestConfig({
-                              singleFileBytes: Number(event.target.value),
-                            })
-                          }
-                        />
-                      </label>
-                      <label className="field-row">
-                        <span>{t("singlePasteLimit")}</span>
-                        <input
-                          min={1}
-                          type="number"
-                          value={
-                            adminData.runtimeConfig?.guestUploads
-                              .singlePasteBytes ?? 0
-                          }
-                          onChange={(event) =>
-                            updateRuntimeGuestConfig({
-                              singlePasteBytes: Number(event.target.value),
-                            })
-                          }
-                        />
-                      </label>
-                      <label className="field-row">
-                        <span>{t("attachmentsPerPaste")}</span>
-                        <input
-                          min={1}
-                          type="number"
-                          value={
-                            adminData.runtimeConfig?.guestUploads
-                              .attachmentsPerPasteLimit ?? 0
-                          }
-                          onChange={(event) =>
-                            updateRuntimeGuestConfig({
-                              attachmentsPerPasteLimit: Number(
-                                event.target.value,
-                              ),
-                            })
-                          }
-                        />
-                      </label>
-                      <label className="field-row">
-                        <span>{t("dailyUploadLimit")}</span>
-                        <input
-                          min={1}
-                          type="number"
-                          value={
-                            adminData.runtimeConfig?.guestUploads
-                              .dailyUploadBytes ?? 0
-                          }
-                          onChange={(event) =>
-                            updateRuntimeGuestConfig({
-                              dailyUploadBytes: Number(event.target.value),
-                            })
-                          }
-                        />
-                      </label>
-                      <label className="field-row">
-                        <span>{t("dailyShareDownloadLimit")}</span>
-                        <input
-                          min={0}
-                          type="number"
-                          value={
-                            adminData.runtimeConfig?.guestUploads
-                              .dailyShareDownloadBytes ?? 0
-                          }
-                          onChange={(event) =>
-                            updateRuntimeGuestConfig({
-                              dailyShareDownloadBytes: Number(
-                                event.target.value,
-                              ),
-                            })
-                          }
-                        />
-                      </label>
-                    </div>
-                  </article>
-                  <article className="list-card">
-                    <strong>{t("telegramAlerts")}</strong>
-                    <div className="form-grid">
-                      <label className="check-row">
-                        <input
-                          checked={
-                            adminData.runtimeConfig?.alerts.enabled ?? false
-                          }
-                          type="checkbox"
-                          onChange={() => void toggleRuntimeAlerts()}
-                        />
-                        {t("enabled")}
-                      </label>
-                      <label className="check-row">
-                        <input
-                          checked={
-                            adminData.runtimeConfig?.alerts.telegramEnabled ??
-                            false
-                          }
-                          type="checkbox"
-                          onChange={(event) =>
-                            updateRuntimeAlertConfig({
-                              telegramEnabled: event.target.checked,
-                            })
-                          }
-                        />
-                        {t("telegramDelivery")}
-                      </label>
-                      <label className="check-row">
-                        <input
-                          checked={
-                            adminData.runtimeConfig?.alerts.silent ?? false
-                          }
-                          type="checkbox"
-                          onChange={(event) =>
-                            updateRuntimeAlertConfig({
-                              silent: event.target.checked,
-                            })
-                          }
-                        />
-                        {t("silentAlert")}
-                      </label>
-                      <label className="field-row">
-                        <span>{t("cooldownSeconds")}</span>
-                        <input
-                          min={1}
-                          type="number"
-                          value={
-                            adminData.runtimeConfig?.alerts.cooldownSeconds ?? 0
-                          }
-                          onChange={(event) =>
-                            updateRuntimeAlertConfig({
-                              cooldownSeconds: Number(event.target.value),
-                            })
-                          }
-                        />
-                      </label>
-                      <label className="field-row">
-                        <span>{t("cpuThreshold")}</span>
-                        <input
-                          min={1}
-                          step={0.1}
-                          type="number"
-                          value={
-                            adminData.runtimeConfig?.alerts
-                              .cpuPercentThreshold ?? 0
-                          }
-                          onChange={(event) =>
-                            updateRuntimeAlertConfig({
-                              cpuPercentThreshold: Number(event.target.value),
-                            })
-                          }
-                        />
-                      </label>
-                      <label className="field-row">
-                        <span>{t("memoryThreshold")}</span>
-                        <input
-                          min={1}
-                          step={0.1}
-                          type="number"
-                          value={
-                            adminData.runtimeConfig?.alerts
-                              .memoryPercentThreshold ?? 0
-                          }
-                          onChange={(event) =>
-                            updateRuntimeAlertConfig({
-                              memoryPercentThreshold: Number(
-                                event.target.value,
-                              ),
-                            })
-                          }
-                        />
-                      </label>
-                      <label className="field-row">
-                        <span>{t("diskThreshold")}</span>
-                        <input
-                          min={1}
-                          step={0.1}
-                          type="number"
-                          value={
-                            adminData.runtimeConfig?.alerts
-                              .diskPercentThreshold ?? 0
-                          }
-                          onChange={(event) =>
-                            updateRuntimeAlertConfig({
-                              diskPercentThreshold: Number(event.target.value),
-                            })
-                          }
-                        />
-                      </label>
-                      <label className="field-row">
-                        <span>{t("objectStorageThreshold")}</span>
-                        <input
-                          min={0}
-                          type="number"
-                          value={
-                            adminData.runtimeConfig?.alerts
-                              .objectStorageBytesThreshold ?? 0
-                          }
-                          onChange={(event) =>
-                            updateRuntimeAlertConfig({
-                              objectStorageBytesThreshold: Number(
-                                event.target.value,
-                              ),
-                            })
-                          }
-                        />
-                      </label>
-                      <label className="field-row">
-                        <span>{t("scanFailureThreshold")}</span>
-                        <input
-                          min={0}
-                          type="number"
-                          value={
-                            adminData.runtimeConfig?.alerts
-                              .scanFailureDepthThreshold ?? 0
-                          }
-                          onChange={(event) =>
-                            updateRuntimeAlertConfig({
-                              scanFailureDepthThreshold: Number(
-                                event.target.value,
-                              ),
-                            })
-                          }
-                        />
-                      </label>
-                      <label className="field-row">
-                        <span>{t("failedJobThreshold")}</span>
-                        <input
-                          min={0}
-                          type="number"
-                          value={
-                            adminData.runtimeConfig?.alerts
-                              .failedJobDepthThreshold ?? 0
-                          }
-                          onChange={(event) =>
-                            updateRuntimeAlertConfig({
-                              failedJobDepthThreshold: Number(
-                                event.target.value,
-                              ),
-                            })
-                          }
-                        />
-                      </label>
-                      <label className="field-row">
-                        <span>{t("failedMailThreshold")}</span>
-                        <input
-                          min={0}
-                          type="number"
-                          value={
-                            adminData.runtimeConfig?.alerts
-                              .mailFailedDepthThreshold ?? 0
-                          }
-                          onChange={(event) =>
-                            updateRuntimeAlertConfig({
-                              mailFailedDepthThreshold: Number(
-                                event.target.value,
-                              ),
-                            })
-                          }
-                        />
-                      </label>
-                      <label className="field-row">
-                        <span>{t("openReportThreshold")}</span>
-                        <input
-                          min={0}
-                          type="number"
-                          value={
-                            adminData.runtimeConfig?.alerts
-                              .reportsOpenThreshold ?? 0
-                          }
-                          onChange={(event) =>
-                            updateRuntimeAlertConfig({
-                              reportsOpenThreshold: Number(event.target.value),
-                            })
-                          }
-                        />
-                      </label>
-                    </div>
-                  </article>
-                  <button
-                    type="button"
-                    onClick={() => void saveRuntimeConfig()}
-                  >
-                    <ShieldCheck size={16} aria-hidden="true" />
-                    {t("saveRuntimeConfig")}
-                  </button>
-                </section>
-                <section className="admin-section admin-section--compact">
-                  <h3>{t("resourcePanel")}</h3>
-                  <article className="list-card">
-                    <strong>{t("cpu")}</strong>
-                    <span>
-                      {adminData.runtimePanel?.resources.cpuPercent ?? 0}%
-                    </span>
-                  </article>
-                  <article className="list-card">
-                    <strong>{t("memory")}</strong>
-                    <span>
-                      {formatBytes(
-                        adminData.runtimePanel?.resources.memoryUsedBytes ?? 0,
-                      )}{" "}
-                      /{" "}
-                      {formatBytes(
-                        adminData.runtimePanel?.resources.memoryTotalBytes ?? 0,
-                      )}{" "}
-                      · {adminData.runtimePanel?.resources.memoryPercent ?? 0}%
-                    </span>
-                  </article>
-                  <article className="list-card">
-                    <strong>{t("disk")}</strong>
-                    <span>
-                      {formatBytes(
-                        adminData.runtimePanel?.resources.diskUsedBytes ?? 0,
-                      )}{" "}
-                      /{" "}
-                      {formatBytes(
-                        adminData.runtimePanel?.resources.diskTotalBytes ?? 0,
-                      )}{" "}
-                      · {adminData.runtimePanel?.resources.diskPercent ?? 0}%
-                    </span>
-                  </article>
-                  <article className="list-card">
-                    <strong>{t("objectStorage")}</strong>
-                    <span>
-                      {formatBytes(
-                        adminData.runtimePanel?.resources.objectStorageBytes ??
-                          0,
-                      )}{" "}
-                      ·{" "}
-                      {adminData.runtimePanel?.resources
-                        .objectStorageObjectCount ?? 0}{" "}
-                      {t("files")}
-                    </span>
-                  </article>
-                </section>
-                <section className="admin-section admin-section--compact">
-                  <h3>{t("providerStatus")}</h3>
-                  {Object.entries(
-                    adminData.runtimeConfig?.providerStatus ?? {},
-                  ).map(([provider, status]) => (
-                    <article className="list-card" key={provider}>
-                      <div>
-                        <strong>{provider}</strong>
-                        <span>
-                          {status.configured ? t("enabled") : t("disabled")} ·{" "}
-                          {(status.missingEnv ?? []).join(", ") ||
-                            status.provider}
-                        </span>
-                        {status.lastTestStatus ? (
-                          <span>{status.lastTestStatus}</span>
-                        ) : null}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void adminProviderTest(provider)}
-                      >
-                        <CheckCircle2 size={16} aria-hidden="true" />
-                        {t("verify")}
-                      </button>
-                    </article>
-                  ))}
-                </section>
-                <section className="admin-section admin-section--wide">
-                  <h3>{t("planCatalog")}</h3>
-                  {(catalog?.plans ?? []).map((plan) => (
-                    <article className="list-card" key={plan.id}>
-                      <strong>{plan.id}</strong>
-                      <div className="form-grid">
-                        <label className="field-row">
-                          <span>{t("title")}</span>
-                          <input
-                            value={plan.name}
-                            onChange={(event) =>
-                              updateCatalogPlan(plan.id, {
-                                name: event.target.value,
+                {adminTab === "guest" || adminTab === "services" ? (
+                  <section className="admin-section admin-section--wide">
+                    <h3>
+                      {adminTab === "guest"
+                        ? t("guestUploads")
+                        : t("telegramAlerts")}
+                    </h3>
+                    {adminTab === "guest" ? (
+                      <article className="list-card">
+                        <strong>{t("guestUploads")}</strong>
+                        <div className="form-grid">
+                          <label className="check-row">
+                            <input
+                              checked={
+                                adminData.runtimeConfig?.guestUploads.enabled ??
+                                false
+                              }
+                              type="checkbox"
+                              onChange={() => void toggleGuestUploads()}
+                            />
+                            {t("enabled")}
+                          </label>
+                          <label className="check-row">
+                            <input
+                              checked={
+                                adminData.runtimeConfig?.guestUploads
+                                  .requireTurnstile ?? false
+                              }
+                              type="checkbox"
+                              onChange={(event) =>
+                                updateRuntimeGuestConfig({
+                                  requireTurnstile: event.target.checked,
+                                })
+                              }
+                            />
+                            {t("requireTurnstile")}
+                          </label>
+                          <AdminTimeField
+                            label={t("retentionSeconds")}
+                            minSeconds={1}
+                            t={t}
+                            unit={adminTimeUnitFor(
+                              "guest.retentionSeconds",
+                              adminData.runtimeConfig?.guestUploads
+                                .retentionSeconds ?? 0,
+                            )}
+                            valueSeconds={
+                              adminData.runtimeConfig?.guestUploads
+                                .retentionSeconds ?? 0
+                            }
+                            onChangeSeconds={(value) =>
+                              updateRuntimeGuestConfig({
+                                retentionSeconds: value,
                               })
                             }
-                          />
-                        </label>
-                        <label className="field-row">
-                          <span>{t("activePasteLimitShort")}</span>
-                          <input
-                            min={0}
-                            type="number"
-                            value={plan.activePasteLimit}
-                            onChange={(event) =>
-                              updateCatalogPlan(plan.id, {
-                                activePasteLimit: Number(event.target.value),
-                              })
+                            onUnitChange={(unit) =>
+                              setAdminTimeUnit("guest.retentionSeconds", unit)
                             }
                           />
-                        </label>
-                        <label className="field-row">
-                          <span>{t("activeStorageLimit")}</span>
-                          <input
-                            min={0}
-                            type="number"
-                            value={plan.activeStorageBytes}
-                            onChange={(event) =>
-                              updateCatalogPlan(plan.id, {
-                                activeStorageBytes: Number(event.target.value),
-                              })
-                            }
-                          />
-                        </label>
-                        <label className="field-row">
-                          <span>{t("singleTextLimit")}</span>
-                          <input
-                            min={0}
-                            type="number"
-                            value={plan.singleTextBytes}
-                            onChange={(event) =>
-                              updateCatalogPlan(plan.id, {
-                                singleTextBytes: Number(event.target.value),
-                              })
-                            }
-                          />
-                        </label>
-                        <label className="field-row">
-                          <span>{t("singleFileLimit")}</span>
-                          <input
-                            min={0}
-                            type="number"
-                            value={plan.singleFileBytes}
-                            onChange={(event) =>
-                              updateCatalogPlan(plan.id, {
-                                singleFileBytes: Number(event.target.value),
-                              })
-                            }
-                          />
-                        </label>
-                        <label className="field-row">
-                          <span>{t("singlePasteLimit")}</span>
-                          <input
-                            min={0}
-                            type="number"
-                            value={plan.singlePasteBytes}
-                            onChange={(event) =>
-                              updateCatalogPlan(plan.id, {
-                                singlePasteBytes: Number(event.target.value),
-                              })
-                            }
-                          />
-                        </label>
-                        <label className="field-row">
-                          <span>{t("attachmentsPerPaste")}</span>
-                          <input
-                            min={0}
-                            type="number"
-                            value={plan.attachmentsPerPasteLimit}
-                            onChange={(event) =>
-                              updateCatalogPlan(plan.id, {
-                                attachmentsPerPasteLimit: Number(
-                                  event.target.value,
-                                ),
-                              })
-                            }
-                          />
-                        </label>
-                        <label className="field-row">
-                          <span>{t("retentionSeconds")}</span>
-                          <input
+                          <AdminNumberField
+                            label={t("activePasteLimitShort")}
                             min={1}
-                            type="number"
-                            value={plan.maxRetentionSeconds}
-                            onChange={(event) =>
-                              updateCatalogPlan(plan.id, {
-                                maxRetentionSeconds: Number(event.target.value),
+                            unitLabel={t("unitItems")}
+                            value={
+                              adminData.runtimeConfig?.guestUploads
+                                .activePasteLimit ?? 0
+                            }
+                            onChange={(value) =>
+                              updateRuntimeGuestConfig({
+                                activePasteLimit: value,
                               })
                             }
                           />
-                        </label>
-                        <label className="field-row">
-                          <span>{t("dailyUploadLimit")}</span>
-                          <input
+                          <AdminSizeField
+                            label={t("activeStorageLimit")}
+                            minBytes={1}
+                            t={t}
+                            unit={adminSizeUnitFor(
+                              "guest.activeStorageBytes",
+                              adminData.runtimeConfig?.guestUploads
+                                .activeStorageBytes ?? 0,
+                            )}
+                            valueBytes={
+                              adminData.runtimeConfig?.guestUploads
+                                .activeStorageBytes ?? 0
+                            }
+                            onChangeBytes={(value) =>
+                              updateRuntimeGuestConfig({
+                                activeStorageBytes: value,
+                              })
+                            }
+                            onUnitChange={(unit) =>
+                              setAdminSizeUnit("guest.activeStorageBytes", unit)
+                            }
+                          />
+                          <AdminSizeField
+                            label={t("singleTextLimit")}
+                            minBytes={1}
+                            t={t}
+                            unit={adminSizeUnitFor(
+                              "guest.singleTextBytes",
+                              adminData.runtimeConfig?.guestUploads
+                                .singleTextBytes ?? 0,
+                            )}
+                            valueBytes={
+                              adminData.runtimeConfig?.guestUploads
+                                .singleTextBytes ?? 0
+                            }
+                            onChangeBytes={(value) =>
+                              updateRuntimeGuestConfig({
+                                singleTextBytes: value,
+                              })
+                            }
+                            onUnitChange={(unit) =>
+                              setAdminSizeUnit("guest.singleTextBytes", unit)
+                            }
+                          />
+                          <AdminSizeField
+                            label={t("singleFileLimit")}
+                            minBytes={1}
+                            t={t}
+                            unit={adminSizeUnitFor(
+                              "guest.singleFileBytes",
+                              adminData.runtimeConfig?.guestUploads
+                                .singleFileBytes ?? 0,
+                            )}
+                            valueBytes={
+                              adminData.runtimeConfig?.guestUploads
+                                .singleFileBytes ?? 0
+                            }
+                            onChangeBytes={(value) =>
+                              updateRuntimeGuestConfig({
+                                singleFileBytes: value,
+                              })
+                            }
+                            onUnitChange={(unit) =>
+                              setAdminSizeUnit("guest.singleFileBytes", unit)
+                            }
+                          />
+                          <AdminSizeField
+                            label={t("singlePasteLimit")}
+                            minBytes={1}
+                            t={t}
+                            unit={adminSizeUnitFor(
+                              "guest.singlePasteBytes",
+                              adminData.runtimeConfig?.guestUploads
+                                .singlePasteBytes ?? 0,
+                            )}
+                            valueBytes={
+                              adminData.runtimeConfig?.guestUploads
+                                .singlePasteBytes ?? 0
+                            }
+                            onChangeBytes={(value) =>
+                              updateRuntimeGuestConfig({
+                                singlePasteBytes: value,
+                              })
+                            }
+                            onUnitChange={(unit) =>
+                              setAdminSizeUnit("guest.singlePasteBytes", unit)
+                            }
+                          />
+                          <AdminNumberField
+                            label={t("attachmentsPerPaste")}
+                            min={1}
+                            unitLabel={t("unitFiles")}
+                            value={
+                              adminData.runtimeConfig?.guestUploads
+                                .attachmentsPerPasteLimit ?? 0
+                            }
+                            onChange={(value) =>
+                              updateRuntimeGuestConfig({
+                                attachmentsPerPasteLimit: value,
+                              })
+                            }
+                          />
+                          <AdminSizeField
+                            label={t("dailyUploadLimit")}
+                            minBytes={1}
+                            t={t}
+                            unit={adminSizeUnitFor(
+                              "guest.dailyUploadBytes",
+                              adminData.runtimeConfig?.guestUploads
+                                .dailyUploadBytes ?? 0,
+                            )}
+                            valueBytes={
+                              adminData.runtimeConfig?.guestUploads
+                                .dailyUploadBytes ?? 0
+                            }
+                            onChangeBytes={(value) =>
+                              updateRuntimeGuestConfig({
+                                dailyUploadBytes: value,
+                              })
+                            }
+                            onUnitChange={(unit) =>
+                              setAdminSizeUnit("guest.dailyUploadBytes", unit)
+                            }
+                          />
+                          <AdminSizeField
+                            label={t("dailyShareDownloadLimit")}
+                            minBytes={0}
+                            t={t}
+                            unit={adminSizeUnitFor(
+                              "guest.dailyShareDownloadBytes",
+                              adminData.runtimeConfig?.guestUploads
+                                .dailyShareDownloadBytes ?? 0,
+                            )}
+                            valueBytes={
+                              adminData.runtimeConfig?.guestUploads
+                                .dailyShareDownloadBytes ?? 0
+                            }
+                            onChangeBytes={(value) =>
+                              updateRuntimeGuestConfig({
+                                dailyShareDownloadBytes: value,
+                              })
+                            }
+                            onUnitChange={(unit) =>
+                              setAdminSizeUnit(
+                                "guest.dailyShareDownloadBytes",
+                                unit,
+                              )
+                            }
+                          />
+                        </div>
+                      </article>
+                    ) : null}
+                    {adminTab === "services" ? (
+                      <article className="list-card">
+                        <strong>{t("telegramAlerts")}</strong>
+                        <div className="form-grid">
+                          <label className="check-row">
+                            <input
+                              checked={
+                                adminData.runtimeConfig?.alerts.enabled ?? false
+                              }
+                              type="checkbox"
+                              onChange={() => void toggleRuntimeAlerts()}
+                            />
+                            {t("enabled")}
+                          </label>
+                          <label className="check-row">
+                            <input
+                              checked={
+                                adminData.runtimeConfig?.alerts
+                                  .telegramEnabled ?? false
+                              }
+                              type="checkbox"
+                              onChange={(event) =>
+                                updateRuntimeAlertConfig({
+                                  telegramEnabled: event.target.checked,
+                                })
+                              }
+                            />
+                            {t("telegramDelivery")}
+                          </label>
+                          <label className="check-row">
+                            <input
+                              checked={
+                                adminData.runtimeConfig?.alerts.silent ?? false
+                              }
+                              type="checkbox"
+                              onChange={(event) =>
+                                updateRuntimeAlertConfig({
+                                  silent: event.target.checked,
+                                })
+                              }
+                            />
+                            {t("silentAlert")}
+                          </label>
+                          <AdminTimeField
+                            label={t("cooldownSeconds")}
+                            minSeconds={1}
+                            t={t}
+                            unit={adminTimeUnitFor(
+                              "alerts.cooldownSeconds",
+                              adminData.runtimeConfig?.alerts.cooldownSeconds ??
+                                0,
+                            )}
+                            valueSeconds={
+                              adminData.runtimeConfig?.alerts.cooldownSeconds ??
+                              0
+                            }
+                            onChangeSeconds={(value) =>
+                              updateRuntimeAlertConfig({
+                                cooldownSeconds: value,
+                              })
+                            }
+                            onUnitChange={(unit) =>
+                              setAdminTimeUnit("alerts.cooldownSeconds", unit)
+                            }
+                          />
+                          <AdminNumberField
+                            label={t("cpuThreshold")}
+                            min={1}
+                            step={0.1}
+                            unitLabel={t("unitPercent")}
+                            value={
+                              adminData.runtimeConfig?.alerts
+                                .cpuPercentThreshold ?? 0
+                            }
+                            onChange={(value) =>
+                              updateRuntimeAlertConfig({
+                                cpuPercentThreshold: value,
+                              })
+                            }
+                          />
+                          <AdminNumberField
+                            label={t("memoryThreshold")}
+                            min={1}
+                            step={0.1}
+                            unitLabel={t("unitPercent")}
+                            value={
+                              adminData.runtimeConfig?.alerts
+                                .memoryPercentThreshold ?? 0
+                            }
+                            onChange={(value) =>
+                              updateRuntimeAlertConfig({
+                                memoryPercentThreshold: value,
+                              })
+                            }
+                          />
+                          <AdminNumberField
+                            label={t("diskThreshold")}
+                            min={1}
+                            step={0.1}
+                            unitLabel={t("unitPercent")}
+                            value={
+                              adminData.runtimeConfig?.alerts
+                                .diskPercentThreshold ?? 0
+                            }
+                            onChange={(value) =>
+                              updateRuntimeAlertConfig({
+                                diskPercentThreshold: value,
+                              })
+                            }
+                          />
+                          <AdminSizeField
+                            label={t("objectStorageThreshold")}
+                            minBytes={0}
+                            t={t}
+                            unit={adminSizeUnitFor(
+                              "alerts.objectStorageBytesThreshold",
+                              adminData.runtimeConfig?.alerts
+                                .objectStorageBytesThreshold ?? 0,
+                            )}
+                            valueBytes={
+                              adminData.runtimeConfig?.alerts
+                                .objectStorageBytesThreshold ?? 0
+                            }
+                            onChangeBytes={(value) =>
+                              updateRuntimeAlertConfig({
+                                objectStorageBytesThreshold: value,
+                              })
+                            }
+                            onUnitChange={(unit) =>
+                              setAdminSizeUnit(
+                                "alerts.objectStorageBytesThreshold",
+                                unit,
+                              )
+                            }
+                          />
+                          <AdminNumberField
+                            label={t("scanFailureThreshold")}
                             min={0}
-                            type="number"
-                            value={plan.dailyUploadBytes}
-                            onChange={(event) =>
-                              updateCatalogPlan(plan.id, {
-                                dailyUploadBytes: Number(event.target.value),
+                            unitLabel={t("unitItems")}
+                            value={
+                              adminData.runtimeConfig?.alerts
+                                .scanFailureDepthThreshold ?? 0
+                            }
+                            onChange={(value) =>
+                              updateRuntimeAlertConfig({
+                                scanFailureDepthThreshold: value,
                               })
                             }
                           />
-                        </label>
-                        <label className="field-row">
-                          <span>{t("dailyShareDownloadLimit")}</span>
-                          <input
+                          <AdminNumberField
+                            label={t("failedJobThreshold")}
                             min={0}
-                            type="number"
-                            value={plan.dailyShareDownloadBytes}
-                            onChange={(event) =>
-                              updateCatalogPlan(plan.id, {
-                                dailyShareDownloadBytes: Number(
-                                  event.target.value,
-                                ),
+                            unitLabel={t("unitItems")}
+                            value={
+                              adminData.runtimeConfig?.alerts
+                                .failedJobDepthThreshold ?? 0
+                            }
+                            onChange={(value) =>
+                              updateRuntimeAlertConfig({
+                                failedJobDepthThreshold: value,
                               })
                             }
                           />
-                        </label>
-                      </div>
-                    </article>
-                  ))}
-                  {(catalog?.prices ?? []).map((price) => (
-                    <article className="list-card" key={price.id}>
-                      <strong>
-                        {price.planId} · {price.period}
-                      </strong>
-                      <div className="form-grid">
-                        <label className="field-row">
-                          <span>{t("period")}</span>
-                          <input
-                            value={price.period}
-                            onChange={(event) =>
-                              updateCatalogPrice(price.id, {
-                                period: event.target.value,
-                              })
-                            }
-                          />
-                        </label>
-                        <label className="field-row">
-                          <span>{t("priceCents")}</span>
-                          <input
+                          <AdminNumberField
+                            label={t("failedMailThreshold")}
                             min={0}
-                            type="number"
-                            value={price.amountCents}
-                            onChange={(event) =>
-                              updateCatalogPrice(price.id, {
-                                amountCents: Number(event.target.value),
+                            unitLabel={t("unitItems")}
+                            value={
+                              adminData.runtimeConfig?.alerts
+                                .mailFailedDepthThreshold ?? 0
+                            }
+                            onChange={(value) =>
+                              updateRuntimeAlertConfig({
+                                mailFailedDepthThreshold: value,
                               })
                             }
                           />
-                        </label>
-                        <label className="field-row">
-                          <span>{t("currency")}</span>
-                          <input
-                            maxLength={8}
-                            value={price.currency}
-                            onChange={(event) =>
-                              updateCatalogPrice(price.id, {
-                                currency: event.target.value,
+                          <AdminNumberField
+                            label={t("openReportThreshold")}
+                            min={0}
+                            unitLabel={t("unitItems")}
+                            value={
+                              adminData.runtimeConfig?.alerts
+                                .reportsOpenThreshold ?? 0
+                            }
+                            onChange={(value) =>
+                              updateRuntimeAlertConfig({
+                                reportsOpenThreshold: value,
                               })
                             }
                           />
-                        </label>
-                        <label className="check-row">
-                          <input
-                            checked={price.visible}
-                            type="checkbox"
-                            onChange={(event) =>
-                              updateCatalogPrice(price.id, {
-                                visible: event.target.checked,
-                              })
-                            }
-                          />
-                          {t("visible")}
-                        </label>
-                        <label className="check-row">
-                          <input
-                            checked={price.purchaseEnabled}
-                            type="checkbox"
-                            onChange={(event) =>
-                              updateCatalogPrice(price.id, {
-                                purchaseEnabled: event.target.checked,
-                              })
-                            }
-                          />
-                          {t("purchase")}
-                        </label>
-                      </div>
-                    </article>
-                  ))}
-                  <button type="button" onClick={() => void saveAdminCatalog()}>
-                    <ShieldCheck size={16} aria-hidden="true" />
-                    {t("saveCatalog")}
-                  </button>
-                </section>
-                <section className="admin-section">
-                  <h3>{t("redemptionCodes")}</h3>
-                  <div className="form-grid">
-                    <select
-                      aria-label={t("currentPlan")}
-                      value={redemptionDraft.planId}
-                      onChange={(event) =>
-                        setRedemptionDraft((previous) => ({
-                          ...previous,
-                          planId: event.target.value,
-                        }))
-                      }
-                    >
-                      {(catalog?.plans ?? []).map((plan) => (
-                        <option key={plan.id} value={plan.id}>
-                          {plan.name}
-                        </option>
-                      ))}
-                    </select>
-                    <input
-                      aria-label={t("durationDays")}
-                      min={1}
-                      type="number"
-                      value={redemptionDraft.durationDays}
-                      onChange={(event) =>
-                        setRedemptionDraft((previous) => ({
-                          ...previous,
-                          durationDays: Number(event.target.value),
-                        }))
-                      }
-                    />
-                    <input
-                      aria-label={t("quantity")}
-                      min={1}
-                      type="number"
-                      value={redemptionDraft.quantity}
-                      onChange={(event) =>
-                        setRedemptionDraft((previous) => ({
-                          ...previous,
-                          quantity: Number(event.target.value),
-                        }))
-                      }
-                    />
-                    <input
-                      aria-label={t("note")}
-                      maxLength={200}
-                      placeholder={t("note")}
-                      value={redemptionDraft.note}
-                      onChange={(event) =>
-                        setRedemptionDraft((previous) => ({
-                          ...previous,
-                          note: event.target.value,
-                        }))
-                      }
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => void createRedemptionBatch()}
-                  >
-                    <Archive size={16} aria-hidden="true" />
-                    {t("createRedemptionBatch")}
-                  </button>
-                  {adminData.redemptionBatches.slice(0, 5).map((batch) => (
-                    <article className="list-card" key={batch.id}>
-                      <div>
-                        <strong>
-                          {batch.planId} · {batch.quantity}
-                        </strong>
-                        <span>
-                          {batch.redeemedCount}/{batch.maxTotalRedemptions} ·{" "}
-                          {batch.disabled ? t("disabled") : t("enabled")}
-                        </span>
-                        {batch.codes?.[0]?.code ? (
-                          <code>
-                            {batch.codes.map((code) => code.code).join(", ")}
-                          </code>
-                        ) : null}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void toggleRedemptionBatch(batch)}
-                      >
-                        {batch.disabled ? (
-                          <Undo2 size={16} aria-hidden="true" />
-                        ) : (
-                          <Ban size={16} aria-hidden="true" />
-                        )}
-                        {batch.disabled ? t("enabled") : t("disabled")}
-                      </button>
-                    </article>
-                  ))}
-                </section>
-                <section className="admin-section">
-                  <h3>{t("manualReview")}</h3>
-                  {adminData.manualWorkItems.length === 0 ? (
-                    <article className="list-card">
-                      <span>{t("noManualWorkItems")}</span>
-                    </article>
-                  ) : null}
-                  {adminData.manualWorkItems.slice(0, 6).map((item) => (
-                    <article
-                      className="list-card"
-                      key={`${item.kind}-${item.id}`}
-                    >
-                      <strong>{item.kind}</strong>
-                      <span>
-                        {item.status} · {item.summary}
-                      </span>
-                      {item.risk ? <span>{item.risk}</span> : null}
-                    </article>
-                  ))}
-                </section>
-                <section className="admin-section">
-                  <h3>{t("alertHistory")}</h3>
-                  <div className="form-grid">
-                    <input
-                      aria-label={t("sendTestAlert")}
-                      maxLength={240}
-                      value={alertTestMessage}
-                      onChange={(event) =>
-                        setAlertTestMessage(event.target.value)
-                      }
-                    />
+                        </div>
+                      </article>
+                    ) : null}
                     <button
                       type="button"
-                      onClick={() => void sendAdminTestAlert()}
+                      onClick={() => void saveRuntimeConfig()}
                     >
-                      <Send size={16} aria-hidden="true" />
-                      {t("sendTestAlert")}
+                      <ShieldCheck size={16} aria-hidden="true" />
+                      {t("saveRuntimeConfig")}
                     </button>
-                  </div>
-                  {adminData.alerts.length === 0 ? (
+                  </section>
+                ) : null}
+                {adminTab === "overview" || adminTab === "services" ? (
+                  <section className="admin-section admin-section--compact">
+                    <h3>{t("resourcePanel")}</h3>
                     <article className="list-card">
-                      <span>{t("noRecentAlerts")}</span>
-                    </article>
-                  ) : null}
-                  {adminData.alerts.slice(0, 5).map((alert) => (
-                    <article className="list-card" key={alert.id}>
-                      <strong>{alert.status}</strong>
-                      <span>{alert.message}</span>
-                      {alert.lastError ? <span>{alert.lastError}</span> : null}
-                    </article>
-                  ))}
-                </section>
-                <section className="admin-section admin-section--compact">
-                  <h3>{t("users")}</h3>
-                  {adminData.users.slice(0, 5).map((item) => (
-                    <article className="list-card" key={item.id}>
-                      <strong>{item.email}</strong>
+                      <strong>{t("cpu")}</strong>
                       <span>
-                        {item.planId} ·{" "}
-                        {item.frozen ? t("frozen") : t("active")}
+                        {adminData.runtimePanel?.resources.cpuPercent ?? 0}%
                       </span>
                     </article>
-                  ))}
-                </section>
-                <section className="admin-section">
-                  <h3>{t("attachments")}</h3>
-                  {adminData.attachments.slice(0, 5).map((attachment) => (
-                    <article className="list-card" key={attachment.id}>
-                      <div>
-                        <strong>{attachment.fileName}</strong>
-                        <span>
-                          {attachment.scanStatus} · {attachment.status} ·{" "}
-                          {attachment.sha256.slice(0, 12)}
-                        </span>
-                      </div>
-                      <div className="button-row compact">
-                        <button
-                          type="button"
-                          onClick={() => void adminRetryScan(attachment.id)}
-                        >
-                          <RotateCcw size={16} aria-hidden="true" />
-                          {t("retry")}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            void adminFreezeAttachment(
-                              attachment.id,
-                              attachment.status !== "frozen",
-                            )
-                          }
-                        >
-                          {attachment.status === "frozen" ? (
-                            <Undo2 size={16} aria-hidden="true" />
-                          ) : (
-                            <Snowflake size={16} aria-hidden="true" />
-                          )}
-                          {attachment.status === "frozen"
-                            ? t("release")
-                            : t("freeze")}
-                        </button>
-                      </div>
+                    <article className="list-card">
+                      <strong>{t("memory")}</strong>
+                      <span>
+                        {formatBytes(
+                          adminData.runtimePanel?.resources.memoryUsedBytes ??
+                            0,
+                        )}{" "}
+                        /{" "}
+                        {formatBytes(
+                          adminData.runtimePanel?.resources.memoryTotalBytes ??
+                            0,
+                        )}{" "}
+                        · {adminData.runtimePanel?.resources.memoryPercent ?? 0}
+                        %
+                      </span>
                     </article>
-                  ))}
-                </section>
-                <section className="admin-section">
-                  <h3>{t("shares")}</h3>
-                  {adminData.shares.slice(0, 5).map((share) => (
-                    <article className="list-card" key={share.id}>
-                      <div>
-                        <strong>{share.id}</strong>
-                        <span>
-                          {share.visitCount} {t("visits")} ·{" "}
-                          {share.downloadCount} {t("downloads")}
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void adminRevokeShare(share.id)}
-                        disabled={Boolean(share.revokedAt)}
-                      >
-                        <Trash2 size={16} aria-hidden="true" />
-                        {t("revoke")}
-                      </button>
+                    <article className="list-card">
+                      <strong>{t("disk")}</strong>
+                      <span>
+                        {formatBytes(
+                          adminData.runtimePanel?.resources.diskUsedBytes ?? 0,
+                        )}{" "}
+                        /{" "}
+                        {formatBytes(
+                          adminData.runtimePanel?.resources.diskTotalBytes ?? 0,
+                        )}{" "}
+                        · {adminData.runtimePanel?.resources.diskPercent ?? 0}%
+                      </span>
                     </article>
-                  ))}
-                </section>
-                <section className="admin-section">
-                  <h3>{t("orders")}</h3>
-                  {adminData.orders.slice(0, 5).map((order) => {
-                    const status = orderStatusDetail(order.status, locale);
-                    return (
-                      <article className="list-card" key={order.id}>
+                    <article className="list-card">
+                      <strong>{t("objectStorage")}</strong>
+                      <span>
+                        {formatBytes(
+                          adminData.runtimePanel?.resources
+                            .objectStorageBytes ?? 0,
+                        )}{" "}
+                        ·{" "}
+                        {adminData.runtimePanel?.resources
+                          .objectStorageObjectCount ?? 0}{" "}
+                        {t("files")}
+                      </span>
+                    </article>
+                  </section>
+                ) : null}
+                {adminTab === "overview" || adminTab === "services" ? (
+                  <section className="admin-section admin-section--compact">
+                    <h3>{t("providerStatus")}</h3>
+                    {Object.entries(
+                      adminData.runtimeConfig?.providerStatus ?? {},
+                    ).map(([provider, status]) => (
+                      <article className="list-card" key={provider}>
                         <div>
-                          <strong>{order.planId}</strong>
+                          <strong>{provider}</strong>
                           <span>
-                            {order.provider} ·{" "}
-                            {(order.amountCents / 100).toFixed(2)}{" "}
-                            {order.currency}
+                            {status.configured ? t("enabled") : t("disabled")} ·{" "}
+                            {(status.missingEnv ?? []).join(", ") ||
+                              status.provider}
                           </span>
-                          <span className="order-status-note">
-                            {status.description}
-                          </span>
+                          {status.lastTestStatus ? (
+                            <span>{status.lastTestStatus}</span>
+                          ) : null}
                         </div>
-                        <span
-                          className={`order-status order-status--${status.tone}`}
-                        >
-                          {status.label}
-                        </span>
-                        <input
-                          aria-label={t("manualPaymentReason")}
-                          disabled={order.status === "paid"}
-                          maxLength={500}
-                          placeholder={t("manualPaymentReasonPlaceholder")}
-                          value={adminPaymentReasons[order.id] ?? ""}
-                          onChange={(event) =>
-                            setAdminPaymentReasons((previous) => ({
-                              ...previous,
-                              [order.id]: event.target.value,
-                            }))
-                          }
-                        />
                         <button
                           type="button"
-                          onClick={() => void adminMarkOrderPaid(order.id)}
-                          disabled={
-                            order.status === "paid" ||
-                            !(adminPaymentReasons[order.id] ?? "").trim()
-                          }
+                          onClick={() => void adminProviderTest(provider)}
                         >
-                          <CreditCard size={16} aria-hidden="true" />
-                          {t("paid")}
+                          <CheckCircle2 size={16} aria-hidden="true" />
+                          {t("verify")}
                         </button>
                       </article>
-                    );
-                  })}
-                </section>
-                <section className="admin-section admin-section--wide">
-                  <h3>{t("queues")}</h3>
-                  <article className="list-card">
-                    <strong>{t("scanFailures")}</strong>
-                    <span>{adminData.queues?.scanFailures.length ?? 0}</span>
-                  </article>
-                  <article className="list-card">
-                    <strong>{t("cleanupJobs")}</strong>
-                    <span>{adminData.queues?.cleanupJobs.length ?? 0}</span>
-                  </article>
-                  <article className="list-card">
-                    <strong>{t("cleanupFailures")}</strong>
-                    <span>{adminData.queues?.cleanupFailures.length ?? 0}</span>
-                  </article>
-                  <article className="list-card">
-                    <strong>{t("failedJobs")}</strong>
-                    <span>{adminData.queues?.failedJobs.length ?? 0}</span>
-                  </article>
-                  <article className="list-card">
-                    <strong>{t("queuedMails")}</strong>
-                    <span>{adminData.queues?.queuedMails.length ?? 0}</span>
-                  </article>
-                  <article className="list-card">
-                    <strong>{t("failedMails")}</strong>
-                    <span>{adminData.queues?.failedMails.length ?? 0}</span>
-                  </article>
-                  {(adminData.queues?.failedMails ?? [])
-                    .slice(0, 5)
-                    .map((mail) => (
-                      <article className="list-card" key={mail.id}>
-                        <div>
-                          <strong>{mail.subject}</strong>
-                          <span>
-                            {mail.to} · {mail.status} · {mail.attempts}{" "}
-                            {t("attempts")}
-                          </span>
-                          {mail.lastError ? (
-                            <span>{mail.lastError}</span>
-                          ) : null}
+                    ))}
+                  </section>
+                ) : null}
+                {adminTab === "plans" ? (
+                  <section className="admin-section admin-section--wide">
+                    <h3>{t("planCatalog")}</h3>
+                    {(catalog?.plans ?? []).map((plan) => (
+                      <article className="list-card" key={plan.id}>
+                        <strong>{plan.id}</strong>
+                        <div className="form-grid">
+                          <label className="field-row">
+                            <span>{t("title")}</span>
+                            <input
+                              value={plan.name}
+                              onChange={(event) =>
+                                updateCatalogPlan(plan.id, {
+                                  name: event.target.value,
+                                })
+                              }
+                            />
+                          </label>
+                          <AdminNumberField
+                            label={t("activePasteLimitShort")}
+                            min={0}
+                            unitLabel={t("unitItems")}
+                            value={plan.activePasteLimit}
+                            onChange={(value) =>
+                              updateCatalogPlan(plan.id, {
+                                activePasteLimit: value,
+                              })
+                            }
+                          />
+                          <AdminSizeField
+                            label={t("activeStorageLimit")}
+                            minBytes={0}
+                            t={t}
+                            unit={adminSizeUnitFor(
+                              `plan.${plan.id}.activeStorageBytes`,
+                              plan.activeStorageBytes,
+                            )}
+                            valueBytes={plan.activeStorageBytes}
+                            onChangeBytes={(value) =>
+                              updateCatalogPlan(plan.id, {
+                                activeStorageBytes: value,
+                              })
+                            }
+                            onUnitChange={(unit) =>
+                              setAdminSizeUnit(
+                                `plan.${plan.id}.activeStorageBytes`,
+                                unit,
+                              )
+                            }
+                          />
+                          <AdminSizeField
+                            label={t("singleTextLimit")}
+                            minBytes={0}
+                            t={t}
+                            unit={adminSizeUnitFor(
+                              `plan.${plan.id}.singleTextBytes`,
+                              plan.singleTextBytes,
+                            )}
+                            valueBytes={plan.singleTextBytes}
+                            onChangeBytes={(value) =>
+                              updateCatalogPlan(plan.id, {
+                                singleTextBytes: value,
+                              })
+                            }
+                            onUnitChange={(unit) =>
+                              setAdminSizeUnit(
+                                `plan.${plan.id}.singleTextBytes`,
+                                unit,
+                              )
+                            }
+                          />
+                          <AdminSizeField
+                            label={t("singleFileLimit")}
+                            minBytes={0}
+                            t={t}
+                            unit={adminSizeUnitFor(
+                              `plan.${plan.id}.singleFileBytes`,
+                              plan.singleFileBytes,
+                            )}
+                            valueBytes={plan.singleFileBytes}
+                            onChangeBytes={(value) =>
+                              updateCatalogPlan(plan.id, {
+                                singleFileBytes: value,
+                              })
+                            }
+                            onUnitChange={(unit) =>
+                              setAdminSizeUnit(
+                                `plan.${plan.id}.singleFileBytes`,
+                                unit,
+                              )
+                            }
+                          />
+                          <AdminSizeField
+                            label={t("singlePasteLimit")}
+                            minBytes={0}
+                            t={t}
+                            unit={adminSizeUnitFor(
+                              `plan.${plan.id}.singlePasteBytes`,
+                              plan.singlePasteBytes,
+                            )}
+                            valueBytes={plan.singlePasteBytes}
+                            onChangeBytes={(value) =>
+                              updateCatalogPlan(plan.id, {
+                                singlePasteBytes: value,
+                              })
+                            }
+                            onUnitChange={(unit) =>
+                              setAdminSizeUnit(
+                                `plan.${plan.id}.singlePasteBytes`,
+                                unit,
+                              )
+                            }
+                          />
+                          <AdminNumberField
+                            label={t("attachmentsPerPaste")}
+                            min={0}
+                            unitLabel={t("unitFiles")}
+                            value={plan.attachmentsPerPasteLimit}
+                            onChange={(value) =>
+                              updateCatalogPlan(plan.id, {
+                                attachmentsPerPasteLimit: value,
+                              })
+                            }
+                          />
+                          <AdminTimeField
+                            label={t("retentionSeconds")}
+                            minSeconds={1}
+                            t={t}
+                            unit={adminTimeUnitFor(
+                              `plan.${plan.id}.maxRetentionSeconds`,
+                              plan.maxRetentionSeconds,
+                            )}
+                            valueSeconds={plan.maxRetentionSeconds}
+                            onChangeSeconds={(value) =>
+                              updateCatalogPlan(plan.id, {
+                                maxRetentionSeconds: value,
+                              })
+                            }
+                            onUnitChange={(unit) =>
+                              setAdminTimeUnit(
+                                `plan.${plan.id}.maxRetentionSeconds`,
+                                unit,
+                              )
+                            }
+                          />
+                          <AdminSizeField
+                            label={t("dailyUploadLimit")}
+                            minBytes={0}
+                            t={t}
+                            unit={adminSizeUnitFor(
+                              `plan.${plan.id}.dailyUploadBytes`,
+                              plan.dailyUploadBytes,
+                            )}
+                            valueBytes={plan.dailyUploadBytes}
+                            onChangeBytes={(value) =>
+                              updateCatalogPlan(plan.id, {
+                                dailyUploadBytes: value,
+                              })
+                            }
+                            onUnitChange={(unit) =>
+                              setAdminSizeUnit(
+                                `plan.${plan.id}.dailyUploadBytes`,
+                                unit,
+                              )
+                            }
+                          />
+                          <AdminSizeField
+                            label={t("dailyShareDownloadLimit")}
+                            minBytes={0}
+                            t={t}
+                            unit={adminSizeUnitFor(
+                              `plan.${plan.id}.dailyShareDownloadBytes`,
+                              plan.dailyShareDownloadBytes,
+                            )}
+                            valueBytes={plan.dailyShareDownloadBytes}
+                            onChangeBytes={(value) =>
+                              updateCatalogPlan(plan.id, {
+                                dailyShareDownloadBytes: value,
+                              })
+                            }
+                            onUnitChange={(unit) =>
+                              setAdminSizeUnit(
+                                `plan.${plan.id}.dailyShareDownloadBytes`,
+                                unit,
+                              )
+                            }
+                          />
                         </div>
                       </article>
                     ))}
-                  {(adminData.queues?.reports ?? [])
-                    .slice(0, 5)
-                    .map((report) => (
-                      <article className="list-card" key={report.id}>
+                    {(catalog?.prices ?? []).map((price) => (
+                      <article className="list-card" key={price.id}>
+                        <strong>
+                          {price.planId} · {price.period}
+                        </strong>
+                        <div className="form-grid">
+                          <label className="field-row">
+                            <span>{t("period")}</span>
+                            <input
+                              value={price.period}
+                              onChange={(event) =>
+                                updateCatalogPrice(price.id, {
+                                  period: event.target.value,
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="field-row">
+                            <span>{t("priceCents")}</span>
+                            <input
+                              min={0}
+                              type="number"
+                              value={price.amountCents}
+                              onChange={(event) =>
+                                updateCatalogPrice(price.id, {
+                                  amountCents: Number(event.target.value),
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="field-row">
+                            <span>{t("currency")}</span>
+                            <input
+                              maxLength={8}
+                              value={price.currency}
+                              onChange={(event) =>
+                                updateCatalogPrice(price.id, {
+                                  currency: event.target.value,
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="check-row">
+                            <input
+                              checked={price.visible}
+                              type="checkbox"
+                              onChange={(event) =>
+                                updateCatalogPrice(price.id, {
+                                  visible: event.target.checked,
+                                })
+                              }
+                            />
+                            {t("visible")}
+                          </label>
+                          <label className="check-row">
+                            <input
+                              checked={price.purchaseEnabled}
+                              type="checkbox"
+                              onChange={(event) =>
+                                updateCatalogPrice(price.id, {
+                                  purchaseEnabled: event.target.checked,
+                                })
+                              }
+                            />
+                            {t("purchase")}
+                          </label>
+                        </div>
+                      </article>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => void saveAdminCatalog()}
+                    >
+                      <ShieldCheck size={16} aria-hidden="true" />
+                      {t("saveCatalog")}
+                    </button>
+                  </section>
+                ) : null}
+                {adminTab === "plans" ? (
+                  <section className="admin-section">
+                    <h3>{t("redemptionCodes")}</h3>
+                    <div className="form-grid">
+                      <select
+                        aria-label={t("currentPlan")}
+                        value={redemptionDraft.planId}
+                        onChange={(event) =>
+                          setRedemptionDraft((previous) => ({
+                            ...previous,
+                            planId: event.target.value,
+                          }))
+                        }
+                      >
+                        {(catalog?.plans ?? []).map((plan) => (
+                          <option key={plan.id} value={plan.id}>
+                            {plan.name}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        aria-label={t("durationDays")}
+                        min={1}
+                        type="number"
+                        value={redemptionDraft.durationDays}
+                        onChange={(event) =>
+                          setRedemptionDraft((previous) => ({
+                            ...previous,
+                            durationDays: Number(event.target.value),
+                          }))
+                        }
+                      />
+                      <input
+                        aria-label={t("quantity")}
+                        min={1}
+                        type="number"
+                        value={redemptionDraft.quantity}
+                        onChange={(event) =>
+                          setRedemptionDraft((previous) => ({
+                            ...previous,
+                            quantity: Number(event.target.value),
+                          }))
+                        }
+                      />
+                      <input
+                        aria-label={t("note")}
+                        maxLength={200}
+                        placeholder={t("note")}
+                        value={redemptionDraft.note}
+                        onChange={(event) =>
+                          setRedemptionDraft((previous) => ({
+                            ...previous,
+                            note: event.target.value,
+                          }))
+                        }
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void createRedemptionBatch()}
+                    >
+                      <Archive size={16} aria-hidden="true" />
+                      {t("createRedemptionBatch")}
+                    </button>
+                    {adminData.redemptionBatches.slice(0, 5).map((batch) => (
+                      <article className="list-card" key={batch.id}>
                         <div>
-                          <strong>{report.target}</strong>
+                          <strong>
+                            {batch.planId} · {batch.quantity}
+                          </strong>
                           <span>
-                            {report.status} · {report.reason}
+                            {batch.redeemedCount}/{batch.maxTotalRedemptions} ·{" "}
+                            {batch.disabled ? t("disabled") : t("enabled")}
+                          </span>
+                          {batch.codes?.[0]?.code ? (
+                            <code>
+                              {batch.codes.map((code) => code.code).join(", ")}
+                            </code>
+                          ) : null}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void toggleRedemptionBatch(batch)}
+                        >
+                          {batch.disabled ? (
+                            <Undo2 size={16} aria-hidden="true" />
+                          ) : (
+                            <Ban size={16} aria-hidden="true" />
+                          )}
+                          {batch.disabled ? t("enabled") : t("disabled")}
+                        </button>
+                      </article>
+                    ))}
+                  </section>
+                ) : null}
+                {adminTab === "overview" ? (
+                  <section className="admin-section">
+                    <h3>{t("manualReview")}</h3>
+                    {adminData.manualWorkItems.length === 0 ? (
+                      <article className="list-card">
+                        <span>{t("noManualWorkItems")}</span>
+                      </article>
+                    ) : null}
+                    {adminData.manualWorkItems.slice(0, 6).map((item) => (
+                      <article
+                        className="list-card"
+                        key={`${item.kind}-${item.id}`}
+                      >
+                        <strong>{item.kind}</strong>
+                        <span>
+                          {item.status} · {item.summary}
+                        </span>
+                        {item.risk ? <span>{item.risk}</span> : null}
+                      </article>
+                    ))}
+                  </section>
+                ) : null}
+                {adminTab === "services" ? (
+                  <section className="admin-section">
+                    <h3>{t("alertHistory")}</h3>
+                    <div className="form-grid">
+                      <input
+                        aria-label={t("sendTestAlert")}
+                        maxLength={240}
+                        value={alertTestMessage}
+                        onChange={(event) =>
+                          setAlertTestMessage(event.target.value)
+                        }
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void sendAdminTestAlert()}
+                      >
+                        <Send size={16} aria-hidden="true" />
+                        {t("sendTestAlert")}
+                      </button>
+                    </div>
+                    {adminData.alerts.length === 0 ? (
+                      <article className="list-card">
+                        <span>{t("noRecentAlerts")}</span>
+                      </article>
+                    ) : null}
+                    {adminData.alerts.slice(0, 5).map((alert) => (
+                      <article className="list-card" key={alert.id}>
+                        <strong>{alert.status}</strong>
+                        <span>{alert.message}</span>
+                        {alert.lastError ? (
+                          <span>{alert.lastError}</span>
+                        ) : null}
+                      </article>
+                    ))}
+                  </section>
+                ) : null}
+                {adminTab === "overview" ? (
+                  <section className="admin-section admin-section--compact">
+                    <h3>{t("users")}</h3>
+                    {adminData.users.slice(0, 5).map((item) => (
+                      <article className="list-card" key={item.id}>
+                        <strong>{item.email}</strong>
+                        <span>
+                          {item.planId} ·{" "}
+                          {item.frozen ? t("frozen") : t("active")}
+                        </span>
+                      </article>
+                    ))}
+                  </section>
+                ) : null}
+                {adminTab === "overview" ? (
+                  <section className="admin-section">
+                    <h3>{t("attachments")}</h3>
+                    {adminData.attachments.slice(0, 5).map((attachment) => (
+                      <article className="list-card" key={attachment.id}>
+                        <div>
+                          <strong>{attachment.fileName}</strong>
+                          <span>
+                            {attachment.scanStatus} · {attachment.status} ·{" "}
+                            {attachment.sha256.slice(0, 12)}
                           </span>
                         </div>
                         <div className="button-row compact">
                           <button
                             type="button"
-                            onClick={() =>
-                              void adminResolveReport(report, "resolved")
-                            }
-                            disabled={report.status === "resolved"}
+                            onClick={() => void adminRetryScan(attachment.id)}
                           >
-                            <CheckCircle2 size={16} aria-hidden="true" />
-                            {t("resolve")}
+                            <RotateCcw size={16} aria-hidden="true" />
+                            {t("retry")}
                           </button>
                           <button
                             type="button"
                             onClick={() =>
-                              void adminResolveReport(report, "dismissed")
+                              void adminFreezeAttachment(
+                                attachment.id,
+                                attachment.status !== "frozen",
+                              )
                             }
-                            disabled={report.status === "dismissed"}
                           >
-                            <Ban size={16} aria-hidden="true" />
-                            {t("dismiss")}
+                            {attachment.status === "frozen" ? (
+                              <Undo2 size={16} aria-hidden="true" />
+                            ) : (
+                              <Snowflake size={16} aria-hidden="true" />
+                            )}
+                            {attachment.status === "frozen"
+                              ? t("release")
+                              : t("freeze")}
                           </button>
                         </div>
                       </article>
                     ))}
-                </section>
-                <section className="admin-section admin-section--compact">
-                  <h3>{t("webhooks")}</h3>
-                  {adminData.webhookEvents.slice(0, 5).map((event) => (
-                    <article className="list-card" key={event.id}>
-                      <div>
-                        <strong>{event.eventType}</strong>
-                        <span>
-                          {event.provider} · {event.targetId}
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void adminReplayWebhook(event.id)}
-                      >
-                        <RotateCcw size={16} aria-hidden="true" />
-                        {t("replay")}
-                      </button>
+                  </section>
+                ) : null}
+                {adminTab === "overview" ? (
+                  <section className="admin-section">
+                    <h3>{t("shares")}</h3>
+                    {adminData.shares.slice(0, 5).map((share) => (
+                      <article className="list-card" key={share.id}>
+                        <div>
+                          <strong>{share.id}</strong>
+                          <span>
+                            {share.visitCount} {t("visits")} ·{" "}
+                            {share.downloadCount} {t("downloads")}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void adminRevokeShare(share.id)}
+                          disabled={Boolean(share.revokedAt)}
+                        >
+                          <Trash2 size={16} aria-hidden="true" />
+                          {t("revoke")}
+                        </button>
+                      </article>
+                    ))}
+                  </section>
+                ) : null}
+                {adminTab === "plans" ? (
+                  <section className="admin-section">
+                    <h3>{t("orders")}</h3>
+                    {adminData.orders.slice(0, 5).map((order) => {
+                      const status = orderStatusDetail(order.status, locale);
+                      return (
+                        <article className="list-card" key={order.id}>
+                          <div>
+                            <strong>{order.planId}</strong>
+                            <span>
+                              {order.provider} ·{" "}
+                              {(order.amountCents / 100).toFixed(2)}{" "}
+                              {order.currency}
+                            </span>
+                            <span className="order-status-note">
+                              {status.description}
+                            </span>
+                          </div>
+                          <span
+                            className={`order-status order-status--${status.tone}`}
+                          >
+                            {status.label}
+                          </span>
+                          <input
+                            aria-label={t("manualPaymentReason")}
+                            disabled={order.status === "paid"}
+                            maxLength={500}
+                            placeholder={t("manualPaymentReasonPlaceholder")}
+                            value={adminPaymentReasons[order.id] ?? ""}
+                            onChange={(event) =>
+                              setAdminPaymentReasons((previous) => ({
+                                ...previous,
+                                [order.id]: event.target.value,
+                              }))
+                            }
+                          />
+                          <button
+                            type="button"
+                            onClick={() => void adminMarkOrderPaid(order.id)}
+                            disabled={
+                              order.status === "paid" ||
+                              !(adminPaymentReasons[order.id] ?? "").trim()
+                            }
+                          >
+                            <CreditCard size={16} aria-hidden="true" />
+                            {t("paid")}
+                          </button>
+                        </article>
+                      );
+                    })}
+                  </section>
+                ) : null}
+                {adminTab === "queues" ? (
+                  <section className="admin-section admin-section--wide">
+                    <h3>{t("queues")}</h3>
+                    <article className="list-card">
+                      <strong>{t("scanFailures")}</strong>
+                      <span>{adminData.queues?.scanFailures.length ?? 0}</span>
                     </article>
-                  ))}
-                </section>
-              </div>
-              <section className="admin-audit-section">
-                <h3>{t("auditQueuesCleanup")}</h3>
-                <div className="admin-audit-list">
-                  {auditLogs.slice(0, 8).map((log) => (
-                    <article className="list-card" key={log.id}>
-                      <strong>{log.action}</strong>
+                    <article className="list-card">
+                      <strong>{t("cleanupJobs")}</strong>
+                      <span>{adminData.queues?.cleanupJobs.length ?? 0}</span>
+                    </article>
+                    <article className="list-card">
+                      <strong>{t("cleanupFailures")}</strong>
                       <span>
-                        {log.target} ·{" "}
-                        {new Date(log.createdAt).toLocaleString()}
+                        {adminData.queues?.cleanupFailures.length ?? 0}
                       </span>
                     </article>
-                  ))}
-                </div>
-              </section>
+                    <article className="list-card">
+                      <strong>{t("failedJobs")}</strong>
+                      <span>{adminData.queues?.failedJobs.length ?? 0}</span>
+                    </article>
+                    <article className="list-card">
+                      <strong>{t("queuedMails")}</strong>
+                      <span>{adminData.queues?.queuedMails.length ?? 0}</span>
+                    </article>
+                    <article className="list-card">
+                      <strong>{t("failedMails")}</strong>
+                      <span>{adminData.queues?.failedMails.length ?? 0}</span>
+                    </article>
+                    {(adminData.queues?.failedMails ?? [])
+                      .slice(0, 5)
+                      .map((mail) => (
+                        <article className="list-card" key={mail.id}>
+                          <div>
+                            <strong>{mail.subject}</strong>
+                            <span>
+                              {mail.to} · {mail.status} · {mail.attempts}{" "}
+                              {t("attempts")}
+                            </span>
+                            {mail.lastError ? (
+                              <span>{mail.lastError}</span>
+                            ) : null}
+                          </div>
+                        </article>
+                      ))}
+                    {(adminData.queues?.reports ?? [])
+                      .slice(0, 5)
+                      .map((report) => (
+                        <article className="list-card" key={report.id}>
+                          <div>
+                            <strong>{report.target}</strong>
+                            <span>
+                              {report.status} · {report.reason}
+                            </span>
+                          </div>
+                          <div className="button-row compact">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void adminResolveReport(report, "resolved")
+                              }
+                              disabled={report.status === "resolved"}
+                            >
+                              <CheckCircle2 size={16} aria-hidden="true" />
+                              {t("resolve")}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void adminResolveReport(report, "dismissed")
+                              }
+                              disabled={report.status === "dismissed"}
+                            >
+                              <Ban size={16} aria-hidden="true" />
+                              {t("dismiss")}
+                            </button>
+                          </div>
+                        </article>
+                      ))}
+                  </section>
+                ) : null}
+                {adminTab === "queues" ? (
+                  <section className="admin-section admin-section--compact">
+                    <h3>{t("webhooks")}</h3>
+                    {adminData.webhookEvents.slice(0, 5).map((event) => (
+                      <article className="list-card" key={event.id}>
+                        <div>
+                          <strong>{event.eventType}</strong>
+                          <span>
+                            {event.provider} · {event.targetId}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void adminReplayWebhook(event.id)}
+                        >
+                          <RotateCcw size={16} aria-hidden="true" />
+                          {t("replay")}
+                        </button>
+                      </article>
+                    ))}
+                  </section>
+                ) : null}
+              </div>
+              {adminTab === "queues" ? (
+                <section className="admin-audit-section">
+                  <h3>{t("auditQueuesCleanup")}</h3>
+                  <div className="admin-audit-list">
+                    {auditLogs.slice(0, 8).map((log) => (
+                      <article className="list-card" key={log.id}>
+                        <strong>{log.action}</strong>
+                        <span>
+                          {log.target} ·{" "}
+                          {new Date(log.createdAt).toLocaleString()}
+                        </span>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
             </div>
           </Panel>
         ) : null}
@@ -5689,7 +6096,11 @@ function GuestWorkbench({
           {labels.hint} · {formatBytes(totalBytes)} /{" "}
           {formatBytes(config.singlePasteBytes)}
         </span>
-        <button type="button" onClick={() => void createGuestShare()} disabled={busy}>
+        <button
+          type="button"
+          onClick={() => void createGuestShare()}
+          disabled={busy}
+        >
           <Link2 size={16} aria-hidden="true" />
           {busy ? labels.creating : labels.create}
         </button>
@@ -5837,7 +6248,9 @@ function AuthScreen({
             {isPasswordReset ? t("newPassword") : t("password")}
             <input
               autoComplete={
-                isRegister || isPasswordReset ? "new-password" : "current-password"
+                isRegister || isPasswordReset
+                  ? "new-password"
+                  : "current-password"
               }
               value={auth.password}
               type="password"
