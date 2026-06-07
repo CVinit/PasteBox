@@ -94,6 +94,7 @@ func runAPI(stdout io.Writer) int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go runRuntimeAlertLoop(ctx, service, logger, time.Minute)
 
 	select {
 	case <-ctx.Done():
@@ -261,15 +262,39 @@ func newProductionService(ctx context.Context, cfg config.Config) (*app.Service,
 			Queues:        postgres.NewJobStore(pool),
 			Mails:         postgres.NewMailStore(pool),
 		},
-		DailyMetrics: postgres.NewDailyMetricStore(pool),
-		Catalog:      postgres.NewCatalogStore(pool),
-		AuditLogs:    postgres.NewAuditLogStore(pool),
+		DailyMetrics:   postgres.NewDailyMetricStore(pool),
+		Catalog:        postgres.NewCatalogStore(pool),
+		AuditLogs:      postgres.NewAuditLogStore(pool),
+		RuntimeConfigs: postgres.NewRuntimeConfigStore(pool),
+		Redemptions:    postgres.NewRedemptionStore(pool),
+		AlertEvents:    postgres.NewAlertEventStore(pool),
 	})
 	if err != nil {
 		pool.Close()
 		return nil, nil, nil, err
 	}
 	return service, pool, objects, nil
+}
+
+func runRuntimeAlertLoop(ctx context.Context, service *app.Service, logger *slog.Logger, interval time.Duration) {
+	if service == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := service.EvaluateRuntimeAlerts(ctx); err != nil && logger != nil {
+				logger.Warn("runtime alert evaluation failed", "error", err)
+			}
+		}
+	}
 }
 
 func runAdmin(args []string, stdout io.Writer, stderr io.Writer) int {

@@ -45,14 +45,19 @@ import {
   type AdminAttachment,
   type AdminQueues,
   type AdminShare,
+  type AlertEvent,
   type ApiError,
   type AuditLog,
+  type ManualWorkItem,
   type Order,
   type Paste,
   type PlanCatalog,
   type Price,
   type Quota,
+  type RedemptionBatch,
   type Report,
+  type RuntimeConfig,
+  type RuntimePanel,
   type Share,
   type SupportContacts,
   type User,
@@ -93,6 +98,13 @@ type ShareDraft = {
   expiresInSeconds: number;
 };
 
+type RedemptionDraft = {
+  planId: string;
+  durationDays: number;
+  quantity: number;
+  note: string;
+};
+
 type AdminData = {
   users: User[];
   pastes: Paste[];
@@ -101,6 +113,11 @@ type AdminData = {
   orders: Order[];
   queues: AdminQueues | null;
   webhookEvents: WebhookEvent[];
+  runtimeConfig: RuntimeConfig | null;
+  runtimePanel: RuntimePanel | null;
+  manualWorkItems: ManualWorkItem[];
+  redemptionBatches: RedemptionBatch[];
+  alerts: AlertEvent[];
 };
 
 type Locale = "en" | "zh-CN" | "zh-TW" | "es";
@@ -190,6 +207,13 @@ const defaultShareDraft: ShareDraft = {
   expiresInSeconds: 24 * 60 * 60,
 };
 
+const defaultRedemptionDraft: RedemptionDraft = {
+  planId: "plus",
+  durationDays: 30,
+  quantity: 1,
+  note: "",
+};
+
 const emptyAdminData: AdminData = {
   users: [],
   pastes: [],
@@ -198,6 +222,11 @@ const emptyAdminData: AdminData = {
   orders: [],
   queues: null,
   webhookEvents: [],
+  runtimeConfig: null,
+  runtimePanel: null,
+  manualWorkItems: [],
+  redemptionBatches: [],
+  alerts: [],
 };
 
 const supportedLocales: Array<{ value: Locale; label: string }> = [
@@ -887,6 +916,63 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     reportTarget: "report target",
     reportReason: "report reason",
     auditQueuesCleanup: "Audit, queues, cleanup",
+    adminControlPanel: "Control panel",
+    runtimeConfig: "Runtime config",
+    resourcePanel: "Resources",
+    planCatalog: "Plans and prices",
+    providerStatus: "Provider status",
+    manualReview: "Manual review",
+    redemptionCodes: "Redemption codes",
+    alertHistory: "Alert history",
+    saveCatalog: "Save catalog",
+    catalogSaved: "Catalog saved",
+    runtimeConfigSaved: "Runtime config saved",
+    saveRuntimeConfig: "Save runtime config",
+    guestUploads: "Guest uploads",
+    requireTurnstile: "Require Turnstile",
+    enabled: "Enabled",
+    disabled: "Disabled",
+    telegramAlerts: "Telegram alerts",
+    telegramDelivery: "Telegram delivery",
+    silentAlert: "Silent alert",
+    cooldownSeconds: "Cooldown seconds",
+    cpuThreshold: "CPU threshold %",
+    memoryThreshold: "Memory threshold %",
+    diskThreshold: "Disk threshold %",
+    objectStorageThreshold: "Object storage threshold",
+    scanFailureThreshold: "Scan failure threshold",
+    failedJobThreshold: "Failed job threshold",
+    failedMailThreshold: "Failed mail threshold",
+    openReportThreshold: "Open report threshold",
+    sendTestAlert: "Send test alert",
+    alertSent: "Alert sent",
+    providerTested: "Provider tested",
+    createRedemptionBatch: "Create batch",
+    redemptionBatchCreated: "Redemption batch created",
+    redemptionBatchUpdated: "Redemption batch updated",
+    durationDays: "Duration days",
+    quantity: "Quantity",
+    note: "Note",
+    objectStorage: "Object storage",
+    cpu: "CPU",
+    memory: "Memory",
+    disk: "Disk",
+    activePasteLimitShort: "Active limit",
+    activeStorageLimit: "Active storage",
+    singleTextLimit: "Single text",
+    singleFileLimit: "Single file",
+    singlePasteLimit: "Single paste",
+    attachmentsPerPaste: "Attachments per paste",
+    retentionSeconds: "Retention seconds",
+    dailyUploadLimit: "Daily upload",
+    dailyShareDownloadLimit: "Daily share download",
+    period: "Period",
+    currency: "Currency",
+    priceCents: "Price cents",
+    visible: "Visible",
+    purchase: "Purchase",
+    noRecentAlerts: "No recent alerts",
+    noManualWorkItems: "No manual work items",
     runCleanup: "Run cleanup",
     runBillingReconcile: "Run billing reconcile",
     users: "Users",
@@ -1104,6 +1190,63 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     reportTarget: "举报目标",
     reportReason: "举报原因",
     auditQueuesCleanup: "审计、队列、清理",
+    adminControlPanel: "控制面板",
+    runtimeConfig: "运行配置",
+    resourcePanel: "资源面板",
+    planCatalog: "套餐和价格",
+    providerStatus: "服务配置状态",
+    manualReview: "人工处理",
+    redemptionCodes: "兑换码",
+    alertHistory: "告警记录",
+    saveCatalog: "保存套餐",
+    catalogSaved: "套餐已保存",
+    runtimeConfigSaved: "运行配置已保存",
+    saveRuntimeConfig: "保存运行配置",
+    guestUploads: "游客上传",
+    requireTurnstile: "要求 Turnstile",
+    enabled: "已开启",
+    disabled: "已关闭",
+    telegramAlerts: "Telegram 告警",
+    telegramDelivery: "Telegram 发送",
+    silentAlert: "静默告警",
+    cooldownSeconds: "冷却秒数",
+    cpuThreshold: "CPU 阈值 %",
+    memoryThreshold: "内存阈值 %",
+    diskThreshold: "磁盘阈值 %",
+    objectStorageThreshold: "对象存储阈值",
+    scanFailureThreshold: "扫描失败阈值",
+    failedJobThreshold: "失败任务阈值",
+    failedMailThreshold: "失败邮件阈值",
+    openReportThreshold: "未处理举报阈值",
+    sendTestAlert: "发送测试告警",
+    alertSent: "告警已发送",
+    providerTested: "服务测试已完成",
+    createRedemptionBatch: "创建批次",
+    redemptionBatchCreated: "兑换码批次已创建",
+    redemptionBatchUpdated: "兑换码批次已更新",
+    durationDays: "有效天数",
+    quantity: "数量",
+    note: "备注",
+    objectStorage: "对象存储",
+    cpu: "CPU",
+    memory: "内存",
+    disk: "磁盘",
+    activePasteLimitShort: "有效内容上限",
+    activeStorageLimit: "有效存储上限",
+    singleTextLimit: "单文本上限",
+    singleFileLimit: "单文件上限",
+    singlePasteLimit: "单条内容上限",
+    attachmentsPerPaste: "每条附件数",
+    retentionSeconds: "保留秒数",
+    dailyUploadLimit: "每日上传上限",
+    dailyShareDownloadLimit: "每日分享下载上限",
+    period: "周期",
+    currency: "币种",
+    priceCents: "价格分",
+    visible: "可见",
+    purchase: "可购买",
+    noRecentAlerts: "暂无近期告警",
+    noManualWorkItems: "暂无人工处理项",
     runCleanup: "运行清理",
     runBillingReconcile: "运行支付对账",
     users: "用户",
@@ -1319,6 +1462,63 @@ const copy: Record<Locale, Record<string, string>> = {
     reportTarget: "檢舉目標",
     reportReason: "檢舉原因",
     auditQueuesCleanup: "稽核、佇列、清理",
+    adminControlPanel: "控制面板",
+    runtimeConfig: "執行設定",
+    resourcePanel: "資源面板",
+    planCatalog: "方案和價格",
+    providerStatus: "服務設定狀態",
+    manualReview: "人工處理",
+    redemptionCodes: "兌換碼",
+    alertHistory: "告警記錄",
+    saveCatalog: "儲存方案",
+    catalogSaved: "方案已儲存",
+    runtimeConfigSaved: "執行設定已儲存",
+    saveRuntimeConfig: "儲存執行設定",
+    guestUploads: "訪客上傳",
+    requireTurnstile: "要求 Turnstile",
+    enabled: "已開啟",
+    disabled: "已關閉",
+    telegramAlerts: "Telegram 告警",
+    telegramDelivery: "Telegram 傳送",
+    silentAlert: "靜默告警",
+    cooldownSeconds: "冷卻秒數",
+    cpuThreshold: "CPU 閾值 %",
+    memoryThreshold: "記憶體閾值 %",
+    diskThreshold: "磁碟閾值 %",
+    objectStorageThreshold: "物件儲存閾值",
+    scanFailureThreshold: "掃描失敗閾值",
+    failedJobThreshold: "失敗任務閾值",
+    failedMailThreshold: "失敗郵件閾值",
+    openReportThreshold: "未處理檢舉閾值",
+    sendTestAlert: "傳送測試告警",
+    alertSent: "告警已傳送",
+    providerTested: "服務測試已完成",
+    createRedemptionBatch: "建立批次",
+    redemptionBatchCreated: "兌換碼批次已建立",
+    redemptionBatchUpdated: "兌換碼批次已更新",
+    durationDays: "有效天數",
+    quantity: "數量",
+    note: "備註",
+    objectStorage: "物件儲存",
+    cpu: "CPU",
+    memory: "記憶體",
+    disk: "磁碟",
+    activePasteLimitShort: "有效內容上限",
+    activeStorageLimit: "有效儲存上限",
+    singleTextLimit: "單文字上限",
+    singleFileLimit: "單檔上限",
+    singlePasteLimit: "單則內容上限",
+    attachmentsPerPaste: "每則附件數",
+    retentionSeconds: "保留秒數",
+    dailyUploadLimit: "每日上傳上限",
+    dailyShareDownloadLimit: "每日分享下載上限",
+    period: "週期",
+    currency: "幣別",
+    priceCents: "價格分",
+    visible: "可見",
+    purchase: "可購買",
+    noRecentAlerts: "暫無近期告警",
+    noManualWorkItems: "暫無人工處理項",
     runCleanup: "執行清理",
     runBillingReconcile: "執行付款對帳",
     users: "使用者",
@@ -1537,6 +1737,63 @@ const copy: Record<Locale, Record<string, string>> = {
     reportTarget: "objetivo del reporte",
     reportReason: "motivo del reporte",
     auditQueuesCleanup: "Auditoría, colas y limpieza",
+    adminControlPanel: "Panel de control",
+    runtimeConfig: "Configuración runtime",
+    resourcePanel: "Recursos",
+    planCatalog: "Planes y precios",
+    providerStatus: "Estado de proveedores",
+    manualReview: "Revisión manual",
+    redemptionCodes: "Códigos",
+    alertHistory: "Alertas",
+    saveCatalog: "Guardar catálogo",
+    catalogSaved: "Catálogo guardado",
+    runtimeConfigSaved: "Configuración guardada",
+    saveRuntimeConfig: "Guardar configuración",
+    guestUploads: "Subidas invitadas",
+    requireTurnstile: "Requerir Turnstile",
+    enabled: "Activado",
+    disabled: "Desactivado",
+    telegramAlerts: "Alertas Telegram",
+    telegramDelivery: "Envío Telegram",
+    silentAlert: "Alerta silenciosa",
+    cooldownSeconds: "Segundos de pausa",
+    cpuThreshold: "Umbral CPU %",
+    memoryThreshold: "Umbral memoria %",
+    diskThreshold: "Umbral disco %",
+    objectStorageThreshold: "Umbral objetos",
+    scanFailureThreshold: "Umbral escaneo",
+    failedJobThreshold: "Umbral trabajos",
+    failedMailThreshold: "Umbral correos",
+    openReportThreshold: "Umbral reportes",
+    sendTestAlert: "Enviar alerta",
+    alertSent: "Alerta enviada",
+    providerTested: "Proveedor probado",
+    createRedemptionBatch: "Crear lote",
+    redemptionBatchCreated: "Lote creado",
+    redemptionBatchUpdated: "Lote actualizado",
+    durationDays: "Días",
+    quantity: "Cantidad",
+    note: "Nota",
+    objectStorage: "Objetos",
+    cpu: "CPU",
+    memory: "Memoria",
+    disk: "Disco",
+    activePasteLimitShort: "Límite activo",
+    activeStorageLimit: "Almacenamiento activo",
+    singleTextLimit: "Texto único",
+    singleFileLimit: "Archivo único",
+    singlePasteLimit: "Paste único",
+    attachmentsPerPaste: "Adjuntos por paste",
+    retentionSeconds: "Retención segundos",
+    dailyUploadLimit: "Subida diaria",
+    dailyShareDownloadLimit: "Descarga compartida diaria",
+    period: "Periodo",
+    currency: "Moneda",
+    priceCents: "Precio centavos",
+    visible: "Visible",
+    purchase: "Compra",
+    noRecentAlerts: "Sin alertas recientes",
+    noManualWorkItems: "Sin revisión manual",
     runCleanup: "Ejecutar limpieza",
     runBillingReconcile: "Reconciliar facturación",
     users: "Usuarios",
@@ -2052,6 +2309,10 @@ function App() {
   const [adminPaymentReasons, setAdminPaymentReasons] = useState<
     Record<string, string>
   >({});
+  const [redemptionDraft, setRedemptionDraft] = useState<RedemptionDraft>(
+    defaultRedemptionDraft,
+  );
+  const [alertTestMessage, setAlertTestMessage] = useState("PasteBox alert test");
   const [view, setView] = useState<View>("inbox");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
@@ -2256,6 +2517,11 @@ function App() {
       sharesResult,
       ordersResult,
       queues,
+      runtimeConfig,
+      runtimePanel,
+      manualWorkItems,
+      redemptionBatches,
+      alerts,
       webhooks,
       logs,
     ] = await Promise.allSettled([
@@ -2266,6 +2532,11 @@ function App() {
       client.adminShares(),
       client.adminOrders(),
       client.adminQueues(),
+      client.adminRuntimeConfig(),
+      client.adminRuntimePanel(),
+      client.adminManualWorkItems(),
+      client.adminRedemptionBatches(),
+      client.adminAlerts(),
       client.adminWebhookEvents(),
       client.adminAuditLogs(),
     ]);
@@ -2281,6 +2552,16 @@ function App() {
       orders:
         ordersResult.status === "fulfilled" ? ordersResult.value.orders : [],
       queues: queues.status === "fulfilled" ? queues.value : null,
+      runtimeConfig:
+        runtimeConfig.status === "fulfilled" ? runtimeConfig.value : null,
+      runtimePanel: runtimePanel.status === "fulfilled" ? runtimePanel.value : null,
+      manualWorkItems:
+        manualWorkItems.status === "fulfilled" ? manualWorkItems.value.items : [],
+      redemptionBatches:
+        redemptionBatches.status === "fulfilled"
+          ? redemptionBatches.value.batches
+          : [],
+      alerts: alerts.status === "fulfilled" ? alerts.value.alerts : [],
       webhookEvents:
         webhooks.status === "fulfilled" ? webhooks.value.webhookEvents : [],
     });
@@ -2801,6 +3082,160 @@ function App() {
     await run(
       () => client.adminResolveReport(report.id, status),
       t("reportUpdated"),
+    );
+    await refreshAdmin();
+  }
+
+  function updateCatalogPlan(
+    planId: string,
+    patch: Partial<PlanCatalog["plans"][number]>,
+  ) {
+    setCatalog((previous) => {
+      if (!previous) return previous;
+      return {
+        ...previous,
+        plans: previous.plans.map((plan) =>
+          plan.id === planId ? { ...plan, ...patch } : plan,
+        ),
+      };
+    });
+  }
+
+  function updateCatalogPrice(priceId: string, patch: Partial<Price>) {
+    setCatalog((previous) => {
+      if (!previous) return previous;
+      return {
+        ...previous,
+        prices: previous.prices.map((price) =>
+          price.id === priceId ? { ...price, ...patch } : price,
+        ),
+      };
+    });
+  }
+
+  function updateRuntimeGuestConfig(
+    patch: Partial<RuntimeConfig["guestUploads"]>,
+  ) {
+    setAdminData((previous) => {
+      if (!previous.runtimeConfig) return previous;
+      return {
+        ...previous,
+        runtimeConfig: {
+          ...previous.runtimeConfig,
+          guestUploads: {
+            ...previous.runtimeConfig.guestUploads,
+            ...patch,
+          },
+        },
+      };
+    });
+  }
+
+  function updateRuntimeAlertConfig(patch: Partial<RuntimeConfig["alerts"]>) {
+    setAdminData((previous) => {
+      if (!previous.runtimeConfig) return previous;
+      return {
+        ...previous,
+        runtimeConfig: {
+          ...previous.runtimeConfig,
+          alerts: {
+            ...previous.runtimeConfig.alerts,
+            ...patch,
+          },
+        },
+      };
+    });
+  }
+
+  async function saveAdminCatalog() {
+    if (!catalog) return;
+    const updated = await run(
+      () => client.adminUpdateCatalog(catalog),
+      t("catalogSaved"),
+    );
+    if (updated) {
+      setCatalog(updated);
+      await refreshAuthed();
+      await refreshAdmin();
+    }
+  }
+
+  async function saveRuntimeConfig() {
+    const cfg = adminData.runtimeConfig;
+    if (!cfg) return;
+    const updated = await run(
+      () =>
+        client.adminUpdateRuntimeConfig({
+          guestUploads: cfg.guestUploads,
+          alerts: cfg.alerts,
+        }),
+      t("runtimeConfigSaved"),
+    );
+    if (updated) {
+      setAdminData((previous) => ({
+        ...previous,
+        runtimeConfig: updated,
+        runtimePanel: previous.runtimePanel
+          ? { ...previous.runtimePanel, config: updated }
+          : previous.runtimePanel,
+      }));
+      await refreshAdmin();
+    }
+  }
+
+  async function toggleGuestUploads() {
+    const cfg = adminData.runtimeConfig?.guestUploads;
+    if (!cfg) return;
+    updateRuntimeGuestConfig({ enabled: !cfg.enabled });
+  }
+
+  async function toggleRuntimeAlerts() {
+    const cfg = adminData.runtimeConfig?.alerts;
+    if (!cfg) return;
+    updateRuntimeAlertConfig({ enabled: !cfg.enabled });
+  }
+
+  async function adminProviderTest(provider: string) {
+    await run(() => client.adminProviderTest(provider), t("providerTested"));
+    await refreshAdmin();
+  }
+
+  async function createRedemptionBatch() {
+    const created = await run(
+      () =>
+        client.adminCreateRedemptionBatch({
+          planId: redemptionDraft.planId,
+          durationDays: redemptionDraft.durationDays,
+          quantity: redemptionDraft.quantity,
+          note: redemptionDraft.note,
+        }),
+      t("redemptionBatchCreated"),
+    );
+    if (created) {
+      setRedemptionDraft((previous) => ({
+        ...defaultRedemptionDraft,
+        planId: previous.planId,
+      }));
+      await refreshAdmin();
+    }
+  }
+
+  async function toggleRedemptionBatch(batch: RedemptionBatch) {
+    await run(
+      () =>
+        client.adminUpdateRedemptionBatch(batch.id, {
+          disabled: !batch.disabled,
+          note: batch.note ?? "",
+        }),
+      t("redemptionBatchUpdated"),
+    );
+    await refreshAdmin();
+  }
+
+  async function sendAdminTestAlert() {
+    await run(
+      () => client.adminSendTestAlert(alertTestMessage),
+      t("alertSent"),
     );
     await refreshAdmin();
   }
@@ -3476,6 +3911,790 @@ function App() {
               {t("runBillingReconcile")}
             </button>
             <div className="admin-grid">
+              <section>
+                <h3>{t("runtimeConfig")}</h3>
+                <article className="list-card">
+                  <strong>{t("guestUploads")}</strong>
+                  <div className="form-grid">
+                    <label className="check-row">
+                      <input
+                        checked={
+                          adminData.runtimeConfig?.guestUploads.enabled ?? false
+                        }
+                        type="checkbox"
+                        onChange={() => void toggleGuestUploads()}
+                      />
+                      {t("enabled")}
+                    </label>
+                    <label className="check-row">
+                      <input
+                        checked={
+                          adminData.runtimeConfig?.guestUploads
+                            .requireTurnstile ?? false
+                        }
+                        type="checkbox"
+                        onChange={(event) =>
+                          updateRuntimeGuestConfig({
+                            requireTurnstile: event.target.checked,
+                          })
+                        }
+                      />
+                      {t("requireTurnstile")}
+                    </label>
+                    <label className="field-row">
+                      <span>{t("retentionSeconds")}</span>
+                      <input
+                        min={1}
+                        type="number"
+                        value={
+                          adminData.runtimeConfig?.guestUploads
+                            .retentionSeconds ?? 0
+                        }
+                        onChange={(event) =>
+                          updateRuntimeGuestConfig({
+                            retentionSeconds: Number(event.target.value),
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="field-row">
+                      <span>{t("activePasteLimitShort")}</span>
+                      <input
+                        min={1}
+                        type="number"
+                        value={
+                          adminData.runtimeConfig?.guestUploads
+                            .activePasteLimit ?? 0
+                        }
+                        onChange={(event) =>
+                          updateRuntimeGuestConfig({
+                            activePasteLimit: Number(event.target.value),
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="field-row">
+                      <span>{t("activeStorageLimit")}</span>
+                      <input
+                        min={1}
+                        type="number"
+                        value={
+                          adminData.runtimeConfig?.guestUploads
+                            .activeStorageBytes ?? 0
+                        }
+                        onChange={(event) =>
+                          updateRuntimeGuestConfig({
+                            activeStorageBytes: Number(event.target.value),
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="field-row">
+                      <span>{t("singleTextLimit")}</span>
+                      <input
+                        min={1}
+                        type="number"
+                        value={
+                          adminData.runtimeConfig?.guestUploads
+                            .singleTextBytes ?? 0
+                        }
+                        onChange={(event) =>
+                          updateRuntimeGuestConfig({
+                            singleTextBytes: Number(event.target.value),
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="field-row">
+                      <span>{t("singleFileLimit")}</span>
+                      <input
+                        min={1}
+                        type="number"
+                        value={
+                          adminData.runtimeConfig?.guestUploads
+                            .singleFileBytes ?? 0
+                        }
+                        onChange={(event) =>
+                          updateRuntimeGuestConfig({
+                            singleFileBytes: Number(event.target.value),
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="field-row">
+                      <span>{t("singlePasteLimit")}</span>
+                      <input
+                        min={1}
+                        type="number"
+                        value={
+                          adminData.runtimeConfig?.guestUploads
+                            .singlePasteBytes ?? 0
+                        }
+                        onChange={(event) =>
+                          updateRuntimeGuestConfig({
+                            singlePasteBytes: Number(event.target.value),
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="field-row">
+                      <span>{t("attachmentsPerPaste")}</span>
+                      <input
+                        min={1}
+                        type="number"
+                        value={
+                          adminData.runtimeConfig?.guestUploads
+                            .attachmentsPerPasteLimit ?? 0
+                        }
+                        onChange={(event) =>
+                          updateRuntimeGuestConfig({
+                            attachmentsPerPasteLimit: Number(event.target.value),
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="field-row">
+                      <span>{t("dailyUploadLimit")}</span>
+                      <input
+                        min={1}
+                        type="number"
+                        value={
+                          adminData.runtimeConfig?.guestUploads
+                            .dailyUploadBytes ?? 0
+                        }
+                        onChange={(event) =>
+                          updateRuntimeGuestConfig({
+                            dailyUploadBytes: Number(event.target.value),
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="field-row">
+                      <span>{t("dailyShareDownloadLimit")}</span>
+                      <input
+                        min={0}
+                        type="number"
+                        value={
+                          adminData.runtimeConfig?.guestUploads
+                            .dailyShareDownloadBytes ?? 0
+                        }
+                        onChange={(event) =>
+                          updateRuntimeGuestConfig({
+                            dailyShareDownloadBytes: Number(event.target.value),
+                          })
+                        }
+                      />
+                    </label>
+                  </div>
+                </article>
+                <article className="list-card">
+                  <strong>{t("telegramAlerts")}</strong>
+                  <div className="form-grid">
+                    <label className="check-row">
+                      <input
+                        checked={adminData.runtimeConfig?.alerts.enabled ?? false}
+                        type="checkbox"
+                        onChange={() => void toggleRuntimeAlerts()}
+                      />
+                      {t("enabled")}
+                    </label>
+                    <label className="check-row">
+                      <input
+                        checked={
+                          adminData.runtimeConfig?.alerts.telegramEnabled ??
+                          false
+                        }
+                        type="checkbox"
+                        onChange={(event) =>
+                          updateRuntimeAlertConfig({
+                            telegramEnabled: event.target.checked,
+                          })
+                        }
+                      />
+                      {t("telegramDelivery")}
+                    </label>
+                    <label className="check-row">
+                      <input
+                        checked={adminData.runtimeConfig?.alerts.silent ?? false}
+                        type="checkbox"
+                        onChange={(event) =>
+                          updateRuntimeAlertConfig({
+                            silent: event.target.checked,
+                          })
+                        }
+                      />
+                      {t("silentAlert")}
+                    </label>
+                    <label className="field-row">
+                      <span>{t("cooldownSeconds")}</span>
+                      <input
+                        min={1}
+                        type="number"
+                        value={adminData.runtimeConfig?.alerts.cooldownSeconds ?? 0}
+                        onChange={(event) =>
+                          updateRuntimeAlertConfig({
+                            cooldownSeconds: Number(event.target.value),
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="field-row">
+                      <span>{t("cpuThreshold")}</span>
+                      <input
+                        min={1}
+                        step={0.1}
+                        type="number"
+                        value={
+                          adminData.runtimeConfig?.alerts
+                            .cpuPercentThreshold ?? 0
+                        }
+                        onChange={(event) =>
+                          updateRuntimeAlertConfig({
+                            cpuPercentThreshold: Number(event.target.value),
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="field-row">
+                      <span>{t("memoryThreshold")}</span>
+                      <input
+                        min={1}
+                        step={0.1}
+                        type="number"
+                        value={
+                          adminData.runtimeConfig?.alerts
+                            .memoryPercentThreshold ?? 0
+                        }
+                        onChange={(event) =>
+                          updateRuntimeAlertConfig({
+                            memoryPercentThreshold: Number(event.target.value),
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="field-row">
+                      <span>{t("diskThreshold")}</span>
+                      <input
+                        min={1}
+                        step={0.1}
+                        type="number"
+                        value={
+                          adminData.runtimeConfig?.alerts
+                            .diskPercentThreshold ?? 0
+                        }
+                        onChange={(event) =>
+                          updateRuntimeAlertConfig({
+                            diskPercentThreshold: Number(event.target.value),
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="field-row">
+                      <span>{t("objectStorageThreshold")}</span>
+                      <input
+                        min={0}
+                        type="number"
+                        value={
+                          adminData.runtimeConfig?.alerts
+                            .objectStorageBytesThreshold ?? 0
+                        }
+                        onChange={(event) =>
+                          updateRuntimeAlertConfig({
+                            objectStorageBytesThreshold: Number(
+                              event.target.value,
+                            ),
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="field-row">
+                      <span>{t("scanFailureThreshold")}</span>
+                      <input
+                        min={0}
+                        type="number"
+                        value={
+                          adminData.runtimeConfig?.alerts
+                            .scanFailureDepthThreshold ?? 0
+                        }
+                        onChange={(event) =>
+                          updateRuntimeAlertConfig({
+                            scanFailureDepthThreshold: Number(
+                              event.target.value,
+                            ),
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="field-row">
+                      <span>{t("failedJobThreshold")}</span>
+                      <input
+                        min={0}
+                        type="number"
+                        value={
+                          adminData.runtimeConfig?.alerts
+                            .failedJobDepthThreshold ?? 0
+                        }
+                        onChange={(event) =>
+                          updateRuntimeAlertConfig({
+                            failedJobDepthThreshold: Number(event.target.value),
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="field-row">
+                      <span>{t("failedMailThreshold")}</span>
+                      <input
+                        min={0}
+                        type="number"
+                        value={
+                          adminData.runtimeConfig?.alerts
+                            .mailFailedDepthThreshold ?? 0
+                        }
+                        onChange={(event) =>
+                          updateRuntimeAlertConfig({
+                            mailFailedDepthThreshold: Number(event.target.value),
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="field-row">
+                      <span>{t("openReportThreshold")}</span>
+                      <input
+                        min={0}
+                        type="number"
+                        value={
+                          adminData.runtimeConfig?.alerts.reportsOpenThreshold ??
+                          0
+                        }
+                        onChange={(event) =>
+                          updateRuntimeAlertConfig({
+                            reportsOpenThreshold: Number(event.target.value),
+                          })
+                        }
+                      />
+                    </label>
+                  </div>
+                </article>
+                <button type="button" onClick={() => void saveRuntimeConfig()}>
+                  {t("saveRuntimeConfig")}
+                </button>
+              </section>
+              <section>
+                <h3>{t("resourcePanel")}</h3>
+                <article className="list-card">
+                  <strong>{t("cpu")}</strong>
+                  <span>{adminData.runtimePanel?.resources.cpuPercent ?? 0}%</span>
+                </article>
+                <article className="list-card">
+                  <strong>{t("memory")}</strong>
+                  <span>
+                    {formatBytes(
+                      adminData.runtimePanel?.resources.memoryUsedBytes ?? 0,
+                    )}{" "}
+                    /{" "}
+                    {formatBytes(
+                      adminData.runtimePanel?.resources.memoryTotalBytes ?? 0,
+                    )}{" "}
+                    · {adminData.runtimePanel?.resources.memoryPercent ?? 0}%
+                  </span>
+                </article>
+                <article className="list-card">
+                  <strong>{t("disk")}</strong>
+                  <span>
+                    {formatBytes(
+                      adminData.runtimePanel?.resources.diskUsedBytes ?? 0,
+                    )}{" "}
+                    /{" "}
+                    {formatBytes(
+                      adminData.runtimePanel?.resources.diskTotalBytes ?? 0,
+                    )}{" "}
+                    · {adminData.runtimePanel?.resources.diskPercent ?? 0}%
+                  </span>
+                </article>
+                <article className="list-card">
+                  <strong>{t("objectStorage")}</strong>
+                  <span>
+                    {formatBytes(
+                      adminData.runtimePanel?.resources.objectStorageBytes ?? 0,
+                    )}{" "}
+                    ·{" "}
+                    {adminData.runtimePanel?.resources.objectStorageObjectCount ??
+                      0}{" "}
+                    {t("files")}
+                  </span>
+                </article>
+              </section>
+              <section>
+                <h3>{t("providerStatus")}</h3>
+                {Object.entries(
+                  adminData.runtimeConfig?.providerStatus ?? {},
+                ).map(([provider, status]) => (
+                  <article className="list-card" key={provider}>
+                    <div>
+                      <strong>{provider}</strong>
+                      <span>
+                        {status.configured ? t("enabled") : t("disabled")} ·{" "}
+                        {status.missingEnv.join(", ") || status.provider}
+                      </span>
+                      {status.lastTestStatus ? (
+                        <span>{status.lastTestStatus}</span>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void adminProviderTest(provider)}
+                    >
+                      {t("verify")}
+                    </button>
+                  </article>
+                ))}
+              </section>
+              <section>
+                <h3>{t("planCatalog")}</h3>
+                {(catalog?.plans ?? []).map((plan) => (
+                  <article className="list-card" key={plan.id}>
+                    <strong>{plan.id}</strong>
+                    <div className="form-grid">
+                      <label className="field-row">
+                        <span>{t("title")}</span>
+                        <input
+                          value={plan.name}
+                          onChange={(event) =>
+                            updateCatalogPlan(plan.id, {
+                              name: event.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="field-row">
+                        <span>{t("activePasteLimitShort")}</span>
+                        <input
+                          min={0}
+                          type="number"
+                          value={plan.activePasteLimit}
+                          onChange={(event) =>
+                            updateCatalogPlan(plan.id, {
+                              activePasteLimit: Number(event.target.value),
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="field-row">
+                        <span>{t("activeStorageLimit")}</span>
+                        <input
+                          min={0}
+                          type="number"
+                          value={plan.activeStorageBytes}
+                          onChange={(event) =>
+                            updateCatalogPlan(plan.id, {
+                              activeStorageBytes: Number(event.target.value),
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="field-row">
+                        <span>{t("singleTextLimit")}</span>
+                        <input
+                          min={0}
+                          type="number"
+                          value={plan.singleTextBytes}
+                          onChange={(event) =>
+                            updateCatalogPlan(plan.id, {
+                              singleTextBytes: Number(event.target.value),
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="field-row">
+                        <span>{t("singleFileLimit")}</span>
+                        <input
+                          min={0}
+                          type="number"
+                          value={plan.singleFileBytes}
+                          onChange={(event) =>
+                            updateCatalogPlan(plan.id, {
+                              singleFileBytes: Number(event.target.value),
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="field-row">
+                        <span>{t("singlePasteLimit")}</span>
+                        <input
+                          min={0}
+                          type="number"
+                          value={plan.singlePasteBytes}
+                          onChange={(event) =>
+                            updateCatalogPlan(plan.id, {
+                              singlePasteBytes: Number(event.target.value),
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="field-row">
+                        <span>{t("attachmentsPerPaste")}</span>
+                        <input
+                          min={0}
+                          type="number"
+                          value={plan.attachmentsPerPasteLimit}
+                          onChange={(event) =>
+                            updateCatalogPlan(plan.id, {
+                              attachmentsPerPasteLimit: Number(
+                                event.target.value,
+                              ),
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="field-row">
+                        <span>{t("retentionSeconds")}</span>
+                        <input
+                          min={1}
+                          type="number"
+                          value={plan.maxRetentionSeconds}
+                          onChange={(event) =>
+                            updateCatalogPlan(plan.id, {
+                              maxRetentionSeconds: Number(event.target.value),
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="field-row">
+                        <span>{t("dailyUploadLimit")}</span>
+                        <input
+                          min={0}
+                          type="number"
+                          value={plan.dailyUploadBytes}
+                          onChange={(event) =>
+                            updateCatalogPlan(plan.id, {
+                              dailyUploadBytes: Number(event.target.value),
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="field-row">
+                        <span>{t("dailyShareDownloadLimit")}</span>
+                        <input
+                          min={0}
+                          type="number"
+                          value={plan.dailyShareDownloadBytes}
+                          onChange={(event) =>
+                            updateCatalogPlan(plan.id, {
+                              dailyShareDownloadBytes: Number(
+                                event.target.value,
+                              ),
+                            })
+                          }
+                        />
+                      </label>
+                    </div>
+                  </article>
+                ))}
+                {(catalog?.prices ?? []).map((price) => (
+                  <article className="list-card" key={price.id}>
+                    <strong>
+                      {price.planId} · {price.period}
+                    </strong>
+                    <div className="form-grid">
+                      <label className="field-row">
+                        <span>{t("period")}</span>
+                        <input
+                          value={price.period}
+                          onChange={(event) =>
+                            updateCatalogPrice(price.id, {
+                              period: event.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="field-row">
+                        <span>{t("priceCents")}</span>
+                        <input
+                          min={0}
+                          type="number"
+                          value={price.amountCents}
+                          onChange={(event) =>
+                            updateCatalogPrice(price.id, {
+                              amountCents: Number(event.target.value),
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="field-row">
+                        <span>{t("currency")}</span>
+                        <input
+                          maxLength={8}
+                          value={price.currency}
+                          onChange={(event) =>
+                            updateCatalogPrice(price.id, {
+                              currency: event.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="check-row">
+                        <input
+                          checked={price.visible}
+                          type="checkbox"
+                          onChange={(event) =>
+                            updateCatalogPrice(price.id, {
+                              visible: event.target.checked,
+                            })
+                          }
+                        />
+                        {t("visible")}
+                      </label>
+                      <label className="check-row">
+                        <input
+                          checked={price.purchaseEnabled}
+                          type="checkbox"
+                          onChange={(event) =>
+                            updateCatalogPrice(price.id, {
+                              purchaseEnabled: event.target.checked,
+                            })
+                          }
+                        />
+                        {t("purchase")}
+                      </label>
+                    </div>
+                  </article>
+                ))}
+                <button type="button" onClick={() => void saveAdminCatalog()}>
+                  {t("saveCatalog")}
+                </button>
+              </section>
+              <section>
+                <h3>{t("redemptionCodes")}</h3>
+                <div className="form-grid">
+                  <select
+                    aria-label={t("currentPlan")}
+                    value={redemptionDraft.planId}
+                    onChange={(event) =>
+                      setRedemptionDraft((previous) => ({
+                        ...previous,
+                        planId: event.target.value,
+                      }))
+                    }
+                  >
+                    {(catalog?.plans ?? []).map((plan) => (
+                      <option key={plan.id} value={plan.id}>
+                        {plan.name}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    aria-label={t("durationDays")}
+                    min={1}
+                    type="number"
+                    value={redemptionDraft.durationDays}
+                    onChange={(event) =>
+                      setRedemptionDraft((previous) => ({
+                        ...previous,
+                        durationDays: Number(event.target.value),
+                      }))
+                    }
+                  />
+                  <input
+                    aria-label={t("quantity")}
+                    min={1}
+                    type="number"
+                    value={redemptionDraft.quantity}
+                    onChange={(event) =>
+                      setRedemptionDraft((previous) => ({
+                        ...previous,
+                        quantity: Number(event.target.value),
+                      }))
+                    }
+                  />
+                  <input
+                    aria-label={t("note")}
+                    maxLength={200}
+                    placeholder={t("note")}
+                    value={redemptionDraft.note}
+                    onChange={(event) =>
+                      setRedemptionDraft((previous) => ({
+                        ...previous,
+                        note: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void createRedemptionBatch()}
+                >
+                  {t("createRedemptionBatch")}
+                </button>
+                {adminData.redemptionBatches.slice(0, 5).map((batch) => (
+                  <article className="list-card" key={batch.id}>
+                    <div>
+                      <strong>
+                        {batch.planId} · {batch.quantity}
+                      </strong>
+                      <span>
+                        {batch.redeemedCount}/{batch.maxTotalRedemptions} ·{" "}
+                        {batch.disabled ? t("disabled") : t("enabled")}
+                      </span>
+                      {batch.codes?.[0]?.code ? (
+                        <code>{batch.codes.map((code) => code.code).join(", ")}</code>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void toggleRedemptionBatch(batch)}
+                    >
+                      {batch.disabled ? t("enabled") : t("disabled")}
+                    </button>
+                  </article>
+                ))}
+              </section>
+              <section>
+                <h3>{t("manualReview")}</h3>
+                {adminData.manualWorkItems.length === 0 ? (
+                  <article className="list-card">
+                    <span>{t("noManualWorkItems")}</span>
+                  </article>
+                ) : null}
+                {adminData.manualWorkItems.slice(0, 6).map((item) => (
+                  <article className="list-card" key={`${item.kind}-${item.id}`}>
+                    <strong>{item.kind}</strong>
+                    <span>
+                      {item.status} · {item.summary}
+                    </span>
+                    {item.risk ? <span>{item.risk}</span> : null}
+                  </article>
+                ))}
+              </section>
+              <section>
+                <h3>{t("alertHistory")}</h3>
+                <div className="form-grid">
+                  <input
+                    aria-label={t("sendTestAlert")}
+                    maxLength={240}
+                    value={alertTestMessage}
+                    onChange={(event) => setAlertTestMessage(event.target.value)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void sendAdminTestAlert()}
+                  >
+                    <Send size={16} aria-hidden="true" />
+                    {t("sendTestAlert")}
+                  </button>
+                </div>
+                {adminData.alerts.length === 0 ? (
+                  <article className="list-card">
+                    <span>{t("noRecentAlerts")}</span>
+                  </article>
+                ) : null}
+                {adminData.alerts.slice(0, 5).map((alert) => (
+                  <article className="list-card" key={alert.id}>
+                    <strong>{alert.status}</strong>
+                    <span>{alert.message}</span>
+                    {alert.lastError ? <span>{alert.lastError}</span> : null}
+                  </article>
+                ))}
+              </section>
               <section>
                 <h3>{t("users")}</h3>
                 {adminData.users.slice(0, 5).map((item) => (

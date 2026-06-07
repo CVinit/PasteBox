@@ -105,6 +105,93 @@ const freeStorage = formatBytes(plan.activeStorageBytes);
 
 ---
 
+## Scenario: Admin Runtime Control API Consumption
+
+### 1. Scope / Trigger
+
+- Trigger: The frontend consumes or edits admin runtime config, plan catalog,
+  redemption batches, manual work items, provider status, runtime panel, or
+  alert history.
+
+### 2. Signatures
+
+- Typed client file: `web/src/api.ts`
+- Admin UI shell: `web/src/App.tsx`
+- Endpoints:
+  `GET/PATCH /api/v1/admin/runtime-config`,
+  `GET /api/v1/admin/runtime-panel`,
+  `GET /api/v1/admin/manual-work-items`,
+  `PATCH /api/v1/admin/catalog`,
+  `POST /api/v1/admin/providers/{provider}/test`,
+  `GET/POST/PATCH /api/v1/admin/redemption-batches`,
+  `GET /api/v1/admin/alerts`,
+  `POST /api/v1/admin/alerts/test`, and
+  `POST /api/v1/redemptions/redeem`.
+
+### 3. Contracts
+
+- `RuntimeConfig`, `RuntimePanel`, `ManualWorkItem`, `RedemptionBatch`,
+  `RedemptionCode`, and `AlertEvent` in `api.ts` must mirror backend JSON
+  fields exactly, including camelCase `OperationalMetrics` fields.
+- Admin runtime edits are staged in React state and saved through
+  `client.adminUpdateRuntimeConfig({ guestUploads, alerts })`; numeric inputs
+  must send numbers, not formatted byte strings.
+- Admin catalog edits must expose all backend plan limit fields and price
+  fields that operators can change: visibility, purchase switch, period,
+  amount cents, currency, storage limits, single item limits, retention,
+  attachment count, daily upload, and daily share download.
+- Provider status UI must never render provider secrets. It may display
+  configured/missing env state, provider name, non-sensitive fields, and last
+  test status.
+- New visible admin copy must be added to every supported locale in
+  `copyFor(locale)`.
+
+### 4. Validation & Error Matrix
+
+- Non-admin admin endpoint response -> backend returns `403 admin_required`;
+  frontend should surface the API error instead of assuming admin data exists.
+- Missing runtime config response -> render disabled/null-safe controls until
+  admin data loads.
+- Backend field rename without `api.ts` update -> `make test-web` typecheck or
+  build should fail when the field is referenced.
+- Secret-bearing response field -> frontend contract violation; do not add it
+  to `api.ts` or render it.
+
+### 5. Good/Base/Bad Cases
+
+- Good: Add a new alert threshold by adding the Go JSON field, `api.ts` type,
+  localized label, admin form control, handler test, and `make test-web`.
+- Base: Render runtime resource values with `formatBytes` while keeping the
+  raw editable threshold inputs numeric.
+- Bad: Add only a backend admin route and call it through an untyped
+  `api<Record<string, any>>`, or expose only one quota field while hiding the
+  rest of the editable plan/guest limit contract.
+
+### 6. Tests Required
+
+- Run `make test-web` for every admin UI or typed client change.
+- Run full `make test` when backend admin JSON fields, routes, or validation
+  behavior change.
+- Handler tests must cover representative admin runtime/catalog/redemption/
+  alert contracts and non-admin rejection.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+const panel = await api<any>("/admin/runtime-panel");
+```
+
+#### Correct
+
+```ts
+const panel = await client.adminRuntimePanel();
+panel.operational.mailFailedDepth;
+```
+
+---
+
 ## Examples
 
 - `web/src/api.ts`: typed API boundary and local fallback.

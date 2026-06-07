@@ -53,43 +53,56 @@ func ErrorResponse(err error) (int, map[string]any) {
 }
 
 type Service struct {
-	mu          sync.Mutex
-	cfg         config.Config
-	now         func() time.Time
-	catalog     plans.Catalog
-	auth        AuthStores
-	content     ContentStores
-	objectStore ObjectStore
-	ops         OperationalStores
-	audit       AuditLogStore
+	mu           sync.Mutex
+	cfg          config.Config
+	now          func() time.Time
+	catalog      plans.Catalog
+	catalogStore CatalogStore
+	auth         AuthStores
+	content      ContentStores
+	objectStore  ObjectStore
+	ops          OperationalStores
+	audit        AuditLogStore
+	runtime      RuntimeConfigStore
+	redemptions  RedemptionStore
+	alerts       AlertEventStore
 
-	usersByID        map[string]*User
-	userIDByEmail    map[string]string
-	sessionsByID     map[string]*Session
-	magicLinks       map[string]*AuthToken
-	emailVerifies    map[string]*AuthToken
-	passwordResets   map[string]*AuthToken
-	loginFailures    map[string]*LoginFailure
-	oauthIdentities  map[string]*OAuthIdentity
-	pastesByID       map[string]*Paste
-	attachmentsByID  map[string]*Attachment
-	objects          map[string][]byte
-	objectRefs       map[string]int
-	dailyMetrics     DailyMetricStore
-	sharesByID       map[string]*Share
-	shareIDByToken   map[string]string
-	ordersByID       map[string]*Order
-	webhookEventKeys map[string]string
-	webhookEvents    []*WebhookEvent
-	auditLogs        []*AuditLog
-	reports          []*Report
-	cleanupJobs      []*QueueItem
-	cleanupFailures  []*QueueItem
-	scanJobs         []*QueueItem
-	scanFailures     []*QueueItem
-	failedJobs       []*QueueItem
-	mails            []*Mail
-	nextID           int64
+	usersByID             map[string]*User
+	userIDByEmail         map[string]string
+	sessionsByID          map[string]*Session
+	magicLinks            map[string]*AuthToken
+	emailVerifies         map[string]*AuthToken
+	passwordResets        map[string]*AuthToken
+	loginFailures         map[string]*LoginFailure
+	oauthIdentities       map[string]*OAuthIdentity
+	pastesByID            map[string]*Paste
+	attachmentsByID       map[string]*Attachment
+	objects               map[string][]byte
+	objectRefs            map[string]int
+	dailyMetrics          DailyMetricStore
+	sharesByID            map[string]*Share
+	shareIDByToken        map[string]string
+	ordersByID            map[string]*Order
+	webhookEventKeys      map[string]string
+	webhookEvents         []*WebhookEvent
+	auditLogs             []*AuditLog
+	reports               []*Report
+	cleanupJobs           []*QueueItem
+	cleanupFailures       []*QueueItem
+	scanJobs              []*QueueItem
+	scanFailures          []*QueueItem
+	failedJobs            []*QueueItem
+	mails                 []*Mail
+	runtimeConfig         RuntimeConfig
+	redemptionBatches     map[string]*RedemptionBatch
+	redemptionCodesByHash map[string]*RedemptionCode
+	redemptionRecords     []*RedemptionRecord
+	alertEvents           []*AlertEvent
+	alertSender           AlertSender
+	turnstileVerifier     TurnstileVerifier
+	turnstileTokenHashes  map[string]time.Time
+	resourceSnapshot      func() RuntimeResourceSnapshot
+	nextID                int64
 }
 
 func New(cfg config.Config) *Service {
@@ -118,34 +131,55 @@ func NewWithStorage(ctx context.Context, cfg config.Config, stores Stores) (*Ser
 	}
 
 	svc := &Service{
-		cfg:              cfg,
-		now:              time.Now,
-		catalog:          catalog,
-		auth:             stores.Auth,
-		content:          stores.Content,
-		objectStore:      stores.Objects,
-		ops:              stores.Operational,
-		audit:            stores.AuditLogs,
-		usersByID:        map[string]*User{},
-		userIDByEmail:    map[string]string{},
-		sessionsByID:     map[string]*Session{},
-		magicLinks:       map[string]*AuthToken{},
-		emailVerifies:    map[string]*AuthToken{},
-		passwordResets:   map[string]*AuthToken{},
-		loginFailures:    map[string]*LoginFailure{},
-		oauthIdentities:  map[string]*OAuthIdentity{},
-		pastesByID:       map[string]*Paste{},
-		attachmentsByID:  map[string]*Attachment{},
-		objects:          map[string][]byte{},
-		objectRefs:       map[string]int{},
-		dailyMetrics:     newMemoryDailyMetricStore(),
-		sharesByID:       map[string]*Share{},
-		shareIDByToken:   map[string]string{},
-		ordersByID:       map[string]*Order{},
-		webhookEventKeys: map[string]string{},
+		cfg:                   cfg,
+		now:                   time.Now,
+		catalog:               catalog,
+		catalogStore:          stores.Catalog,
+		auth:                  stores.Auth,
+		content:               stores.Content,
+		objectStore:           stores.Objects,
+		ops:                   stores.Operational,
+		audit:                 stores.AuditLogs,
+		runtime:               stores.RuntimeConfigs,
+		redemptions:           stores.Redemptions,
+		alerts:                stores.AlertEvents,
+		usersByID:             map[string]*User{},
+		userIDByEmail:         map[string]string{},
+		sessionsByID:          map[string]*Session{},
+		magicLinks:            map[string]*AuthToken{},
+		emailVerifies:         map[string]*AuthToken{},
+		passwordResets:        map[string]*AuthToken{},
+		loginFailures:         map[string]*LoginFailure{},
+		oauthIdentities:       map[string]*OAuthIdentity{},
+		pastesByID:            map[string]*Paste{},
+		attachmentsByID:       map[string]*Attachment{},
+		objects:               map[string][]byte{},
+		objectRefs:            map[string]int{},
+		dailyMetrics:          newMemoryDailyMetricStore(),
+		sharesByID:            map[string]*Share{},
+		shareIDByToken:        map[string]string{},
+		ordersByID:            map[string]*Order{},
+		webhookEventKeys:      map[string]string{},
+		runtimeConfig:         defaultRuntimeConfig(cfg),
+		redemptionBatches:     map[string]*RedemptionBatch{},
+		redemptionCodesByHash: map[string]*RedemptionCode{},
+		redemptionRecords:     []*RedemptionRecord{},
+		alertEvents:           []*AlertEvent{},
+		turnstileVerifier:     NewTurnstileVerifier(cfg),
+		turnstileTokenHashes:  map[string]time.Time{},
+		resourceSnapshot:      defaultRuntimeResourceSnapshot,
 	}
 	if stores.DailyMetrics != nil {
 		svc.dailyMetrics = stores.DailyMetrics
+	}
+	if err := svc.loadRuntimeConfig(ctx); err != nil {
+		return nil, err
+	}
+	if err := svc.loadRedemptionCaches(ctx); err != nil {
+		return nil, err
+	}
+	if err := svc.loadAlertEvents(ctx); err != nil {
+		return nil, err
 	}
 	if err := svc.loadContentCaches(ctx); err != nil {
 		return nil, err
@@ -172,13 +206,16 @@ func NewWithDailyMetricStore(cfg config.Config, dailyMetrics DailyMetricStore) *
 }
 
 type Stores struct {
-	Auth         AuthStores
-	Content      ContentStores
-	Objects      ObjectStore
-	Operational  OperationalStores
-	DailyMetrics DailyMetricStore
-	Catalog      CatalogStore
-	AuditLogs    AuditLogStore
+	Auth           AuthStores
+	Content        ContentStores
+	Objects        ObjectStore
+	Operational    OperationalStores
+	DailyMetrics   DailyMetricStore
+	Catalog        CatalogStore
+	AuditLogs      AuditLogStore
+	RuntimeConfigs RuntimeConfigStore
+	Redemptions    RedemptionStore
+	AlertEvents    AlertEventStore
 }
 
 type CatalogStore interface {
@@ -478,18 +515,19 @@ type MailQueueItem struct {
 }
 
 type OperationalMetrics struct {
-	UserCount          int
-	ActivePastes       int
-	ActiveStorageBytes int64
-	ReportsOpen        int
-	CleanupQueueDepth  int
-	ScanQueueDepth     int
-	ScanFailureDepth   int
-	FailedJobDepth     int
-	MailQueueDepth     int
-	MailFailedDepth    int
-	WebhookEvents      int
-	OrdersByStatus     map[string]int
+	UserCount           int            `json:"userCount"`
+	ActivePastes        int            `json:"activePastes"`
+	ActiveStorageBytes  int64          `json:"activeStorageBytes"`
+	ReportsOpen         int            `json:"reportsOpen"`
+	CleanupQueueDepth   int            `json:"cleanupQueueDepth"`
+	CleanupFailureDepth int            `json:"cleanupFailureDepth"`
+	ScanQueueDepth      int            `json:"scanQueueDepth"`
+	ScanFailureDepth    int            `json:"scanFailureDepth"`
+	FailedJobDepth      int            `json:"failedJobDepth"`
+	MailQueueDepth      int            `json:"mailQueueDepth"`
+	MailFailedDepth     int            `json:"mailFailedDepth"`
+	WebhookEvents       int            `json:"webhookEvents"`
+	OrdersByStatus      map[string]int `json:"ordersByStatus"`
 }
 
 type QuotaView struct {
@@ -2268,18 +2306,19 @@ func (s *Service) operationalMetricsLocked(ctx context.Context) (OperationalMetr
 		return OperationalMetrics{}, err
 	}
 	return OperationalMetrics{
-		UserCount:          len(users),
-		ActivePastes:       activePastes,
-		ActiveStorageBytes: storage,
-		ReportsOpen:        countReports(s.reports, "open"),
-		CleanupQueueDepth:  len(s.cleanupJobs),
-		ScanQueueDepth:     len(s.scanJobs),
-		ScanFailureDepth:   len(s.scanFailures),
-		FailedJobDepth:     len(s.failedJobs),
-		MailQueueDepth:     len(s.mails),
-		MailFailedDepth:    len(failedMails),
-		WebhookEvents:      len(s.webhookEvents),
-		OrdersByStatus:     ordersByStatus,
+		UserCount:           len(users),
+		ActivePastes:        activePastes,
+		ActiveStorageBytes:  storage,
+		ReportsOpen:         countReports(s.reports, "open"),
+		CleanupQueueDepth:   len(s.cleanupJobs),
+		CleanupFailureDepth: len(s.cleanupFailures),
+		ScanQueueDepth:      len(s.scanJobs),
+		ScanFailureDepth:    len(s.scanFailures),
+		FailedJobDepth:      len(s.failedJobs),
+		MailQueueDepth:      len(s.mails),
+		MailFailedDepth:     len(failedMails),
+		WebhookEvents:       len(s.webhookEvents),
+		OrdersByStatus:      ordersByStatus,
 	}, nil
 }
 

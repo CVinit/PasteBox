@@ -209,6 +209,152 @@ export type Report = {
   createdAt: string;
 };
 
+export type GuestUploadConfig = {
+  enabled: boolean;
+  requireTurnstile: boolean;
+  retentionSeconds: number;
+  activePasteLimit: number;
+  activeStorageBytes: number;
+  singleTextBytes: number;
+  singleFileBytes: number;
+  singlePasteBytes: number;
+  attachmentsPerPasteLimit: number;
+  dailyUploadBytes: number;
+  dailyShareDownloadBytes: number;
+  shareDownloadsEnabled: boolean;
+};
+
+export type AlertConfig = {
+  enabled: boolean;
+  telegramEnabled: boolean;
+  silent: boolean;
+  cooldownSeconds: number;
+  cpuPercentThreshold: number;
+  memoryPercentThreshold: number;
+  diskPercentThreshold: number;
+  objectStorageBytesThreshold: number;
+  scanFailureDepthThreshold: number;
+  failedJobDepthThreshold: number;
+  mailFailedDepthThreshold: number;
+  reportsOpenThreshold: number;
+};
+
+export type ProviderConfigStatus = {
+  provider: string;
+  configured: boolean;
+  secretManaged: boolean;
+  requiredEnv: string[];
+  missingEnv: string[];
+  nonSensitive?: Record<string, string>;
+  lastTestStatus?: string;
+  lastTestMessage?: string;
+};
+
+export type ProviderStatus = {
+  mailer: ProviderConfigStatus;
+  google: ProviderConfigStatus;
+  turnstile: ProviderConfigStatus;
+  telegram: ProviderConfigStatus;
+  s3: ProviderConfigStatus;
+};
+
+export type RuntimeConfig = {
+  id: string;
+  guestUploads: GuestUploadConfig;
+  limits: {
+    freePlanId: string;
+    paidPlanIds: string[];
+  };
+  providerStatus: ProviderStatus;
+  alerts: AlertConfig;
+  updatedAt: string;
+};
+
+export type RuntimeResourceSnapshot = {
+  collectedAt: string;
+  cpuPercent: number;
+  memoryUsedBytes: number;
+  memoryTotalBytes: number;
+  memoryPercent: number;
+  diskUsedBytes: number;
+  diskTotalBytes: number;
+  diskPercent: number;
+  objectStorageBytes: number;
+  objectStorageObjectCount: number;
+};
+
+export type OperationalMetrics = {
+  userCount: number;
+  activePastes: number;
+  activeStorageBytes: number;
+  cleanupQueueDepth: number;
+  cleanupFailureDepth: number;
+  scanQueueDepth: number;
+  scanFailureDepth: number;
+  failedJobDepth: number;
+  mailQueueDepth: number;
+  mailFailedDepth: number;
+  reportsOpen: number;
+  webhookEvents: number;
+  ordersByStatus: Record<string, number>;
+};
+
+export type AlertEvent = {
+  id: string;
+  fingerprint: string;
+  level: string;
+  message: string;
+  status: string;
+  lastError?: string;
+  sentAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RuntimePanel = {
+  config: RuntimeConfig;
+  resources: RuntimeResourceSnapshot;
+  operational: OperationalMetrics;
+  alerts: AlertEvent[];
+};
+
+export type ManualWorkItem = {
+  id: string;
+  kind: string;
+  targetId: string;
+  status: string;
+  risk?: string;
+  summary: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RedemptionCode = {
+  code?: string;
+  batchId: string;
+  redeemedBy?: string;
+  redeemedAt?: string;
+  createdAt: string;
+};
+
+export type RedemptionBatch = {
+  id: string;
+  planId: string;
+  durationDays: number;
+  quantity: number;
+  expiresAt?: string;
+  maxTotalRedemptions: number;
+  maxRedemptionsPerUser: number;
+  allowedEmails?: string[];
+  allowedDomains?: string[];
+  note?: string;
+  disabled: boolean;
+  redeemedCount: number;
+  createdAt: string;
+  updatedAt: string;
+  codes?: RedemptionCode[];
+};
+
 export type ApiError = Error & {
   status?: number;
   code?: string;
@@ -372,6 +518,11 @@ export const client = {
       method: "DELETE",
     }),
   quota: () => api<Quota>("/quota"),
+  redeemCode: (code: string) =>
+    api<User>("/redemptions/redeem", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    }),
   pastes: (params: URLSearchParams) =>
     api<{ pastes: Paste[] }>(`/pastes?${params.toString()}`),
   createPaste: (body: {
@@ -407,6 +558,33 @@ export const client = {
     const form = new FormData();
     form.append("file", file);
     return api<Attachment>(`/pastes/${pasteId}/attachments`, {
+      method: "POST",
+      body: form,
+    });
+  },
+  createGuestPaste: (body: {
+    guestToken?: string;
+    title: string;
+    text: string;
+    tags: string[];
+    expiresInSeconds: number;
+    turnstileToken?: string;
+  }) =>
+    api<{ guestToken: string; paste: Paste }>("/guest/pastes", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  uploadGuestAttachment: (
+    pasteId: string,
+    file: File,
+    guestToken: string,
+    turnstileToken = "",
+  ) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("guestToken", guestToken);
+    if (turnstileToken) form.append("turnstileToken", turnstileToken);
+    return api<Attachment>(`/guest/pastes/${pasteId}/attachments`, {
       method: "POST",
       body: form,
     });
@@ -451,6 +629,59 @@ export const client = {
   executeDelete: () =>
     api<{ status: string }>("/me/delete-now", { method: "POST" }),
   adminDashboard: () => api<Record<string, unknown>>("/admin/dashboard"),
+  adminRuntimeConfig: () => api<RuntimeConfig>("/admin/runtime-config"),
+  adminUpdateRuntimeConfig: (body: {
+    guestUploads?: Partial<GuestUploadConfig>;
+    alerts?: Partial<AlertConfig>;
+  }) =>
+    api<RuntimeConfig>("/admin/runtime-config", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  adminRuntimePanel: () => api<RuntimePanel>("/admin/runtime-panel"),
+  adminManualWorkItems: () =>
+    api<{ items: ManualWorkItem[] }>("/admin/manual-work-items"),
+  adminUpdateCatalog: (body: PlanCatalog) =>
+    api<PlanCatalog>("/admin/catalog", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  adminProviderTest: (provider: string) =>
+    api<RuntimeConfig>(`/admin/providers/${encodeURIComponent(provider)}/test`, {
+      method: "POST",
+    }),
+  adminRedemptionBatches: () =>
+    api<{ batches: RedemptionBatch[] }>("/admin/redemption-batches"),
+  adminCreateRedemptionBatch: (body: {
+    planId: string;
+    durationDays: number;
+    quantity: number;
+    expiresAt?: string;
+    maxTotalRedemptions?: number;
+    maxRedemptionsPerUser?: number;
+    allowedEmails?: string[];
+    allowedDomains?: string[];
+    note?: string;
+    disabled?: boolean;
+  }) =>
+    api<RedemptionBatch>("/admin/redemption-batches", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  adminUpdateRedemptionBatch: (
+    id: string,
+    body: { disabled: boolean; note?: string },
+  ) =>
+    api<RedemptionBatch>(`/admin/redemption-batches/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  adminAlerts: () => api<{ alerts: AlertEvent[] }>("/admin/alerts"),
+  adminSendTestAlert: (message: string) =>
+    api<AlertEvent>("/admin/alerts/test", {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    }),
   adminUsers: () => api<{ users: User[] }>("/admin/users"),
   adminPastes: () => api<{ pastes: Paste[] }>("/admin/pastes"),
   adminAttachments: (query: string) =>

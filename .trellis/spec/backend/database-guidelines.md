@@ -1086,3 +1086,89 @@ for _, paste := range s.pastesByID {
     cleanupPaste(paste)
 }
 ```
+
+## Scenario: Admin Runtime Control Persistence
+
+### 1. Scope / Trigger
+
+- Trigger: Any change that reads or writes runtime admin configuration,
+  redemption batches/codes/records, alert events, or editable catalog data.
+
+### 2. Signatures
+
+- Migration: `internal/postgres/migrations/000005_admin_runtime_controls.sql`
+- Runtime config store: `app.RuntimeConfigStore`
+- Redemption store: `app.RedemptionStore`
+- Alert event store: `app.AlertEventStore`
+- Catalog writer extension: `app.CatalogWriter`
+- Production wiring: `postgres.NewRuntimeConfigStore`,
+  `postgres.NewRedemptionStore`, `postgres.NewAlertEventStore`, and
+  `postgres.NewCatalogStore`
+
+### 3. Contracts
+
+- `system_configs(id='default')` stores non-sensitive runtime config as JSONB.
+  Provider secrets remain in `PASTEBOX_*` env vars and must only appear as
+  configured/missing status in admin responses.
+- `redemption_batches`, `redemption_codes`, and `redemption_records` are the
+  durable source for generated redemption codes and redemption audit state.
+  Plain redemption code values are returned only at generation time; persisted
+  rows store hashes.
+- `alert_events` stores alert send attempts, final status, failure text, send
+  time, fingerprint, and timestamps for cooldown/de-duplication.
+- `CatalogWriter.SaveCatalog` updates plans/prices so `/api/v1/plans`,
+  `/api/v1/billing/prices`, quota checks, and admin edits share one service
+  catalog source.
+- The application alert loop belongs to the API process. Worker processes must
+  not start their own Telegram alert loop.
+
+### 4. Validation & Error Matrix
+
+- Missing `system_configs.default` row -> service uses env-derived defaults.
+- Invalid catalog update -> `400 invalid_plan`, `invalid_plan_limits`,
+  `invalid_price`, or related validation code.
+- Invalid redemption code -> `404 redemption_code_invalid`.
+- Used code -> `409 redemption_code_used`.
+- Disabled/expired batch -> `403 redemption_batch_disabled` or
+  `410 redemption_batch_expired`.
+- Telegram send failure -> alert event status `failed`; business requests must
+  not be blocked by the alert loop.
+
+### 5. Good/Base/Bad Cases
+
+- Good: Admin updates catalog, runtime config, provider test, redemption batch,
+  or alert test through service methods; each mutation persists when a store is
+  configured and writes an audit log.
+- Base: In-memory stores keep local tests lightweight while PostgreSQL stores
+  are wired in production.
+- Bad: Put SMTP, Google, Turnstile, Telegram, or S3 secrets into
+  `system_configs`, audit metadata, frontend state, logs, or metrics.
+
+### 6. Tests Required
+
+- App tests cover guest upload gates, Turnstile verification, redemption edge
+  cases, alert cooldown/send/failure, failed-mail manual work items, and audit
+  actions for admin mutations.
+- HTTP tests cover non-admin `403 admin_required`, admin runtime/catalog/API
+  contracts, guest create/upload, redemption, manual work items, runtime panel,
+  provider tests, alert test, and alert history.
+- PostgreSQL tests with `PASTEBOX_TEST_DATABASE_URL` assert runtime config,
+  redemption, and alert event rows round-trip through the store APIs.
+- Run `make test-web` and full `make test` after cross-layer admin contract
+  changes.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+// Handler bypasses the service and stores a secret in JSONB.
+saveSystemConfig(map[string]string{"telegramBotToken": token})
+```
+
+#### Correct
+
+```go
+cfg, err := service.AdminUpdateRuntimeConfig(adminID, patch)
+// cfg.ProviderStatus.Telegram reports env-backed configured/missing state only.
+```

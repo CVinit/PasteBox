@@ -1,0 +1,21 @@
+{
+  "ok": false,
+  "url": "https://core.telegram.org/bots/api#sendmessage",
+  "provider": "",
+  "content": "",
+  "error_type": "network_error",
+  "error": "所有提取服务均未能获取内容",
+  "provider_attempts": [
+    {
+      "capability": "web_fetch",
+      "provider": "tavily",
+      "status": "empty",
+      "error_type": "",
+      "error": "",
+      "elapsed_ms": 16187.1,
+      "result_count": 0
+    }
+  ],
+  "fallback_used": false,
+  "elapsed_ms": 16187.66
+}

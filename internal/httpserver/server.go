@@ -160,6 +160,11 @@ func (s *Server) routes() http.Handler {
 		r.Get("/plans", s.planCatalog)
 		r.Get("/support/contacts", s.supportContacts)
 
+		r.Route("/guest", func(r chi.Router) {
+			r.Post("/pastes", s.createGuestPaste)
+			r.Post("/pastes/{pasteID}/attachments", s.uploadGuestAttachment)
+		})
+
 		r.Route("/auth", func(r chi.Router) {
 			r.Post("/register", s.register)
 			r.Post("/login", s.login)
@@ -185,6 +190,7 @@ func (s *Server) routes() http.Handler {
 		r.Get("/me/export", s.exportMe)
 
 		r.Get("/quota", s.quota)
+		r.Post("/redemptions/redeem", s.redeemCode)
 
 		r.Route("/pastes", func(r chi.Router) {
 			r.Get("/", s.listPastes)
@@ -217,6 +223,17 @@ func (s *Server) routes() http.Handler {
 
 		r.Route("/admin", func(r chi.Router) {
 			r.Get("/dashboard", s.adminDashboard)
+			r.Get("/runtime-config", s.adminRuntimeConfig)
+			r.Patch("/runtime-config", s.adminUpdateRuntimeConfig)
+			r.Get("/runtime-panel", s.adminRuntimePanel)
+			r.Get("/manual-work-items", s.adminManualWorkItems)
+			r.Patch("/catalog", s.adminUpdateCatalog)
+			r.Post("/providers/{provider}/test", s.adminProviderTest)
+			r.Get("/redemption-batches", s.adminRedemptionBatches)
+			r.Post("/redemption-batches", s.adminCreateRedemptionBatch)
+			r.Patch("/redemption-batches/{batchID}", s.adminUpdateRedemptionBatch)
+			r.Get("/alerts", s.adminAlertEvents)
+			r.Post("/alerts/test", s.adminSendTestAlert)
 			r.Get("/users", s.adminUsers)
 			r.Patch("/users/{userID}/plan", s.adminSetUserPlan)
 			r.Patch("/users/{userID}/freeze", s.adminFreezeUser)
@@ -824,6 +841,24 @@ func (s *Server) quota(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, quota)
 }
 
+func (s *Server) redeemCode(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Code string `json:"code"`
+	}
+	if !s.decode(w, r, &req) {
+		return
+	}
+	updated, err := s.app.RedeemCode(user.ID, req.Code)
+	if s.handleErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
 func (s *Server) listPastes(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireUser(w, r)
 	if !ok {
@@ -861,6 +896,33 @@ func (s *Server) createPaste(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, paste)
+}
+
+func (s *Server) createGuestPaste(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		GuestToken       string   `json:"guestToken"`
+		Title            string   `json:"title"`
+		Text             string   `json:"text"`
+		Tags             []string `json:"tags"`
+		ExpiresInSeconds int64    `json:"expiresInSeconds"`
+		TurnstileToken   string   `json:"turnstileToken"`
+	}
+	if !s.decode(w, r, &req) {
+		return
+	}
+	token, paste, err := s.app.CreateGuestPaste(app.GuestCreatePasteInput{
+		Token:            firstNonEmpty(req.GuestToken, guestTokenFromRequest(r)),
+		Title:            req.Title,
+		Text:             req.Text,
+		Tags:             req.Tags,
+		ExpiresInSeconds: req.ExpiresInSeconds,
+		TurnstileToken:   req.TurnstileToken,
+		RemoteIP:         clientIP(r),
+	})
+	if s.handleErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"guestToken": token, "paste": paste})
 }
 
 func (s *Server) getPaste(w http.ResponseWriter, r *http.Request) {
@@ -948,6 +1010,37 @@ func (s *Server) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	attachment, err := s.app.AddAttachment(user.ID, chi.URLParam(r, "pasteID"), header.Filename, contentType(header), content)
+	if s.handleErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusCreated, attachment)
+}
+
+func (s *Server) uploadGuestAttachment(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(64 << 20); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_multipart", "message": "invalid multipart form"})
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_file", "message": "file is required"})
+		return
+	}
+	defer file.Close()
+	content, err := io.ReadAll(io.LimitReader(file, 5<<30))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "read_failed", "message": "failed to read file"})
+		return
+	}
+	attachment, err := s.app.AddGuestAttachment(
+		firstNonEmpty(r.FormValue("guestToken"), guestTokenFromRequest(r)),
+		chi.URLParam(r, "pasteID"),
+		header.Filename,
+		contentType(header),
+		content,
+		r.FormValue("turnstileToken"),
+		clientIP(r),
+	)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1130,6 +1223,185 @@ func (s *Server) adminDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *Server) adminRuntimeConfig(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	cfg, err := s.app.AdminRuntimeConfig(user.ID)
+	if s.handleErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, cfg)
+}
+
+func (s *Server) adminUpdateRuntimeConfig(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	var req app.RuntimeConfigPatch
+	if !s.decode(w, r, &req) {
+		return
+	}
+	cfg, err := s.app.AdminUpdateRuntimeConfig(user.ID, req)
+	if s.handleErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, cfg)
+}
+
+func (s *Server) adminRuntimePanel(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	panel, err := s.app.AdminRuntimePanel(user.ID)
+	if s.handleErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, panel)
+}
+
+func (s *Server) adminManualWorkItems(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.app.AdminManualWorkItems(user.ID)
+	if s.handleErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) adminUpdateCatalog(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	var req app.AdminPlanUpdate
+	if !s.decode(w, r, &req) {
+		return
+	}
+	catalog, err := s.app.AdminUpdateCatalog(user.ID, req)
+	if s.handleErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, catalog)
+}
+
+func (s *Server) adminProviderTest(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	cfg, err := s.app.AdminProviderTest(user.ID, chi.URLParam(r, "provider"))
+	if s.handleErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, cfg)
+}
+
+func (s *Server) adminRedemptionBatches(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	batches, err := s.app.AdminListRedemptionBatches(user.ID)
+	if s.handleErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"batches": batches})
+}
+
+func (s *Server) adminCreateRedemptionBatch(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		PlanID                string     `json:"planId"`
+		DurationDays          int        `json:"durationDays"`
+		Quantity              int        `json:"quantity"`
+		ExpiresAt             *time.Time `json:"expiresAt"`
+		MaxTotalRedemptions   int        `json:"maxTotalRedemptions"`
+		MaxRedemptionsPerUser int        `json:"maxRedemptionsPerUser"`
+		AllowedEmails         []string   `json:"allowedEmails"`
+		AllowedDomains        []string   `json:"allowedDomains"`
+		Note                  string     `json:"note"`
+		Disabled              bool       `json:"disabled"`
+	}
+	if !s.decode(w, r, &req) {
+		return
+	}
+	batch, err := s.app.AdminCreateRedemptionBatch(user.ID, app.RedemptionBatchInput{
+		PlanID:                req.PlanID,
+		DurationDays:          req.DurationDays,
+		Quantity:              req.Quantity,
+		ExpiresAt:             req.ExpiresAt,
+		MaxTotalRedemptions:   req.MaxTotalRedemptions,
+		MaxRedemptionsPerUser: req.MaxRedemptionsPerUser,
+		AllowedEmails:         req.AllowedEmails,
+		AllowedDomains:        req.AllowedDomains,
+		Note:                  req.Note,
+		Disabled:              req.Disabled,
+	})
+	if s.handleErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusCreated, batch)
+}
+
+func (s *Server) adminUpdateRedemptionBatch(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Disabled bool   `json:"disabled"`
+		Note     string `json:"note"`
+	}
+	if !s.decode(w, r, &req) {
+		return
+	}
+	batch, err := s.app.AdminUpdateRedemptionBatch(user.ID, chi.URLParam(r, "batchID"), req.Disabled, req.Note)
+	if s.handleErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, batch)
+}
+
+func (s *Server) adminAlertEvents(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	events, err := s.app.AdminAlertEvents(user.ID)
+	if s.handleErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"alerts": events})
+}
+
+func (s *Server) adminSendTestAlert(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Message string `json:"message"`
+	}
+	if !s.decode(w, r, &req) {
+		return
+	}
+	event, err := s.app.AdminSendTestAlert(user.ID, req.Message)
+	if s.handleErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, event)
 }
 
 func (s *Server) adminUsers(w http.ResponseWriter, r *http.Request) {
@@ -1569,6 +1841,8 @@ func (s *Server) rateLimitRule(r *http.Request) (rateLimitRule, bool) {
 		return rateLimitRule{Category: "download", Limit: cfg.DownloadLimit, Window: window}, cfg.DownloadLimit > 0
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "/api/v1/pastes/") && strings.HasSuffix(path, "/attachments"):
 		return rateLimitRule{Category: "upload", Limit: cfg.UploadLimit, Window: window}, cfg.UploadLimit > 0
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/api/v1/guest/pastes/") && strings.HasSuffix(path, "/attachments"):
+		return rateLimitRule{Category: "upload", Limit: cfg.UploadLimit, Window: window}, cfg.UploadLimit > 0
 	case requiresCSRF(r):
 		return rateLimitRule{Category: "write", Limit: cfg.WriteLimit, Window: window}, cfg.WriteLimit > 0
 	default:
@@ -1979,6 +2253,13 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func guestTokenFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.Header.Get("X-PasteBox-Guest-Token"))
 }
 
 func stringFromObject(object map[string]any, key string) string {

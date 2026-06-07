@@ -28,6 +28,8 @@ type Config struct {
 	S3          S3Config
 	Scanner     ScannerConfig
 	GoogleOAuth GoogleOAuthConfig
+	Turnstile   TurnstileConfig
+	Telegram    TelegramConfig
 
 	MailerProvider string
 	SMTP           SMTPConfig
@@ -64,6 +66,18 @@ type GoogleOAuthConfig struct {
 	ClientID     string
 	ClientSecret string
 	RedirectURL  string
+}
+
+type TurnstileConfig struct {
+	SiteKey   string
+	SecretKey string
+	VerifyURL string
+}
+
+type TelegramConfig struct {
+	BotToken   string
+	ChatID     string
+	APIBaseURL string
 }
 
 type SMTPConfig struct {
@@ -146,6 +160,16 @@ func FromEnv() Config {
 			ClientID:     envString("PASTEBOX_GOOGLE_OAUTH_CLIENT_ID", ""),
 			ClientSecret: envString("PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET", ""),
 			RedirectURL:  envString("PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL", strings.TrimRight(publicURL, "/")+"/api/v1/auth/google/callback"),
+		},
+		Turnstile: TurnstileConfig{
+			SiteKey:   envString("PASTEBOX_TURNSTILE_SITE_KEY", ""),
+			SecretKey: envString("PASTEBOX_TURNSTILE_SECRET_KEY", ""),
+			VerifyURL: envString("PASTEBOX_TURNSTILE_VERIFY_URL", "https://challenges.cloudflare.com/turnstile/v0/siteverify"),
+		},
+		Telegram: TelegramConfig{
+			BotToken:   envString("PASTEBOX_TELEGRAM_BOT_TOKEN", ""),
+			ChatID:     envString("PASTEBOX_TELEGRAM_CHAT_ID", ""),
+			APIBaseURL: envString("PASTEBOX_TELEGRAM_API_BASE_URL", "https://api.telegram.org"),
 		},
 
 		MailerProvider: envString("PASTEBOX_MAILER_PROVIDER", "log"),

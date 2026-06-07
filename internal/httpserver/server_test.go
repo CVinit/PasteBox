@@ -981,6 +981,162 @@ func TestAdminHTTPContractsWriteAuditLogs(t *testing.T) {
 	}
 }
 
+func TestAdminRuntimeGuestRedemptionAndAlertHTTPContracts(t *testing.T) {
+	cfg := config.FromEnv()
+	cfg.BootstrapAdminEmail = ""
+	cfg.BootstrapAdminPassword = ""
+	cfg.DevAuthTokens = true
+	service := app.New(cfg)
+	alertSender := &fakeHTTPAlertSender{}
+	service.SetAlertSender(alertSender)
+	if _, err := service.SeedAdmin("runtime-admin@example.com", "password123"); err != nil {
+		t.Fatalf("seed admin: %v", err)
+	}
+	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), service)
+
+	user := newHTTPTestClient(t, handler)
+	register := user.json(http.MethodPost, "/api/v1/auth/register", `{"email":"runtime-user@example.com","password":"password123","displayName":"Runtime User"}`)
+	assertStatus(t, register, http.StatusCreated)
+	nonAdminRuntime := user.json(http.MethodGet, "/api/v1/admin/runtime-panel", "")
+	assertStatus(t, nonAdminRuntime, http.StatusForbidden)
+	var nonAdminErr map[string]string
+	decodeResponse(t, nonAdminRuntime, &nonAdminErr)
+	if nonAdminErr["error"] != "admin_required" {
+		t.Fatalf("expected admin_required, got %#v", nonAdminErr)
+	}
+
+	admin := newHTTPTestClient(t, handler)
+	login := admin.json(http.MethodPost, "/api/v1/auth/login", `{"email":"runtime-admin@example.com","password":"password123"}`)
+	assertStatus(t, login, http.StatusOK)
+
+	updateRuntime := admin.json(http.MethodPatch, "/api/v1/admin/runtime-config", `{"guestUploads":{"enabled":true,"requireTurnstile":false},"alerts":{"enabled":true,"telegramEnabled":true,"cooldownSeconds":60,"cpuPercentThreshold":90,"memoryPercentThreshold":90,"diskPercentThreshold":90,"scanFailureDepthThreshold":10,"failedJobDepthThreshold":10,"mailFailedDepthThreshold":10,"reportsOpenThreshold":10}}`)
+	assertStatus(t, updateRuntime, http.StatusOK)
+	var runtimeCfg app.RuntimeConfig
+	decodeResponse(t, updateRuntime, &runtimeCfg)
+	if !runtimeCfg.GuestUploads.Enabled || runtimeCfg.GuestUploads.RequireTurnstile {
+		t.Fatalf("expected guest uploads enabled without turnstile, got %#v", runtimeCfg.GuestUploads)
+	}
+
+	catalog := service.PlanCatalog()
+	if len(catalog.Plans) == 0 {
+		t.Fatal("expected plan catalog")
+	}
+	catalog.Plans[0].ActivePasteLimit = 7
+	catalogBody, err := json.Marshal(catalog)
+	if err != nil {
+		t.Fatalf("marshal catalog: %v", err)
+	}
+	updateCatalog := admin.json(http.MethodPatch, "/api/v1/admin/catalog", string(catalogBody))
+	assertStatus(t, updateCatalog, http.StatusOK)
+	publicPlans := admin.json(http.MethodGet, "/api/v1/plans", "")
+	assertStatus(t, publicPlans, http.StatusOK)
+	var publicCatalog struct {
+		Plans []struct {
+			ID               string `json:"id"`
+			ActivePasteLimit int    `json:"activePasteLimit"`
+		} `json:"plans"`
+	}
+	decodeResponse(t, publicPlans, &publicCatalog)
+	if len(publicCatalog.Plans) == 0 || publicCatalog.Plans[0].ActivePasteLimit != 7 {
+		t.Fatalf("expected public plans to use updated catalog, got %#v", publicCatalog.Plans)
+	}
+
+	createBatch := admin.json(http.MethodPost, "/api/v1/admin/redemption-batches", `{"planId":"plus","durationDays":30,"quantity":1,"note":"HTTP contract"}`)
+	assertStatus(t, createBatch, http.StatusCreated)
+	var batch app.RedemptionBatchView
+	decodeResponse(t, createBatch, &batch)
+	if len(batch.Codes) != 1 || batch.Codes[0].Code == "" {
+		t.Fatalf("expected generated redemption code, got %#v", batch)
+	}
+	redeem := user.json(http.MethodPost, "/api/v1/redemptions/redeem", `{"code":"`+batch.Codes[0].Code+`"}`)
+	assertStatus(t, redeem, http.StatusOK)
+	var redeemed app.UserView
+	decodeResponse(t, redeem, &redeemed)
+	if redeemed.PlanID != "plus" {
+		t.Fatalf("expected redeemed plus plan, got %#v", redeemed)
+	}
+
+	guest := newHTTPTestClient(t, handler)
+	guestPaste := guest.json(http.MethodPost, "/api/v1/guest/pastes", `{"title":"Guest","text":"hello","tags":[],"expiresInSeconds":600}`)
+	assertStatus(t, guestPaste, http.StatusCreated)
+	var guestBody struct {
+		GuestToken string        `json:"guestToken"`
+		Paste      app.PasteView `json:"paste"`
+	}
+	decodeResponse(t, guestPaste, &guestBody)
+	if guestBody.GuestToken == "" || guestBody.Paste.ID == "" {
+		t.Fatalf("expected guest token and paste, got %#v", guestBody)
+	}
+	guestUpload := guest.multipartWithFields("/api/v1/guest/pastes/"+guestBody.Paste.ID+"/attachments", "file", "guest.txt", []byte("guest file"), map[string]string{"guestToken": guestBody.GuestToken})
+	assertStatus(t, guestUpload, http.StatusCreated)
+	var guestAttachment app.AttachmentView
+	decodeResponse(t, guestUpload, &guestAttachment)
+	if guestAttachment.PasteID != guestBody.Paste.ID {
+		t.Fatalf("expected guest attachment on paste, got %#v", guestAttachment)
+	}
+
+	freeze := admin.json(http.MethodPatch, "/api/v1/admin/attachments/"+guestAttachment.ID+"/freeze", `{"frozen":true}`)
+	assertStatus(t, freeze, http.StatusOK)
+	workItems := admin.json(http.MethodGet, "/api/v1/admin/manual-work-items", "")
+	assertStatus(t, workItems, http.StatusOK)
+	var workBody struct {
+		Items []app.ManualWorkItem `json:"items"`
+	}
+	decodeResponse(t, workItems, &workBody)
+	if len(workBody.Items) == 0 {
+		t.Fatalf("expected frozen attachment in manual work items, got %#v", workBody)
+	}
+
+	panel := admin.json(http.MethodGet, "/api/v1/admin/runtime-panel", "")
+	assertStatus(t, panel, http.StatusOK)
+	var panelBody app.RuntimePanel
+	decodeResponse(t, panel, &panelBody)
+	if panelBody.Resources.CollectedAt.IsZero() || !panelBody.Config.GuestUploads.Enabled {
+		t.Fatalf("unexpected runtime panel body: %#v", panelBody)
+	}
+
+	provider := admin.json(http.MethodPost, "/api/v1/admin/providers/telegram/test", "")
+	assertStatus(t, provider, http.StatusOK)
+	var providerCfg app.RuntimeConfig
+	decodeResponse(t, provider, &providerCfg)
+	if providerCfg.ProviderStatus.Telegram.LastTestStatus != "missing_telegram_config" {
+		t.Fatalf("expected missing telegram status, got %#v", providerCfg.ProviderStatus.Telegram)
+	}
+	alert := admin.json(http.MethodPost, "/api/v1/admin/alerts/test", `{"message":"HTTP alert"}`)
+	assertStatus(t, alert, http.StatusOK)
+	var alertEvent app.AlertEvent
+	decodeResponse(t, alert, &alertEvent)
+	if alertEvent.Status != "sent" || alertSender.calls != 1 {
+		t.Fatalf("expected sent alert event, got event=%#v calls=%d", alertEvent, alertSender.calls)
+	}
+	alerts := admin.json(http.MethodGet, "/api/v1/admin/alerts", "")
+	assertStatus(t, alerts, http.StatusOK)
+	var alertsBody struct {
+		Alerts []app.AlertEvent `json:"alerts"`
+	}
+	decodeResponse(t, alerts, &alertsBody)
+	if len(alertsBody.Alerts) == 0 {
+		t.Fatalf("expected alert history, got %#v", alertsBody)
+	}
+	auditLogs := admin.json(http.MethodGet, "/api/v1/admin/audit-logs", "")
+	assertStatus(t, auditLogs, http.StatusOK)
+	var auditBody struct {
+		AuditLogs []app.AuditLog `json:"auditLogs"`
+	}
+	decodeResponse(t, auditLogs, &auditBody)
+	for _, action := range []string{
+		"admin.runtime_config_update",
+		"admin.catalog_update",
+		"admin.redemption_batch_create",
+		"admin.provider_test",
+		"admin.alert_test",
+	} {
+		if !containsAuditAction(auditBody.AuditLogs, action) {
+			t.Fatalf("expected audit action %s, got %#v", action, auditBody.AuditLogs)
+		}
+	}
+}
+
 func TestOAuthWebhookReplayAndReportHTTPContracts(t *testing.T) {
 	cfg := config.FromEnv()
 	cfg.BootstrapAdminEmail = ""
@@ -1222,6 +1378,15 @@ type httpTestClient struct {
 	csrfToken string
 }
 
+type fakeHTTPAlertSender struct {
+	calls int
+}
+
+func (s *fakeHTTPAlertSender) SendAlert(_ context.Context, _ string, _ bool) error {
+	s.calls++
+	return nil
+}
+
 func newHTTPTestClient(t *testing.T, handler http.Handler) *httpTestClient {
 	t.Helper()
 	return &httpTestClient{t: t, handler: handler, cookies: map[string]*http.Cookie{}}
@@ -1266,8 +1431,18 @@ func (c *httpTestClient) json(method string, path string, body string) *httptest
 
 func (c *httpTestClient) multipart(path string, fieldName string, fileName string, content []byte) *httptest.ResponseRecorder {
 	c.t.Helper()
+	return c.multipartWithFields(path, fieldName, fileName, content, nil)
+}
+
+func (c *httpTestClient) multipartWithFields(path string, fieldName string, fileName string, content []byte, fields map[string]string) *httptest.ResponseRecorder {
+	c.t.Helper()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
+	for key, value := range fields {
+		if err := writer.WriteField(key, value); err != nil {
+			c.t.Fatalf("write multipart field %s: %v", key, err)
+		}
+	}
 	part, err := writer.CreateFormFile(fieldName, fileName)
 	if err != nil {
 		c.t.Fatalf("create multipart field: %v", err)

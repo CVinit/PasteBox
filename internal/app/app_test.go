@@ -3,11 +3,13 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"image"
 	"image/color"
 	"image/png"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -1709,6 +1711,225 @@ func TestAccountDeletionRevokesSharesAndSessions(t *testing.T) {
 	assertAuditAction(t, logs, "account.deleted")
 }
 
+func TestGuestUploadsRespectRuntimeConfigAndTurnstile(t *testing.T) {
+	now := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	admin := seedAdminTestUser(t, svc, "guest-admin@example.com")
+	verifier := &fakeTurnstileVerifier{}
+	svc.SetTurnstileVerifier(verifier)
+
+	if _, _, err := svc.CreateGuestPaste(GuestCreatePasteInput{Title: "closed", Text: "x", TurnstileToken: "closed-token"}); !hasAppCode(err, "guest_uploads_disabled") {
+		t.Fatalf("expected guest uploads disabled, got %v", err)
+	}
+
+	if _, err := svc.AdminUpdateRuntimeConfig(admin.ID, RuntimeConfigPatch{GuestUploads: &GuestUploadConfig{Enabled: true, RequireTurnstile: true}}); err != nil {
+		t.Fatalf("enable guest uploads: %v", err)
+	}
+	token, paste, err := svc.CreateGuestPaste(GuestCreatePasteInput{Title: "guest", Text: "hello", TurnstileToken: "turn-text", RemoteIP: "127.0.0.1"})
+	if err != nil {
+		t.Fatalf("create guest paste: %v", err)
+	}
+	if token == "" || paste.ID == "" {
+		t.Fatalf("expected guest token and paste, got token=%q paste=%#v", token, paste)
+	}
+	if _, _, err := svc.CreateGuestPaste(GuestCreatePasteInput{Token: token, Title: "dup", Text: "x", TurnstileToken: "turn-text"}); !hasAppCode(err, "turnstile_timeout_or_duplicate") {
+		t.Fatalf("expected duplicate turnstile rejection, got %v", err)
+	}
+	attachment, err := svc.AddGuestAttachment(token, paste.ID, "guest.txt", "text/plain", []byte("file"), "turn-file", "127.0.0.1")
+	if err != nil {
+		t.Fatalf("add guest attachment: %v", err)
+	}
+	if attachment.PasteID != paste.ID || verifier.calls != 2 {
+		t.Fatalf("unexpected guest attachment or verifier calls: attachment=%#v calls=%d", attachment, verifier.calls)
+	}
+}
+
+func TestTurnstileVerifierSiteverifyResponses(t *testing.T) {
+	successServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode siteverify payload: %v", err)
+		}
+		if payload["secret"] != "secret" || payload["response"] != "token-ok" || payload["remoteip"] != "127.0.0.1" {
+			t.Fatalf("unexpected siteverify payload: %#v", payload)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
+	}))
+	defer successServer.Close()
+
+	cfg := config.FromEnv()
+	cfg.Turnstile.SecretKey = "secret"
+	cfg.Turnstile.VerifyURL = successServer.URL
+	if err := NewTurnstileVerifier(cfg).Verify(context.Background(), "token-ok", "127.0.0.1"); err != nil {
+		t.Fatalf("expected successful turnstile verification, got %v", err)
+	}
+
+	failedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error-codes": []string{"bad-input-response"}})
+	}))
+	defer failedServer.Close()
+	cfg.Turnstile.VerifyURL = failedServer.URL
+	if err := NewTurnstileVerifier(cfg).Verify(context.Background(), "token-bad", ""); !hasAppCode(err, "turnstile_failed") {
+		t.Fatalf("expected turnstile_failed, got %v", err)
+	}
+
+	duplicateServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error-codes": []string{"timeout-or-duplicate"}})
+	}))
+	defer duplicateServer.Close()
+	cfg.Turnstile.VerifyURL = duplicateServer.URL
+	if err := NewTurnstileVerifier(cfg).Verify(context.Background(), "token-duplicate", ""); !hasAppCode(err, "turnstile_timeout_or_duplicate") {
+		t.Fatalf("expected turnstile_timeout_or_duplicate, got %v", err)
+	}
+
+	timeoutServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
+	}))
+	defer timeoutServer.Close()
+	timeoutVerifier := &turnstileVerifier{
+		cfg:    config.TurnstileConfig{SecretKey: "secret", VerifyURL: timeoutServer.URL},
+		client: &http.Client{Timeout: time.Millisecond},
+	}
+	if err := timeoutVerifier.Verify(context.Background(), "token-timeout", ""); !hasAppCode(err, "turnstile_timeout") {
+		t.Fatalf("expected turnstile_timeout, got %v", err)
+	}
+}
+
+func TestRedemptionCodesValidateBatchRulesAndUserLimits(t *testing.T) {
+	now := time.Date(2026, 6, 7, 11, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	admin := seedAdminTestUser(t, svc, "redemption-admin@example.com")
+	alice := registerTestUser(t, svc, "alice@example.com")
+	bob := registerTestUser(t, svc, "bob@example.org")
+
+	if _, err := svc.RedeemCode(alice.User.ID, "missing"); !hasAppCode(err, "redemption_code_invalid") {
+		t.Fatalf("expected invalid redemption code, got %v", err)
+	}
+
+	batch, err := svc.AdminCreateRedemptionBatch(admin.ID, RedemptionBatchInput{
+		PlanID:                "plus",
+		DurationDays:          30,
+		Quantity:              2,
+		MaxRedemptionsPerUser: 1,
+		AllowedDomains:        []string{"example.com"},
+	})
+	if err != nil {
+		t.Fatalf("create redemption batch: %v", err)
+	}
+	if len(batch.Codes) != 2 || batch.Codes[0].Code == "" {
+		t.Fatalf("expected generated redemption codes, got %#v", batch.Codes)
+	}
+	updated, err := svc.RedeemCode(alice.User.ID, batch.Codes[0].Code)
+	if err != nil {
+		t.Fatalf("redeem code: %v", err)
+	}
+	if updated.PlanID != "plus" || updated.PlanExpiresAt == nil {
+		t.Fatalf("expected plus plan with expiry, got %#v", updated)
+	}
+	if _, err := svc.RedeemCode(alice.User.ID, batch.Codes[1].Code); !hasAppCode(err, "redemption_user_limit") {
+		t.Fatalf("expected user redemption limit, got %v", err)
+	}
+	if _, err := svc.RedeemCode(bob.User.ID, batch.Codes[1].Code); !hasAppCode(err, "redemption_domain_not_allowed") {
+		t.Fatalf("expected domain restriction, got %v", err)
+	}
+	if _, err := svc.RedeemCode(bob.User.ID, batch.Codes[0].Code); !hasAppCode(err, "redemption_code_used") {
+		t.Fatalf("expected used code rejection, got %v", err)
+	}
+
+	disabled, err := svc.AdminCreateRedemptionBatch(admin.ID, RedemptionBatchInput{PlanID: "plus", DurationDays: 1, Quantity: 1, Disabled: true})
+	if err != nil {
+		t.Fatalf("create disabled redemption batch: %v", err)
+	}
+	if _, err := svc.RedeemCode(alice.User.ID, disabled.Codes[0].Code); !hasAppCode(err, "redemption_batch_disabled") {
+		t.Fatalf("expected disabled batch rejection, got %v", err)
+	}
+	expiredAt := now.Add(-time.Hour)
+	expired, err := svc.AdminCreateRedemptionBatch(admin.ID, RedemptionBatchInput{PlanID: "plus", DurationDays: 1, Quantity: 1, ExpiresAt: &expiredAt})
+	if err != nil {
+		t.Fatalf("create expired redemption batch: %v", err)
+	}
+	if _, err := svc.RedeemCode(alice.User.ID, expired.Codes[0].Code); !hasAppCode(err, "redemption_batch_expired") {
+		t.Fatalf("expected expired batch rejection, got %v", err)
+	}
+}
+
+func TestRuntimeAlertsSendRecordFailuresAndRespectCooldown(t *testing.T) {
+	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	admin := seedAdminTestUser(t, svc, "alert-admin@example.com")
+	sender := &fakeAlertSender{}
+	svc.SetAlertSender(sender)
+	svc.SetRuntimeResourceSnapshot(func() RuntimeResourceSnapshot {
+		return RuntimeResourceSnapshot{CollectedAt: now, CPUPercent: 95, MemoryPercent: 10, DiskPercent: 10}
+	})
+	if _, err := svc.AdminUpdateRuntimeConfig(admin.ID, RuntimeConfigPatch{Alerts: &AlertConfig{
+		Enabled:                   true,
+		TelegramEnabled:           true,
+		CooldownSeconds:           3600,
+		CPUPercentThreshold:       90,
+		MemoryPercentThreshold:    90,
+		DiskPercentThreshold:      90,
+		ScanFailureDepthThreshold: 10,
+		FailedJobDepthThreshold:   10,
+		MailFailedDepthThreshold:  10,
+		ReportsOpenThreshold:      10,
+	}}); err != nil {
+		t.Fatalf("configure alerts: %v", err)
+	}
+	events, err := svc.EvaluateRuntimeAlerts(context.Background())
+	if err != nil {
+		t.Fatalf("evaluate runtime alerts: %v", err)
+	}
+	if len(events) != 1 || events[0].Status != "sent" || sender.calls != 1 {
+		t.Fatalf("expected one sent alert, got events=%#v calls=%d", events, sender.calls)
+	}
+	events, err = svc.EvaluateRuntimeAlerts(context.Background())
+	if err != nil {
+		t.Fatalf("evaluate cooldown runtime alerts: %v", err)
+	}
+	if len(events) != 0 || sender.calls != 1 {
+		t.Fatalf("expected cooldown to suppress duplicate alert, got events=%#v calls=%d", events, sender.calls)
+	}
+
+	now = now.Add(2 * time.Hour)
+	sender.err = errors.New("telegram down")
+	events, err = svc.EvaluateRuntimeAlerts(context.Background())
+	if err != nil {
+		t.Fatalf("evaluate failed runtime alert: %v", err)
+	}
+	if len(events) != 1 || events[0].Status != "failed" || !strings.Contains(events[0].LastError, "telegram down") {
+		t.Fatalf("expected failed alert event, got %#v", events)
+	}
+}
+
+func TestAdminManualWorkItemsIncludeFailedMails(t *testing.T) {
+	now := time.Date(2026, 6, 7, 13, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	admin := seedAdminTestUser(t, svc, "manual-mail-admin@example.com")
+	svc.ops.Mails = manualWorkMailStore{failed: []MailQueueItem{{
+		ID:        "mail_failed_1",
+		To:        "user@example.com",
+		Subject:   "Verify your PasteBox email",
+		Status:    "failed",
+		Attempts:  3,
+		LastError: "smtp unavailable",
+		RunAfter:  now.Add(10 * time.Minute),
+		CreatedAt: now,
+	}}}
+
+	items, err := svc.AdminManualWorkItems(admin.ID)
+	if err != nil {
+		t.Fatalf("manual work items: %v", err)
+	}
+	for _, item := range items {
+		if item.Kind == "failed_mail" && item.ID == "mail_failed_1" && item.Risk == "smtp unavailable" {
+			return
+		}
+	}
+	t.Fatalf("expected failed mail manual work item, got %#v", items)
+}
+
 func newTestService(t *testing.T, now *time.Time) *Service {
 	t.Helper()
 	cfg := config.FromEnv()
@@ -1754,6 +1975,57 @@ func newTestServiceWithStorage(t *testing.T, now *time.Time, stores Stores) *Ser
 	}
 	svc.now = func() time.Time { return *now }
 	return svc
+}
+
+type fakeTurnstileVerifier struct {
+	calls int
+	err   error
+}
+
+func (v *fakeTurnstileVerifier) Verify(_ context.Context, token string, _ string) error {
+	v.calls++
+	if v.err != nil {
+		return v.err
+	}
+	if strings.TrimSpace(token) == "" {
+		return E(http.StatusForbidden, "turnstile_required", "Turnstile token is required")
+	}
+	return nil
+}
+
+type fakeAlertSender struct {
+	calls    int
+	messages []string
+	err      error
+}
+
+func (s *fakeAlertSender) SendAlert(_ context.Context, message string, _ bool) error {
+	s.calls++
+	s.messages = append(s.messages, message)
+	return s.err
+}
+
+type manualWorkMailStore struct {
+	failed []MailQueueItem
+}
+
+func (s manualWorkMailStore) QueueMail(_ context.Context, _ Mail) error {
+	return nil
+}
+
+func (s manualWorkMailStore) QueuedMails(_ context.Context, _ int) ([]Mail, error) {
+	return []Mail{}, nil
+}
+
+func (s manualWorkMailStore) MailQueueItems(_ context.Context, status string, limit int) ([]MailQueueItem, error) {
+	if strings.ToLower(strings.TrimSpace(status)) != "failed" {
+		return []MailQueueItem{}, nil
+	}
+	out := append([]MailQueueItem(nil), s.failed...)
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 type memoryCatalogStore struct {

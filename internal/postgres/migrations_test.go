@@ -125,3 +125,31 @@ func TestLoadMigrationsIncludesWorkerHeartbeats(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadMigrationsIncludesAdminRuntimeControls(t *testing.T) {
+	migrations, err := LoadMigrations()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	var migration Migration
+	for _, item := range migrations {
+		if item.Version == 5 {
+			migration = item
+			break
+		}
+	}
+	if migration.Name != "admin_runtime_controls" || migration.Filename != "000005_admin_runtime_controls.sql" {
+		t.Fatalf("expected admin runtime controls migration, got %#v", migration)
+	}
+	for _, expected := range []string{
+		"CREATE TABLE IF NOT EXISTS system_configs",
+		"CREATE TABLE IF NOT EXISTS redemption_batches",
+		"CREATE TABLE IF NOT EXISTS redemption_codes",
+		"CREATE TABLE IF NOT EXISTS redemption_records",
+		"CREATE TABLE IF NOT EXISTS alert_events",
+	} {
+		if !strings.Contains(migration.SQL, expected) {
+			t.Fatalf("expected admin runtime controls migration to contain %q", expected)
+		}
+	}
+}
