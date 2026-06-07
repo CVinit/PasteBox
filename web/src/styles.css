@@ -3328,8 +3328,8 @@ button:disabled,
 
 .workspace-footer {
   width: 100%;
-  margin-top: 32px;
-  padding-top: 18px;
+  margin-top: auto;
+  padding-top: 10px;
   border-top: 1px solid var(--line);
   background: transparent;
 }
@@ -3338,14 +3338,14 @@ button:disabled,
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px 28px;
+  gap: 6px 24px;
 }
 
 .workspace-footer-group {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .workspace-footer-group strong {
@@ -3357,14 +3357,14 @@ button:disabled,
 .workspace-footer-group div {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
 }
 
 .workspace-footer a {
   display: inline-flex;
-  min-height: 32px;
+  min-height: 28px;
   align-items: center;
-  padding: 6px 10px;
+  padding: 4px 8px;
   border-radius: var(--radius-sm);
   color: var(--body);
   font-size: 13px;
@@ -3431,7 +3431,10 @@ button:disabled,
 }
 
 .workspace {
-  padding: 32px;
+  display: flex;
+  min-height: 100vh;
+  flex-direction: column;
+  padding: 32px 32px 24px;
   background: var(--canvas);
 }
 
