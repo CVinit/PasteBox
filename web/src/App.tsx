@@ -808,6 +808,10 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     manualTokenFallback: "Manual token fallback",
     reset: "Reset",
     resetToken: "reset token",
+    forgotPassword: "Forgot password?",
+    sendResetEmail: "Send reset email",
+    newPassword: "New password",
+    backToLogin: "Back to login",
     updatePassword: "Update password",
     inbox: "Inbox",
     shares: "Shares",
@@ -1032,7 +1036,7 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     logoutAllDevices: "Sign out all device sessions",
     logoutAllDevicesDescription:
       "End every active PasteBox session on this browser and other devices. You will need to sign in again everywhere.",
-    passwordResetIssued: "Password reset issued",
+    passwordResetIssued: "Reset email sent. Open it to continue.",
     passwordUpdated: "Password updated",
     reportSubmitted: "Report submitted",
     pasteCreated: "Paste created",
@@ -1086,6 +1090,10 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     manualTokenFallback: "手动令牌备用入口",
     reset: "重置",
     resetToken: "重置令牌",
+    forgotPassword: "忘记密码？",
+    sendResetEmail: "发送重置邮件",
+    newPassword: "新密码",
+    backToLogin: "返回登录",
     updatePassword: "更新密码",
     inbox: "收件箱",
     shares: "分享",
@@ -1307,7 +1315,7 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     logoutAllDevices: "退出所有设备会话",
     logoutAllDevicesDescription:
       "结束当前浏览器和其他设备上的全部 PasteBox 登录会话，之后所有设备都需要重新登录。",
-    passwordResetIssued: "密码重置已签发",
+    passwordResetIssued: "重置邮件已发送，请打开邮件继续。",
     passwordUpdated: "密码已更新",
     reportSubmitted: "举报已提交",
     pasteCreated: "内容已创建",
@@ -1365,6 +1373,10 @@ const copy: Record<Locale, Record<string, string>> = {
     manualTokenFallback: "手動權杖備用入口",
     reset: "重設",
     resetToken: "重設權杖",
+    forgotPassword: "忘記密碼？",
+    sendResetEmail: "寄送重設郵件",
+    newPassword: "新密碼",
+    backToLogin: "返回登入",
     updatePassword: "更新密碼",
     inbox: "收件匣",
     shares: "分享",
@@ -1578,7 +1590,7 @@ const copy: Record<Locale, Record<string, string>> = {
     logoutAllDevices: "登出所有裝置工作階段",
     logoutAllDevicesDescription:
       "結束目前瀏覽器和其他裝置上的所有 PasteBox 登入工作階段，之後所有裝置都需要重新登入。",
-    passwordResetIssued: "密碼重設已簽發",
+    passwordResetIssued: "重設郵件已寄出，請開啟郵件繼續。",
     passwordUpdated: "密碼已更新",
     reportSubmitted: "檢舉已提交",
     pasteCreated: "內容已建立",
@@ -1632,6 +1644,10 @@ const copy: Record<Locale, Record<string, string>> = {
     manualTokenFallback: "Entrada manual de token",
     reset: "Restablecer",
     resetToken: "token de restablecimiento",
+    forgotPassword: "¿Olvidaste tu contraseña?",
+    sendResetEmail: "Enviar correo de restablecimiento",
+    newPassword: "Contraseña nueva",
+    backToLogin: "Volver al inicio",
     updatePassword: "Actualizar contraseña",
     inbox: "Bandeja",
     shares: "Enlaces",
@@ -1856,7 +1872,8 @@ const copy: Record<Locale, Record<string, string>> = {
     logoutAllDevices: "Cerrar sesiones en todos los dispositivos",
     logoutAllDevicesDescription:
       "Cierra cada sesión activa de PasteBox en este navegador y en otros dispositivos. Tendrás que iniciar sesión de nuevo en todas partes.",
-    passwordResetIssued: "Restablecimiento emitido",
+    passwordResetIssued:
+      "Correo de restablecimiento enviado. Ábrelo para continuar.",
     passwordUpdated: "Contraseña actualizada",
     reportSubmitted: "Reporte enviado",
     pasteCreated: "Paste creado",
@@ -2410,7 +2427,9 @@ function App() {
   const publicShareRoute = Boolean(publicShareToken);
   const authRoute = authModeForPath(currentPath);
   const workspaceRoute = isWorkspacePath(currentPath);
-  const shouldProbeSession = Boolean(authLink || workspaceRoute);
+  const shouldProbeSession = Boolean(
+    authLink?.kind === "email-verification" || workspaceRoute,
+  );
 
   const activePlan = useMemo(() => {
     const planId = user?.planId ?? "free";
@@ -2643,7 +2662,7 @@ function App() {
     if (link.kind === "password-reset") {
       setResetToken(link.token);
       setPasswordResetLinkActive(true);
-      setMessage(t("passwordResetLinkReady"));
+      setMessage("");
       return;
     }
 
@@ -2793,7 +2812,11 @@ function App() {
       () => client.passwordReset(auth.email),
       t("passwordResetIssued"),
     );
-    if (result) setResetToken(result.devToken ?? "");
+    if (result?.devToken) {
+      setResetToken(result.devToken);
+      setPasswordResetLinkActive(true);
+      setMessage("");
+    }
   }
 
   async function finishPasswordReset() {
@@ -2804,6 +2827,19 @@ function App() {
     if (result) {
       setResetToken("");
       setPasswordResetLinkActive(false);
+      setAuth((current) => ({ ...current, password: "" }));
+      if (typeof window !== "undefined" && normalizedPathname() === "/password-reset") {
+        window.history.replaceState(null, "", "/login");
+      }
+    }
+  }
+
+  function cancelPasswordReset() {
+    setResetToken("");
+    setPasswordResetLinkActive(false);
+    setMessage("");
+    if (typeof window !== "undefined" && normalizedPathname() === "/password-reset") {
+      window.history.replaceState(null, "", "/login");
     }
   }
 
@@ -3300,32 +3336,28 @@ function App() {
     );
   }
 
-  if (!user) {
-    if (authRoute) {
-      return (
-        <AuthScreen
-          mode={authRoute}
-          auth={auth}
-          busy={busy}
-          message={message}
-          resetToken={resetToken}
-          verificationToken={verificationToken}
-          passwordResetLinkActive={passwordResetLinkActive}
-          onAuth={setAuth}
-          onLogin={() => void login()}
-          onRegister={() => void register()}
-          onGoogle={googleOAuth}
-          onGithub={githubOAuth}
-          onPasswordReset={() => void passwordReset()}
-          onFinishPasswordReset={() => void finishPasswordReset()}
-          onResetToken={setResetToken}
-          onVerificationToken={setVerificationToken}
-          onFinishVerification={() => void finishVerification()}
-          locale={browserLocale}
-        />
-      );
-    }
+  if (authRoute && (!user || passwordResetLinkActive)) {
+    return (
+      <AuthScreen
+        mode={authRoute}
+        auth={auth}
+        busy={busy}
+        message={message}
+        passwordResetLinkActive={passwordResetLinkActive}
+        onAuth={setAuth}
+        onLogin={() => void login()}
+        onRegister={() => void register()}
+        onGoogle={googleOAuth}
+        onGithub={githubOAuth}
+        onPasswordReset={() => void passwordReset()}
+        onFinishPasswordReset={() => void finishPasswordReset()}
+        onCancelPasswordReset={cancelPasswordReset}
+        locale={browserLocale}
+      />
+    );
+  }
 
+  if (!user) {
     return <LandingPage catalog={catalog} locale={browserLocale} />;
   }
 
@@ -5583,8 +5615,10 @@ function GuestWorkbench({
       <div className="guest-workbench-tabs" role="tablist">
         {modeLabels.map((item) => (
           <button
+            aria-selected={mode === item.mode}
             className={mode === item.mode ? "active" : ""}
             key={item.mode}
+            role="tab"
             type="button"
             onClick={() => switchMode(item.mode)}
           >
@@ -5698,8 +5732,6 @@ function AuthScreen({
   auth,
   busy,
   message,
-  resetToken,
-  verificationToken,
   passwordResetLinkActive,
   onAuth,
   onLogin,
@@ -5708,17 +5740,13 @@ function AuthScreen({
   onGithub,
   onPasswordReset,
   onFinishPasswordReset,
-  onResetToken,
-  onVerificationToken,
-  onFinishVerification,
+  onCancelPasswordReset,
   locale,
 }: {
   mode: AuthMode;
   auth: AuthFormState;
   busy: boolean;
   message: string;
-  resetToken: string;
-  verificationToken: string;
   passwordResetLinkActive: boolean;
   onAuth: (value: AuthFormState) => void;
   onLogin: () => void;
@@ -5727,14 +5755,13 @@ function AuthScreen({
   onGithub: () => void;
   onPasswordReset: () => void;
   onFinishPasswordReset: () => void;
-  onResetToken: (value: string) => void;
-  onVerificationToken: (value: string) => void;
-  onFinishVerification: () => void;
+  onCancelPasswordReset: () => void;
   locale: Locale;
 }) {
   const t = copyFor(locale);
   const content = landingContentFor(locale);
   const isRegister = mode === "register";
+  const isPasswordReset = passwordResetLinkActive;
 
   return (
     <main className="auth-screen product-auth-screen">
@@ -5786,26 +5813,32 @@ function AuthScreen({
             event.preventDefault();
             if (isRegister) {
               onRegister();
+            } else if (isPasswordReset) {
+              onFinishPasswordReset();
             } else {
               onLogin();
             }
           }}
         >
+          {!isPasswordReset ? (
+            <label>
+              {t("email")}
+              <input
+                autoComplete="email"
+                type="email"
+                value={auth.email}
+                onChange={(event) =>
+                  onAuth({ ...auth, email: event.target.value })
+                }
+              />
+            </label>
+          ) : null}
           <label>
-            {t("email")}
+            {isPasswordReset ? t("newPassword") : t("password")}
             <input
-              autoComplete="email"
-              type="email"
-              value={auth.email}
-              onChange={(event) =>
-                onAuth({ ...auth, email: event.target.value })
+              autoComplete={
+                isRegister || isPasswordReset ? "new-password" : "current-password"
               }
-            />
-          </label>
-          <label>
-            {t("password")}
-            <input
-              autoComplete={isRegister ? "new-password" : "current-password"}
               value={auth.password}
               type="password"
               onChange={(event) =>
@@ -5831,71 +5864,67 @@ function AuthScreen({
             ) : (
               <KeyRound size={16} aria-hidden="true" />
             )}
-            {isRegister ? t("register") : t("login")}
+            {isRegister
+              ? t("register")
+              : isPasswordReset
+                ? t("updatePassword")
+                : t("login")}
           </button>
         </form>
 
-        <button
-          className="auth-oauth-button"
-          type="button"
-          onClick={onGoogle}
-          disabled={busy}
-        >
-          <ShieldCheck size={16} aria-hidden="true" />
-          {t("google")}
-        </button>
-        <button
-          className="auth-oauth-button"
-          type="button"
-          onClick={onGithub}
-          disabled={busy}
-        >
-          <Github size={16} aria-hidden="true" />
-          {t("github")}
-        </button>
+        {!isPasswordReset ? (
+          <>
+            <button
+              className="auth-oauth-button"
+              type="button"
+              onClick={onGoogle}
+              disabled={busy}
+            >
+              <ShieldCheck size={16} aria-hidden="true" />
+              {t("google")}
+            </button>
+            <button
+              className="auth-oauth-button"
+              type="button"
+              onClick={onGithub}
+              disabled={busy}
+            >
+              <Github size={16} aria-hidden="true" />
+              {t("github")}
+            </button>
+          </>
+        ) : null}
 
-        {passwordResetLinkActive ? (
+        {isPasswordReset ? (
           <div className="auth-link-callout">
             <MailCheck size={16} aria-hidden="true" />
             <span>{t("passwordResetLinkReady")}</span>
           </div>
         ) : null}
 
-        <details className="auth-advanced">
-          <summary>{t("reset")}</summary>
-          <div className="magic-row">
-            <button type="button" onClick={onPasswordReset} disabled={busy}>
-              {t("reset")}
-            </button>
-            <input
-              value={resetToken}
-              onChange={(event) => onResetToken(event.target.value)}
-              placeholder={t("resetToken")}
-            />
-            <button
-              type="button"
-              onClick={onFinishPasswordReset}
-              disabled={busy || !resetToken}
-            >
-              {t("updatePassword")}
-            </button>
-          </div>
-          <div className="magic-row manual-token-row">
-            <span>{t("manualTokenFallback")}</span>
-            <input
-              value={verificationToken}
-              onChange={(event) => onVerificationToken(event.target.value)}
-              placeholder={t("verificationToken")}
-            />
-            <button
-              type="button"
-              onClick={onFinishVerification}
-              disabled={busy || !verificationToken}
-            >
-              {t("verify")}
-            </button>
-          </div>
-        </details>
+        {!isRegister && !isPasswordReset ? (
+          <button
+            className="auth-forgot-button"
+            type="button"
+            onClick={onPasswordReset}
+            disabled={busy || !auth.email.trim()}
+          >
+            <MailCheck size={16} aria-hidden="true" />
+            <span>{t("forgotPassword")}</span>
+            <strong>{t("sendResetEmail")}</strong>
+          </button>
+        ) : null}
+
+        {isPasswordReset ? (
+          <button
+            className="auth-text-button"
+            type="button"
+            onClick={onCancelPasswordReset}
+            disabled={busy}
+          >
+            {t("backToLogin")}
+          </button>
+        ) : null}
 
         {message ? <p className="status-line">{message}</p> : null}
         <PublicFooter locale={locale} />
