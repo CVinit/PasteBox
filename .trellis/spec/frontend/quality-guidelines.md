@@ -118,6 +118,88 @@ TypeScript strict, and build with Vite.
 
 ---
 
+## Scenario: Admin Dashboard Responsive Layout
+
+### 1. Scope / Trigger
+
+- Trigger: Any frontend change that touches the admin dashboard panel, admin
+  card layout, runtime controls, queues, orders, or admin-only form grids.
+
+### 2. Signatures
+
+- Primary component: admin view in `web/src/App.tsx`.
+- Primary stylesheet: admin-scoped selectors in `web/src/styles.css`.
+- Required layout classes: `.admin-panel`, `.admin-console`, `.admin-grid`,
+  `.admin-section`, `.admin-section--wide`, `.admin-section--compact`, and
+  `.admin-audit-section`.
+
+### 3. Contracts
+
+- Admin sections must use explicit semantic classes for grid span decisions;
+  do not rely on `section:nth-child(...)` because adding or reordering admin
+  sections silently breaks layout.
+- Admin list cards that mix text, status badges, inputs, and action buttons
+  must use admin-scoped grid constraints so content wraps instead of clipping.
+- Admin form controls and action buttons must keep at least 44px touch/click
+  height and visible focus/disabled states.
+- The admin panel and `.admin-grid` must not make the page horizontally
+  scrollable at 375px or desktop widths.
+
+### 4. Validation & Error Matrix
+
+- 375px admin view: `.admin-panel.scrollWidth <= .admin-panel.clientWidth` and
+  `.admin-grid.scrollWidth <= .admin-grid.clientWidth`.
+- Desktop admin view: same width assertions, with all admin sections visible.
+- Mixed order card (`content + status + input + button`) -> wraps into stable
+  rows rather than forcing a wide flex row.
+- Long webhook, queue, email, or redemption-code text -> wraps or scrolls inside
+  its own code block, not the whole page.
+
+### 5. Good/Base/Bad Cases
+
+- Good: Runtime config and catalog sections use `.admin-section--wide`; compact
+  status panels use `.admin-section--compact`; regular sections use
+  `.admin-section`.
+- Base: Existing admin actions still work and keep lucide icons where an action
+  icon exists.
+- Bad: Layout span rules depend on `nth-child`, or `.list-card` stays a single
+  flex row for order cards with status, manual-payment input, and action button.
+
+### 6. Tests Required
+
+- Run `make test-web` after changing admin UI or admin CSS.
+- Run full `make test` when synced embedded static assets or backend-adjacent
+  admin behavior changes are part of the same slice.
+- Browser-check the admin view at 375px and desktop width; assert no console
+  errors and no admin panel/grid horizontal overflow.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```css
+.admin-panel .admin-grid section:first-child,
+.admin-panel .admin-grid section:nth-child(4) {
+  grid-column: span 8;
+}
+```
+
+#### Correct
+
+```tsx
+<section className="admin-section admin-section--wide">
+  ...
+</section>
+```
+
+```css
+.admin-panel .admin-section--wide {
+  grid-column: span 8;
+}
+```
+
+---
+
 ## Scenario: Billing Order Status Presentation
 
 ### 1. Scope / Trigger

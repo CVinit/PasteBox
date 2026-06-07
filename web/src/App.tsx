@@ -7,6 +7,8 @@ import {
 } from "react";
 import {
   Archive,
+  Ban,
+  CheckCircle2,
   ClipboardCopy,
   Clock3,
   CreditCard,
@@ -27,10 +29,12 @@ import {
   Search,
   Send,
   ShieldCheck,
+  Snowflake,
   Sparkles,
   Star,
   TimerReset,
   Trash2,
+  Undo2,
   UploadCloud,
   UserRound,
 } from "lucide-react";
@@ -284,7 +288,8 @@ const viewSummaries: Record<Locale, Record<View, ViewSummary>> = {
     billing: {
       eyebrow: "套餐与支付",
       title: "带生命周期细节的支付。",
-      description: "Stripe 和 Epusdt 订单显示完整生命周期，而不是原始状态字符串。",
+      description:
+        "Stripe 和 Epusdt 订单显示完整生命周期，而不是原始状态字符串。",
     },
     settings: {
       eyebrow: "账号操作",
@@ -312,7 +317,8 @@ const viewSummaries: Record<Locale, Record<View, ViewSummary>> = {
     billing: {
       eyebrow: "方案與付款",
       title: "帶生命週期細節的付款。",
-      description: "Stripe 和 Epusdt 訂單顯示完整生命週期，而不是原始狀態字串。",
+      description:
+        "Stripe 和 Epusdt 訂單顯示完整生命週期，而不是原始狀態字串。",
     },
     settings: {
       eyebrow: "帳號操作",
@@ -405,7 +411,11 @@ function localeFor(language?: string): Locale {
   ) {
     return "zh-TW";
   }
-  if (normalized === "zh-cn" || normalized === "zh-sg" || normalized.startsWith("zh")) {
+  if (
+    normalized === "zh-cn" ||
+    normalized === "zh-sg" ||
+    normalized.startsWith("zh")
+  ) {
     return "zh-CN";
   }
   if (normalized.startsWith("es")) return "es";
@@ -1969,13 +1979,15 @@ function landingContentFor(locale: Locale): LandingContent {
       navSecurity: "Seguridad",
       navPricing: "Planes",
       eyebrow: "Portapapeles online entre dispositivos",
-      title: "Texto, archivos y control de enlaces en un solo escritorio limpio.",
+      title:
+        "Texto, archivos y control de enlaces en un solo escritorio limpio.",
       subtitle:
         "PasteBox combina una captura rápida tipo online clipboard con enlaces privados, escaneo, vencimientos y cuenta.",
       primaryCta: "Registrarse gratis",
       secondaryCta: "Iniciar sesión",
       workspaceLabel: "Escritorio PasteBox",
-      workspaceTitle: "Pega contenido, define vencimiento y comparte con control.",
+      workspaceTitle:
+        "Pega contenido, define vencimiento y comparte con control.",
       workspaceBody:
         "Tarjetas compactas, campos visibles, estado de escaneo y límites de enlace en una sola pantalla.",
       features: [
@@ -1996,9 +2008,15 @@ function landingContentFor(locale: Locale): LandingContent {
         },
       ],
       steps: [
-        { title: "Pega", body: "Guarda texto, enlaces, credenciales o contexto." },
+        {
+          title: "Pega",
+          body: "Guarda texto, enlaces, credenciales o contexto.",
+        },
         { title: "Adjunta", body: "Suelta archivos junto al mismo contenido." },
-        { title: "Comparte", body: "Crea enlaces temporales y revócalos luego." },
+        {
+          title: "Comparte",
+          body: "Crea enlaces temporales y revócalos luego.",
+        },
       ],
     };
   }
@@ -2035,8 +2053,14 @@ function landingContentFor(locale: Locale): LandingContent {
       },
     ],
     steps: [
-      { title: "Paste", body: "Save text, links, credential snippets, or handoff notes." },
-      { title: "Attach", body: "Drop files into the same paste and keep context together." },
+      {
+        title: "Paste",
+        body: "Save text, links, credential snippets, or handoff notes.",
+      },
+      {
+        title: "Attach",
+        body: "Drop files into the same paste and keep context together.",
+      },
       { title: "Share", body: "Create expiring links and revoke them later." },
     ],
   };
@@ -2236,8 +2260,8 @@ function orderStatusDetail(status: string, locale: Locale): OrderStatusDetail {
       locale === "es"
         ? "El proveedor devolvió este estado."
         : isChineseLocale(locale)
-        ? "支付渠道返回的状态。"
-        : "Provider returned this status.",
+          ? "支付渠道返回的状态。"
+          : "Provider returned this status.",
   };
   return { ...detail, tone: orderStatusTone(normalized) };
 }
@@ -2254,8 +2278,8 @@ function attachmentScanDetail(
       locale === "es"
         ? "El escáner devolvió este estado."
         : isChineseLocale(locale)
-        ? "扫描服务返回的状态。"
-        : "Scanner returned this status.",
+          ? "扫描服务返回的状态。"
+          : "Scanner returned this status.",
   };
   const canDownload =
     normalized === "malicious"
@@ -2269,7 +2293,13 @@ function attachmentScanDetail(
   if (normalized === "malicious") tone = "danger";
   const risk = attachment.risk?.trim();
   const riskPrefix =
-    locale === "es" ? "Riesgo" : locale === "zh-TW" ? "風險" : isChineseLocale(locale) ? "风险" : "Risk";
+    locale === "es"
+      ? "Riesgo"
+      : locale === "zh-TW"
+        ? "風險"
+        : isChineseLocale(locale)
+          ? "风险"
+          : "Risk";
   return {
     ...base,
     description: risk
@@ -2312,7 +2342,9 @@ function App() {
   const [redemptionDraft, setRedemptionDraft] = useState<RedemptionDraft>(
     defaultRedemptionDraft,
   );
-  const [alertTestMessage, setAlertTestMessage] = useState("PasteBox alert test");
+  const [alertTestMessage, setAlertTestMessage] = useState(
+    "PasteBox alert test",
+  );
   const [view, setView] = useState<View>("inbox");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
@@ -2372,7 +2404,9 @@ function App() {
   const publicShareRoute = Boolean(publicShareToken);
   const authRoute = authModeForPath(currentPath);
   const workspaceRoute = isWorkspacePath(currentPath);
-  const shouldProbeSession = Boolean(authLink || publicShareRoute || workspaceRoute);
+  const shouldProbeSession = Boolean(
+    authLink || publicShareRoute || workspaceRoute,
+  );
 
   const activePlan = useMemo(() => {
     const planId = user?.planId ?? "free";
@@ -2554,9 +2588,12 @@ function App() {
       queues: queues.status === "fulfilled" ? queues.value : null,
       runtimeConfig:
         runtimeConfig.status === "fulfilled" ? runtimeConfig.value : null,
-      runtimePanel: runtimePanel.status === "fulfilled" ? runtimePanel.value : null,
+      runtimePanel:
+        runtimePanel.status === "fulfilled" ? runtimePanel.value : null,
       manualWorkItems:
-        manualWorkItems.status === "fulfilled" ? manualWorkItems.value.items : [],
+        manualWorkItems.status === "fulfilled"
+          ? manualWorkItems.value.items
+          : [],
       redemptionBatches:
         redemptionBatches.status === "fulfilled"
           ? redemptionBatches.value.batches
@@ -2979,7 +3016,10 @@ function App() {
   }
 
   async function cancelDelete() {
-    const updated = await run(() => client.cancelDelete(), t("deletionCanceled"));
+    const updated = await run(
+      () => client.cancelDelete(),
+      t("deletionCanceled"),
+    );
     if (updated) setUser(updated);
   }
 
@@ -3295,12 +3335,7 @@ function App() {
       );
     }
 
-    return (
-      <LandingPage
-        locale={browserLocale}
-        plans={catalog?.plans ?? []}
-      />
-    );
+    return <LandingPage locale={browserLocale} plans={catalog?.plans ?? []} />;
   }
 
   return (
@@ -3509,7 +3544,9 @@ function App() {
                     }
                   >
                     <option value={24 * 60 * 60}>{t("duration24Hours")}</option>
-                    <option value={7 * 24 * 60 * 60}>{t("duration7Days")}</option>
+                    <option value={7 * 24 * 60 * 60}>
+                      {t("duration7Days")}
+                    </option>
                     <option value={30 * 24 * 60 * 60}>
                       {t("duration30Days")}
                     </option>
@@ -3592,7 +3629,10 @@ function App() {
         ) : null}
 
         {view === "shared" ? (
-          <Panel title={t("shares")} meta={`${shares.length} ${t("sharedLinks")}`}>
+          <Panel
+            title={t("shares")}
+            meta={`${shares.length} ${t("sharedLinks")}`}
+          >
             {shares.map((share) => (
               <article className="list-card" key={share.id}>
                 <div>
@@ -3603,8 +3643,8 @@ function App() {
                     {t("downloads")}
                   </span>
                   <span>
-                    {share.loginRequired ? t("loginRequired") : t("anonymous")} ·
-                    {t("expires")} {new Date(share.expiresAt).toLocaleString()}
+                    {share.loginRequired ? t("loginRequired") : t("anonymous")}{" "}
+                    ·{t("expires")} {new Date(share.expiresAt).toLocaleString()}
                   </span>
                 </div>
                 <button
@@ -3754,7 +3794,9 @@ function App() {
           <Panel
             title={t("settings")}
             meta={
-              user.deleteScheduledAt ? t("deletionScheduled") : t("accountActive")
+              user.deleteScheduledAt
+                ? t("deletionScheduled")
+                : t("accountActive")
             }
           >
             <section className="notice-card">
@@ -3895,473 +3937,74 @@ function App() {
         ) : null}
 
         {view === "admin" ? (
-          <Panel title={t("admin")} meta={t("auditQueuesCleanup")}>
-            <div className="metric-grid">
-              {Object.entries(adminStats ?? {}).map(([key, value]) => (
-                <div className="metric" key={key}>
-                  <span>{key}</span>
-                  <strong>{String(value)}</strong>
-                </div>
-              ))}
-            </div>
-            <button type="button" onClick={runCleanup}>
-              {t("runCleanup")}
-            </button>
-            <button type="button" onClick={runBillingReconciliation}>
-              {t("runBillingReconcile")}
-            </button>
-            <div className="admin-grid">
-              <section>
-                <h3>{t("runtimeConfig")}</h3>
-                <article className="list-card">
-                  <strong>{t("guestUploads")}</strong>
-                  <div className="form-grid">
-                    <label className="check-row">
-                      <input
-                        checked={
-                          adminData.runtimeConfig?.guestUploads.enabled ?? false
-                        }
-                        type="checkbox"
-                        onChange={() => void toggleGuestUploads()}
-                      />
-                      {t("enabled")}
-                    </label>
-                    <label className="check-row">
-                      <input
-                        checked={
-                          adminData.runtimeConfig?.guestUploads
-                            .requireTurnstile ?? false
-                        }
-                        type="checkbox"
-                        onChange={(event) =>
-                          updateRuntimeGuestConfig({
-                            requireTurnstile: event.target.checked,
-                          })
-                        }
-                      />
-                      {t("requireTurnstile")}
-                    </label>
-                    <label className="field-row">
-                      <span>{t("retentionSeconds")}</span>
-                      <input
-                        min={1}
-                        type="number"
-                        value={
-                          adminData.runtimeConfig?.guestUploads
-                            .retentionSeconds ?? 0
-                        }
-                        onChange={(event) =>
-                          updateRuntimeGuestConfig({
-                            retentionSeconds: Number(event.target.value),
-                          })
-                        }
-                      />
-                    </label>
-                    <label className="field-row">
-                      <span>{t("activePasteLimitShort")}</span>
-                      <input
-                        min={1}
-                        type="number"
-                        value={
-                          adminData.runtimeConfig?.guestUploads
-                            .activePasteLimit ?? 0
-                        }
-                        onChange={(event) =>
-                          updateRuntimeGuestConfig({
-                            activePasteLimit: Number(event.target.value),
-                          })
-                        }
-                      />
-                    </label>
-                    <label className="field-row">
-                      <span>{t("activeStorageLimit")}</span>
-                      <input
-                        min={1}
-                        type="number"
-                        value={
-                          adminData.runtimeConfig?.guestUploads
-                            .activeStorageBytes ?? 0
-                        }
-                        onChange={(event) =>
-                          updateRuntimeGuestConfig({
-                            activeStorageBytes: Number(event.target.value),
-                          })
-                        }
-                      />
-                    </label>
-                    <label className="field-row">
-                      <span>{t("singleTextLimit")}</span>
-                      <input
-                        min={1}
-                        type="number"
-                        value={
-                          adminData.runtimeConfig?.guestUploads
-                            .singleTextBytes ?? 0
-                        }
-                        onChange={(event) =>
-                          updateRuntimeGuestConfig({
-                            singleTextBytes: Number(event.target.value),
-                          })
-                        }
-                      />
-                    </label>
-                    <label className="field-row">
-                      <span>{t("singleFileLimit")}</span>
-                      <input
-                        min={1}
-                        type="number"
-                        value={
-                          adminData.runtimeConfig?.guestUploads
-                            .singleFileBytes ?? 0
-                        }
-                        onChange={(event) =>
-                          updateRuntimeGuestConfig({
-                            singleFileBytes: Number(event.target.value),
-                          })
-                        }
-                      />
-                    </label>
-                    <label className="field-row">
-                      <span>{t("singlePasteLimit")}</span>
-                      <input
-                        min={1}
-                        type="number"
-                        value={
-                          adminData.runtimeConfig?.guestUploads
-                            .singlePasteBytes ?? 0
-                        }
-                        onChange={(event) =>
-                          updateRuntimeGuestConfig({
-                            singlePasteBytes: Number(event.target.value),
-                          })
-                        }
-                      />
-                    </label>
-                    <label className="field-row">
-                      <span>{t("attachmentsPerPaste")}</span>
-                      <input
-                        min={1}
-                        type="number"
-                        value={
-                          adminData.runtimeConfig?.guestUploads
-                            .attachmentsPerPasteLimit ?? 0
-                        }
-                        onChange={(event) =>
-                          updateRuntimeGuestConfig({
-                            attachmentsPerPasteLimit: Number(event.target.value),
-                          })
-                        }
-                      />
-                    </label>
-                    <label className="field-row">
-                      <span>{t("dailyUploadLimit")}</span>
-                      <input
-                        min={1}
-                        type="number"
-                        value={
-                          adminData.runtimeConfig?.guestUploads
-                            .dailyUploadBytes ?? 0
-                        }
-                        onChange={(event) =>
-                          updateRuntimeGuestConfig({
-                            dailyUploadBytes: Number(event.target.value),
-                          })
-                        }
-                      />
-                    </label>
-                    <label className="field-row">
-                      <span>{t("dailyShareDownloadLimit")}</span>
-                      <input
-                        min={0}
-                        type="number"
-                        value={
-                          adminData.runtimeConfig?.guestUploads
-                            .dailyShareDownloadBytes ?? 0
-                        }
-                        onChange={(event) =>
-                          updateRuntimeGuestConfig({
-                            dailyShareDownloadBytes: Number(event.target.value),
-                          })
-                        }
-                      />
-                    </label>
+          <Panel
+            className="admin-panel"
+            title={t("admin")}
+            meta={t("auditQueuesCleanup")}
+          >
+            <div className="admin-console">
+              <div className="metric-grid admin-metric-grid">
+                {Object.entries(adminStats ?? {}).map(([key, value]) => (
+                  <div className="metric" key={key}>
+                    <span>{key}</span>
+                    <strong>{String(value)}</strong>
                   </div>
-                </article>
-                <article className="list-card">
-                  <strong>{t("telegramAlerts")}</strong>
-                  <div className="form-grid">
-                    <label className="check-row">
-                      <input
-                        checked={adminData.runtimeConfig?.alerts.enabled ?? false}
-                        type="checkbox"
-                        onChange={() => void toggleRuntimeAlerts()}
-                      />
-                      {t("enabled")}
-                    </label>
-                    <label className="check-row">
-                      <input
-                        checked={
-                          adminData.runtimeConfig?.alerts.telegramEnabled ??
-                          false
-                        }
-                        type="checkbox"
-                        onChange={(event) =>
-                          updateRuntimeAlertConfig({
-                            telegramEnabled: event.target.checked,
-                          })
-                        }
-                      />
-                      {t("telegramDelivery")}
-                    </label>
-                    <label className="check-row">
-                      <input
-                        checked={adminData.runtimeConfig?.alerts.silent ?? false}
-                        type="checkbox"
-                        onChange={(event) =>
-                          updateRuntimeAlertConfig({
-                            silent: event.target.checked,
-                          })
-                        }
-                      />
-                      {t("silentAlert")}
-                    </label>
-                    <label className="field-row">
-                      <span>{t("cooldownSeconds")}</span>
-                      <input
-                        min={1}
-                        type="number"
-                        value={adminData.runtimeConfig?.alerts.cooldownSeconds ?? 0}
-                        onChange={(event) =>
-                          updateRuntimeAlertConfig({
-                            cooldownSeconds: Number(event.target.value),
-                          })
-                        }
-                      />
-                    </label>
-                    <label className="field-row">
-                      <span>{t("cpuThreshold")}</span>
-                      <input
-                        min={1}
-                        step={0.1}
-                        type="number"
-                        value={
-                          adminData.runtimeConfig?.alerts
-                            .cpuPercentThreshold ?? 0
-                        }
-                        onChange={(event) =>
-                          updateRuntimeAlertConfig({
-                            cpuPercentThreshold: Number(event.target.value),
-                          })
-                        }
-                      />
-                    </label>
-                    <label className="field-row">
-                      <span>{t("memoryThreshold")}</span>
-                      <input
-                        min={1}
-                        step={0.1}
-                        type="number"
-                        value={
-                          adminData.runtimeConfig?.alerts
-                            .memoryPercentThreshold ?? 0
-                        }
-                        onChange={(event) =>
-                          updateRuntimeAlertConfig({
-                            memoryPercentThreshold: Number(event.target.value),
-                          })
-                        }
-                      />
-                    </label>
-                    <label className="field-row">
-                      <span>{t("diskThreshold")}</span>
-                      <input
-                        min={1}
-                        step={0.1}
-                        type="number"
-                        value={
-                          adminData.runtimeConfig?.alerts
-                            .diskPercentThreshold ?? 0
-                        }
-                        onChange={(event) =>
-                          updateRuntimeAlertConfig({
-                            diskPercentThreshold: Number(event.target.value),
-                          })
-                        }
-                      />
-                    </label>
-                    <label className="field-row">
-                      <span>{t("objectStorageThreshold")}</span>
-                      <input
-                        min={0}
-                        type="number"
-                        value={
-                          adminData.runtimeConfig?.alerts
-                            .objectStorageBytesThreshold ?? 0
-                        }
-                        onChange={(event) =>
-                          updateRuntimeAlertConfig({
-                            objectStorageBytesThreshold: Number(
-                              event.target.value,
-                            ),
-                          })
-                        }
-                      />
-                    </label>
-                    <label className="field-row">
-                      <span>{t("scanFailureThreshold")}</span>
-                      <input
-                        min={0}
-                        type="number"
-                        value={
-                          adminData.runtimeConfig?.alerts
-                            .scanFailureDepthThreshold ?? 0
-                        }
-                        onChange={(event) =>
-                          updateRuntimeAlertConfig({
-                            scanFailureDepthThreshold: Number(
-                              event.target.value,
-                            ),
-                          })
-                        }
-                      />
-                    </label>
-                    <label className="field-row">
-                      <span>{t("failedJobThreshold")}</span>
-                      <input
-                        min={0}
-                        type="number"
-                        value={
-                          adminData.runtimeConfig?.alerts
-                            .failedJobDepthThreshold ?? 0
-                        }
-                        onChange={(event) =>
-                          updateRuntimeAlertConfig({
-                            failedJobDepthThreshold: Number(event.target.value),
-                          })
-                        }
-                      />
-                    </label>
-                    <label className="field-row">
-                      <span>{t("failedMailThreshold")}</span>
-                      <input
-                        min={0}
-                        type="number"
-                        value={
-                          adminData.runtimeConfig?.alerts
-                            .mailFailedDepthThreshold ?? 0
-                        }
-                        onChange={(event) =>
-                          updateRuntimeAlertConfig({
-                            mailFailedDepthThreshold: Number(event.target.value),
-                          })
-                        }
-                      />
-                    </label>
-                    <label className="field-row">
-                      <span>{t("openReportThreshold")}</span>
-                      <input
-                        min={0}
-                        type="number"
-                        value={
-                          adminData.runtimeConfig?.alerts.reportsOpenThreshold ??
-                          0
-                        }
-                        onChange={(event) =>
-                          updateRuntimeAlertConfig({
-                            reportsOpenThreshold: Number(event.target.value),
-                          })
-                        }
-                      />
-                    </label>
-                  </div>
-                </article>
-                <button type="button" onClick={() => void saveRuntimeConfig()}>
-                  {t("saveRuntimeConfig")}
-                </button>
-              </section>
-              <section>
-                <h3>{t("resourcePanel")}</h3>
-                <article className="list-card">
-                  <strong>{t("cpu")}</strong>
-                  <span>{adminData.runtimePanel?.resources.cpuPercent ?? 0}%</span>
-                </article>
-                <article className="list-card">
-                  <strong>{t("memory")}</strong>
-                  <span>
-                    {formatBytes(
-                      adminData.runtimePanel?.resources.memoryUsedBytes ?? 0,
-                    )}{" "}
-                    /{" "}
-                    {formatBytes(
-                      adminData.runtimePanel?.resources.memoryTotalBytes ?? 0,
-                    )}{" "}
-                    · {adminData.runtimePanel?.resources.memoryPercent ?? 0}%
-                  </span>
-                </article>
-                <article className="list-card">
-                  <strong>{t("disk")}</strong>
-                  <span>
-                    {formatBytes(
-                      adminData.runtimePanel?.resources.diskUsedBytes ?? 0,
-                    )}{" "}
-                    /{" "}
-                    {formatBytes(
-                      adminData.runtimePanel?.resources.diskTotalBytes ?? 0,
-                    )}{" "}
-                    · {adminData.runtimePanel?.resources.diskPercent ?? 0}%
-                  </span>
-                </article>
-                <article className="list-card">
-                  <strong>{t("objectStorage")}</strong>
-                  <span>
-                    {formatBytes(
-                      adminData.runtimePanel?.resources.objectStorageBytes ?? 0,
-                    )}{" "}
-                    ·{" "}
-                    {adminData.runtimePanel?.resources.objectStorageObjectCount ??
-                      0}{" "}
-                    {t("files")}
-                  </span>
-                </article>
-              </section>
-              <section>
-                <h3>{t("providerStatus")}</h3>
-                {Object.entries(
-                  adminData.runtimeConfig?.providerStatus ?? {},
-                ).map(([provider, status]) => (
-                  <article className="list-card" key={provider}>
-                    <div>
-                      <strong>{provider}</strong>
-                      <span>
-                        {status.configured ? t("enabled") : t("disabled")} ·{" "}
-                        {status.missingEnv.join(", ") || status.provider}
-                      </span>
-                      {status.lastTestStatus ? (
-                        <span>{status.lastTestStatus}</span>
-                      ) : null}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => void adminProviderTest(provider)}
-                    >
-                      {t("verify")}
-                    </button>
-                  </article>
                 ))}
-              </section>
-              <section>
-                <h3>{t("planCatalog")}</h3>
-                {(catalog?.plans ?? []).map((plan) => (
-                  <article className="list-card" key={plan.id}>
-                    <strong>{plan.id}</strong>
+              </div>
+              <div className="button-row admin-command-row">
+                <button type="button" onClick={runCleanup}>
+                  <RotateCcw size={16} aria-hidden="true" />
+                  {t("runCleanup")}
+                </button>
+                <button type="button" onClick={runBillingReconciliation}>
+                  <CreditCard size={16} aria-hidden="true" />
+                  {t("runBillingReconcile")}
+                </button>
+              </div>
+              <div className="admin-grid">
+                <section className="admin-section admin-section--wide">
+                  <h3>{t("runtimeConfig")}</h3>
+                  <article className="list-card">
+                    <strong>{t("guestUploads")}</strong>
                     <div className="form-grid">
-                      <label className="field-row">
-                        <span>{t("title")}</span>
+                      <label className="check-row">
                         <input
-                          value={plan.name}
+                          checked={
+                            adminData.runtimeConfig?.guestUploads.enabled ??
+                            false
+                          }
+                          type="checkbox"
+                          onChange={() => void toggleGuestUploads()}
+                        />
+                        {t("enabled")}
+                      </label>
+                      <label className="check-row">
+                        <input
+                          checked={
+                            adminData.runtimeConfig?.guestUploads
+                              .requireTurnstile ?? false
+                          }
+                          type="checkbox"
                           onChange={(event) =>
-                            updateCatalogPlan(plan.id, {
-                              name: event.target.value,
+                            updateRuntimeGuestConfig({
+                              requireTurnstile: event.target.checked,
+                            })
+                          }
+                        />
+                        {t("requireTurnstile")}
+                      </label>
+                      <label className="field-row">
+                        <span>{t("retentionSeconds")}</span>
+                        <input
+                          min={1}
+                          type="number"
+                          value={
+                            adminData.runtimeConfig?.guestUploads
+                              .retentionSeconds ?? 0
+                          }
+                          onChange={(event) =>
+                            updateRuntimeGuestConfig({
+                              retentionSeconds: Number(event.target.value),
                             })
                           }
                         />
@@ -4369,11 +4012,14 @@ function App() {
                       <label className="field-row">
                         <span>{t("activePasteLimitShort")}</span>
                         <input
-                          min={0}
+                          min={1}
                           type="number"
-                          value={plan.activePasteLimit}
+                          value={
+                            adminData.runtimeConfig?.guestUploads
+                              .activePasteLimit ?? 0
+                          }
                           onChange={(event) =>
-                            updateCatalogPlan(plan.id, {
+                            updateRuntimeGuestConfig({
                               activePasteLimit: Number(event.target.value),
                             })
                           }
@@ -4382,11 +4028,14 @@ function App() {
                       <label className="field-row">
                         <span>{t("activeStorageLimit")}</span>
                         <input
-                          min={0}
+                          min={1}
                           type="number"
-                          value={plan.activeStorageBytes}
+                          value={
+                            adminData.runtimeConfig?.guestUploads
+                              .activeStorageBytes ?? 0
+                          }
                           onChange={(event) =>
-                            updateCatalogPlan(plan.id, {
+                            updateRuntimeGuestConfig({
                               activeStorageBytes: Number(event.target.value),
                             })
                           }
@@ -4395,11 +4044,14 @@ function App() {
                       <label className="field-row">
                         <span>{t("singleTextLimit")}</span>
                         <input
-                          min={0}
+                          min={1}
                           type="number"
-                          value={plan.singleTextBytes}
+                          value={
+                            adminData.runtimeConfig?.guestUploads
+                              .singleTextBytes ?? 0
+                          }
                           onChange={(event) =>
-                            updateCatalogPlan(plan.id, {
+                            updateRuntimeGuestConfig({
                               singleTextBytes: Number(event.target.value),
                             })
                           }
@@ -4408,11 +4060,14 @@ function App() {
                       <label className="field-row">
                         <span>{t("singleFileLimit")}</span>
                         <input
-                          min={0}
+                          min={1}
                           type="number"
-                          value={plan.singleFileBytes}
+                          value={
+                            adminData.runtimeConfig?.guestUploads
+                              .singleFileBytes ?? 0
+                          }
                           onChange={(event) =>
-                            updateCatalogPlan(plan.id, {
+                            updateRuntimeGuestConfig({
                               singleFileBytes: Number(event.target.value),
                             })
                           }
@@ -4421,11 +4076,14 @@ function App() {
                       <label className="field-row">
                         <span>{t("singlePasteLimit")}</span>
                         <input
-                          min={0}
+                          min={1}
                           type="number"
-                          value={plan.singlePasteBytes}
+                          value={
+                            adminData.runtimeConfig?.guestUploads
+                              .singlePasteBytes ?? 0
+                          }
                           onChange={(event) =>
-                            updateCatalogPlan(plan.id, {
+                            updateRuntimeGuestConfig({
                               singlePasteBytes: Number(event.target.value),
                             })
                           }
@@ -4434,11 +4092,14 @@ function App() {
                       <label className="field-row">
                         <span>{t("attachmentsPerPaste")}</span>
                         <input
-                          min={0}
+                          min={1}
                           type="number"
-                          value={plan.attachmentsPerPasteLimit}
+                          value={
+                            adminData.runtimeConfig?.guestUploads
+                              .attachmentsPerPasteLimit ?? 0
+                          }
                           onChange={(event) =>
-                            updateCatalogPlan(plan.id, {
+                            updateRuntimeGuestConfig({
                               attachmentsPerPasteLimit: Number(
                                 event.target.value,
                               ),
@@ -4447,26 +4108,16 @@ function App() {
                         />
                       </label>
                       <label className="field-row">
-                        <span>{t("retentionSeconds")}</span>
+                        <span>{t("dailyUploadLimit")}</span>
                         <input
                           min={1}
                           type="number"
-                          value={plan.maxRetentionSeconds}
-                          onChange={(event) =>
-                            updateCatalogPlan(plan.id, {
-                              maxRetentionSeconds: Number(event.target.value),
-                            })
+                          value={
+                            adminData.runtimeConfig?.guestUploads
+                              .dailyUploadBytes ?? 0
                           }
-                        />
-                      </label>
-                      <label className="field-row">
-                        <span>{t("dailyUploadLimit")}</span>
-                        <input
-                          min={0}
-                          type="number"
-                          value={plan.dailyUploadBytes}
                           onChange={(event) =>
-                            updateCatalogPlan(plan.id, {
+                            updateRuntimeGuestConfig({
                               dailyUploadBytes: Number(event.target.value),
                             })
                           }
@@ -4477,9 +4128,12 @@ function App() {
                         <input
                           min={0}
                           type="number"
-                          value={plan.dailyShareDownloadBytes}
+                          value={
+                            adminData.runtimeConfig?.guestUploads
+                              .dailyShareDownloadBytes ?? 0
+                          }
                           onChange={(event) =>
-                            updateCatalogPlan(plan.id, {
+                            updateRuntimeGuestConfig({
                               dailyShareDownloadBytes: Number(
                                 event.target.value,
                               ),
@@ -4489,426 +4143,887 @@ function App() {
                       </label>
                     </div>
                   </article>
-                ))}
-                {(catalog?.prices ?? []).map((price) => (
-                  <article className="list-card" key={price.id}>
-                    <strong>
-                      {price.planId} · {price.period}
-                    </strong>
+                  <article className="list-card">
+                    <strong>{t("telegramAlerts")}</strong>
                     <div className="form-grid">
-                      <label className="field-row">
-                        <span>{t("period")}</span>
+                      <label className="check-row">
                         <input
-                          value={price.period}
+                          checked={
+                            adminData.runtimeConfig?.alerts.enabled ?? false
+                          }
+                          type="checkbox"
+                          onChange={() => void toggleRuntimeAlerts()}
+                        />
+                        {t("enabled")}
+                      </label>
+                      <label className="check-row">
+                        <input
+                          checked={
+                            adminData.runtimeConfig?.alerts.telegramEnabled ??
+                            false
+                          }
+                          type="checkbox"
                           onChange={(event) =>
-                            updateCatalogPrice(price.id, {
-                              period: event.target.value,
+                            updateRuntimeAlertConfig({
+                              telegramEnabled: event.target.checked,
+                            })
+                          }
+                        />
+                        {t("telegramDelivery")}
+                      </label>
+                      <label className="check-row">
+                        <input
+                          checked={
+                            adminData.runtimeConfig?.alerts.silent ?? false
+                          }
+                          type="checkbox"
+                          onChange={(event) =>
+                            updateRuntimeAlertConfig({
+                              silent: event.target.checked,
+                            })
+                          }
+                        />
+                        {t("silentAlert")}
+                      </label>
+                      <label className="field-row">
+                        <span>{t("cooldownSeconds")}</span>
+                        <input
+                          min={1}
+                          type="number"
+                          value={
+                            adminData.runtimeConfig?.alerts.cooldownSeconds ?? 0
+                          }
+                          onChange={(event) =>
+                            updateRuntimeAlertConfig({
+                              cooldownSeconds: Number(event.target.value),
                             })
                           }
                         />
                       </label>
                       <label className="field-row">
-                        <span>{t("priceCents")}</span>
+                        <span>{t("cpuThreshold")}</span>
+                        <input
+                          min={1}
+                          step={0.1}
+                          type="number"
+                          value={
+                            adminData.runtimeConfig?.alerts
+                              .cpuPercentThreshold ?? 0
+                          }
+                          onChange={(event) =>
+                            updateRuntimeAlertConfig({
+                              cpuPercentThreshold: Number(event.target.value),
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="field-row">
+                        <span>{t("memoryThreshold")}</span>
+                        <input
+                          min={1}
+                          step={0.1}
+                          type="number"
+                          value={
+                            adminData.runtimeConfig?.alerts
+                              .memoryPercentThreshold ?? 0
+                          }
+                          onChange={(event) =>
+                            updateRuntimeAlertConfig({
+                              memoryPercentThreshold: Number(
+                                event.target.value,
+                              ),
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="field-row">
+                        <span>{t("diskThreshold")}</span>
+                        <input
+                          min={1}
+                          step={0.1}
+                          type="number"
+                          value={
+                            adminData.runtimeConfig?.alerts
+                              .diskPercentThreshold ?? 0
+                          }
+                          onChange={(event) =>
+                            updateRuntimeAlertConfig({
+                              diskPercentThreshold: Number(event.target.value),
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="field-row">
+                        <span>{t("objectStorageThreshold")}</span>
                         <input
                           min={0}
                           type="number"
-                          value={price.amountCents}
+                          value={
+                            adminData.runtimeConfig?.alerts
+                              .objectStorageBytesThreshold ?? 0
+                          }
                           onChange={(event) =>
-                            updateCatalogPrice(price.id, {
-                              amountCents: Number(event.target.value),
+                            updateRuntimeAlertConfig({
+                              objectStorageBytesThreshold: Number(
+                                event.target.value,
+                              ),
                             })
                           }
                         />
                       </label>
                       <label className="field-row">
-                        <span>{t("currency")}</span>
+                        <span>{t("scanFailureThreshold")}</span>
                         <input
-                          maxLength={8}
-                          value={price.currency}
+                          min={0}
+                          type="number"
+                          value={
+                            adminData.runtimeConfig?.alerts
+                              .scanFailureDepthThreshold ?? 0
+                          }
                           onChange={(event) =>
-                            updateCatalogPrice(price.id, {
-                              currency: event.target.value,
+                            updateRuntimeAlertConfig({
+                              scanFailureDepthThreshold: Number(
+                                event.target.value,
+                              ),
                             })
                           }
                         />
                       </label>
-                      <label className="check-row">
+                      <label className="field-row">
+                        <span>{t("failedJobThreshold")}</span>
                         <input
-                          checked={price.visible}
-                          type="checkbox"
+                          min={0}
+                          type="number"
+                          value={
+                            adminData.runtimeConfig?.alerts
+                              .failedJobDepthThreshold ?? 0
+                          }
                           onChange={(event) =>
-                            updateCatalogPrice(price.id, {
-                              visible: event.target.checked,
+                            updateRuntimeAlertConfig({
+                              failedJobDepthThreshold: Number(
+                                event.target.value,
+                              ),
                             })
                           }
                         />
-                        {t("visible")}
                       </label>
-                      <label className="check-row">
+                      <label className="field-row">
+                        <span>{t("failedMailThreshold")}</span>
                         <input
-                          checked={price.purchaseEnabled}
-                          type="checkbox"
+                          min={0}
+                          type="number"
+                          value={
+                            adminData.runtimeConfig?.alerts
+                              .mailFailedDepthThreshold ?? 0
+                          }
                           onChange={(event) =>
-                            updateCatalogPrice(price.id, {
-                              purchaseEnabled: event.target.checked,
+                            updateRuntimeAlertConfig({
+                              mailFailedDepthThreshold: Number(
+                                event.target.value,
+                              ),
                             })
                           }
                         />
-                        {t("purchase")}
+                      </label>
+                      <label className="field-row">
+                        <span>{t("openReportThreshold")}</span>
+                        <input
+                          min={0}
+                          type="number"
+                          value={
+                            adminData.runtimeConfig?.alerts
+                              .reportsOpenThreshold ?? 0
+                          }
+                          onChange={(event) =>
+                            updateRuntimeAlertConfig({
+                              reportsOpenThreshold: Number(event.target.value),
+                            })
+                          }
+                        />
                       </label>
                     </div>
                   </article>
-                ))}
-                <button type="button" onClick={() => void saveAdminCatalog()}>
-                  {t("saveCatalog")}
-                </button>
-              </section>
-              <section>
-                <h3>{t("redemptionCodes")}</h3>
-                <div className="form-grid">
-                  <select
-                    aria-label={t("currentPlan")}
-                    value={redemptionDraft.planId}
-                    onChange={(event) =>
-                      setRedemptionDraft((previous) => ({
-                        ...previous,
-                        planId: event.target.value,
-                      }))
-                    }
-                  >
-                    {(catalog?.plans ?? []).map((plan) => (
-                      <option key={plan.id} value={plan.id}>
-                        {plan.name}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    aria-label={t("durationDays")}
-                    min={1}
-                    type="number"
-                    value={redemptionDraft.durationDays}
-                    onChange={(event) =>
-                      setRedemptionDraft((previous) => ({
-                        ...previous,
-                        durationDays: Number(event.target.value),
-                      }))
-                    }
-                  />
-                  <input
-                    aria-label={t("quantity")}
-                    min={1}
-                    type="number"
-                    value={redemptionDraft.quantity}
-                    onChange={(event) =>
-                      setRedemptionDraft((previous) => ({
-                        ...previous,
-                        quantity: Number(event.target.value),
-                      }))
-                    }
-                  />
-                  <input
-                    aria-label={t("note")}
-                    maxLength={200}
-                    placeholder={t("note")}
-                    value={redemptionDraft.note}
-                    onChange={(event) =>
-                      setRedemptionDraft((previous) => ({
-                        ...previous,
-                        note: event.target.value,
-                      }))
-                    }
-                  />
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void createRedemptionBatch()}
-                >
-                  {t("createRedemptionBatch")}
-                </button>
-                {adminData.redemptionBatches.slice(0, 5).map((batch) => (
-                  <article className="list-card" key={batch.id}>
-                    <div>
-                      <strong>
-                        {batch.planId} · {batch.quantity}
-                      </strong>
-                      <span>
-                        {batch.redeemedCount}/{batch.maxTotalRedemptions} ·{" "}
-                        {batch.disabled ? t("disabled") : t("enabled")}
-                      </span>
-                      {batch.codes?.[0]?.code ? (
-                        <code>{batch.codes.map((code) => code.code).join(", ")}</code>
-                      ) : null}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => void toggleRedemptionBatch(batch)}
-                    >
-                      {batch.disabled ? t("enabled") : t("disabled")}
-                    </button>
-                  </article>
-                ))}
-              </section>
-              <section>
-                <h3>{t("manualReview")}</h3>
-                {adminData.manualWorkItems.length === 0 ? (
-                  <article className="list-card">
-                    <span>{t("noManualWorkItems")}</span>
-                  </article>
-                ) : null}
-                {adminData.manualWorkItems.slice(0, 6).map((item) => (
-                  <article className="list-card" key={`${item.kind}-${item.id}`}>
-                    <strong>{item.kind}</strong>
-                    <span>
-                      {item.status} · {item.summary}
-                    </span>
-                    {item.risk ? <span>{item.risk}</span> : null}
-                  </article>
-                ))}
-              </section>
-              <section>
-                <h3>{t("alertHistory")}</h3>
-                <div className="form-grid">
-                  <input
-                    aria-label={t("sendTestAlert")}
-                    maxLength={240}
-                    value={alertTestMessage}
-                    onChange={(event) => setAlertTestMessage(event.target.value)}
-                  />
                   <button
                     type="button"
-                    onClick={() => void sendAdminTestAlert()}
+                    onClick={() => void saveRuntimeConfig()}
                   >
-                    <Send size={16} aria-hidden="true" />
-                    {t("sendTestAlert")}
+                    <ShieldCheck size={16} aria-hidden="true" />
+                    {t("saveRuntimeConfig")}
                   </button>
-                </div>
-                {adminData.alerts.length === 0 ? (
+                </section>
+                <section className="admin-section admin-section--compact">
+                  <h3>{t("resourcePanel")}</h3>
                   <article className="list-card">
-                    <span>{t("noRecentAlerts")}</span>
-                  </article>
-                ) : null}
-                {adminData.alerts.slice(0, 5).map((alert) => (
-                  <article className="list-card" key={alert.id}>
-                    <strong>{alert.status}</strong>
-                    <span>{alert.message}</span>
-                    {alert.lastError ? <span>{alert.lastError}</span> : null}
-                  </article>
-                ))}
-              </section>
-              <section>
-                <h3>{t("users")}</h3>
-                {adminData.users.slice(0, 5).map((item) => (
-                  <article className="list-card" key={item.id}>
-                    <strong>{item.email}</strong>
+                    <strong>{t("cpu")}</strong>
                     <span>
-                      {item.planId} · {item.frozen ? t("frozen") : t("active")}
+                      {adminData.runtimePanel?.resources.cpuPercent ?? 0}%
                     </span>
                   </article>
-                ))}
-              </section>
-              <section>
-                <h3>{t("attachments")}</h3>
-                {adminData.attachments.slice(0, 5).map((attachment) => (
-                  <article className="list-card" key={attachment.id}>
-                    <div>
-                      <strong>{attachment.fileName}</strong>
-                      <span>
-                        {attachment.scanStatus} · {attachment.status} ·{" "}
-                        {attachment.sha256.slice(0, 12)}
-                      </span>
-                    </div>
-                    <div className="button-row compact">
-                      <button
-                        type="button"
-                        onClick={() => void adminRetryScan(attachment.id)}
-                      >
-                        {t("retry")}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void adminFreezeAttachment(
-                            attachment.id,
-                            attachment.status !== "frozen",
-                          )
-                        }
-                      >
-                        {attachment.status === "frozen" ? t("release") : t("freeze")}
-                      </button>
-                    </div>
+                  <article className="list-card">
+                    <strong>{t("memory")}</strong>
+                    <span>
+                      {formatBytes(
+                        adminData.runtimePanel?.resources.memoryUsedBytes ?? 0,
+                      )}{" "}
+                      /{" "}
+                      {formatBytes(
+                        adminData.runtimePanel?.resources.memoryTotalBytes ?? 0,
+                      )}{" "}
+                      · {adminData.runtimePanel?.resources.memoryPercent ?? 0}%
+                    </span>
                   </article>
-                ))}
-              </section>
-              <section>
-                <h3>{t("shares")}</h3>
-                {adminData.shares.slice(0, 5).map((share) => (
-                  <article className="list-card" key={share.id}>
-                    <div>
-                      <strong>{share.id}</strong>
-                      <span>
-                        {share.visitCount} {t("visits")} ·{" "}
-                        {share.downloadCount} {t("downloads")}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => void adminRevokeShare(share.id)}
-                      disabled={Boolean(share.revokedAt)}
-                    >
-                      {t("revoke")}
-                    </button>
+                  <article className="list-card">
+                    <strong>{t("disk")}</strong>
+                    <span>
+                      {formatBytes(
+                        adminData.runtimePanel?.resources.diskUsedBytes ?? 0,
+                      )}{" "}
+                      /{" "}
+                      {formatBytes(
+                        adminData.runtimePanel?.resources.diskTotalBytes ?? 0,
+                      )}{" "}
+                      · {adminData.runtimePanel?.resources.diskPercent ?? 0}%
+                    </span>
                   </article>
-                ))}
-              </section>
-              <section>
-                <h3>{t("orders")}</h3>
-                {adminData.orders.slice(0, 5).map((order) => {
-                  const status = orderStatusDetail(order.status, locale);
-                  return (
-                    <article className="list-card" key={order.id}>
+                  <article className="list-card">
+                    <strong>{t("objectStorage")}</strong>
+                    <span>
+                      {formatBytes(
+                        adminData.runtimePanel?.resources.objectStorageBytes ??
+                          0,
+                      )}{" "}
+                      ·{" "}
+                      {adminData.runtimePanel?.resources
+                        .objectStorageObjectCount ?? 0}{" "}
+                      {t("files")}
+                    </span>
+                  </article>
+                </section>
+                <section className="admin-section admin-section--compact">
+                  <h3>{t("providerStatus")}</h3>
+                  {Object.entries(
+                    adminData.runtimeConfig?.providerStatus ?? {},
+                  ).map(([provider, status]) => (
+                    <article className="list-card" key={provider}>
                       <div>
-                        <strong>{order.planId}</strong>
+                        <strong>{provider}</strong>
                         <span>
-                          {order.provider} ·{" "}
-                          {(order.amountCents / 100).toFixed(2)}{" "}
-                          {order.currency}
+                          {status.configured ? t("enabled") : t("disabled")} ·{" "}
+                          {(status.missingEnv ?? []).join(", ") ||
+                            status.provider}
                         </span>
-                        <span className="order-status-note">
-                          {status.description}
-                        </span>
+                        {status.lastTestStatus ? (
+                          <span>{status.lastTestStatus}</span>
+                        ) : null}
                       </div>
-                      <span
-                        className={`order-status order-status--${status.tone}`}
-                      >
-                        {status.label}
-                      </span>
-                      <input
-                        aria-label={t("manualPaymentReason")}
-                        disabled={order.status === "paid"}
-                        maxLength={500}
-                        placeholder={t("manualPaymentReasonPlaceholder")}
-                        value={adminPaymentReasons[order.id] ?? ""}
-                        onChange={(event) =>
-                          setAdminPaymentReasons((previous) => ({
-                            ...previous,
-                            [order.id]: event.target.value,
-                          }))
-                        }
-                      />
                       <button
                         type="button"
-                        onClick={() => void adminMarkOrderPaid(order.id)}
-                        disabled={
-                          order.status === "paid" ||
-                          !(adminPaymentReasons[order.id] ?? "").trim()
-                        }
+                        onClick={() => void adminProviderTest(provider)}
                       >
-                        {t("paid")}
+                        <CheckCircle2 size={16} aria-hidden="true" />
+                        {t("verify")}
                       </button>
                     </article>
-                  );
-                })}
-              </section>
-              <section>
-                <h3>{t("queues")}</h3>
-                <article className="list-card">
-                  <strong>{t("scanFailures")}</strong>
-                  <span>{adminData.queues?.scanFailures.length ?? 0}</span>
-                </article>
-                <article className="list-card">
-                  <strong>{t("cleanupJobs")}</strong>
-                  <span>{adminData.queues?.cleanupJobs.length ?? 0}</span>
-                </article>
-                <article className="list-card">
-                  <strong>{t("cleanupFailures")}</strong>
-                  <span>{adminData.queues?.cleanupFailures.length ?? 0}</span>
-                </article>
-                <article className="list-card">
-                  <strong>{t("failedJobs")}</strong>
-                  <span>{adminData.queues?.failedJobs.length ?? 0}</span>
-                </article>
-                <article className="list-card">
-                  <strong>{t("queuedMails")}</strong>
-                  <span>{adminData.queues?.queuedMails.length ?? 0}</span>
-                </article>
-                <article className="list-card">
-                  <strong>{t("failedMails")}</strong>
-                  <span>{adminData.queues?.failedMails.length ?? 0}</span>
-                </article>
-                {(adminData.queues?.failedMails ?? [])
-                  .slice(0, 5)
-                  .map((mail) => (
-                    <article className="list-card" key={mail.id}>
-                      <div>
-                        <strong>{mail.subject}</strong>
-                        <span>
-                          {mail.to} · {mail.status} · {mail.attempts}{" "}
-                          {t("attempts")}
-                        </span>
-                        {mail.lastError ? <span>{mail.lastError}</span> : null}
+                  ))}
+                </section>
+                <section className="admin-section admin-section--wide">
+                  <h3>{t("planCatalog")}</h3>
+                  {(catalog?.plans ?? []).map((plan) => (
+                    <article className="list-card" key={plan.id}>
+                      <strong>{plan.id}</strong>
+                      <div className="form-grid">
+                        <label className="field-row">
+                          <span>{t("title")}</span>
+                          <input
+                            value={plan.name}
+                            onChange={(event) =>
+                              updateCatalogPlan(plan.id, {
+                                name: event.target.value,
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="field-row">
+                          <span>{t("activePasteLimitShort")}</span>
+                          <input
+                            min={0}
+                            type="number"
+                            value={plan.activePasteLimit}
+                            onChange={(event) =>
+                              updateCatalogPlan(plan.id, {
+                                activePasteLimit: Number(event.target.value),
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="field-row">
+                          <span>{t("activeStorageLimit")}</span>
+                          <input
+                            min={0}
+                            type="number"
+                            value={plan.activeStorageBytes}
+                            onChange={(event) =>
+                              updateCatalogPlan(plan.id, {
+                                activeStorageBytes: Number(event.target.value),
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="field-row">
+                          <span>{t("singleTextLimit")}</span>
+                          <input
+                            min={0}
+                            type="number"
+                            value={plan.singleTextBytes}
+                            onChange={(event) =>
+                              updateCatalogPlan(plan.id, {
+                                singleTextBytes: Number(event.target.value),
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="field-row">
+                          <span>{t("singleFileLimit")}</span>
+                          <input
+                            min={0}
+                            type="number"
+                            value={plan.singleFileBytes}
+                            onChange={(event) =>
+                              updateCatalogPlan(plan.id, {
+                                singleFileBytes: Number(event.target.value),
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="field-row">
+                          <span>{t("singlePasteLimit")}</span>
+                          <input
+                            min={0}
+                            type="number"
+                            value={plan.singlePasteBytes}
+                            onChange={(event) =>
+                              updateCatalogPlan(plan.id, {
+                                singlePasteBytes: Number(event.target.value),
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="field-row">
+                          <span>{t("attachmentsPerPaste")}</span>
+                          <input
+                            min={0}
+                            type="number"
+                            value={plan.attachmentsPerPasteLimit}
+                            onChange={(event) =>
+                              updateCatalogPlan(plan.id, {
+                                attachmentsPerPasteLimit: Number(
+                                  event.target.value,
+                                ),
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="field-row">
+                          <span>{t("retentionSeconds")}</span>
+                          <input
+                            min={1}
+                            type="number"
+                            value={plan.maxRetentionSeconds}
+                            onChange={(event) =>
+                              updateCatalogPlan(plan.id, {
+                                maxRetentionSeconds: Number(event.target.value),
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="field-row">
+                          <span>{t("dailyUploadLimit")}</span>
+                          <input
+                            min={0}
+                            type="number"
+                            value={plan.dailyUploadBytes}
+                            onChange={(event) =>
+                              updateCatalogPlan(plan.id, {
+                                dailyUploadBytes: Number(event.target.value),
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="field-row">
+                          <span>{t("dailyShareDownloadLimit")}</span>
+                          <input
+                            min={0}
+                            type="number"
+                            value={plan.dailyShareDownloadBytes}
+                            onChange={(event) =>
+                              updateCatalogPlan(plan.id, {
+                                dailyShareDownloadBytes: Number(
+                                  event.target.value,
+                                ),
+                              })
+                            }
+                          />
+                        </label>
                       </div>
                     </article>
                   ))}
-                {(adminData.queues?.reports ?? []).slice(0, 5).map((report) => (
-                  <article className="list-card" key={report.id}>
-                    <div>
-                      <strong>{report.target}</strong>
-                      <span>
-                        {report.status} · {report.reason}
-                      </span>
-                    </div>
-                    <div className="button-row compact">
+                  {(catalog?.prices ?? []).map((price) => (
+                    <article className="list-card" key={price.id}>
+                      <strong>
+                        {price.planId} · {price.period}
+                      </strong>
+                      <div className="form-grid">
+                        <label className="field-row">
+                          <span>{t("period")}</span>
+                          <input
+                            value={price.period}
+                            onChange={(event) =>
+                              updateCatalogPrice(price.id, {
+                                period: event.target.value,
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="field-row">
+                          <span>{t("priceCents")}</span>
+                          <input
+                            min={0}
+                            type="number"
+                            value={price.amountCents}
+                            onChange={(event) =>
+                              updateCatalogPrice(price.id, {
+                                amountCents: Number(event.target.value),
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="field-row">
+                          <span>{t("currency")}</span>
+                          <input
+                            maxLength={8}
+                            value={price.currency}
+                            onChange={(event) =>
+                              updateCatalogPrice(price.id, {
+                                currency: event.target.value,
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="check-row">
+                          <input
+                            checked={price.visible}
+                            type="checkbox"
+                            onChange={(event) =>
+                              updateCatalogPrice(price.id, {
+                                visible: event.target.checked,
+                              })
+                            }
+                          />
+                          {t("visible")}
+                        </label>
+                        <label className="check-row">
+                          <input
+                            checked={price.purchaseEnabled}
+                            type="checkbox"
+                            onChange={(event) =>
+                              updateCatalogPrice(price.id, {
+                                purchaseEnabled: event.target.checked,
+                              })
+                            }
+                          />
+                          {t("purchase")}
+                        </label>
+                      </div>
+                    </article>
+                  ))}
+                  <button type="button" onClick={() => void saveAdminCatalog()}>
+                    <ShieldCheck size={16} aria-hidden="true" />
+                    {t("saveCatalog")}
+                  </button>
+                </section>
+                <section className="admin-section">
+                  <h3>{t("redemptionCodes")}</h3>
+                  <div className="form-grid">
+                    <select
+                      aria-label={t("currentPlan")}
+                      value={redemptionDraft.planId}
+                      onChange={(event) =>
+                        setRedemptionDraft((previous) => ({
+                          ...previous,
+                          planId: event.target.value,
+                        }))
+                      }
+                    >
+                      {(catalog?.plans ?? []).map((plan) => (
+                        <option key={plan.id} value={plan.id}>
+                          {plan.name}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      aria-label={t("durationDays")}
+                      min={1}
+                      type="number"
+                      value={redemptionDraft.durationDays}
+                      onChange={(event) =>
+                        setRedemptionDraft((previous) => ({
+                          ...previous,
+                          durationDays: Number(event.target.value),
+                        }))
+                      }
+                    />
+                    <input
+                      aria-label={t("quantity")}
+                      min={1}
+                      type="number"
+                      value={redemptionDraft.quantity}
+                      onChange={(event) =>
+                        setRedemptionDraft((previous) => ({
+                          ...previous,
+                          quantity: Number(event.target.value),
+                        }))
+                      }
+                    />
+                    <input
+                      aria-label={t("note")}
+                      maxLength={200}
+                      placeholder={t("note")}
+                      value={redemptionDraft.note}
+                      onChange={(event) =>
+                        setRedemptionDraft((previous) => ({
+                          ...previous,
+                          note: event.target.value,
+                        }))
+                      }
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void createRedemptionBatch()}
+                  >
+                    <Archive size={16} aria-hidden="true" />
+                    {t("createRedemptionBatch")}
+                  </button>
+                  {adminData.redemptionBatches.slice(0, 5).map((batch) => (
+                    <article className="list-card" key={batch.id}>
+                      <div>
+                        <strong>
+                          {batch.planId} · {batch.quantity}
+                        </strong>
+                        <span>
+                          {batch.redeemedCount}/{batch.maxTotalRedemptions} ·{" "}
+                          {batch.disabled ? t("disabled") : t("enabled")}
+                        </span>
+                        {batch.codes?.[0]?.code ? (
+                          <code>
+                            {batch.codes.map((code) => code.code).join(", ")}
+                          </code>
+                        ) : null}
+                      </div>
                       <button
                         type="button"
-                        onClick={() =>
-                          void adminResolveReport(report, "resolved")
-                        }
-                        disabled={report.status === "resolved"}
+                        onClick={() => void toggleRedemptionBatch(batch)}
                       >
-                        {t("resolve")}
+                        {batch.disabled ? (
+                          <Undo2 size={16} aria-hidden="true" />
+                        ) : (
+                          <Ban size={16} aria-hidden="true" />
+                        )}
+                        {batch.disabled ? t("enabled") : t("disabled")}
                       </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void adminResolveReport(report, "dismissed")
-                        }
-                        disabled={report.status === "dismissed"}
-                      >
-                        {t("dismiss")}
-                      </button>
-                    </div>
-                  </article>
-                ))}
-              </section>
-              <section>
-                <h3>{t("webhooks")}</h3>
-                {adminData.webhookEvents.slice(0, 5).map((event) => (
-                  <article className="list-card" key={event.id}>
-                    <div>
-                      <strong>{event.eventType}</strong>
+                    </article>
+                  ))}
+                </section>
+                <section className="admin-section">
+                  <h3>{t("manualReview")}</h3>
+                  {adminData.manualWorkItems.length === 0 ? (
+                    <article className="list-card">
+                      <span>{t("noManualWorkItems")}</span>
+                    </article>
+                  ) : null}
+                  {adminData.manualWorkItems.slice(0, 6).map((item) => (
+                    <article
+                      className="list-card"
+                      key={`${item.kind}-${item.id}`}
+                    >
+                      <strong>{item.kind}</strong>
                       <span>
-                        {event.provider} · {event.targetId}
+                        {item.status} · {item.summary}
                       </span>
-                    </div>
+                      {item.risk ? <span>{item.risk}</span> : null}
+                    </article>
+                  ))}
+                </section>
+                <section className="admin-section">
+                  <h3>{t("alertHistory")}</h3>
+                  <div className="form-grid">
+                    <input
+                      aria-label={t("sendTestAlert")}
+                      maxLength={240}
+                      value={alertTestMessage}
+                      onChange={(event) =>
+                        setAlertTestMessage(event.target.value)
+                      }
+                    />
                     <button
                       type="button"
-                      onClick={() => void adminReplayWebhook(event.id)}
+                      onClick={() => void sendAdminTestAlert()}
                     >
-                      <RotateCcw size={16} aria-hidden="true" />
-                      {t("replay")}
+                      <Send size={16} aria-hidden="true" />
+                      {t("sendTestAlert")}
                     </button>
+                  </div>
+                  {adminData.alerts.length === 0 ? (
+                    <article className="list-card">
+                      <span>{t("noRecentAlerts")}</span>
+                    </article>
+                  ) : null}
+                  {adminData.alerts.slice(0, 5).map((alert) => (
+                    <article className="list-card" key={alert.id}>
+                      <strong>{alert.status}</strong>
+                      <span>{alert.message}</span>
+                      {alert.lastError ? <span>{alert.lastError}</span> : null}
+                    </article>
+                  ))}
+                </section>
+                <section className="admin-section admin-section--compact">
+                  <h3>{t("users")}</h3>
+                  {adminData.users.slice(0, 5).map((item) => (
+                    <article className="list-card" key={item.id}>
+                      <strong>{item.email}</strong>
+                      <span>
+                        {item.planId} ·{" "}
+                        {item.frozen ? t("frozen") : t("active")}
+                      </span>
+                    </article>
+                  ))}
+                </section>
+                <section className="admin-section">
+                  <h3>{t("attachments")}</h3>
+                  {adminData.attachments.slice(0, 5).map((attachment) => (
+                    <article className="list-card" key={attachment.id}>
+                      <div>
+                        <strong>{attachment.fileName}</strong>
+                        <span>
+                          {attachment.scanStatus} · {attachment.status} ·{" "}
+                          {attachment.sha256.slice(0, 12)}
+                        </span>
+                      </div>
+                      <div className="button-row compact">
+                        <button
+                          type="button"
+                          onClick={() => void adminRetryScan(attachment.id)}
+                        >
+                          <RotateCcw size={16} aria-hidden="true" />
+                          {t("retry")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void adminFreezeAttachment(
+                              attachment.id,
+                              attachment.status !== "frozen",
+                            )
+                          }
+                        >
+                          {attachment.status === "frozen" ? (
+                            <Undo2 size={16} aria-hidden="true" />
+                          ) : (
+                            <Snowflake size={16} aria-hidden="true" />
+                          )}
+                          {attachment.status === "frozen"
+                            ? t("release")
+                            : t("freeze")}
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                </section>
+                <section className="admin-section">
+                  <h3>{t("shares")}</h3>
+                  {adminData.shares.slice(0, 5).map((share) => (
+                    <article className="list-card" key={share.id}>
+                      <div>
+                        <strong>{share.id}</strong>
+                        <span>
+                          {share.visitCount} {t("visits")} ·{" "}
+                          {share.downloadCount} {t("downloads")}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void adminRevokeShare(share.id)}
+                        disabled={Boolean(share.revokedAt)}
+                      >
+                        <Trash2 size={16} aria-hidden="true" />
+                        {t("revoke")}
+                      </button>
+                    </article>
+                  ))}
+                </section>
+                <section className="admin-section">
+                  <h3>{t("orders")}</h3>
+                  {adminData.orders.slice(0, 5).map((order) => {
+                    const status = orderStatusDetail(order.status, locale);
+                    return (
+                      <article className="list-card" key={order.id}>
+                        <div>
+                          <strong>{order.planId}</strong>
+                          <span>
+                            {order.provider} ·{" "}
+                            {(order.amountCents / 100).toFixed(2)}{" "}
+                            {order.currency}
+                          </span>
+                          <span className="order-status-note">
+                            {status.description}
+                          </span>
+                        </div>
+                        <span
+                          className={`order-status order-status--${status.tone}`}
+                        >
+                          {status.label}
+                        </span>
+                        <input
+                          aria-label={t("manualPaymentReason")}
+                          disabled={order.status === "paid"}
+                          maxLength={500}
+                          placeholder={t("manualPaymentReasonPlaceholder")}
+                          value={adminPaymentReasons[order.id] ?? ""}
+                          onChange={(event) =>
+                            setAdminPaymentReasons((previous) => ({
+                              ...previous,
+                              [order.id]: event.target.value,
+                            }))
+                          }
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void adminMarkOrderPaid(order.id)}
+                          disabled={
+                            order.status === "paid" ||
+                            !(adminPaymentReasons[order.id] ?? "").trim()
+                          }
+                        >
+                          <CreditCard size={16} aria-hidden="true" />
+                          {t("paid")}
+                        </button>
+                      </article>
+                    );
+                  })}
+                </section>
+                <section className="admin-section admin-section--wide">
+                  <h3>{t("queues")}</h3>
+                  <article className="list-card">
+                    <strong>{t("scanFailures")}</strong>
+                    <span>{adminData.queues?.scanFailures.length ?? 0}</span>
                   </article>
-                ))}
+                  <article className="list-card">
+                    <strong>{t("cleanupJobs")}</strong>
+                    <span>{adminData.queues?.cleanupJobs.length ?? 0}</span>
+                  </article>
+                  <article className="list-card">
+                    <strong>{t("cleanupFailures")}</strong>
+                    <span>{adminData.queues?.cleanupFailures.length ?? 0}</span>
+                  </article>
+                  <article className="list-card">
+                    <strong>{t("failedJobs")}</strong>
+                    <span>{adminData.queues?.failedJobs.length ?? 0}</span>
+                  </article>
+                  <article className="list-card">
+                    <strong>{t("queuedMails")}</strong>
+                    <span>{adminData.queues?.queuedMails.length ?? 0}</span>
+                  </article>
+                  <article className="list-card">
+                    <strong>{t("failedMails")}</strong>
+                    <span>{adminData.queues?.failedMails.length ?? 0}</span>
+                  </article>
+                  {(adminData.queues?.failedMails ?? [])
+                    .slice(0, 5)
+                    .map((mail) => (
+                      <article className="list-card" key={mail.id}>
+                        <div>
+                          <strong>{mail.subject}</strong>
+                          <span>
+                            {mail.to} · {mail.status} · {mail.attempts}{" "}
+                            {t("attempts")}
+                          </span>
+                          {mail.lastError ? (
+                            <span>{mail.lastError}</span>
+                          ) : null}
+                        </div>
+                      </article>
+                    ))}
+                  {(adminData.queues?.reports ?? [])
+                    .slice(0, 5)
+                    .map((report) => (
+                      <article className="list-card" key={report.id}>
+                        <div>
+                          <strong>{report.target}</strong>
+                          <span>
+                            {report.status} · {report.reason}
+                          </span>
+                        </div>
+                        <div className="button-row compact">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void adminResolveReport(report, "resolved")
+                            }
+                            disabled={report.status === "resolved"}
+                          >
+                            <CheckCircle2 size={16} aria-hidden="true" />
+                            {t("resolve")}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void adminResolveReport(report, "dismissed")
+                            }
+                            disabled={report.status === "dismissed"}
+                          >
+                            <Ban size={16} aria-hidden="true" />
+                            {t("dismiss")}
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                </section>
+                <section className="admin-section admin-section--compact">
+                  <h3>{t("webhooks")}</h3>
+                  {adminData.webhookEvents.slice(0, 5).map((event) => (
+                    <article className="list-card" key={event.id}>
+                      <div>
+                        <strong>{event.eventType}</strong>
+                        <span>
+                          {event.provider} · {event.targetId}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void adminReplayWebhook(event.id)}
+                      >
+                        <RotateCcw size={16} aria-hidden="true" />
+                        {t("replay")}
+                      </button>
+                    </article>
+                  ))}
+                </section>
+              </div>
+              <section className="admin-audit-section">
+                <h3>{t("auditQueuesCleanup")}</h3>
+                <div className="admin-audit-list">
+                  {auditLogs.slice(0, 8).map((log) => (
+                    <article className="list-card" key={log.id}>
+                      <strong>{log.action}</strong>
+                      <span>
+                        {log.target} ·{" "}
+                        {new Date(log.createdAt).toLocaleString()}
+                      </span>
+                    </article>
+                  ))}
+                </div>
               </section>
             </div>
-            {auditLogs.slice(0, 8).map((log) => (
-              <article className="list-card" key={log.id}>
-                <strong>{log.action}</strong>
-                <span>
-                  {log.target} · {new Date(log.createdAt).toLocaleString()}
-                </span>
-              </article>
-            ))}
           </Panel>
         ) : null}
       </section>
@@ -5102,7 +5217,10 @@ function LandingPage({
           </div>
         </div>
 
-        <div className="landing-clipboard-card" aria-label={content.workspaceLabel}>
+        <div
+          className="landing-clipboard-card"
+          aria-label={content.workspaceLabel}
+        >
           <div className="clipboard-window-bar">
             <span />
             <span />
@@ -5191,8 +5309,8 @@ function LandingPage({
         </div>
         {showcasePlan ? (
           <p className="landing-footnote">
-            {showcasePlan.name} · {formatBytes(showcasePlan.activeStorageBytes)} ·{" "}
-            {formatDuration(showcasePlan.maxRetentionSeconds)}
+            {showcasePlan.name} · {formatBytes(showcasePlan.activeStorageBytes)}{" "}
+            · {formatDuration(showcasePlan.maxRetentionSeconds)}
           </p>
         ) : null}
       </section>
@@ -5586,9 +5704,7 @@ function PublicPageScreen({
           {page.path === "/support" ? (
             <section className="support-contact-card">
               <div>
-                <span>
-                  {t("supportRequests")}
-                </span>
+                <span>{t("supportRequests")}</span>
                 {contacts?.supportEmail ? (
                   <a href={`mailto:${contacts.supportEmail}`}>
                     {contacts.supportEmail}
@@ -5907,16 +6023,18 @@ function AttachmentDownloadItem({
 }
 
 function Panel({
+  className,
   title,
   meta,
   children,
 }: {
+  className?: string;
   title: string;
   meta: string;
   children: ReactNode;
 }) {
   return (
-    <section className="panel">
+    <section className={className ? `panel ${className}` : "panel"}>
       <div className="section-heading">
         <h2>{title}</h2>
         <span>{meta}</span>
