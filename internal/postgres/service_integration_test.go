@@ -55,19 +55,26 @@ func TestServiceWithPostgresStoresPreservesLaunchStateAcrossRestart(t *testing.T
 	if err != nil {
 		t.Fatalf("seed admin: %v", err)
 	}
+	start, err := service.StartRegistrationEmailVerification(ctx, userEmail)
+	if err != nil {
+		t.Fatalf("start registration verification: %v", err)
+	}
+	code := start["devToken"]
+	if code == "" {
+		t.Fatalf("expected registration dev token")
+	}
+	service = newPostgresBackedService(t, ctx, pool, cfg)
 	auth, err := service.Register(ctx, app.RegisterInput{
-		Email:       userEmail,
-		Password:    "password123",
-		DisplayName: "Service Persistence User",
+		Email:                 userEmail,
+		Password:              "password123",
+		DisplayName:           "Service Persistence User",
+		EmailVerificationCode: code,
 	})
 	if err != nil {
 		t.Fatalf("register user: %v", err)
 	}
-	if auth.SessionID == "" || auth.DevEmailVerificationToken == "" {
-		t.Fatalf("expected session and dev verification token, got %#v", auth)
-	}
-	if _, err := service.FinishEmailVerification(auth.DevEmailVerificationToken); err != nil {
-		t.Fatalf("finish email verification: %v", err)
+	if auth.SessionID == "" || !auth.User.EmailVerified {
+		t.Fatalf("expected verified session, got %#v", auth)
 	}
 	created, err := service.CreatePaste(auth.User.ID, app.PasteInput{
 		Title:            "Launch state",

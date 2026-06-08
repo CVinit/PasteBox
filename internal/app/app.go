@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -70,7 +71,6 @@ type Service struct {
 	usersByID             map[string]*User
 	userIDByEmail         map[string]string
 	sessionsByID          map[string]*Session
-	magicLinks            map[string]*AuthToken
 	emailVerifies         map[string]*AuthToken
 	passwordResets        map[string]*AuthToken
 	loginFailures         map[string]*LoginFailure
@@ -146,7 +146,6 @@ func NewWithStorage(ctx context.Context, cfg config.Config, stores Stores) (*Ser
 		usersByID:             map[string]*User{},
 		userIDByEmail:         map[string]string{},
 		sessionsByID:          map[string]*Session{},
-		magicLinks:            map[string]*AuthToken{},
 		emailVerifies:         map[string]*AuthToken{},
 		passwordResets:        map[string]*AuthToken{},
 		loginFailures:         map[string]*LoginFailure{},
@@ -540,10 +539,13 @@ type QuotaView struct {
 }
 
 type RegisterInput struct {
-	Email       string
-	Password    string
-	DisplayName string
-	Language    string
+	Email                 string
+	Password              string
+	DisplayName           string
+	Language              string
+	EmailVerificationCode string
+	TurnstileToken        string
+	RemoteIP              string
 }
 
 type PasteInput struct {
@@ -587,10 +589,36 @@ type ListOptions struct {
 	Tag    string
 }
 
-func (s *Service) Register(_ context.Context, input RegisterInput) (AuthResult, error) {
+func (s *Service) StartRegistrationEmailVerification(_ context.Context, email string) (map[string]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	email = normalizeEmail(email)
+	if email == "" || !strings.Contains(email, "@") {
+		return nil, E(http.StatusBadRequest, "invalid_email", "valid email is required")
+	}
+	if err := s.ensureAllowedRegistrationEmailLocked(email); err != nil {
+		return nil, err
+	}
+	if _, err := s.userByEmailLocked(email); err == nil {
+		return nil, E(http.StatusConflict, "email_exists", "email is already registered")
+	} else if !isStoreNotFound(err) && !isAppStatus(err, http.StatusNotFound) {
+		return nil, err
+	}
+
+	token := verificationCode()
+	authToken := AuthToken{Hash: registrationVerificationHash(email, token), Email: email, ExpiresAt: s.now().UTC().Add(15 * time.Minute)}
+	if err := s.createAuthTokenLocked("registration_email_verification", authToken); err != nil {
+		return nil, err
+	}
+	s.emailVerifies[authToken.Hash] = &authToken
+	if err := s.mail(email, "Your PasteBox registration code", fmt.Sprintf("Your PasteBox registration code is %s.\n\nThis code expires in 15 minutes.", token)); err != nil {
+		return nil, err
+	}
+	return s.authTokenResponse(token, "registration verification sent"), nil
+}
+
+func (s *Service) Register(ctx context.Context, input RegisterInput) (AuthResult, error) {
 	email := normalizeEmail(input.Email)
 	if email == "" || !strings.Contains(email, "@") {
 		return AuthResult{}, E(http.StatusBadRequest, "invalid_email", "valid email is required")
@@ -598,10 +626,25 @@ func (s *Service) Register(_ context.Context, input RegisterInput) (AuthResult, 
 	if len(input.Password) < 8 {
 		return AuthResult{}, E(http.StatusBadRequest, "weak_password", "password must be at least 8 characters")
 	}
+	if err := s.verifyRegistrationTurnstile(ctx, input.TurnstileToken, input.RemoteIP); err != nil {
+		return AuthResult{}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.ensureAllowedRegistrationEmailLocked(email); err != nil {
+		return AuthResult{}, err
+	}
 	if _, err := s.userByEmailLocked(email); err == nil {
 		return AuthResult{}, E(http.StatusConflict, "email_exists", "email is already registered")
 	} else if !isStoreNotFound(err) && !isAppStatus(err, http.StatusNotFound) {
 		return AuthResult{}, err
+	}
+	if s.runtimeConfig.Registration.RequireEmailVerification {
+		if err := s.consumeRegistrationEmailVerificationLocked(email, input.EmailVerificationCode); err != nil {
+			return AuthResult{}, err
+		}
 	}
 
 	passwordHash, err := hashPassword(input.Password)
@@ -614,10 +657,10 @@ func (s *Service) Register(_ context.Context, input RegisterInput) (AuthResult, 
 		ID:            s.newID("usr"),
 		Email:         email,
 		DisplayName:   defaultString(strings.TrimSpace(input.DisplayName), email),
-		Language:      defaultString(strings.TrimSpace(input.Language), "en"),
+		Language:      NormalizeUserLanguage(input.Language),
 		PasswordHash:  passwordHash,
 		Role:          "user",
-		EmailVerified: false,
+		EmailVerified: true,
 		PlanID:        "free",
 		CreatedAt:     now,
 		UpdatedAt:     now,
@@ -631,17 +674,9 @@ func (s *Service) Register(_ context.Context, input RegisterInput) (AuthResult, 
 	if err := s.mail(user.Email, "Welcome to PasteBox", "Your PasteBox account is ready."); err != nil {
 		return AuthResult{}, err
 	}
-	verificationToken, err := s.issueEmailVerificationLocked(user)
-	if err != nil {
-		return AuthResult{}, err
-	}
-
 	result, err := s.newSessionLocked(user)
 	if err != nil {
 		return AuthResult{}, err
-	}
-	if s.cfg.ExposeDevAuthTokens() {
-		result.DevEmailVerificationToken = verificationToken
 	}
 	return result, nil
 }
@@ -682,15 +717,15 @@ func (s *Service) Login(_ context.Context, email string, password string) (AuthR
 	return s.newSessionLocked(user)
 }
 
-func (s *Service) GoogleOAuth(ctx context.Context, email string, displayName string, googleSubject string) (AuthResult, error) {
-	return s.OAuthLogin(ctx, "google", email, displayName, googleSubject)
+func (s *Service) GoogleOAuth(ctx context.Context, email string, displayName string, googleSubject string, language string) (AuthResult, error) {
+	return s.OAuthLogin(ctx, "google", email, displayName, googleSubject, language)
 }
 
-func (s *Service) GitHubOAuth(ctx context.Context, email string, displayName string, githubSubject string) (AuthResult, error) {
-	return s.OAuthLogin(ctx, "github", email, displayName, githubSubject)
+func (s *Service) GitHubOAuth(ctx context.Context, email string, displayName string, githubSubject string, language string) (AuthResult, error) {
+	return s.OAuthLogin(ctx, "github", email, displayName, githubSubject, language)
 }
 
-func (s *Service) OAuthLogin(_ context.Context, provider string, email string, displayName string, subject string) (AuthResult, error) {
+func (s *Service) OAuthLogin(_ context.Context, provider string, email string, displayName string, subject string, language string) (AuthResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -759,6 +794,9 @@ func (s *Service) OAuthLogin(_ context.Context, provider string, email string, d
 	} else if !isStoreNotFound(err) && !isAppStatus(err, http.StatusNotFound) {
 		return AuthResult{}, err
 	}
+	if err := s.ensureAllowedRegistrationEmailLocked(email); err != nil {
+		return AuthResult{}, err
+	}
 
 	passwordHash, err := hashPassword(newToken())
 	if err != nil {
@@ -769,7 +807,7 @@ func (s *Service) OAuthLogin(_ context.Context, provider string, email string, d
 		ID:            s.newID("usr"),
 		Email:         email,
 		DisplayName:   defaultString(strings.TrimSpace(displayName), email),
-		Language:      "en",
+		Language:      NormalizeUserLanguage(language),
 		PasswordHash:  passwordHash,
 		Role:          "user",
 		EmailVerified: true,
@@ -834,47 +872,6 @@ func (s *Service) FinishEmailVerification(token string) (UserView, error) {
 		return UserView{}, err
 	}
 	return s.viewUserLocked(user)
-}
-
-func (s *Service) StartMagicLink(_ context.Context, email string) (map[string]string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	user, err := s.userByEmailLocked(email)
-	if err != nil {
-		return nil, err
-	}
-	token := newToken()
-	hash := tokenHash(token)
-	authToken := AuthToken{Hash: hash, UserID: user.ID, Email: user.Email, ExpiresAt: s.now().UTC().Add(15 * time.Minute)}
-	if err := s.createAuthTokenLocked("magic_link", authToken); err != nil {
-		return nil, err
-	}
-	s.magicLinks[hash] = &authToken
-	if err := s.mail(user.Email, "Your PasteBox magic link", s.authLinkBody("Sign in to PasteBox", "/magic", token, 15*time.Minute)); err != nil {
-		return nil, err
-	}
-	return s.authTokenResponse(token, "magic link sent"), nil
-}
-
-func (s *Service) ConsumeMagicLink(_ context.Context, token string) (AuthResult, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	authToken, err := s.consumeTokenLocked("magic_link", s.magicLinks, token)
-	if err != nil {
-		return AuthResult{}, err
-	}
-	user, err := s.activeUserLocked(authToken.UserID)
-	if err != nil {
-		return AuthResult{}, E(http.StatusForbidden, "account_unavailable", "account is unavailable")
-	}
-	user.EmailVerified = true
-	user.UpdatedAt = s.now().UTC()
-	if err := s.updateUserLocked(user); err != nil {
-		return AuthResult{}, err
-	}
-	return s.newSessionLocked(user)
 }
 
 func (s *Service) StartPasswordReset(_ context.Context, email string) (map[string]string, error) {
@@ -975,7 +972,7 @@ func (s *Service) UpdateProfile(userID string, displayName string, language stri
 		user.DisplayName = strings.TrimSpace(displayName)
 	}
 	if strings.TrimSpace(language) != "" {
-		user.Language = strings.TrimSpace(language)
+		user.Language = NormalizeUserLanguage(language)
 	}
 	user.UpdatedAt = s.now().UTC()
 	if err := s.updateUserLocked(user); err != nil {
@@ -2365,7 +2362,7 @@ func (s *Service) AdminUsers(actorID string) ([]UserView, error) {
 	return out, nil
 }
 
-func (s *Service) AdminSetUserPlan(actorID string, userID string, planID string, expiresAt *time.Time) (UserView, error) {
+func (s *Service) AdminSetUserPlan(actorID string, userID string, planID string, expiresAt *time.Time, reason string, ticketID string) (UserView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.requireAdminLocked(actorID); err != nil {
@@ -2378,13 +2375,32 @@ func (s *Service) AdminSetUserPlan(actorID string, userID string, planID string,
 	if _, ok := plans.Find(s.catalog, planID); !ok {
 		return UserView{}, E(http.StatusBadRequest, "invalid_plan", "plan does not exist")
 	}
+	reason = strings.TrimSpace(reason)
+	ticketID = strings.TrimSpace(ticketID)
+	if reason == "" && ticketID == "" {
+		return UserView{}, E(http.StatusBadRequest, "admin_plan_reason_required", "plan changes require a support reason or ticket id")
+	}
+	oldPlanID := user.PlanID
+	oldExpiresAt := user.PlanExpiresAt
 	user.PlanID = planID
 	user.PlanExpiresAt = expiresAt
 	user.UpdatedAt = s.now().UTC()
 	if err := s.updateUserLocked(user); err != nil {
 		return UserView{}, err
 	}
-	if err := s.auditLocked(actorID, "admin.user_plan_set", userID, map[string]any{"planId": planID}); err != nil {
+	metadata := map[string]any{
+		"oldPlanId":    oldPlanID,
+		"newPlanId":    planID,
+		"oldExpiresAt": oldExpiresAt,
+		"newExpiresAt": expiresAt,
+	}
+	if reason != "" {
+		metadata["reason"] = reason
+	}
+	if ticketID != "" {
+		metadata["ticketId"] = ticketID
+	}
+	if err := s.auditLocked(actorID, "admin.user_plan_set", userID, metadata); err != nil {
 		return UserView{}, err
 	}
 	return s.viewUserLocked(user)
@@ -4026,6 +4042,69 @@ func (s *Service) consumeTokenLocked(kind string, tokens map[string]*AuthToken, 
 	return authToken, nil
 }
 
+func (s *Service) ensureAllowedRegistrationEmailLocked(email string) error {
+	domain := emailDomain(email)
+	if domain == "" {
+		return E(http.StatusBadRequest, "invalid_email", "valid email is required")
+	}
+	allowed := s.runtimeConfig.Registration.AllowedDomains
+	if len(allowed) == 0 {
+		return nil
+	}
+	for _, candidate := range allowed {
+		if strings.EqualFold(domain, candidate) {
+			return nil
+		}
+	}
+	return E(http.StatusForbidden, "email_domain_not_allowed", "email domain is not allowed for registration")
+}
+
+func (s *Service) consumeRegistrationEmailVerificationLocked(email string, code string) error {
+	hash := registrationVerificationHash(email, code)
+	authToken := s.emailVerifies[hash]
+	if s.auth.Tokens != nil {
+		loaded, err := s.auth.Tokens.AuthToken(context.Background(), "registration_email_verification", hash)
+		if err != nil {
+			if isStoreNotFound(err) {
+				return E(http.StatusUnauthorized, "invalid_token", "token is invalid or expired")
+			}
+			return err
+		}
+		authToken = &loaded
+		s.emailVerifies[hash] = authToken
+	}
+	if authToken == nil || authToken.UsedAt != nil || !authToken.ExpiresAt.After(s.now().UTC()) {
+		return E(http.StatusUnauthorized, "invalid_token", "token is invalid or expired")
+	}
+	if subtle.ConstantTimeCompare([]byte(normalizeEmail(authToken.Email)), []byte(normalizeEmail(email))) != 1 {
+		return E(http.StatusUnauthorized, "invalid_token", "token is invalid or expired")
+	}
+	now := s.now().UTC()
+	if s.auth.Tokens != nil {
+		if err := s.auth.Tokens.MarkAuthTokenUsed(context.Background(), "registration_email_verification", hash, now); err != nil {
+			return err
+		}
+	}
+	authToken.UsedAt = &now
+	return nil
+}
+
+func (s *Service) verifyRegistrationTurnstile(ctx context.Context, token string, remoteIP string) error {
+	s.mu.Lock()
+	required := s.runtimeConfig.Registration.RequireTurnstile
+	s.mu.Unlock()
+	if !required {
+		return nil
+	}
+	return s.VerifyTurnstile(ctx, token, remoteIP)
+}
+
+func (s *Service) VerifyTurnstile(ctx context.Context, token string, remoteIP string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.verifyTurnstileLocked(ctx, token, remoteIP)
+}
+
 func (s *Service) issueEmailVerificationLocked(user *User) (string, error) {
 	token := newToken()
 	hash := tokenHash(token)
@@ -4669,6 +4748,18 @@ func newToken() string {
 	return base64.RawURLEncoding.EncodeToString(raw)
 }
 
+func verificationCode() string {
+	raw := make([]byte, 4)
+	if _, err := rand.Read(raw); err != nil {
+		panic(err)
+	}
+	return fmt.Sprintf("%06d", binary.BigEndian.Uint32(raw)%1000000)
+}
+
+func registrationVerificationHash(email string, code string) string {
+	return tokenHash(normalizeEmail(email) + "\x00" + strings.TrimSpace(code))
+}
+
 func tokenHash(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
@@ -4868,6 +4959,24 @@ func removeString(values []string, target string) []string {
 		}
 	}
 	return out
+}
+
+func NormalizeUserLanguage(language string) string {
+	for _, candidate := range strings.Split(language, ",") {
+		normalized := strings.TrimSpace(strings.Split(candidate, ";")[0])
+		normalized = strings.ToLower(normalized)
+		switch {
+		case normalized == "zh-tw", normalized == "zh-hk", normalized == "zh-mo", strings.Contains(normalized, "hant"):
+			return "zh-TW"
+		case normalized == "zh-cn", normalized == "zh-sg", strings.HasPrefix(normalized, "zh"):
+			return "zh-CN"
+		case strings.HasPrefix(normalized, "es"):
+			return "es"
+		case strings.HasPrefix(normalized, "en"):
+			return "en"
+		}
+	}
+	return "en"
 }
 
 func defaultString(value string, fallback string) string {

@@ -10,7 +10,7 @@
 
 - 使用演示默认值、本地 PostgreSQL volume、本地 Redis、本地 MinIO、本地 Mailpit SMTP 和本地 ClamAV。
 - 不包含 HTTPS edge、production preflight、off-host backup、恢复演练、PITR 证据和生产告警。
-- 开发认证流程可在 JSON 响应中返回邮箱验证、magic link 和密码重置 token，便于演示，但不应暴露给真实公网用户。
+- 开发认证流程可在 JSON 响应中返回注册验证码、邮箱验证和密码重置 token，便于演示，但不应暴露给真实公网用户。
 
 如果要执行已确认的生产上线 Phase 0A 基线，请使用
 `docs/production-deployment-runbook.md` 和 `compose.production.yaml`，不要使用本

@@ -48,7 +48,7 @@ for (const section of requiredRunbookSections) {
 const requiredEvidence = [
   "upload, private read, and delete",
   "Verify your PasteBox email",
-  "Your PasteBox magic link",
+  "Your PasteBox registration code",
   "Reset your PasteBox password",
   "New PasteBox login",
   "PasteBox payment received",

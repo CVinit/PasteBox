@@ -111,7 +111,7 @@ payloads, private object keys, or user data.
   and sanitized evidence was copied into the release notes.
 - [ ] Managed S3-compatible object storage accepted upload, private read, and
   delete through the application path.
-- [ ] SMTP delivered verification, magic-link, reset, security, billing, and
+- [ ] SMTP delivered registration-code, verification, reset, security, billing, and
   account-deletion messages to controlled test mailboxes.
 - [ ] Google OAuth login completed against the production OAuth application and
   authorized redirect URI.

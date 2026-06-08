@@ -2,7 +2,9 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
+  type KeyboardEvent,
   type ReactNode,
 } from "react";
 import {
@@ -62,6 +64,7 @@ import {
   type Price,
   type Quota,
   type RedemptionBatch,
+  type RegistrationConfig,
   type Report,
   type RuntimeConfig,
   type RuntimePanel,
@@ -168,7 +171,13 @@ type AuthLink = {
 };
 
 type AuthMode = "login" | "register";
-type AdminTab = "overview" | "plans" | "guest" | "services" | "queues";
+type AdminTab =
+  | "overview"
+  | "plans"
+  | "guest"
+  | "security"
+  | "services"
+  | "queues";
 type SizeUnit = "KB" | "MB" | "GB";
 type TimeUnit = "seconds" | "minutes" | "hours" | "days";
 
@@ -176,6 +185,8 @@ type AuthFormState = {
   email: string;
   password: string;
   displayName: string;
+  emailVerificationCode: string;
+  turnstileToken: string;
 };
 
 type LandingFeature = {
@@ -198,6 +209,9 @@ type LandingContent = {
   workspaceBody: string;
   features: LandingFeature[];
   steps: Array<{ title: string; body: string }>;
+  ctaTitle: string;
+  ctaBody: string;
+  ctaBadges: string[];
 };
 
 const defaultDraft: Draft = {
@@ -250,6 +264,7 @@ const adminTabOptions: Array<{ value: AdminTab; labelKey: string }> = [
   { value: "overview", labelKey: "adminTabOverview" },
   { value: "plans", labelKey: "adminTabPlans" },
   { value: "guest", labelKey: "adminTabGuest" },
+  { value: "security", labelKey: "adminTabSecurity" },
   { value: "services", labelKey: "adminTabServices" },
   { value: "queues", labelKey: "adminTabQueues" },
 ];
@@ -260,124 +275,124 @@ const clayFooterAsset = "/assets/clay-footer-ai.png";
 const viewSummaries: Record<Locale, Record<View, ViewSummary>> = {
   en: {
     inbox: {
-      eyebrow: "Private transfer desk",
-      title: "Capture. Scan. Share.",
+      eyebrow: "Unified workspace",
+      title: "Save content in one place. Pick it up anytime.",
       description:
-        "PasteBox keeps active clips, expiring files, and share controls visible in one operational workspace.",
+        "Text, images, and files land in one focused workspace, so you can find them, add attachments, and share faster.",
     },
     shared: {
-      eyebrow: "Link control",
-      title: "Shared links, under control.",
+      eyebrow: "Share management",
+      title: "Every link is trackable and revocable.",
       description:
-        "Review visits, download counts, expiry windows, and revoke risky links before they drift.",
+        "See visits, downloads, and expiry at a glance, then pull a link back when access should stop.",
     },
     billing: {
-      eyebrow: "Plan and payments",
-      title: "Payments with lifecycle detail.",
+      eyebrow: "Plan benefits",
+      title: "Choose the plan that fits how you share.",
       description:
-        "Stripe and Epusdt orders show lifecycle detail instead of raw status strings.",
+        "Free covers quick transfers; Plus adds more room and longer retention; Pro is built for large files, frequent sharing, and ongoing projects.",
     },
     settings: {
-      eyebrow: "Account operations",
-      title: "Account operations in one place.",
+      eyebrow: "Account and security",
+      title: "Keep account, data, and safety requests together.",
       description:
-        "Manage identity, export data, report abuse, and handle deletion requests from one place.",
+        "Manage sign-in options, export data, report abuse, and request deletion without jumping between pages.",
     },
     admin: {
-      eyebrow: "Launch control room",
-      title: "Launch signals at a glance.",
+      eyebrow: "Operations console",
+      title: "See key signals together and act faster.",
       description:
-        "Monitor production surfaces that gate public beta readiness and abuse response.",
+        "Users, content, orders, queues, and alerts stay in one view so operators can spot risk and finish launch checks.",
     },
   },
   "zh-CN": {
     inbox: {
-      eyebrow: "私有传输台",
-      title: "捕获、扫描、分享。",
+      eyebrow: "统一工作台",
+      title: "集中保存内容，随时继续处理。",
       description:
-        "PasteBox 在同一个操作工作区里展示活动内容、即将过期的文件和分享控制。",
+        "文字、图片和文件会进入同一个清爽工作区，方便查找、补充附件并快速生成分享。",
     },
     shared: {
-      eyebrow: "链接控制",
-      title: "分享链接，始终可控。",
-      description: "查看访问、下载、过期窗口，并在风险扩散前撤销链接。",
+      eyebrow: "分享管理",
+      title: "每一条链接都可追踪、可撤销。",
+      description: "访问次数、下载状态和过期时间集中展示，发现风险时可以立即收回分享权限。",
     },
     billing: {
-      eyebrow: "套餐与支付",
-      title: "带生命周期细节的支付。",
+      eyebrow: "套餐权益",
+      title: "按使用场景选择更合适的套餐。",
       description:
-        "Stripe 和 Epusdt 订单显示完整生命周期，而不是原始状态字符串。",
+        "Free 适合临时传输；Plus 提供更高容量和更长有效期；Pro 面向大文件、高频分享和长期项目。",
     },
     settings: {
-      eyebrow: "账号操作",
-      title: "账号操作集中处理。",
-      description: "在一个位置管理身份、导出数据、举报滥用和处理删除请求。",
+      eyebrow: "账号与安全",
+      title: "把账号、数据和安全请求放在一起。",
+      description: "绑定登录方式、导出数据、提交举报和删除申请都在这里完成，减少来回切换。",
     },
     admin: {
-      eyebrow: "上线控制室",
-      title: "上线信号一目了然。",
-      description: "监控决定公开 beta 就绪度和滥用响应能力的生产表面。",
+      eyebrow: "运营控制台",
+      title: "关键状态集中看，问题处理更快。",
+      description: "用户、内容、订单、队列和告警集中在同一处，方便管理员判断风险和推进上线检查。",
     },
   },
   "zh-TW": {
     inbox: {
-      eyebrow: "私有傳輸台",
-      title: "擷取、掃描、分享。",
+      eyebrow: "統一工作台",
+      title: "集中儲存內容，隨時繼續處理。",
       description:
-        "PasteBox 在同一個操作工作區裡展示作用中內容、即將過期的檔案和分享控制。",
+        "文字、圖片和檔案會進入同一個清爽工作區，方便查找、補充附件並快速產生分享。",
     },
     shared: {
-      eyebrow: "連結控制",
-      title: "分享連結，始終可控。",
-      description: "檢視訪問、下載、過期視窗，並在風險擴散前撤銷連結。",
+      eyebrow: "分享管理",
+      title: "每一條連結都可追蹤、可撤銷。",
+      description: "訪問次數、下載狀態和過期時間集中展示，發現風險時可以立即收回分享權限。",
     },
     billing: {
-      eyebrow: "方案與付款",
-      title: "帶生命週期細節的付款。",
+      eyebrow: "方案權益",
+      title: "依照使用場景選擇更合適的方案。",
       description:
-        "Stripe 和 Epusdt 訂單顯示完整生命週期，而不是原始狀態字串。",
+        "Free 適合臨時傳輸；Plus 提供更高容量和更長有效期；Pro 面向大檔案、高頻分享和長期專案。",
     },
     settings: {
-      eyebrow: "帳號操作",
-      title: "帳號操作集中處理。",
-      description: "在一個位置管理身分、匯出資料、檢舉濫用和處理刪除請求。",
+      eyebrow: "帳號與安全",
+      title: "把帳號、資料和安全請求放在一起。",
+      description: "綁定登入方式、匯出資料、提交檢舉和刪除申請都在這裡完成，減少來回切換。",
     },
     admin: {
-      eyebrow: "上線控制室",
-      title: "上線訊號一目了然。",
-      description: "監控決定公開 beta 就緒度和濫用回應能力的生產表面。",
+      eyebrow: "營運控制台",
+      title: "關鍵狀態集中看，問題處理更快。",
+      description: "使用者、內容、訂單、佇列和警示集中在同一處，方便管理員判斷風險和推進上線檢查。",
     },
   },
   es: {
     inbox: {
-      eyebrow: "Mesa privada de transferencia",
-      title: "Captura. Escanea. Comparte.",
+      eyebrow: "Espacio de trabajo unificado",
+      title: "Guarda contenido en un lugar y retómalo cuando quieras.",
       description:
-        "PasteBox mantiene recortes activos, archivos por vencer y controles de enlace en un solo espacio operativo.",
+        "Texto, imágenes y archivos quedan en un espacio claro para encontrarlos, añadir adjuntos y compartirlos más rápido.",
     },
     shared: {
-      eyebrow: "Control de enlaces",
-      title: "Enlaces compartidos bajo control.",
+      eyebrow: "Gestión de enlaces",
+      title: "Cada enlace se puede revisar y revocar.",
       description:
-        "Revisa visitas, descargas, vencimientos y revoca enlaces riesgosos antes de que se propaguen.",
+        "Consulta visitas, descargas y caducidad de un vistazo, y retira el acceso cuando deje de ser seguro.",
     },
     billing: {
-      eyebrow: "Planes y pagos",
-      title: "Pagos con detalle de ciclo de vida.",
+      eyebrow: "Beneficios del plan",
+      title: "Elige el plan que encaja con tu forma de compartir.",
       description:
-        "Los pedidos de Stripe y Epusdt muestran estado operativo, no solo cadenas sin contexto.",
+        "Free cubre envíos puntuales; Plus añade más capacidad y más retención; Pro está pensado para archivos grandes, uso frecuente y proyectos continuos.",
     },
     settings: {
-      eyebrow: "Operaciones de cuenta",
-      title: "Cuenta, datos y soporte en un lugar.",
+      eyebrow: "Cuenta y seguridad",
+      title: "Cuenta, datos y seguridad en un solo lugar.",
       description:
-        "Gestiona identidad, exportaciones, reportes de abuso y solicitudes de eliminación.",
+        "Gestiona métodos de acceso, exportaciones, reportes de abuso y solicitudes de eliminación sin cambiar de página.",
     },
     admin: {
-      eyebrow: "Sala de lanzamiento",
-      title: "Señales de lanzamiento al instante.",
+      eyebrow: "Consola de operaciones",
+      title: "Señales clave juntas para actuar antes.",
       description:
-        "Monitorea las superficies que bloquean beta pública y respuesta ante abuso.",
+        "Usuarios, contenido, pedidos, colas y alertas se ven en una misma vista para detectar riesgos y cerrar revisiones de lanzamiento.",
     },
   },
 };
@@ -820,10 +835,15 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     register: "Register",
     google: "Google",
     github: "GitHub",
+    emailName: "Email name",
+    emailDomain: "Email domain",
+    registrationCode: "Registration code",
+    sendRegistrationCode: "Send code",
+    registrationCodeIssued: "Registration code sent",
+    turnstileChallenge: "Security check",
+    turnstileNotConfigured: "Turnstile is not configured",
     verificationToken: "verification token",
     verify: "Verify",
-    magicLink: "Magic link",
-    magicToken: "magic link token",
     useToken: "Use token",
     manualTokenFallback: "Manual token fallback",
     reset: "Reset",
@@ -958,6 +978,7 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     adminTabOverview: "Overview",
     adminTabPlans: "Plans",
     adminTabGuest: "Guest limits",
+    adminTabSecurity: "Security",
     adminTabServices: "Services",
     adminTabQueues: "Queues & audit",
     adminControlPanel: "Control panel",
@@ -973,6 +994,22 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     runtimeConfigSaved: "Runtime config saved",
     saveRuntimeConfig: "Save runtime config",
     guestUploads: "Guest uploads",
+    registrationSecurity: "Registration security",
+    allowedEmailDomains: "Allowed email domains",
+    allowedEmailDomainsPlaceholder: "gmail.com, outlook.com",
+    requireEmailVerification: "Require email code",
+    turnstileSiteKey: "Turnstile site key",
+    rateLimits: "Rate limits",
+    rateLimitWindow: "Rate limit window",
+    emailVerificationLimit: "Email code sends",
+    registerLimit: "Registrations",
+    loginLimit: "Logins",
+    writeLimit: "Writes",
+    uploadLimit: "Uploads",
+    shareCreateLimit: "Share creates",
+    shareAccessLimit: "Share opens",
+    downloadLimit: "Downloads",
+    webhookLimit: "Webhooks",
     requireTurnstile: "Require Turnstile",
     enabled: "Enabled",
     disabled: "Disabled",
@@ -1052,8 +1089,6 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     emailVerifiedLogin: "Email verified. Sign in to continue.",
     emailVerifiedDifferentAccount:
       "Email verified for another account. Sign out before switching.",
-    magicLinkIssued: "Magic link issued",
-    signedInMagic: "Signed in with magic link",
     passwordResetLinkReady:
       "Enter a new password to finish resetting your account.",
     signedOut: "Signed out",
@@ -1107,6 +1142,7 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     unitItems: "items",
     unitFiles: "files",
     unitPercent: "%",
+    unitRequests: "requests",
   },
   "zh-CN": {
     privateCloudClipboard: "私有云剪切板",
@@ -1118,10 +1154,15 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     register: "注册",
     google: "Google",
     github: "GitHub",
+    emailName: "邮箱名",
+    emailDomain: "邮箱后缀",
+    registrationCode: "注册验证码",
+    sendRegistrationCode: "发送验证码",
+    registrationCodeIssued: "注册验证码已发送",
+    turnstileChallenge: "安全验证",
+    turnstileNotConfigured: "Turnstile 尚未配置",
     verificationToken: "邮箱验证码",
     verify: "验证",
-    magicLink: "魔法链接",
-    magicToken: "魔法链接令牌",
     useToken: "使用令牌",
     manualTokenFallback: "手动令牌备用入口",
     reset: "重置",
@@ -1254,6 +1295,7 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     adminTabOverview: "概览",
     adminTabPlans: "套餐/价格",
     adminTabGuest: "游客限制",
+    adminTabSecurity: "安全/限流",
     adminTabServices: "服务配置",
     adminTabQueues: "队列/审计",
     adminControlPanel: "控制面板",
@@ -1269,6 +1311,22 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     runtimeConfigSaved: "运行配置已保存",
     saveRuntimeConfig: "保存运行配置",
     guestUploads: "游客上传",
+    registrationSecurity: "注册安全",
+    allowedEmailDomains: "允许注册的邮箱后缀",
+    allowedEmailDomainsPlaceholder: "gmail.com, outlook.com",
+    requireEmailVerification: "要求邮箱验证码",
+    turnstileSiteKey: "Turnstile 站点密钥",
+    rateLimits: "接口限流",
+    rateLimitWindow: "限流窗口",
+    emailVerificationLimit: "验证码发送次数",
+    registerLimit: "注册次数",
+    loginLimit: "登录次数",
+    writeLimit: "写入次数",
+    uploadLimit: "上传次数",
+    shareCreateLimit: "创建分享次数",
+    shareAccessLimit: "打开分享次数",
+    downloadLimit: "下载次数",
+    webhookLimit: "Webhook 次数",
     requireTurnstile: "要求 Turnstile",
     enabled: "已开启",
     disabled: "已关闭",
@@ -1348,8 +1406,6 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     emailVerifiedLogin: "邮箱已验证，请登录后继续。",
     emailVerifiedDifferentAccount:
       "另一个账号的邮箱已验证，切换前请先退出当前账号。",
-    magicLinkIssued: "魔法链接已签发",
-    signedInMagic: "已通过魔法链接登录",
     passwordResetLinkReady: "请输入新密码以完成账号密码重置。",
     signedOut: "已退出",
     allSessionsSignedOut: "所有会话已退出",
@@ -1402,6 +1458,7 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     unitItems: "条",
     unitFiles: "个文件",
     unitPercent: "%",
+    unitRequests: "次",
   },
 };
 
@@ -1419,8 +1476,6 @@ const copy: Record<Locale, Record<string, string>> = {
     register: "註冊",
     verificationToken: "電子郵件驗證碼",
     verify: "驗證",
-    magicLink: "魔法連結",
-    magicToken: "魔法連結權杖",
     useToken: "使用權杖",
     manualTokenFallback: "手動權杖備用入口",
     reset: "重設",
@@ -1634,8 +1689,6 @@ const copy: Record<Locale, Record<string, string>> = {
     emailVerifiedLogin: "電子郵件已驗證，請登入後繼續。",
     emailVerifiedDifferentAccount:
       "另一個帳號的電子郵件已驗證，切換前請先登出目前帳號。",
-    magicLinkIssued: "魔法連結已簽發",
-    signedInMagic: "已透過魔法連結登入",
     passwordResetLinkReady: "請輸入新密碼以完成帳號密碼重設。",
     signedOut: "已登出",
     allSessionsSignedOut: "所有工作階段已登出",
@@ -1690,8 +1743,6 @@ const copy: Record<Locale, Record<string, string>> = {
     google: "Google",
     verificationToken: "token de verificación",
     verify: "Verificar",
-    magicLink: "Enlace mágico",
-    magicToken: "token de enlace mágico",
     useToken: "Usar token",
     manualTokenFallback: "Entrada manual de token",
     reset: "Restablecer",
@@ -1915,8 +1966,6 @@ const copy: Record<Locale, Record<string, string>> = {
     emailVerifiedLogin: "Correo verificado. Inicia sesión para continuar.",
     emailVerifiedDifferentAccount:
       "Correo verificado para otra cuenta. Cierra sesión antes de cambiar.",
-    magicLinkIssued: "Enlace mágico emitido",
-    signedInMagic: "Sesión iniciada con enlace mágico",
     passwordResetLinkReady:
       "Ingresa una contraseña nueva para terminar el restablecimiento.",
     signedOut: "Sesión cerrada",
@@ -2149,44 +2198,151 @@ function AdminNumberField({
   );
 }
 
+declare global {
+  interface Window {
+    turnstile?: {
+      render: (
+        element: HTMLElement,
+        options: {
+          sitekey: string;
+          callback: (token: string) => void;
+          "expired-callback"?: () => void;
+          "error-callback"?: () => void;
+          language?: string;
+        },
+      ) => string;
+      remove: (widgetId: string) => void;
+    };
+  }
+}
+
+function TurnstileWidget({
+  siteKey,
+  locale,
+  onToken,
+}: {
+  siteKey: string;
+  locale: Locale;
+  onToken: (token: string) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const widgetRef = useRef<string | null>(null);
+  const onTokenRef = useRef(onToken);
+
+  useEffect(() => {
+    onTokenRef.current = onToken;
+  }, [onToken]);
+
+  useEffect(() => {
+    if (!siteKey || !containerRef.current) return;
+    let canceled = false;
+    const render = () => {
+      if (canceled || !window.turnstile || !containerRef.current) return;
+      if (widgetRef.current) {
+        window.turnstile.remove(widgetRef.current);
+      }
+      widgetRef.current = window.turnstile.render(containerRef.current, {
+        sitekey: siteKey,
+        language: locale.toLowerCase(),
+        callback: (token) => onTokenRef.current(token),
+        "expired-callback": () => onTokenRef.current(""),
+        "error-callback": () => onTokenRef.current(""),
+      });
+    };
+
+    if (window.turnstile) {
+      render();
+    } else {
+      const script = document.createElement("script");
+      script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js";
+      script.async = true;
+      script.defer = true;
+      script.onload = render;
+      document.head.appendChild(script);
+    }
+
+    return () => {
+      canceled = true;
+      if (widgetRef.current && window.turnstile) {
+        window.turnstile.remove(widgetRef.current);
+        widgetRef.current = null;
+      }
+    };
+  }, [locale, siteKey]);
+
+  return <div className="turnstile-box" ref={containerRef} />;
+}
+
+function splitEmailForRegistration(
+  email: string,
+  domains: string[],
+): { local: string; domain: string } {
+  const [localPart = "", domainPart = ""] = email.split("@");
+  const fallbackDomain = domains[0] ?? "";
+  const domain = domains.includes(domainPart) ? domainPart : fallbackDomain;
+  return { local: localPart, domain };
+}
+
+function buildRegistrationEmail(local: string, domain: string): string {
+  const cleanLocal = local.trim().replace(/@/g, "");
+  return domain ? `${cleanLocal}@${domain}` : cleanLocal;
+}
+
+function domainListText(domains: string[]): string {
+  return domains.join(", ");
+}
+
+function parseDomainList(value: string): string[] {
+  return Array.from(
+    new Set(
+      value
+        .split(/[\s,;]+/)
+        .map((item) => item.trim().toLowerCase().replace(/^@+/, ""))
+        .filter(Boolean),
+    ),
+  );
+}
+
 function landingContentFor(locale: Locale): LandingContent {
   if (locale === "zh-TW") {
     return {
       navProduct: "產品",
       navSecurity: "安全",
       navPricing: "方案",
-      eyebrow: "跨裝置線上剪貼簿",
-      title: "一個即開即用的私有線上剪貼簿。",
+      eyebrow: "跨裝置 · 線上剪貼簿",
+      title: "隨手一存，換裝置秒接著用。",
       subtitle:
-        "打開就能貼上文字、圖片或檔案，生成可撤銷的限時分享，登入後管理全部內容。",
+        "免安裝、打開就用。貼上文字、圖片或檔案，產生可設密碼、可撤銷、會自動到期的分享連結，登入後還能保留歷史和更大容量。",
       primaryCta: "免費註冊",
       secondaryCta: "登入",
       workspaceLabel: "PasteBox 工作台",
-      workspaceTitle: "先用起來，再決定是否註冊。",
-      workspaceBody:
-        "首頁工作台支援遊客試用；超過免費額度時，再登入使用完整容量和歷史記錄。",
+      workspaceTitle: "為什麼選 PasteBox",
+      workspaceBody: "傳得更快，連結更可控，檔案更安心。",
       features: [
         {
-          title: "快速貼上",
-          body: "文字、圖片和檔案都從同一個入口建立分享。",
-          stat: "6s",
+          title: "即開即用",
+          body: "不用下載用戶端，瀏覽器打開就能貼上分享，訪客也能先把流程跑一遍。",
+          stat: "0 安裝",
         },
         {
-          title: "可控分享",
-          body: "連結有期限，可撤銷，適合臨時交付和跨設備傳輸。",
-          stat: "4x",
+          title: "分享可控",
+          body: "每條連結都能設密碼、限訪問和下載次數、設到期時間，發錯了隨時一鍵收回。",
+          stat: "可撤銷",
         },
         {
-          title: "檔案掃描",
-          body: "附件會保留掃描狀態，公開下載前風險更清楚。",
-          stat: "safe",
+          title: "檔案更安心",
+          body: "附件會保留病毒掃描狀態，公開下載前風險一目了然。",
+          stat: "已掃描",
         },
       ],
       steps: [
         { title: "貼上", body: "保存文字、連結、憑證片段或交付說明。" },
-        { title: "附檔", body: "拖放檔案到同一條內容，保留上下文。" },
-        { title: "分享", body: "生成限時連結，之後仍可撤銷。" },
+        { title: "附加檔案", body: "把圖片或檔案拖到同一條內容，上下文不丟。" },
+        { title: "分享", body: "產生限時連結，發出去之後還能隨時撤銷。" },
       ],
+      ctaTitle: "現在就把第一條內容存進來。",
+      ctaBody: "免費註冊，立刻拿到歷史記錄、更大容量和完整的分享控制。",
+      ctaBadges: ["免費開始", "免安裝", "可隨時撤銷", "附件已掃描"],
     };
   }
 
@@ -2195,38 +2351,40 @@ function landingContentFor(locale: Locale): LandingContent {
       navProduct: "产品",
       navSecurity: "安全",
       navPricing: "套餐",
-      eyebrow: "跨设备在线剪切板",
-      title: "一个即开即用的私有在线剪切板。",
+      eyebrow: "跨设备 · 在线剪切板",
+      title: "随手一存，换设备秒接着用。",
       subtitle:
-        "打开就能粘贴文字、图片或文件，生成可撤销的限时分享，登录后管理全部内容。",
+        "免安装、打开就用。粘贴文字、图片或文件，生成可设密码、可撤销、会自动到期的分享链接，登录后还能保留历史和更大容量。",
       primaryCta: "免费注册",
       secondaryCta: "登录",
       workspaceLabel: "PasteBox 工作台",
-      workspaceTitle: "先用起来，再决定是否注册。",
-      workspaceBody:
-        "首页工作台支持游客试用；超过免费额度时，再登录使用完整容量和历史记录。",
+      workspaceTitle: "为什么选 PasteBox",
+      workspaceBody: "传得更快，链接更可控，文件更安心。",
       features: [
         {
-          title: "快速粘贴",
-          body: "文字、图片和文件都从同一个入口创建分享。",
-          stat: "6s",
+          title: "即开即用",
+          body: "不用下载客户端，浏览器打开就能粘贴分享，游客也能先把流程跑一遍。",
+          stat: "0 安装",
         },
         {
-          title: "可控分享",
-          body: "链接有期限，可撤销，适合临时交付和跨设备传输。",
-          stat: "4x",
+          title: "分享可控",
+          body: "每条链接都能设密码、限访问和下载次数、设到期时间，发错了随时一键收回。",
+          stat: "可撤销",
         },
         {
-          title: "文件扫描",
-          body: "附件会保留扫描状态，公开下载前风险更清楚。",
-          stat: "safe",
+          title: "文件更安心",
+          body: "附件会保留病毒扫描状态，公开下载前风险一目了然。",
+          stat: "已扫描",
         },
       ],
       steps: [
         { title: "粘贴", body: "保存文本、链接、凭据片段或交付说明。" },
-        { title: "附加文件", body: "拖放文件到同一条内容，保留上下文。" },
-        { title: "分享", body: "生成限时链接，之后仍可撤销。" },
+        { title: "附加文件", body: "把图片或文件拖到同一条内容，上下文不丢。" },
+        { title: "分享", body: "生成限时链接，发出去之后还能随时撤销。" },
       ],
+      ctaTitle: "现在就把第一条内容存进来。",
+      ctaBody: "免费注册，立刻拿到历史记录、更大容量和完整的分享控制。",
+      ctaBadges: ["免费开始", "免安装", "可随时撤销", "附件已扫描"],
     };
   }
 
@@ -2236,44 +2394,54 @@ function landingContentFor(locale: Locale): LandingContent {
       navSecurity: "Seguridad",
       navPricing: "Planes",
       eyebrow: "Portapapeles online entre dispositivos",
-      title:
-        "Texto, archivos y control de enlaces en un solo escritorio limpio.",
+      title: "Guárdalo aquí y retómalo en otro dispositivo al instante.",
       subtitle:
-        "PasteBox combina una captura rápida tipo online clipboard con enlaces privados, escaneo, vencimientos y cuenta.",
+        "Sin instalar nada: abre y pega texto, imágenes o archivos. Crea enlaces con contraseña, revocables y con caducidad automática, e inicia sesión cuando quieras historial y más capacidad.",
       primaryCta: "Registrarse gratis",
       secondaryCta: "Iniciar sesión",
       workspaceLabel: "Escritorio PasteBox",
-      workspaceTitle:
-        "Pega contenido, define vencimiento y comparte con control.",
+      workspaceTitle: "Por qué PasteBox",
       workspaceBody:
-        "Tarjetas compactas, campos visibles, estado de escaneo y límites de enlace en una sola pantalla.",
+        "Transferencias más rápidas, enlaces más controlados y archivos más seguros.",
       features: [
         {
-          title: "Pega rápido",
-          body: "Captura directa con espacio privado de cuenta.",
-          stat: "6s",
+          title: "Listo al instante",
+          body: "Sin cliente que instalar: abre el navegador y comparte. Los invitados también pueden probar todo el flujo.",
+          stat: "0 instalar",
         },
         {
           title: "Enlaces controlados",
-          body: "Contraseña, visitas, descargas y vencimiento al crear.",
-          stat: "4x",
+          body: "Cada enlace admite contraseña, límite de visitas y descargas y caducidad. Revócalo con un clic si te equivocas.",
+          stat: "revocable",
         },
         {
-          title: "Escaneo de archivos",
-          body: "Estado claro antes de permitir descargas públicas.",
-          stat: "safe",
+          title: "Archivos más seguros",
+          body: "Los adjuntos conservan el estado de escaneo antivirus para ver el riesgo antes de cualquier descarga pública.",
+          stat: "escaneado",
         },
       ],
       steps: [
         {
           title: "Pega",
-          body: "Guarda texto, enlaces, credenciales o contexto.",
+          body: "Guarda texto, enlaces, credenciales o notas de entrega.",
         },
-        { title: "Adjunta", body: "Suelta archivos junto al mismo contenido." },
+        {
+          title: "Adjunta",
+          body: "Suelta imágenes o archivos en el mismo contenido y conserva el contexto.",
+        },
         {
           title: "Comparte",
-          body: "Crea enlaces temporales y revócalos luego.",
+          body: "Crea enlaces temporales y revócalos cuando quieras.",
         },
+      ],
+      ctaTitle: "Guarda tu primer contenido ahora.",
+      ctaBody:
+        "Regístrate gratis y obtén historial, más capacidad y control total de enlaces al instante.",
+      ctaBadges: [
+        "Gratis para empezar",
+        "Sin instalar",
+        "Revocable",
+        "Adjuntos escaneados",
       ],
     };
   }
@@ -2283,30 +2451,29 @@ function landingContentFor(locale: Locale): LandingContent {
     navSecurity: "Security",
     navPricing: "Pricing",
     eyebrow: "Cross-device online clipboard",
-    title: "A private online clipboard you can use immediately.",
+    title: "Drop it here, pick it up on any device.",
     subtitle:
-      "Paste text, images, or files, create a revocable expiring link, then sign in when you need history and larger limits.",
+      "No install, no setup. Paste text, images, or files and get a link you can password-protect, revoke, and set to expire on its own. Sign in when you want history and bigger limits.",
     primaryCta: "Register free",
     secondaryCta: "Login",
     workspaceLabel: "PasteBox workspace",
-    workspaceTitle: "Try the workspace before signing up.",
-    workspaceBody:
-      "Guest mode covers quick transfers. Sign in when you need larger capacity, history, and account controls.",
+    workspaceTitle: "Why PasteBox",
+    workspaceBody: "Faster handoffs, links you control, files you can trust.",
     features: [
       {
-        title: "Fast paste",
-        body: "Text, images, and files start from the same sharing workspace.",
-        stat: "6s",
+        title: "Instant, no install",
+        body: "Nothing to download. Open the browser and share. Guests can run the whole flow before signing up.",
+        stat: "0 install",
       },
       {
-        title: "Controlled links",
-        body: "Links expire and can be revoked, making quick handoffs less messy.",
-        stat: "4x",
+        title: "Links you control",
+        body: "Every link takes a password, visit and download caps, and an expiry. Sent it to the wrong person? Revoke it in one click.",
+        stat: "revocable",
       },
       {
-        title: "File scanning",
-        body: "Attachments keep scan state visible before public downloads.",
-        stat: "safe",
+        title: "Files you can trust",
+        body: "Attachments keep their virus-scan status, so the risk is clear before anyone downloads.",
+        stat: "scanned",
       },
     ],
     steps: [
@@ -2316,10 +2483,17 @@ function landingContentFor(locale: Locale): LandingContent {
       },
       {
         title: "Attach",
-        body: "Drop files into the same paste and keep context together.",
+        body: "Drop images or files into the same paste and keep context together.",
       },
-      { title: "Share", body: "Create expiring links and revoke them later." },
+      {
+        title: "Share",
+        body: "Create an expiring link and revoke it anytime after.",
+      },
     ],
+    ctaTitle: "Save your first thing right now.",
+    ctaBody:
+      "Register free and get history, bigger limits, and full link control instantly.",
+    ctaBadges: ["Free to start", "No install", "Revocable", "Scanned uploads"],
   };
 }
 
@@ -2645,6 +2819,8 @@ function App() {
     email: "",
     password: "",
     displayName: "",
+    emailVerificationCode: "",
+    turnstileToken: "",
   });
   const [resetToken, setResetToken] = useState("");
   const [profileDraft, setProfileDraft] = useState({
@@ -2977,7 +3153,15 @@ function App() {
 
   async function register() {
     const result = await run(
-      () => client.register({ ...auth, language: locale }),
+      () =>
+        client.register({
+          email: auth.email,
+          password: auth.password,
+          displayName: auth.displayName,
+          language: locale,
+          emailVerificationCode: auth.emailVerificationCode,
+          turnstileToken: auth.turnstileToken,
+        }),
       t("accountReady"),
     );
     if (result) {
@@ -3009,12 +3193,25 @@ function App() {
     }
   }
 
+  async function startRegistrationVerification() {
+    const result = await run(
+      () => client.startRegistrationVerification(auth.email),
+      t("registrationCodeIssued"),
+    );
+    if (result?.devToken) {
+      setAuth((current) => ({
+        ...current,
+        emailVerificationCode: result.devToken ?? "",
+      }));
+    }
+  }
+
   function googleOAuth() {
-    window.location.assign(client.googleOAuthStartPath("/app"));
+    window.location.assign(client.googleOAuthStartPath("/app", locale));
   }
 
   function githubOAuth() {
-    window.location.assign(client.githubOAuthStartPath("/app"));
+    window.location.assign(client.githubOAuthStartPath("/app", locale));
   }
 
   async function startVerification() {
@@ -3429,6 +3626,42 @@ function App() {
     });
   }
 
+  function updateRuntimeRegistrationConfig(
+    patch: Partial<RuntimeConfig["registration"]>,
+  ) {
+    setAdminData((previous) => {
+      if (!previous.runtimeConfig) return previous;
+      return {
+        ...previous,
+        runtimeConfig: {
+          ...previous.runtimeConfig,
+          registration: {
+            ...previous.runtimeConfig.registration,
+            ...patch,
+          },
+        },
+      };
+    });
+  }
+
+  function updateRuntimeRateLimitConfig(
+    patch: Partial<RuntimeConfig["rateLimits"]>,
+  ) {
+    setAdminData((previous) => {
+      if (!previous.runtimeConfig) return previous;
+      return {
+        ...previous,
+        runtimeConfig: {
+          ...previous.runtimeConfig,
+          rateLimits: {
+            ...previous.runtimeConfig.rateLimits,
+            ...patch,
+          },
+        },
+      };
+    });
+  }
+
   function updateRuntimeAlertConfig(patch: Partial<RuntimeConfig["alerts"]>) {
     setAdminData((previous) => {
       if (!previous.runtimeConfig) return previous;
@@ -3503,6 +3736,8 @@ function App() {
       () =>
         client.adminUpdateRuntimeConfig({
           guestUploads: cfg.guestUploads,
+          registration: cfg.registration,
+          rateLimits: cfg.rateLimits,
           alerts: cfg.alerts,
         }),
       t("runtimeConfigSaved"),
@@ -3613,11 +3848,15 @@ function App() {
         onAuth={setAuth}
         onLogin={() => void login()}
         onRegister={() => void register()}
+        onStartRegistrationVerification={() =>
+          void startRegistrationVerification()
+        }
         onGoogle={googleOAuth}
         onGithub={githubOAuth}
         onPasswordReset={() => void passwordReset()}
         onFinishPasswordReset={() => void finishPasswordReset()}
         onCancelPasswordReset={cancelPasswordReset}
+        registration={catalog?.registration}
         locale={locale}
       />
     );
@@ -4688,6 +4927,245 @@ function App() {
                         </div>
                       </article>
                     ) : null}
+                    <button
+                      type="button"
+                      onClick={() => void saveRuntimeConfig()}
+                    >
+                      <ShieldCheck size={16} aria-hidden="true" />
+                      {t("saveRuntimeConfig")}
+                    </button>
+                  </section>
+                ) : null}
+                {adminTab === "security" ? (
+                  <section className="admin-section admin-section--wide">
+                    <h3>{t("registrationSecurity")}</h3>
+                    <article className="list-card">
+                      <strong>{t("registrationSecurity")}</strong>
+                      <div className="form-grid">
+                        <label className="check-row">
+                          <input
+                            checked={
+                              adminData.runtimeConfig?.registration
+                                .requireEmailVerification ?? false
+                            }
+                            type="checkbox"
+                            onChange={(event) =>
+                              updateRuntimeRegistrationConfig({
+                                requireEmailVerification: event.target.checked,
+                              })
+                            }
+                          />
+                          {t("requireEmailVerification")}
+                        </label>
+                        <label className="check-row">
+                          <input
+                            checked={
+                              adminData.runtimeConfig?.registration
+                                .requireTurnstile ?? false
+                            }
+                            type="checkbox"
+                            onChange={(event) =>
+                              updateRuntimeRegistrationConfig({
+                                requireTurnstile: event.target.checked,
+                              })
+                            }
+                          />
+                          {t("requireTurnstile")}
+                        </label>
+                        <label className="field-row field-row--wide">
+                          <span>{t("allowedEmailDomains")}</span>
+                          <textarea
+                            placeholder={t("allowedEmailDomainsPlaceholder")}
+                            value={domainListText(
+                              adminData.runtimeConfig?.registration
+                                .allowedDomains ?? [],
+                            )}
+                            onChange={(event) =>
+                              updateRuntimeRegistrationConfig({
+                                allowedDomains: parseDomainList(
+                                  event.target.value,
+                                ),
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="field-row field-row--wide">
+                          <span>{t("turnstileSiteKey")}</span>
+                          <input
+                            readOnly
+                            value={
+                              adminData.runtimeConfig?.registration
+                                .turnstileSiteKey || t("disabled")
+                            }
+                          />
+                        </label>
+                      </div>
+                    </article>
+                    <article className="list-card">
+                      <strong>{t("rateLimits")}</strong>
+                      <div className="form-grid">
+                        <label className="check-row">
+                          <input
+                            checked={
+                              adminData.runtimeConfig?.rateLimits.enabled ??
+                              false
+                            }
+                            type="checkbox"
+                            onChange={(event) =>
+                              updateRuntimeRateLimitConfig({
+                                enabled: event.target.checked,
+                              })
+                            }
+                          />
+                          {t("enabled")}
+                        </label>
+                        <AdminTimeField
+                          label={t("rateLimitWindow")}
+                          minSeconds={1}
+                          t={t}
+                          unit={adminTimeUnitFor(
+                            "rate.windowSeconds",
+                            adminData.runtimeConfig?.rateLimits.windowSeconds ??
+                              0,
+                          )}
+                          valueSeconds={
+                            adminData.runtimeConfig?.rateLimits.windowSeconds ??
+                            0
+                          }
+                          onChangeSeconds={(value) =>
+                            updateRuntimeRateLimitConfig({
+                              windowSeconds: value,
+                            })
+                          }
+                          onUnitChange={(unit) =>
+                            setAdminTimeUnit("rate.windowSeconds", unit)
+                          }
+                        />
+                        <AdminNumberField
+                          label={t("emailVerificationLimit")}
+                          min={1}
+                          unitLabel={t("unitRequests")}
+                          value={
+                            adminData.runtimeConfig?.rateLimits
+                              .emailVerificationLimit ?? 0
+                          }
+                          onChange={(value) =>
+                            updateRuntimeRateLimitConfig({
+                              emailVerificationLimit: value,
+                            })
+                          }
+                        />
+                        <AdminNumberField
+                          label={t("registerLimit")}
+                          min={1}
+                          unitLabel={t("unitRequests")}
+                          value={
+                            adminData.runtimeConfig?.rateLimits.registerLimit ??
+                            0
+                          }
+                          onChange={(value) =>
+                            updateRuntimeRateLimitConfig({
+                              registerLimit: value,
+                            })
+                          }
+                        />
+                        <AdminNumberField
+                          label={t("loginLimit")}
+                          min={1}
+                          unitLabel={t("unitRequests")}
+                          value={
+                            adminData.runtimeConfig?.rateLimits.loginLimit ?? 0
+                          }
+                          onChange={(value) =>
+                            updateRuntimeRateLimitConfig({
+                              loginLimit: value,
+                            })
+                          }
+                        />
+                        <AdminNumberField
+                          label={t("writeLimit")}
+                          min={1}
+                          unitLabel={t("unitRequests")}
+                          value={
+                            adminData.runtimeConfig?.rateLimits.writeLimit ?? 0
+                          }
+                          onChange={(value) =>
+                            updateRuntimeRateLimitConfig({
+                              writeLimit: value,
+                            })
+                          }
+                        />
+                        <AdminNumberField
+                          label={t("uploadLimit")}
+                          min={1}
+                          unitLabel={t("unitRequests")}
+                          value={
+                            adminData.runtimeConfig?.rateLimits.uploadLimit ?? 0
+                          }
+                          onChange={(value) =>
+                            updateRuntimeRateLimitConfig({
+                              uploadLimit: value,
+                            })
+                          }
+                        />
+                        <AdminNumberField
+                          label={t("shareCreateLimit")}
+                          min={1}
+                          unitLabel={t("unitRequests")}
+                          value={
+                            adminData.runtimeConfig?.rateLimits
+                              .shareCreateLimit ?? 0
+                          }
+                          onChange={(value) =>
+                            updateRuntimeRateLimitConfig({
+                              shareCreateLimit: value,
+                            })
+                          }
+                        />
+                        <AdminNumberField
+                          label={t("shareAccessLimit")}
+                          min={1}
+                          unitLabel={t("unitRequests")}
+                          value={
+                            adminData.runtimeConfig?.rateLimits
+                              .shareAccessLimit ?? 0
+                          }
+                          onChange={(value) =>
+                            updateRuntimeRateLimitConfig({
+                              shareAccessLimit: value,
+                            })
+                          }
+                        />
+                        <AdminNumberField
+                          label={t("downloadLimit")}
+                          min={1}
+                          unitLabel={t("unitRequests")}
+                          value={
+                            adminData.runtimeConfig?.rateLimits.downloadLimit ??
+                            0
+                          }
+                          onChange={(value) =>
+                            updateRuntimeRateLimitConfig({
+                              downloadLimit: value,
+                            })
+                          }
+                        />
+                        <AdminNumberField
+                          label={t("webhookLimit")}
+                          min={1}
+                          unitLabel={t("unitRequests")}
+                          value={
+                            adminData.runtimeConfig?.rateLimits.webhookLimit ??
+                            0
+                          }
+                          onChange={(value) =>
+                            updateRuntimeRateLimitConfig({
+                              webhookLimit: value,
+                            })
+                          }
+                        />
+                      </div>
+                    </article>
                     <button
                       type="button"
                       onClick={() => void saveRuntimeConfig()}
@@ -5887,6 +6365,25 @@ function LandingPage({
         </section>
       ) : null}
 
+      <section className="landing-cta-band" aria-label={content.ctaTitle}>
+        <div className="landing-cta-band-copy">
+          <h2>{content.ctaTitle}</h2>
+          <p>{content.ctaBody}</p>
+          <ul className="landing-cta-badges">
+            {content.ctaBadges.map((badge) => (
+              <li key={badge}>
+                <CheckCircle2 size={15} aria-hidden="true" />
+                {badge}
+              </li>
+            ))}
+          </ul>
+        </div>
+        <a className="landing-primary-button large" href="/register">
+          <Sparkles size={18} aria-hidden="true" />
+          {content.primaryCta}
+        </a>
+      </section>
+
       <PublicFooter locale={locale} />
     </main>
   );
@@ -6011,6 +6508,38 @@ function GuestWorkbench({
     }
   }
 
+  const activePanelId = `guest-panel-${mode}`;
+  const activeTabId = `guest-tab-${mode}`;
+  const modalTitleId = "guest-limit-modal-title";
+
+  function focusTab(nextMode: GuestWorkbenchMode) {
+    window.requestAnimationFrame(() => {
+      document.getElementById(`guest-tab-${nextMode}`)?.focus();
+    });
+  }
+
+  function handleTabKeyDown(
+    event: KeyboardEvent<HTMLButtonElement>,
+    index: number,
+  ) {
+    let nextIndex = index;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = (index + 1) % modeLabels.length;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = (index - 1 + modeLabels.length) % modeLabels.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = modeLabels.length - 1;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    const nextMode = modeLabels[nextIndex].mode;
+    switchMode(nextMode);
+    focusTab(nextMode);
+  }
+
   return (
     <div className="guest-workbench" aria-label={labels.hint}>
       <div className="clipboard-window-bar guest-workbench-bar">
@@ -6019,13 +6548,17 @@ function GuestWorkbench({
         <span />
         <strong>PasteBox</strong>
       </div>
-      <div className="guest-workbench-tabs" role="tablist">
-        {modeLabels.map((item) => (
+      <div className="guest-workbench-tabs" role="tablist" aria-label="PasteBox">
+        {modeLabels.map((item, index) => (
           <button
+            aria-controls={`guest-panel-${item.mode}`}
             aria-selected={mode === item.mode}
             className={mode === item.mode ? "active" : ""}
+            id={`guest-tab-${item.mode}`}
             key={item.mode}
+            onKeyDown={(event) => handleTabKeyDown(event, index)}
             role="tab"
+            tabIndex={mode === item.mode ? 0 : -1}
             type="button"
             onClick={() => switchMode(item.mode)}
           >
@@ -6034,63 +6567,70 @@ function GuestWorkbench({
           </button>
         ))}
       </div>
-      <label className="guest-field">
-        <span>{labels.titlePlaceholder}</span>
-        <input
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-          placeholder={labels.titlePlaceholder}
-        />
-      </label>
-      {mode === "text" ? (
-        <label className="guest-field guest-field--text">
-          <span>{labels.modeText}</span>
-          <textarea
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            placeholder={labels.textPlaceholder}
-          />
-          <small className="guest-limit-note">
-            {labels.textLimit}: {formatBytes(config.singleTextBytes)}
-          </small>
-        </label>
-      ) : (
-        <label className="guest-upload-box">
-          <UploadCloud size={22} aria-hidden="true" />
-          <strong>
-            {file?.name ??
-              (mode === "image" ? labels.chooseImage : labels.chooseFile)}
-          </strong>
-          <span>
-            {file
-              ? formatBytes(file.size)
-              : mode === "image"
-                ? labels.imageOnly
-                : labels.chooseFile}
-          </span>
+      <div
+        aria-labelledby={activeTabId}
+        className="guest-workbench-panel"
+        id={activePanelId}
+        role="tabpanel"
+      >
+        <label className="guest-field">
+          <span>{labels.titlePlaceholder}</span>
           <input
-            accept={mode === "image" ? "image/*" : undefined}
-            type="file"
-            onChange={(event) => {
-              const nextFile = event.target.files?.[0] ?? null;
-              if (
-                mode === "image" &&
-                nextFile &&
-                !nextFile.type.startsWith("image/")
-              ) {
-                setFile(null);
-                setStatus(labels.imageTypeError);
-                return;
-              }
-              setFile(nextFile);
-              setStatus("");
-            }}
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder={labels.titlePlaceholder}
           />
-          <small className="guest-limit-note">
-            {labels.fileLimit}: {formatBytes(config.singleFileBytes)}
-          </small>
         </label>
-      )}
+        {mode === "text" ? (
+          <label className="guest-field guest-field--text">
+            <span>{labels.modeText}</span>
+            <textarea
+              value={text}
+              onChange={(event) => setText(event.target.value)}
+              placeholder={labels.textPlaceholder}
+            />
+            <small className="guest-limit-note">
+              {labels.textLimit}: {formatBytes(config.singleTextBytes)}
+            </small>
+          </label>
+        ) : (
+          <label className="guest-upload-box">
+            <UploadCloud size={22} aria-hidden="true" />
+            <strong>
+              {file?.name ??
+                (mode === "image" ? labels.chooseImage : labels.chooseFile)}
+            </strong>
+            <span>
+              {file
+                ? formatBytes(file.size)
+                : mode === "image"
+                  ? labels.imageOnly
+                  : labels.chooseFile}
+            </span>
+            <input
+              accept={mode === "image" ? "image/*" : undefined}
+              type="file"
+              onChange={(event) => {
+                const nextFile = event.target.files?.[0] ?? null;
+                if (
+                  mode === "image" &&
+                  nextFile &&
+                  !nextFile.type.startsWith("image/")
+                ) {
+                  setFile(null);
+                  setStatus(labels.imageTypeError);
+                  return;
+                }
+                setFile(nextFile);
+                setStatus("");
+              }}
+            />
+            <small className="guest-limit-note">
+              {labels.fileLimit}: {formatBytes(config.singleFileBytes)}
+            </small>
+          </label>
+        )}
+      </div>
       <div className="guest-workbench-actions">
         <span>
           {labels.hint} · {formatBytes(totalBytes)} /{" "}
@@ -6119,11 +6659,12 @@ function GuestWorkbench({
         <div className="guest-limit-backdrop" role="presentation">
           <section
             aria-modal="true"
+            aria-labelledby={modalTitleId}
             className="guest-limit-modal"
             role="dialog"
           >
             <span className="eyebrow">{labels.modalEyebrow}</span>
-            <h3>{labels.modalTitle}</h3>
+            <h3 id={modalTitleId}>{labels.modalTitle}</h3>
             <p>{limitMessage}</p>
             <div>
               <button type="button" onClick={() => setLimitMessage("")}>
@@ -6147,11 +6688,13 @@ function AuthScreen({
   onAuth,
   onLogin,
   onRegister,
+  onStartRegistrationVerification,
   onGoogle,
   onGithub,
   onPasswordReset,
   onFinishPasswordReset,
   onCancelPasswordReset,
+  registration,
   locale,
 }: {
   mode: AuthMode;
@@ -6162,17 +6705,21 @@ function AuthScreen({
   onAuth: (value: AuthFormState) => void;
   onLogin: () => void;
   onRegister: () => void;
+  onStartRegistrationVerification: () => void;
   onGoogle: () => void;
   onGithub: () => void;
   onPasswordReset: () => void;
   onFinishPasswordReset: () => void;
   onCancelPasswordReset: () => void;
+  registration?: RegistrationConfig;
   locale: Locale;
 }) {
   const t = copyFor(locale);
   const content = landingContentFor(locale);
   const isRegister = mode === "register";
   const isPasswordReset = passwordResetLinkActive;
+  const allowedDomains = registration?.allowedDomains ?? [];
+  const registrationEmail = splitEmailForRegistration(auth.email, allowedDomains);
 
   return (
     <main className="auth-screen product-auth-screen">
@@ -6231,7 +6778,7 @@ function AuthScreen({
             }
           }}
         >
-          {!isPasswordReset ? (
+          {!isPasswordReset && (!isRegister || allowedDomains.length === 0) ? (
             <label>
               {t("email")}
               <input
@@ -6243,6 +6790,47 @@ function AuthScreen({
                 }
               />
             </label>
+          ) : null}
+          {isRegister && allowedDomains.length > 0 ? (
+            <div className="auth-email-grid">
+              <label>
+                {t("emailName")}
+                <input
+                  autoComplete="username"
+                  value={registrationEmail.local}
+                  onChange={(event) =>
+                    onAuth({
+                      ...auth,
+                      email: buildRegistrationEmail(
+                        event.target.value,
+                        registrationEmail.domain,
+                      ),
+                    })
+                  }
+                />
+              </label>
+              <label>
+                {t("emailDomain")}
+                <select
+                  value={registrationEmail.domain}
+                  onChange={(event) =>
+                    onAuth({
+                      ...auth,
+                      email: buildRegistrationEmail(
+                        registrationEmail.local,
+                        event.target.value,
+                      ),
+                    })
+                  }
+                >
+                  {allowedDomains.map((domain) => (
+                    <option key={domain} value={domain}>
+                      @{domain}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
           ) : null}
           <label>
             {isPasswordReset ? t("newPassword") : t("password")}
@@ -6270,6 +6858,49 @@ function AuthScreen({
                 }
               />
             </label>
+          ) : null}
+          {isRegister && registration?.requireEmailVerification ? (
+            <div className="auth-code-row">
+              <label>
+                {t("registrationCode")}
+                <input
+                  inputMode="numeric"
+                  maxLength={12}
+                  value={auth.emailVerificationCode}
+                  onChange={(event) =>
+                    onAuth({
+                      ...auth,
+                      emailVerificationCode: event.target.value,
+                    })
+                  }
+                />
+              </label>
+              <button
+                className="auth-secondary-action"
+                type="button"
+                onClick={onStartRegistrationVerification}
+                disabled={busy || !auth.email.trim()}
+              >
+                <MailCheck size={16} aria-hidden="true" />
+                {t("sendRegistrationCode")}
+              </button>
+            </div>
+          ) : null}
+          {isRegister && registration?.requireTurnstile ? (
+            <div className="auth-turnstile">
+              <span>{t("turnstileChallenge")}</span>
+              {registration.turnstileSiteKey ? (
+                <TurnstileWidget
+                  siteKey={registration.turnstileSiteKey}
+                  locale={locale}
+                  onToken={(token) =>
+                    onAuth({ ...auth, turnstileToken: token })
+                  }
+                />
+              ) : (
+                <p className="status-line">{t("turnstileNotConfigured")}</p>
+              )}
+            </div>
           ) : null}
           <button className="auth-submit" type="submit" disabled={busy}>
             {isRegister ? (
@@ -6386,7 +7017,7 @@ function PublicShareScreen({
           className="clay-scene share-clay-scene"
           src={clayHeroAsset}
         />
-        <div className="magic-row">
+        <div className="share-access-row">
           <input
             value={token}
             onChange={(event) => onToken(event.target.value)}

@@ -57,7 +57,7 @@ The Make target wraps `scripts/check-production-release-evidence.mjs`.
 
 - Provider smoke-test runbook path: `docs/production-provider-smoke-tests.md`
 - Managed S3-compatible upload/read/delete result:
-- SMTP delivery result for verification, magic-link, reset, security, billing,
+- SMTP delivery result for registration-code, verification, reset, security, billing,
   and account-deletion messages:
 - Google OAuth login result:
 - Google OAuth state-mismatch result:

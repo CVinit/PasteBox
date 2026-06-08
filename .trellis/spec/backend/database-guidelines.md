@@ -1110,6 +1110,11 @@ for _, paste := range s.pastesByID {
 - `system_configs(id='default')` stores non-sensitive runtime config as JSONB.
   Provider secrets remain in `PASTEBOX_*` env vars and must only appear as
   configured/missing status in admin responses.
+- `PATCH /api/v1/admin/runtime-config` is field-level partial update
+  semantics, not whole-section replacement. Omitted fields inside
+  `guestUploads`, `registration`, `rateLimits`, or `alerts` must preserve the
+  currently stored value, while explicit `false` and numeric `0` must remain
+  distinguishable from omission at the JSON/service patch boundary.
 - `redemption_batches`, `redemption_codes`, and `redemption_records` are the
   durable source for generated redemption codes and redemption audit state.
   Plain redemption code values are returned only at generation time; persisted
@@ -1125,6 +1130,9 @@ for _, paste := range s.pastesByID {
 ### 4. Validation & Error Matrix
 
 - Missing `system_configs.default` row -> service uses env-derived defaults.
+- Runtime config patch omits a field -> preserve current value for that field.
+- Runtime config patch explicitly sets a boolean false -> store false, not the
+  default.
 - Invalid catalog update -> `400 invalid_plan`, `invalid_plan_limits`,
   `invalid_price`, or related validation code.
 - Invalid redemption code -> `404 redemption_code_invalid`.
@@ -1139,6 +1147,8 @@ for _, paste := range s.pastesByID {
 - Good: Admin updates catalog, runtime config, provider test, redemption batch,
   or alert test through service methods; each mutation persists when a store is
   configured and writes an audit log.
+- Good: Admin changes only `guestUploads.enabled`; existing non-default guest
+  size limits and Turnstile settings survive the patch.
 - Base: In-memory stores keep local tests lightweight while PostgreSQL stores
   are wired in production.
 - Bad: Put SMTP, Google, Turnstile, Telegram, or S3 secrets into
@@ -1147,8 +1157,9 @@ for _, paste := range s.pastesByID {
 ### 6. Tests Required
 
 - App tests cover guest upload gates, Turnstile verification, redemption edge
-  cases, alert cooldown/send/failure, failed-mail manual work items, and audit
-  actions for admin mutations.
+  cases, field-level runtime config partial patches, alert
+  cooldown/send/failure, failed-mail manual work items, and audit actions for
+  admin mutations.
 - HTTP tests cover non-admin `403 admin_required`, admin runtime/catalog/API
   contracts, guest create/upload, redemption, manual work items, runtime panel,
   provider tests, alert test, and alert history.
@@ -1171,4 +1182,18 @@ saveSystemConfig(map[string]string{"telegramBotToken": token})
 ```go
 cfg, err := service.AdminUpdateRuntimeConfig(adminID, patch)
 // cfg.ProviderStatus.Telegram reports env-backed configured/missing state only.
+```
+
+#### Wrong
+
+```go
+// A partial JSON body resets omitted guest upload limits to defaults.
+next.GuestUploads = *patch.GuestUploads
+```
+
+#### Correct
+
+```go
+// Only fields present in the patch overwrite current runtime config values.
+next.GuestUploads = applyGuestUploadConfigPatch(next.GuestUploads, *patch.GuestUploads)
 ```

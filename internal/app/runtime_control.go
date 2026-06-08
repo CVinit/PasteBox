@@ -31,12 +31,14 @@ const (
 )
 
 type RuntimeConfig struct {
-	ID             string            `json:"id"`
-	GuestUploads   GuestUploadConfig `json:"guestUploads"`
-	Limits         LimitConfig       `json:"limits"`
-	ProviderStatus ProviderStatus    `json:"providerStatus"`
-	Alerts         AlertConfig       `json:"alerts"`
-	UpdatedAt      time.Time         `json:"updatedAt"`
+	ID             string                 `json:"id"`
+	GuestUploads   GuestUploadConfig      `json:"guestUploads"`
+	Registration   RegistrationConfig     `json:"registration"`
+	RateLimits     RuntimeRateLimitConfig `json:"rateLimits"`
+	Limits         LimitConfig            `json:"limits"`
+	ProviderStatus ProviderStatus         `json:"providerStatus"`
+	Alerts         AlertConfig            `json:"alerts"`
+	UpdatedAt      time.Time              `json:"updatedAt"`
 }
 
 type GuestUploadConfig struct {
@@ -57,6 +59,27 @@ type GuestUploadConfig struct {
 type LimitConfig struct {
 	FreePlanID  string   `json:"freePlanId"`
 	PaidPlanIDs []string `json:"paidPlanIds"`
+}
+
+type RegistrationConfig struct {
+	AllowedDomains           []string `json:"allowedDomains"`
+	RequireEmailVerification bool     `json:"requireEmailVerification"`
+	RequireTurnstile         bool     `json:"requireTurnstile"`
+	TurnstileSiteKey         string   `json:"turnstileSiteKey,omitempty"`
+}
+
+type RuntimeRateLimitConfig struct {
+	Enabled                bool `json:"enabled"`
+	WindowSeconds          int  `json:"windowSeconds"`
+	EmailVerificationLimit int  `json:"emailVerificationLimit"`
+	RegisterLimit          int  `json:"registerLimit"`
+	LoginLimit             int  `json:"loginLimit"`
+	WriteLimit             int  `json:"writeLimit"`
+	UploadLimit            int  `json:"uploadLimit"`
+	ShareCreateLimit       int  `json:"shareCreateLimit"`
+	ShareAccessLimit       int  `json:"shareAccessLimit"`
+	DownloadLimit          int  `json:"downloadLimit"`
+	WebhookLimit           int  `json:"webhookLimit"`
 }
 
 type ProviderStatus struct {
@@ -104,8 +127,61 @@ type CatalogWriter interface {
 }
 
 type RuntimeConfigPatch struct {
-	GuestUploads *GuestUploadConfig `json:"guestUploads,omitempty"`
-	Alerts       *AlertConfig       `json:"alerts,omitempty"`
+	GuestUploads *GuestUploadConfigPatch      `json:"guestUploads,omitempty"`
+	Registration *RegistrationConfigPatch     `json:"registration,omitempty"`
+	RateLimits   *RuntimeRateLimitConfigPatch `json:"rateLimits,omitempty"`
+	Alerts       *AlertConfigPatch            `json:"alerts,omitempty"`
+}
+
+type GuestUploadConfigPatch struct {
+	Enabled                  *bool  `json:"enabled,omitempty"`
+	RequireTurnstile         *bool  `json:"requireTurnstile,omitempty"`
+	RetentionSeconds         *int64 `json:"retentionSeconds,omitempty"`
+	ActivePasteLimit         *int   `json:"activePasteLimit,omitempty"`
+	ActiveStorageBytes       *int64 `json:"activeStorageBytes,omitempty"`
+	SingleTextBytes          *int64 `json:"singleTextBytes,omitempty"`
+	SingleFileBytes          *int64 `json:"singleFileBytes,omitempty"`
+	SinglePasteBytes         *int64 `json:"singlePasteBytes,omitempty"`
+	AttachmentsPerPasteLimit *int   `json:"attachmentsPerPasteLimit,omitempty"`
+	DailyUploadBytes         *int64 `json:"dailyUploadBytes,omitempty"`
+	DailyShareDownloadBytes  *int64 `json:"dailyShareDownloadBytes,omitempty"`
+	ShareDownloadsEnabled    *bool  `json:"shareDownloadsEnabled,omitempty"`
+}
+
+type RegistrationConfigPatch struct {
+	AllowedDomains           *[]string `json:"allowedDomains,omitempty"`
+	RequireEmailVerification *bool     `json:"requireEmailVerification,omitempty"`
+	RequireTurnstile         *bool     `json:"requireTurnstile,omitempty"`
+	TurnstileSiteKey         *string   `json:"turnstileSiteKey,omitempty"`
+}
+
+type RuntimeRateLimitConfigPatch struct {
+	Enabled                *bool `json:"enabled,omitempty"`
+	WindowSeconds          *int  `json:"windowSeconds,omitempty"`
+	EmailVerificationLimit *int  `json:"emailVerificationLimit,omitempty"`
+	RegisterLimit          *int  `json:"registerLimit,omitempty"`
+	LoginLimit             *int  `json:"loginLimit,omitempty"`
+	WriteLimit             *int  `json:"writeLimit,omitempty"`
+	UploadLimit            *int  `json:"uploadLimit,omitempty"`
+	ShareCreateLimit       *int  `json:"shareCreateLimit,omitempty"`
+	ShareAccessLimit       *int  `json:"shareAccessLimit,omitempty"`
+	DownloadLimit          *int  `json:"downloadLimit,omitempty"`
+	WebhookLimit           *int  `json:"webhookLimit,omitempty"`
+}
+
+type AlertConfigPatch struct {
+	Enabled                     *bool    `json:"enabled,omitempty"`
+	TelegramEnabled             *bool    `json:"telegramEnabled,omitempty"`
+	Silent                      *bool    `json:"silent,omitempty"`
+	CooldownSeconds             *int64   `json:"cooldownSeconds,omitempty"`
+	CPUPercentThreshold         *float64 `json:"cpuPercentThreshold,omitempty"`
+	MemoryPercentThreshold      *float64 `json:"memoryPercentThreshold,omitempty"`
+	DiskPercentThreshold        *float64 `json:"diskPercentThreshold,omitempty"`
+	ObjectStorageBytesThreshold *int64   `json:"objectStorageBytesThreshold,omitempty"`
+	ScanFailureDepthThreshold   *int     `json:"scanFailureDepthThreshold,omitempty"`
+	FailedJobDepthThreshold     *int     `json:"failedJobDepthThreshold,omitempty"`
+	MailFailedDepthThreshold    *int     `json:"mailFailedDepthThreshold,omitempty"`
+	ReportsOpenThreshold        *int     `json:"reportsOpenThreshold,omitempty"`
 }
 
 type AdminPlanUpdate struct {
@@ -298,6 +374,7 @@ func (s *TelegramSender) SendAlert(ctx context.Context, message string, silent b
 }
 
 func defaultRuntimeConfig(cfg config.Config) RuntimeConfig {
+	turnstileConfigured := strings.TrimSpace(cfg.Turnstile.SiteKey) != "" && strings.TrimSpace(cfg.Turnstile.SecretKey) != ""
 	return RuntimeConfig{
 		ID: runtimeConfigID,
 		GuestUploads: GuestUploadConfig{
@@ -313,6 +390,25 @@ func defaultRuntimeConfig(cfg config.Config) RuntimeConfig {
 			DailyUploadBytes:         100 * 1024 * 1024,
 			DailyShareDownloadBytes:  100 * 1024 * 1024,
 			ShareDownloadsEnabled:    true,
+		},
+		Registration: RegistrationConfig{
+			AllowedDomains:           []string{"gmail.com", "outlook.com", "hotmail.com", "icloud.com", "qq.com", "163.com", "example.com", "example.org"},
+			RequireEmailVerification: true,
+			RequireTurnstile:         turnstileConfigured,
+			TurnstileSiteKey:         strings.TrimSpace(cfg.Turnstile.SiteKey),
+		},
+		RateLimits: RuntimeRateLimitConfig{
+			Enabled:                cfg.RateLimit.Enabled,
+			WindowSeconds:          cfg.RateLimit.WindowSeconds,
+			EmailVerificationLimit: max(5, cfg.RateLimit.AuthLimit/6),
+			RegisterLimit:          max(5, cfg.RateLimit.AuthLimit/6),
+			LoginLimit:             cfg.RateLimit.AuthLimit,
+			WriteLimit:             cfg.RateLimit.WriteLimit,
+			UploadLimit:            cfg.RateLimit.UploadLimit,
+			ShareCreateLimit:       cfg.RateLimit.WriteLimit,
+			ShareAccessLimit:       cfg.RateLimit.AuthLimit,
+			DownloadLimit:          cfg.RateLimit.DownloadLimit,
+			WebhookLimit:           cfg.RateLimit.WebhookLimit,
 		},
 		Limits:         LimitConfig{FreePlanID: "free", PaidPlanIDs: []string{"plus", "pro"}},
 		ProviderStatus: providerStatusFromConfig(cfg, map[string]string{}),
@@ -431,6 +527,7 @@ func applyProviderTestStatus(status *ProviderConfigStatus, value string) {
 }
 
 func cloneRuntimeConfig(cfg RuntimeConfig) RuntimeConfig {
+	cfg.Registration.AllowedDomains = append([]string(nil), cfg.Registration.AllowedDomains...)
 	cfg.Limits.PaidPlanIDs = append([]string(nil), cfg.Limits.PaidPlanIDs...)
 	cfg.ProviderStatus = cloneProviderStatus(cfg.ProviderStatus)
 	return cfg
@@ -502,6 +599,18 @@ func (s *Service) PublicGuestUploadsConfig() GuestUploadConfig {
 	return s.runtimeConfig.GuestUploads
 }
 
+func (s *Service) PublicRegistrationConfig() RegistrationConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneRuntimeConfig(s.runtimeConfig).Registration
+}
+
+func (s *Service) PublicRateLimitsConfig() RuntimeRateLimitConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.runtimeConfig.RateLimits
+}
+
 func (s *Service) loadRuntimeConfig(ctx context.Context) error {
 	if s.runtime == nil {
 		return nil
@@ -557,6 +666,62 @@ func normalizeRuntimeConfig(cfg RuntimeConfig, env config.Config) RuntimeConfig 
 	if cfg.GuestUploads.DailyUploadBytes <= 0 {
 		cfg.GuestUploads.DailyUploadBytes = base.GuestUploads.DailyUploadBytes
 	}
+	registrationWasEmpty := len(cfg.Registration.AllowedDomains) == 0 &&
+		!cfg.Registration.RequireEmailVerification &&
+		!cfg.Registration.RequireTurnstile &&
+		strings.TrimSpace(cfg.Registration.TurnstileSiteKey) == ""
+	cfg.Registration.AllowedDomains = normalizeDomainList(cfg.Registration.AllowedDomains)
+	if len(cfg.Registration.AllowedDomains) == 0 {
+		cfg.Registration.AllowedDomains = append([]string{}, base.Registration.AllowedDomains...)
+	}
+	if registrationWasEmpty {
+		cfg.Registration.RequireEmailVerification = base.Registration.RequireEmailVerification
+		cfg.Registration.RequireTurnstile = base.Registration.RequireTurnstile
+	}
+	cfg.Registration.TurnstileSiteKey = strings.TrimSpace(env.Turnstile.SiteKey)
+	rateLimitsWereEmpty := cfg.RateLimits.WindowSeconds <= 0 &&
+		cfg.RateLimits.EmailVerificationLimit <= 0 &&
+		cfg.RateLimits.RegisterLimit <= 0 &&
+		cfg.RateLimits.LoginLimit <= 0 &&
+		cfg.RateLimits.WriteLimit <= 0 &&
+		cfg.RateLimits.UploadLimit <= 0 &&
+		cfg.RateLimits.ShareCreateLimit <= 0 &&
+		cfg.RateLimits.ShareAccessLimit <= 0 &&
+		cfg.RateLimits.DownloadLimit <= 0 &&
+		cfg.RateLimits.WebhookLimit <= 0
+	if rateLimitsWereEmpty {
+		cfg.RateLimits.Enabled = base.RateLimits.Enabled
+	}
+	if cfg.RateLimits.WindowSeconds <= 0 {
+		cfg.RateLimits.WindowSeconds = base.RateLimits.WindowSeconds
+	}
+	if cfg.RateLimits.EmailVerificationLimit <= 0 {
+		cfg.RateLimits.EmailVerificationLimit = base.RateLimits.EmailVerificationLimit
+	}
+	if cfg.RateLimits.RegisterLimit <= 0 {
+		cfg.RateLimits.RegisterLimit = base.RateLimits.RegisterLimit
+	}
+	if cfg.RateLimits.LoginLimit <= 0 {
+		cfg.RateLimits.LoginLimit = base.RateLimits.LoginLimit
+	}
+	if cfg.RateLimits.WriteLimit <= 0 {
+		cfg.RateLimits.WriteLimit = base.RateLimits.WriteLimit
+	}
+	if cfg.RateLimits.UploadLimit <= 0 {
+		cfg.RateLimits.UploadLimit = base.RateLimits.UploadLimit
+	}
+	if cfg.RateLimits.ShareCreateLimit <= 0 {
+		cfg.RateLimits.ShareCreateLimit = base.RateLimits.ShareCreateLimit
+	}
+	if cfg.RateLimits.ShareAccessLimit <= 0 {
+		cfg.RateLimits.ShareAccessLimit = base.RateLimits.ShareAccessLimit
+	}
+	if cfg.RateLimits.DownloadLimit <= 0 {
+		cfg.RateLimits.DownloadLimit = base.RateLimits.DownloadLimit
+	}
+	if cfg.RateLimits.WebhookLimit <= 0 {
+		cfg.RateLimits.WebhookLimit = base.RateLimits.WebhookLimit
+	}
 	if strings.TrimSpace(cfg.Limits.FreePlanID) == "" {
 		cfg.Limits.FreePlanID = base.Limits.FreePlanID
 	}
@@ -602,10 +767,16 @@ func (s *Service) AdminUpdateRuntimeConfig(actorID string, patch RuntimeConfigPa
 	}
 	next := cloneRuntimeConfig(s.runtimeConfig)
 	if patch.GuestUploads != nil {
-		next.GuestUploads = *patch.GuestUploads
+		next.GuestUploads = applyGuestUploadConfigPatch(next.GuestUploads, *patch.GuestUploads)
+	}
+	if patch.Registration != nil {
+		next.Registration = applyRegistrationConfigPatch(next.Registration, *patch.Registration)
+	}
+	if patch.RateLimits != nil {
+		next.RateLimits = applyRuntimeRateLimitConfigPatch(next.RateLimits, *patch.RateLimits)
 	}
 	if patch.Alerts != nil {
-		next.Alerts = *patch.Alerts
+		next.Alerts = applyAlertConfigPatch(next.Alerts, *patch.Alerts)
 	}
 	next.ProviderStatus = providerStatusFromConfig(s.cfg, providerTestStatuses(next.ProviderStatus))
 	next.UpdatedAt = s.now().UTC()
@@ -619,12 +790,149 @@ func (s *Service) AdminUpdateRuntimeConfig(actorID string, patch RuntimeConfigPa
 	return cloneRuntimeConfig(s.runtimeConfig), nil
 }
 
+func applyGuestUploadConfigPatch(cfg GuestUploadConfig, patch GuestUploadConfigPatch) GuestUploadConfig {
+	if patch.Enabled != nil {
+		cfg.Enabled = *patch.Enabled
+	}
+	if patch.RequireTurnstile != nil {
+		cfg.RequireTurnstile = *patch.RequireTurnstile
+	}
+	if patch.RetentionSeconds != nil {
+		cfg.RetentionSeconds = *patch.RetentionSeconds
+	}
+	if patch.ActivePasteLimit != nil {
+		cfg.ActivePasteLimit = *patch.ActivePasteLimit
+	}
+	if patch.ActiveStorageBytes != nil {
+		cfg.ActiveStorageBytes = *patch.ActiveStorageBytes
+	}
+	if patch.SingleTextBytes != nil {
+		cfg.SingleTextBytes = *patch.SingleTextBytes
+	}
+	if patch.SingleFileBytes != nil {
+		cfg.SingleFileBytes = *patch.SingleFileBytes
+	}
+	if patch.SinglePasteBytes != nil {
+		cfg.SinglePasteBytes = *patch.SinglePasteBytes
+	}
+	if patch.AttachmentsPerPasteLimit != nil {
+		cfg.AttachmentsPerPasteLimit = *patch.AttachmentsPerPasteLimit
+	}
+	if patch.DailyUploadBytes != nil {
+		cfg.DailyUploadBytes = *patch.DailyUploadBytes
+	}
+	if patch.DailyShareDownloadBytes != nil {
+		cfg.DailyShareDownloadBytes = *patch.DailyShareDownloadBytes
+	}
+	if patch.ShareDownloadsEnabled != nil {
+		cfg.ShareDownloadsEnabled = *patch.ShareDownloadsEnabled
+	}
+	return cfg
+}
+
+func applyRegistrationConfigPatch(cfg RegistrationConfig, patch RegistrationConfigPatch) RegistrationConfig {
+	if patch.AllowedDomains != nil {
+		cfg.AllowedDomains = append([]string{}, (*patch.AllowedDomains)...)
+	}
+	if patch.RequireEmailVerification != nil {
+		cfg.RequireEmailVerification = *patch.RequireEmailVerification
+	}
+	if patch.RequireTurnstile != nil {
+		cfg.RequireTurnstile = *patch.RequireTurnstile
+	}
+	if patch.TurnstileSiteKey != nil {
+		cfg.TurnstileSiteKey = *patch.TurnstileSiteKey
+	}
+	return cfg
+}
+
+func applyRuntimeRateLimitConfigPatch(cfg RuntimeRateLimitConfig, patch RuntimeRateLimitConfigPatch) RuntimeRateLimitConfig {
+	if patch.Enabled != nil {
+		cfg.Enabled = *patch.Enabled
+	}
+	if patch.WindowSeconds != nil {
+		cfg.WindowSeconds = *patch.WindowSeconds
+	}
+	if patch.EmailVerificationLimit != nil {
+		cfg.EmailVerificationLimit = *patch.EmailVerificationLimit
+	}
+	if patch.RegisterLimit != nil {
+		cfg.RegisterLimit = *patch.RegisterLimit
+	}
+	if patch.LoginLimit != nil {
+		cfg.LoginLimit = *patch.LoginLimit
+	}
+	if patch.WriteLimit != nil {
+		cfg.WriteLimit = *patch.WriteLimit
+	}
+	if patch.UploadLimit != nil {
+		cfg.UploadLimit = *patch.UploadLimit
+	}
+	if patch.ShareCreateLimit != nil {
+		cfg.ShareCreateLimit = *patch.ShareCreateLimit
+	}
+	if patch.ShareAccessLimit != nil {
+		cfg.ShareAccessLimit = *patch.ShareAccessLimit
+	}
+	if patch.DownloadLimit != nil {
+		cfg.DownloadLimit = *patch.DownloadLimit
+	}
+	if patch.WebhookLimit != nil {
+		cfg.WebhookLimit = *patch.WebhookLimit
+	}
+	return cfg
+}
+
+func applyAlertConfigPatch(cfg AlertConfig, patch AlertConfigPatch) AlertConfig {
+	if patch.Enabled != nil {
+		cfg.Enabled = *patch.Enabled
+	}
+	if patch.TelegramEnabled != nil {
+		cfg.TelegramEnabled = *patch.TelegramEnabled
+	}
+	if patch.Silent != nil {
+		cfg.Silent = *patch.Silent
+	}
+	if patch.CooldownSeconds != nil {
+		cfg.CooldownSeconds = *patch.CooldownSeconds
+	}
+	if patch.CPUPercentThreshold != nil {
+		cfg.CPUPercentThreshold = *patch.CPUPercentThreshold
+	}
+	if patch.MemoryPercentThreshold != nil {
+		cfg.MemoryPercentThreshold = *patch.MemoryPercentThreshold
+	}
+	if patch.DiskPercentThreshold != nil {
+		cfg.DiskPercentThreshold = *patch.DiskPercentThreshold
+	}
+	if patch.ObjectStorageBytesThreshold != nil {
+		cfg.ObjectStorageBytesThreshold = *patch.ObjectStorageBytesThreshold
+	}
+	if patch.ScanFailureDepthThreshold != nil {
+		cfg.ScanFailureDepthThreshold = *patch.ScanFailureDepthThreshold
+	}
+	if patch.FailedJobDepthThreshold != nil {
+		cfg.FailedJobDepthThreshold = *patch.FailedJobDepthThreshold
+	}
+	if patch.MailFailedDepthThreshold != nil {
+		cfg.MailFailedDepthThreshold = *patch.MailFailedDepthThreshold
+	}
+	if patch.ReportsOpenThreshold != nil {
+		cfg.ReportsOpenThreshold = *patch.ReportsOpenThreshold
+	}
+	return cfg
+}
+
 func runtimeConfigAuditMetadata(cfg RuntimeConfig) map[string]any {
 	return map[string]any{
-		"guestUploadsEnabled": cfg.GuestUploads.Enabled,
-		"requireTurnstile":    cfg.GuestUploads.RequireTurnstile,
-		"alertsEnabled":       cfg.Alerts.Enabled,
-		"telegramEnabled":     cfg.Alerts.TelegramEnabled,
+		"guestUploadsEnabled":          cfg.GuestUploads.Enabled,
+		"guestRequireTurnstile":        cfg.GuestUploads.RequireTurnstile,
+		"registrationDomains":          cfg.Registration.AllowedDomains,
+		"registrationRequireEmail":     cfg.Registration.RequireEmailVerification,
+		"registrationRequireTurnstile": cfg.Registration.RequireTurnstile,
+		"rateLimitsEnabled":            cfg.RateLimits.Enabled,
+		"alertsEnabled":                cfg.Alerts.Enabled,
+		"telegramEnabled":              cfg.Alerts.TelegramEnabled,
 	}
 }
 
@@ -867,7 +1175,7 @@ func (s *Service) CreateGuestPaste(input GuestCreatePasteInput) (string, PasteVi
 		return "", PasteView{}, E(http.StatusForbidden, "guest_uploads_disabled", "guest uploads are disabled")
 	}
 	if cfg.RequireTurnstile {
-		if err := s.verifyTurnstileLocked(input.TurnstileToken, input.RemoteIP); err != nil {
+		if err := s.verifyTurnstileLocked(context.Background(), input.TurnstileToken, input.RemoteIP); err != nil {
 			return "", PasteView{}, err
 		}
 	}
@@ -919,7 +1227,7 @@ func (s *Service) AddGuestAttachment(token string, pasteID string, fileName stri
 		return AttachmentView{}, E(http.StatusForbidden, "guest_uploads_disabled", "guest uploads are disabled")
 	}
 	if cfg.RequireTurnstile {
-		if err := s.verifyTurnstileLocked(turnstileToken, remoteIP); err != nil {
+		if err := s.verifyTurnstileLocked(context.Background(), turnstileToken, remoteIP); err != nil {
 			return AttachmentView{}, err
 		}
 	}
@@ -1009,7 +1317,7 @@ func (s *Service) guestUserForTokenLocked(token string) (*User, error) {
 	return user, nil
 }
 
-func (s *Service) verifyTurnstileLocked(token string, remoteIP string) error {
+func (s *Service) verifyTurnstileLocked(ctx context.Context, token string, remoteIP string) error {
 	now := s.now().UTC()
 	for hash, seenAt := range s.turnstileTokenHashes {
 		if now.Sub(seenAt) > 5*time.Minute {
@@ -1024,7 +1332,7 @@ func (s *Service) verifyTurnstileLocked(token string, remoteIP string) error {
 		return E(http.StatusServiceUnavailable, "turnstile_not_configured", "Turnstile verifier is not configured")
 	}
 	s.mu.Unlock()
-	err := s.turnstileVerifier.Verify(context.Background(), token, remoteIP)
+	err := s.turnstileVerifier.Verify(ctx, token, remoteIP)
 	s.mu.Lock()
 	if err != nil {
 		return err

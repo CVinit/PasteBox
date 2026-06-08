@@ -168,32 +168,24 @@ func TestDailyMetricWriteFailureDoesNotPartiallyCreatePaste(t *testing.T) {
 func TestEmailVerificationRequiredBeforePasswordLoginAndWrites(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	svc := newTestService(t, &now)
+	start, err := svc.StartRegistrationEmailVerification(context.Background(), "verify@example.com")
+	if err != nil {
+		t.Fatalf("start registration verification: %v", err)
+	}
 	result, err := svc.Register(context.Background(), RegisterInput{
-		Email:       "verify@example.com",
-		Password:    "password123",
-		DisplayName: "Verify",
+		Email:                 "verify@example.com",
+		Password:              "password123",
+		DisplayName:           "Verify",
+		EmailVerificationCode: start["devToken"],
 	})
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if result.User.EmailVerified {
-		t.Fatalf("new email/password account should start unverified")
+	if !result.User.EmailVerified {
+		t.Fatalf("registered account should be verified after email code")
 	}
-	if result.DevEmailVerificationToken == "" {
-		t.Fatalf("expected development verification token")
-	}
-	if _, err := svc.Login(context.Background(), "verify@example.com", "password123"); !hasAppCode(err, "email_not_verified") {
-		t.Fatalf("expected password login to require verification, got %v", err)
-	}
-	if _, err := svc.CreatePaste(result.User.ID, PasteInput{Text: "blocked", ExpiresInSeconds: 60}); !hasAppCode(err, "email_not_verified") {
-		t.Fatalf("expected write to require verification, got %v", err)
-	}
-	verified, err := svc.FinishEmailVerification(result.DevEmailVerificationToken)
-	if err != nil {
-		t.Fatalf("finish verification: %v", err)
-	}
-	if !verified.EmailVerified {
-		t.Fatalf("expected user to become verified")
+	if result.DevEmailVerificationToken != "" {
+		t.Fatalf("register should not issue a post-create email verification token")
 	}
 	if _, err := svc.Login(context.Background(), "verify@example.com", "password123"); err != nil {
 		t.Fatalf("verified password login: %v", err)
@@ -203,30 +195,82 @@ func TestEmailVerificationRequiredBeforePasswordLoginAndWrites(t *testing.T) {
 	}
 }
 
+func TestRegistrationSecurityRequiresAllowedDomainEmailCodeAndTurnstile(t *testing.T) {
+	now := time.Date(2026, 6, 8, 9, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	admin := seedAdminTestUser(t, svc, "security-admin@example.com")
+	verifier := &fakeTurnstileVerifier{}
+	svc.SetTurnstileVerifier(verifier)
+
+	registrationCfg := RegistrationConfigPatch{
+		AllowedDomains:           ptr([]string{"example.com"}),
+		RequireEmailVerification: ptr(true),
+		RequireTurnstile:         ptr(true),
+	}
+	if _, err := svc.AdminUpdateRuntimeConfig(admin.ID, RuntimeConfigPatch{Registration: &registrationCfg}); err != nil {
+		t.Fatalf("update registration config: %v", err)
+	}
+
+	if _, err := svc.StartRegistrationEmailVerification(context.Background(), "blocked@example.org"); !hasAppCode(err, "email_domain_not_allowed") {
+		t.Fatalf("expected disallowed email domain, got %v", err)
+	}
+	missingCodeResult, err := svc.Register(context.Background(), RegisterInput{
+		Email:          "secure@example.com",
+		Password:       "password123",
+		DisplayName:    "Secure",
+		TurnstileToken: "turn-missing-code",
+	})
+	if !hasAppCode(err, "invalid_token") || missingCodeResult.SessionID != "" {
+		t.Fatalf("expected missing email code to block registration, got %v", err)
+	}
+
+	start, err := svc.StartRegistrationEmailVerification(context.Background(), "secure@example.com")
+	if err != nil {
+		t.Fatalf("start registration verification: %v", err)
+	}
+	missingTurnstileResult, err := svc.Register(context.Background(), RegisterInput{
+		Email:                 "secure@example.com",
+		Password:              "password123",
+		DisplayName:           "Secure",
+		EmailVerificationCode: start["devToken"],
+	})
+	if !hasAppCode(err, "turnstile_required") || missingTurnstileResult.SessionID != "" {
+		t.Fatalf("expected missing turnstile to block registration, got %v", err)
+	}
+	start, err = svc.StartRegistrationEmailVerification(context.Background(), "secure@example.com")
+	if err != nil {
+		t.Fatalf("start registration verification again: %v", err)
+	}
+
+	result, err := svc.Register(context.Background(), RegisterInput{
+		Email:                 "secure@example.com",
+		Password:              "password123",
+		DisplayName:           "Secure",
+		EmailVerificationCode: start["devToken"],
+		TurnstileToken:        "turn-ok",
+		RemoteIP:              "127.0.0.1",
+	})
+	if err != nil {
+		t.Fatalf("register with code and turnstile: %v", err)
+	}
+	if result.User.Email != "secure@example.com" || !result.User.EmailVerified {
+		t.Fatalf("expected verified registration, got %#v", result.User)
+	}
+	if len(verifier.tokens) != 3 || verifier.tokens[0] != "turn-missing-code" || verifier.tokens[1] != "" || verifier.tokens[2] != "turn-ok" {
+		t.Fatalf("expected turnstile verifier to be called, got %#v", verifier.tokens)
+	}
+}
+
 func TestAuthEmailsUseRouteScopedTokenLinks(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	svc := newTestService(t, &now)
 	svc.cfg.PublicURL = "https://pastebox.example.com/"
-	result, err := svc.Register(context.Background(), RegisterInput{
-		Email:       "links@example.com",
-		Password:    "password123",
-		DisplayName: "Links",
-	})
-	if err != nil {
-		t.Fatalf("register: %v", err)
-	}
-	if _, err := svc.StartMagicLink(context.Background(), result.User.Email); err != nil {
-		t.Fatalf("start magic link: %v", err)
-	}
-	if _, err := svc.FinishEmailVerification(result.DevEmailVerificationToken); err != nil {
-		t.Fatalf("finish verification: %v", err)
-	}
+	result := registerTestUser(t, svc, "links@example.com")
 	if _, err := svc.StartPasswordReset(context.Background(), result.User.Email); err != nil {
 		t.Fatalf("start password reset: %v", err)
 	}
 
-	assertQueuedAuthMailLink(t, svc, "Verify your PasteBox email", "https://pastebox.example.com/email-verification?token=")
-	assertQueuedAuthMailLink(t, svc, "Your PasteBox magic link", "https://pastebox.example.com/magic?token=")
+	assertQueuedAuthMailLink(t, svc, "Your PasteBox registration code", "Your PasteBox registration code is ")
 	assertQueuedAuthMailLink(t, svc, "Reset your PasteBox password", "https://pastebox.example.com/password-reset?token=")
 }
 
@@ -295,16 +339,26 @@ func TestStoreBackedAuthStateSurvivesServiceRestart(t *testing.T) {
 	svc := newTestServiceWithAuthStores(t, &now, stores.authStores())
 	admin := seedAdminTestUser(t, svc, "durable-admin@example.com")
 
-	registered, err := svc.Register(context.Background(), RegisterInput{
-		Email:       "durable@example.com",
-		Password:    "password123",
-		DisplayName: "Durable",
+	start, err := svc.StartRegistrationEmailVerification(context.Background(), "durable@example.com")
+	if err != nil {
+		t.Fatalf("start registration verification: %v", err)
+	}
+	code := start["devToken"]
+	if code == "" {
+		t.Fatalf("expected persisted registration dev token")
+	}
+	restartedBeforeRegister := newTestServiceWithAuthStores(t, &now, stores.authStores())
+	registered, err := restartedBeforeRegister.Register(context.Background(), RegisterInput{
+		Email:                 "durable@example.com",
+		Password:              "password123",
+		DisplayName:           "Durable",
+		EmailVerificationCode: code,
 	})
 	if err != nil {
-		t.Fatalf("register: %v", err)
+		t.Fatalf("register after restart: %v", err)
 	}
-	if registered.DevEmailVerificationToken == "" || registered.SessionID == "" {
-		t.Fatalf("expected register to issue session and verification token, got %#v", registered)
+	if !registered.User.EmailVerified || registered.SessionID == "" {
+		t.Fatalf("expected verified registered user with session, got %#v", registered)
 	}
 
 	restarted := newTestServiceWithAuthStores(t, &now, stores.authStores())
@@ -328,14 +382,6 @@ func TestStoreBackedAuthStateSurvivesServiceRestart(t *testing.T) {
 	}
 	if dashboard["users"] != 2 {
 		t.Fatalf("expected persisted user count after restart, got %#v", dashboard["users"])
-	}
-
-	verified, err := restarted.FinishEmailVerification(registered.DevEmailVerificationToken)
-	if err != nil {
-		t.Fatalf("email verification token should survive restart: %v", err)
-	}
-	if !verified.EmailVerified {
-		t.Fatalf("expected verified user after restart, got %#v", verified)
 	}
 
 	restartedAgain := newTestServiceWithAuthStores(t, &now, stores.authStores())
@@ -1004,11 +1050,11 @@ func TestStoreBackedOperationalStateSurvivesServiceRestart(t *testing.T) {
 func TestGoogleOAuthCreatesVerifiedAccount(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	svc := newTestService(t, &now)
-	result, err := svc.GoogleOAuth(context.Background(), "google@example.com", "Google User", "google-sub-1")
+	result, err := svc.GoogleOAuth(context.Background(), "google@example.com", "Google User", "google-sub-1", "zh-CN")
 	if err != nil {
 		t.Fatalf("google oauth: %v", err)
 	}
-	if !result.User.EmailVerified || result.User.DisplayName != "Google User" {
+	if !result.User.EmailVerified || result.User.DisplayName != "Google User" || result.User.Language != "zh-CN" {
 		t.Fatalf("unexpected oauth user: %#v", result.User)
 	}
 	if _, err := svc.CreatePaste(result.User.ID, PasteInput{Text: "oauth", ExpiresInSeconds: 60}); err != nil {
@@ -1019,11 +1065,11 @@ func TestGoogleOAuthCreatesVerifiedAccount(t *testing.T) {
 func TestGitHubOAuthCreatesVerifiedAccount(t *testing.T) {
 	now := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
 	svc := newTestService(t, &now)
-	result, err := svc.GitHubOAuth(context.Background(), "github@example.com", "GitHub User", "12345")
+	result, err := svc.GitHubOAuth(context.Background(), "github@example.com", "GitHub User", "12345", "es")
 	if err != nil {
 		t.Fatalf("github oauth: %v", err)
 	}
-	if !result.User.EmailVerified || result.User.DisplayName != "GitHub User" {
+	if !result.User.EmailVerified || result.User.DisplayName != "GitHub User" || result.User.Language != "es" {
 		t.Fatalf("expected verified github user, got %#v", result.User)
 	}
 	if got := result.User.OAuthProviders; len(got) != 1 || got[0] != "github" {
@@ -1038,7 +1084,7 @@ func TestGoogleOAuthIdentityPersistsAcrossServiceRestart(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	authStores := newMemoryAuthStores()
 	svc := newTestServiceWithAuthStores(t, &now, authStores.authStores())
-	first, err := svc.GoogleOAuth(context.Background(), "google-persist@example.com", "Google Persist", "google-sub-persist")
+	first, err := svc.GoogleOAuth(context.Background(), "google-persist@example.com", "Google Persist", "google-sub-persist", "en")
 	if err != nil {
 		t.Fatalf("google oauth: %v", err)
 	}
@@ -1047,7 +1093,7 @@ func TestGoogleOAuthIdentityPersistsAcrossServiceRestart(t *testing.T) {
 	}
 
 	restarted := newTestServiceWithAuthStores(t, &now, authStores.authStores())
-	second, err := restarted.GoogleOAuth(context.Background(), "changed-email@example.com", "Renamed Google", "google-sub-persist")
+	second, err := restarted.GoogleOAuth(context.Background(), "changed-email@example.com", "Renamed Google", "google-sub-persist", "zh-CN")
 	if err != nil {
 		t.Fatalf("google oauth after restart: %v", err)
 	}
@@ -1061,7 +1107,7 @@ func TestGoogleOAuthIdentityPersistsAcrossServiceRestart(t *testing.T) {
 		t.Fatalf("expected provider list after restart, got %#v", got)
 	}
 
-	if _, err := restarted.GoogleOAuth(context.Background(), first.User.Email, "Different Subject", "google-sub-other"); !hasAppCode(err, "oauth_identity_conflict") {
+	if _, err := restarted.GoogleOAuth(context.Background(), first.User.Email, "Different Subject", "google-sub-other", "en"); !hasAppCode(err, "oauth_identity_conflict") {
 		t.Fatalf("expected conflict when linking a second google subject, got %v", err)
 	}
 
@@ -1074,7 +1120,7 @@ func TestGoogleOAuthIdentityPersistsAcrossServiceRestart(t *testing.T) {
 	}
 
 	afterUnlink := newTestServiceWithAuthStores(t, &now, authStores.authStores())
-	third, err := afterUnlink.GoogleOAuth(context.Background(), "new-google@example.com", "New Google", "google-sub-persist")
+	third, err := afterUnlink.GoogleOAuth(context.Background(), "new-google@example.com", "New Google", "google-sub-persist", "en")
 	if err != nil {
 		t.Fatalf("google oauth after unlink: %v", err)
 	}
@@ -1246,7 +1292,7 @@ func TestAdminOperationsWriteAuditLogsAndExposeQueues(t *testing.T) {
 		t.Fatalf("create order: %v", err)
 	}
 
-	if _, err := svc.AdminSetUserPlan(admin.ID, owner.User.ID, "pro", nil); err != nil {
+	if _, err := svc.AdminSetUserPlan(admin.ID, owner.User.ID, "pro", nil, "SUP-200 admin plan correction", "SUP-200"); err != nil {
 		t.Fatalf("admin set plan: %v", err)
 	}
 	if _, err := svc.MarkOrderPaid(owner.User.ID, order.ID, "tx-non-admin", "SUP-100 non-admin attempt"); !hasAppCode(err, "admin_required") {
@@ -1282,6 +1328,7 @@ func TestAdminOperationsWriteAuditLogsAndExposeQueues(t *testing.T) {
 	assertAuditAction(t, logs, "admin.attachment_freeze")
 	assertAuditAction(t, logs, "admin.share_revoke")
 	assertAuditAction(t, logs, "billing.order_paid")
+	assertAdminPlanAuditMetadata(t, logs, owner.User.ID, "free", "pro", "SUP-200 admin plan correction", "SUP-200")
 	assertBillingPaidAuditReason(t, logs, order.ID, reason)
 
 	queues, err := svc.AdminQueues(admin.ID)
@@ -1327,7 +1374,7 @@ func TestExportUserIncludesOrdersReportsWebhooksAndScopedAuditLogs(t *testing.T)
 	if _, err := svc.AdminResolveReport(admin.ID, report.ID, "resolved"); err != nil {
 		t.Fatalf("resolve report: %v", err)
 	}
-	if _, err := svc.AdminSetUserPlan(admin.ID, other.User.ID, "plus", nil); err != nil {
+	if _, err := svc.AdminSetUserPlan(admin.ID, other.User.ID, "plus", nil, "SUP-201 unrelated plan change", "SUP-201"); err != nil {
 		t.Fatalf("create unrelated audit log: %v", err)
 	}
 
@@ -1533,6 +1580,7 @@ func TestProductionOrdersRequireConfiguredPaymentDetails(t *testing.T) {
 	cfg.EpusdtEnabled = true
 	svc := New(cfg)
 	svc.now = func() time.Time { return now }
+	disableRegistrationEmailVerificationForTest(t, svc)
 	owner := registerTestUser(t, svc, "billing-production-missing@example.com")
 
 	if _, err := svc.CreateOrder(owner.User.ID, "stripe", "plus", "monthly"); !hasAppCode(err, "payment_provider_not_configured") {
@@ -1558,6 +1606,7 @@ func TestProductionOrdersRejectLocalCheckoutTemplates(t *testing.T) {
 	cfg.Epusdt.Chain = "USDT-TRC20"
 	svc := New(cfg)
 	svc.now = func() time.Time { return now }
+	disableRegistrationEmailVerificationForTest(t, svc)
 	owner := registerTestUser(t, svc, "billing-production-local-checkout@example.com")
 
 	if _, err := svc.CreateOrder(owner.User.ID, "stripe", "plus", "monthly"); !hasAppCode(err, "payment_provider_not_configured") {
@@ -1583,6 +1632,7 @@ func TestProductionOrdersUseConfiguredProviderPaymentDetails(t *testing.T) {
 	cfg.Epusdt.Chain = "USDT-TRC20"
 	svc := New(cfg)
 	svc.now = func() time.Time { return now }
+	disableRegistrationEmailVerificationForTest(t, svc)
 	owner := registerTestUser(t, svc, "billing-production-configured@example.com")
 
 	stripeOrder, err := svc.CreateOrder(owner.User.ID, "stripe", "plus", "monthly")
@@ -1740,14 +1790,25 @@ func TestGuestUploadsRespectRuntimeConfigAndTurnstile(t *testing.T) {
 	if err != nil || defaultToken == "" || defaultPaste.ID == "" {
 		t.Fatalf("expected default guest uploads to be available, token=%q paste=%#v err=%v", defaultToken, defaultPaste, err)
 	}
-	if _, err := svc.AdminUpdateRuntimeConfig(admin.ID, RuntimeConfigPatch{GuestUploads: &GuestUploadConfig{Enabled: false}}); err != nil {
+	customStorageLimit := int64(123456789)
+	if _, err := svc.AdminUpdateRuntimeConfig(admin.ID, RuntimeConfigPatch{GuestUploads: &GuestUploadConfigPatch{ActiveStorageBytes: ptr(customStorageLimit)}}); err != nil {
+		t.Fatalf("set custom guest storage limit: %v", err)
+	}
+	if _, err := svc.AdminUpdateRuntimeConfig(admin.ID, RuntimeConfigPatch{GuestUploads: &GuestUploadConfigPatch{Enabled: ptr(false)}}); err != nil {
 		t.Fatalf("disable guest uploads: %v", err)
+	}
+	disabledCfg, err := svc.AdminRuntimeConfig(admin.ID)
+	if err != nil {
+		t.Fatalf("runtime config after partial guest patch: %v", err)
+	}
+	if disabledCfg.GuestUploads.ActiveStorageBytes != customStorageLimit {
+		t.Fatalf("partial guest patch reset storage limit: %#v", disabledCfg.GuestUploads)
 	}
 	if _, _, err := svc.CreateGuestPaste(GuestCreatePasteInput{Title: "closed", Text: "x", TurnstileToken: "closed-token"}); !hasAppCode(err, "guest_uploads_disabled") {
 		t.Fatalf("expected guest uploads disabled, got %v", err)
 	}
 
-	if _, err := svc.AdminUpdateRuntimeConfig(admin.ID, RuntimeConfigPatch{GuestUploads: &GuestUploadConfig{Enabled: true, RequireTurnstile: true}}); err != nil {
+	if _, err := svc.AdminUpdateRuntimeConfig(admin.ID, RuntimeConfigPatch{GuestUploads: &GuestUploadConfigPatch{Enabled: ptr(true), RequireTurnstile: ptr(true)}}); err != nil {
 		t.Fatalf("enable guest uploads: %v", err)
 	}
 	token, paste, err := svc.CreateGuestPaste(GuestCreatePasteInput{Title: "guest", Text: "hello", TurnstileToken: "turn-text", RemoteIP: "127.0.0.1"})
@@ -1888,17 +1949,17 @@ func TestRuntimeAlertsSendRecordFailuresAndRespectCooldown(t *testing.T) {
 	svc.SetRuntimeResourceSnapshot(func() RuntimeResourceSnapshot {
 		return RuntimeResourceSnapshot{CollectedAt: now, CPUPercent: 95, MemoryPercent: 10, DiskPercent: 10}
 	})
-	if _, err := svc.AdminUpdateRuntimeConfig(admin.ID, RuntimeConfigPatch{Alerts: &AlertConfig{
-		Enabled:                   true,
-		TelegramEnabled:           true,
-		CooldownSeconds:           3600,
-		CPUPercentThreshold:       90,
-		MemoryPercentThreshold:    90,
-		DiskPercentThreshold:      90,
-		ScanFailureDepthThreshold: 10,
-		FailedJobDepthThreshold:   10,
-		MailFailedDepthThreshold:  10,
-		ReportsOpenThreshold:      10,
+	if _, err := svc.AdminUpdateRuntimeConfig(admin.ID, RuntimeConfigPatch{Alerts: &AlertConfigPatch{
+		Enabled:                   ptr(true),
+		TelegramEnabled:           ptr(true),
+		CooldownSeconds:           ptr[int64](3600),
+		CPUPercentThreshold:       ptr[float64](90),
+		MemoryPercentThreshold:    ptr[float64](90),
+		DiskPercentThreshold:      ptr[float64](90),
+		ScanFailureDepthThreshold: ptr(10),
+		FailedJobDepthThreshold:   ptr(10),
+		MailFailedDepthThreshold:  ptr(10),
+		ReportsOpenThreshold:      ptr(10),
 	}}); err != nil {
 		t.Fatalf("configure alerts: %v", err)
 	}
@@ -2003,12 +2064,14 @@ func newTestServiceWithStorage(t *testing.T, now *time.Time, stores Stores) *Ser
 }
 
 type fakeTurnstileVerifier struct {
-	calls int
-	err   error
+	calls  int
+	tokens []string
+	err    error
 }
 
 func (v *fakeTurnstileVerifier) Verify(_ context.Context, token string, _ string) error {
 	v.calls++
+	v.tokens = append(v.tokens, token)
 	if v.err != nil {
 		return v.err
 	}
@@ -2655,22 +2718,36 @@ func (s *failingAfterFirstMetricStore) RecordDailyMetric(ctx context.Context, us
 
 func registerTestUser(t *testing.T, svc *Service, email string) AuthResult {
 	t.Helper()
+	start, err := svc.StartRegistrationEmailVerification(context.Background(), email)
+	if err != nil {
+		t.Fatalf("start registration verification %s: %v", email, err)
+	}
 	result, err := svc.Register(context.Background(), RegisterInput{
-		Email:       email,
-		Password:    "password123",
-		DisplayName: email,
+		Email:                 email,
+		Password:              "password123",
+		DisplayName:           email,
+		EmailVerificationCode: start["devToken"],
 	})
 	if err != nil {
 		t.Fatalf("register %s: %v", email, err)
 	}
-	if result.DevEmailVerificationToken != "" {
-		verified, err := svc.FinishEmailVerification(result.DevEmailVerificationToken)
-		if err != nil {
-			t.Fatalf("verify %s: %v", email, err)
-		}
-		result.User = verified
+	if !result.User.EmailVerified {
+		t.Fatalf("registered test user should be verified: %#v", result.User)
 	}
 	return result
+}
+
+func disableRegistrationEmailVerificationForTest(t *testing.T, svc *Service) {
+	t.Helper()
+	admin := seedAdminTestUser(t, svc, "registration-config-admin@example.com")
+	cfg, err := svc.AdminRuntimeConfig(admin.ID)
+	if err != nil {
+		t.Fatalf("runtime config: %v", err)
+	}
+	cfg.Registration.RequireEmailVerification = false
+	if _, err := svc.AdminUpdateRuntimeConfig(admin.ID, RuntimeConfigPatch{Registration: registrationConfigPatch(cfg.Registration)}); err != nil {
+		t.Fatalf("disable registration verification: %v", err)
+	}
 }
 
 func assertQueuedAuthMailLink(t *testing.T, svc *Service, subject string, linkPrefix string) {
@@ -2765,6 +2842,19 @@ func hasAppStatus(err error, status int) bool {
 	return errors.As(err, &appErr) && appErr.Status == status
 }
 
+func ptr[T any](value T) *T {
+	return &value
+}
+
+func registrationConfigPatch(cfg RegistrationConfig) *RegistrationConfigPatch {
+	return &RegistrationConfigPatch{
+		AllowedDomains:           ptr(append([]string{}, cfg.AllowedDomains...)),
+		RequireEmailVerification: ptr(cfg.RequireEmailVerification),
+		RequireTurnstile:         ptr(cfg.RequireTurnstile),
+		TurnstileSiteKey:         ptr(cfg.TurnstileSiteKey),
+	}
+}
+
 func assertAuditAction(t *testing.T, logs []AuditLog, action string) {
 	t.Helper()
 	for _, log := range logs {
@@ -2787,6 +2877,23 @@ func assertBillingPaidAuditReason(t *testing.T, logs []AuditLog, orderID string,
 		return
 	}
 	t.Fatalf("expected billing.order_paid audit log for %s in %#v", orderID, logs)
+}
+
+func assertAdminPlanAuditMetadata(t *testing.T, logs []AuditLog, userID string, oldPlanID string, newPlanID string, reason string, ticketID string) {
+	t.Helper()
+	for _, log := range logs {
+		if log.Action != "admin.user_plan_set" || log.Target != userID {
+			continue
+		}
+		if log.Metadata["oldPlanId"] != oldPlanID ||
+			log.Metadata["newPlanId"] != newPlanID ||
+			log.Metadata["reason"] != reason ||
+			log.Metadata["ticketId"] != ticketID {
+			t.Fatalf("expected plan audit metadata, got %#v", log)
+		}
+		return
+	}
+	t.Fatalf("expected admin.user_plan_set audit log for %s in %#v", userID, logs)
 }
 
 func requireOrderStatus(t *testing.T, svc *Service, userID string, orderID string, status string) Order {

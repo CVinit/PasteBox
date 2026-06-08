@@ -393,6 +393,8 @@ writeJSON(w, http.StatusOK, map[string]any{"pastes": out})
 - GitHub start/callback routes:
   `GET /api/v1/auth/github/start` and
   `GET /api/v1/auth/github/callback`.
+- Start route query contract: `returnTo` plus optional `language`, `locale`,
+  `lang`, or `hl`.
 - Config fields: `Config.GoogleOAuth` and `Config.GitHubOAuth`.
 - Demo deployment file: `compose.deploy.yaml`.
 - Production env template: `deploy/production.env.example`.
@@ -407,6 +409,9 @@ writeJSON(w, http.StatusOK, map[string]any{"pastes": out})
   `PASTEBOX_GITHUB_OAUTH_REDIRECT_URL`.
 - Default redirect URLs must derive from `PASTEBOX_PUBLIC_URL` and end with
   `/api/v1/auth/<provider>/callback`.
+- OAuth start routes must persist the normalized UI language in the signed
+  OAuth state. Callback handlers must pass it to the service so newly-created
+  OAuth users get the same language as the request that started OAuth.
 - Compose deployment templates that run the API or worker must pass through
   the OAuth env keys so local/demo deployments do not silently disable a
   configured provider.
@@ -423,14 +428,18 @@ writeJSON(w, http.StatusOK, map[string]any{"pastes": out})
 - Wrong redirect URL in env -> provider callback fails outside PasteBox.
 - Unsupported OAuth callback state -> redirect to the app with provider-scoped
   error query state, without creating a session.
+- Missing language query/header -> new OAuth accounts default to `en`.
+- `zh-Hant`, `zh-TW`, `zh-HK`, or `zh-MO` -> user language `zh-TW`;
+  `zh`, `zh-CN`, or `zh-SG` -> `zh-CN`; `es*` -> `es`; `en*` -> `en`.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: `docker compose config` shows both Google and GitHub OAuth env keys on
   API, worker, and migration services when the host env is set.
 - Base: With local fake client IDs and secrets, `GET
-  /api/v1/auth/google/start` and `/github/start` both return `303` to their
-  provider authorization URL.
+  /api/v1/auth/google/start?returnTo=/app&language=zh-CN` and
+  `/github/start?returnTo=/app&locale=es` both return `303` to their provider
+  authorization URL and preserve language in signed state.
 - Bad: Adding GitHub OAuth to `internal/config` while leaving
   `compose.deploy.yaml` unaware of the new env keys.
 
@@ -439,7 +448,8 @@ writeJSON(w, http.StatusOK, map[string]any{"pastes": out})
 - Config tests must assert both provider env parsing and default redirect URL
   derivation from `PASTEBOX_PUBLIC_URL`.
 - Handler tests must cover OAuth start redirects and callback state handling
-  for each supported provider.
+  for each supported provider, including language persistence into the created
+  user.
 - Deployment changes must run `docker compose -f compose.deploy.yaml config`
   with representative OAuth env values and assert the rendered services carry
   those values.
@@ -1008,6 +1018,10 @@ gunzip -c "$backup" | psql "$PASTEBOX_RESTORE_DRILL_DATABASE"
   verifier keeps non-empty fields except `signature`, sorts by ASCII key order,
   joins as `key=value&...`, appends the secret, and compares lowercase MD5.
 - Valid Epusdt callbacks return plain text `ok`, not JSON.
+- Epusdt webhook event metadata must be allowlisted. It may include normalized
+  amount and provider identifiers such as `tradeId`/`txId`, but must not store
+  the raw provider payload or the provider `signature`, because webhook events
+  are visible to admins and included in user data exports for related orders.
 - Signed lifecycle events preserve explicit order states: successful payment
   events mark orders `paid`; failed payment events mark pending orders
   `failed`; expiry events mark pending orders `expired`; cancel events mark
@@ -1034,6 +1048,8 @@ gunzip -c "$backup" | psql "$PASTEBOX_RESTORE_DRILL_DATABASE"
 - Missing or invalid Epusdt signature -> `400 invalid_webhook_signature`.
 - Epusdt `pid` mismatch -> `400 invalid_webhook`.
 - Bad JSON body after signature validation -> `400 invalid_json`.
+- Signed Epusdt callback with extra provider fields -> process normally, but
+  persisted metadata excludes `raw` and `signature`.
 - Duplicate signed provider event idempotency key -> return the existing
   webhook event and order without double-activating the plan.
 - Signed Stripe `charge.refunded` or `refund.created` for a paid order ->
@@ -1052,7 +1068,8 @@ gunzip -c "$backup" | psql "$PASTEBOX_RESTORE_DRILL_DATABASE"
   `refunded` or `canceled`, revokes the matching active plan, and writes an
   audit log for the transition.
 - Good: A signed Epusdt `success` callback marks the matching order paid and
-  responds with exactly `ok`.
+  responds with exactly `ok`; stored metadata includes sanitized identifiers
+  but not raw payload or signature.
 - Good: A signed Epusdt `expired` callback marks a pending order `expired` and
   still responds with exactly `ok`.
 - Base: Unsigned provider callbacks bypass CSRF but fail at provider signature
@@ -1073,7 +1090,7 @@ gunzip -c "$backup" | psql "$PASTEBOX_RESTORE_DRILL_DATABASE"
   order once.
 - HTTP tests assert signed Stripe refund callbacks mark paid orders refunded.
 - HTTP tests assert signed Epusdt callbacks return plain `ok` and persist the
-  paid order state.
+  paid order state, with webhook metadata excluding raw payload and signature.
 - HTTP tests assert signed Epusdt expired callbacks return plain `ok` and
   persist `expired`.
 - Domain tests assert Stripe failed, refunded, canceled, and Epusdt expired
@@ -1291,6 +1308,11 @@ const contacts = await client.supportContacts();
 - API: `POST /api/v1/admin/orders/{orderID}/mark-paid`
 - Request JSON: `{"txId":"<provider-or-manual-reference>","reason":"<support reason>"}`
 - Frontend client: `client.adminMarkOrderPaid(id, txId, reason)`
+- Service:
+  `AdminSetUserPlan(actorID, userID, planID, expiresAt, reason, ticketID)`
+- API: `PATCH /api/v1/admin/users/{userID}/plan`
+- Request JSON:
+  `{"planId":"plus","expiresAt":"<optional RFC3339>","reason":"<support reason>","ticketId":"<optional support ticket>"}`
 
 ### 3. Contracts
 
@@ -1305,12 +1327,17 @@ const contacts = await client.supportContacts();
   the manual `reason` field.
 - Frontend admin order cards must collect the reason before enabling the manual
   paid action.
+- Manual admin plan changes require either `reason` or `ticketId` and must
+  audit `oldPlanId`, `newPlanId`, `oldExpiresAt`, `newExpiresAt`, and any
+  supplied support reason/ticket.
 
 ### 4. Validation & Error Matrix
 
 - Non-admin actor -> `403 admin_required`.
 - Blank or whitespace-only `reason` -> `400 manual_reason_required`.
 - `reason` longer than 500 characters -> `400 manual_reason_too_long`.
+- Admin plan change with neither `reason` nor `ticketId` ->
+  `400 admin_plan_reason_required`.
 - Existing paid order with manual replay metadata -> idempotent success with no
   duplicate plan activation.
 - Provider webhook payment success -> no manual reason required.
@@ -1319,6 +1346,8 @@ const contacts = await client.supportContacts();
 
 - Good: Admin marks a stuck Epusdt order paid with reason
   `SUP-123 verified stuck Epusdt transfer`; audit logs preserve that reason.
+- Good: Admin changes a user from `free` to `plus` with ticket `SUP-456`;
+  audit logs preserve old/new plan and the ticket.
 - Base: Stripe webhook marks an order paid using signed provider metadata and
   does not need an operator reason.
 - Bad: UI generates `manual-<timestamp>` and calls mark-paid without an
@@ -1332,6 +1361,9 @@ const contacts = await client.supportContacts();
   `manual_reason_required`.
 - Service or handler tests must assert successful manual correction stores the
   reason in `billing.order_paid` audit metadata.
+- Service/handler tests must assert admin plan changes reject missing
+  reason/ticket and store old/new plan plus support reason/ticket in audit
+  metadata.
 - Frontend changes must pass `make test-web`; cross-layer changes must pass
   full `make test`.
 

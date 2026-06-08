@@ -50,7 +50,7 @@ PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=admin@example.com
 PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=<dev-admin-password>
 ```
 
-The development auth flows return dev tokens in JSON responses for email verification, magic link, and password reset so the complete flow can be exercised without a live mail provider.
+The development auth flows return dev tokens in JSON responses for registration codes, email verification, and password reset so the complete flow can be exercised without a live mail provider.
 
 ## Docker Image
 

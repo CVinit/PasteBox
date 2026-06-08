@@ -114,9 +114,10 @@ type PublicSupportContacts struct {
 }
 
 type PublicPlanCatalog struct {
-	Plans        []plans.Plan          `json:"plans"`
-	Prices       []app.BillingPrice    `json:"prices"`
-	GuestUploads app.GuestUploadConfig `json:"guestUploads"`
+	Plans        []plans.Plan           `json:"plans"`
+	Prices       []app.BillingPrice     `json:"prices"`
+	GuestUploads app.GuestUploadConfig  `json:"guestUploads"`
+	Registration app.RegistrationConfig `json:"registration"`
 }
 
 func New(cfg config.Config, logger *slog.Logger) http.Handler {
@@ -180,6 +181,7 @@ func (s *Server) routes() http.Handler {
 		})
 
 		r.Route("/auth", func(r chi.Router) {
+			r.Post("/registration/email-verification/start", s.startRegistrationEmailVerification)
 			r.Post("/register", s.register)
 			r.Post("/login", s.login)
 			r.Post("/logout", s.logout)
@@ -191,8 +193,6 @@ func (s *Server) routes() http.Handler {
 			r.Get("/github/callback", s.githubOAuthCallback)
 			r.Post("/email-verification/start", s.startEmailVerification)
 			r.Post("/email-verification/finish", s.finishEmailVerification)
-			r.Post("/magic/start", s.startMagic)
-			r.Post("/magic/finish", s.finishMagic)
 			r.Post("/password-reset/start", s.startPasswordReset)
 			r.Post("/password-reset/finish", s.finishPasswordReset)
 		})
@@ -499,6 +499,7 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 		Plans:        catalog.Plans,
 		Prices:       catalog.Prices,
 		GuestUploads: s.app.PublicGuestUploadsConfig(),
+		Registration: s.app.PublicRegistrationConfig(),
 	})
 }
 
@@ -521,25 +522,44 @@ func (s *Server) csrf(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Email       string `json:"email"`
-		Password    string `json:"password"`
-		DisplayName string `json:"displayName"`
-		Language    string `json:"language"`
+		Email                 string `json:"email"`
+		Password              string `json:"password"`
+		DisplayName           string `json:"displayName"`
+		Language              string `json:"language"`
+		EmailVerificationCode string `json:"emailVerificationCode"`
+		TurnstileToken        string `json:"turnstileToken"`
 	}
 	if !s.decode(w, r, &req) {
 		return
 	}
 	result, err := s.app.Register(r.Context(), app.RegisterInput{
-		Email:       req.Email,
-		Password:    req.Password,
-		DisplayName: req.DisplayName,
-		Language:    req.Language,
+		Email:                 req.Email,
+		Password:              req.Password,
+		DisplayName:           req.DisplayName,
+		Language:              req.Language,
+		EmailVerificationCode: req.EmailVerificationCode,
+		TurnstileToken:        req.TurnstileToken,
+		RemoteIP:              clientIP(r),
 	})
 	if s.handleErr(w, err) {
 		return
 	}
 	s.setSessionCookie(w, r, result.SessionID, result.ExpiresAt)
 	writeJSON(w, http.StatusCreated, result)
+}
+
+func (s *Server) startRegistrationEmailVerification(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+	}
+	if !s.decode(w, r, &req) {
+		return
+	}
+	resp, err := s.app.StartRegistrationEmailVerification(r.Context(), req.Email)
+	if s.handleErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -567,11 +587,12 @@ func (s *Server) googleOAuth(w http.ResponseWriter, r *http.Request) {
 		Email         string `json:"email"`
 		DisplayName   string `json:"displayName"`
 		GoogleSubject string `json:"googleSubject"`
+		Language      string `json:"language"`
 	}
 	if !s.decode(w, r, &req) {
 		return
 	}
-	result, err := s.app.GoogleOAuth(r.Context(), req.Email, req.DisplayName, req.GoogleSubject)
+	result, err := s.app.GoogleOAuth(r.Context(), req.Email, req.DisplayName, req.GoogleSubject, req.Language)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -595,10 +616,12 @@ func (s *Server) googleOAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	returnTo := sanitizeOAuthReturnTo(r.URL.Query().Get("returnTo"))
+	language := oauthLanguageFromRequest(r)
 	cookieValue, err := s.signGoogleOAuthState(googleOAuthState{
 		State:    state,
 		Nonce:    nonce,
 		ReturnTo: returnTo,
+		Language: language,
 		IssuedAt: time.Now().UTC().Unix(),
 	})
 	if err != nil {
@@ -650,7 +673,7 @@ func (s *Server) googleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		s.redirectGoogleOAuthError(w, r, "google_identity_failed")
 		return
 	}
-	result, err := s.app.GoogleOAuth(r.Context(), identity.Email, identity.Name, identity.Subject)
+	result, err := s.app.GoogleOAuth(r.Context(), identity.Email, identity.Name, identity.Subject, statePayload.Language)
 	if err != nil {
 		s.redirectGoogleOAuthError(w, r, "google_account_failed")
 		return
@@ -670,10 +693,12 @@ func (s *Server) githubOAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	returnTo := sanitizeOAuthReturnTo(r.URL.Query().Get("returnTo"))
+	language := oauthLanguageFromRequest(r)
 	cookieValue, err := s.signOAuthState(googleOAuthState{
 		State:    state,
 		Nonce:    "-",
 		ReturnTo: returnTo,
+		Language: language,
 		IssuedAt: time.Now().UTC().Unix(),
 	}, s.cfg.GitHubOAuth.ClientSecret)
 	if err != nil {
@@ -722,7 +747,7 @@ func (s *Server) githubOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		s.redirectGitHubOAuthError(w, r, "github_identity_failed")
 		return
 	}
-	result, err := s.app.GitHubOAuth(r.Context(), identity.Email, identity.Name, identity.Subject)
+	result, err := s.app.GitHubOAuth(r.Context(), identity.Email, identity.Name, identity.Subject, statePayload.Language)
 	if err != nil {
 		s.redirectGitHubOAuthError(w, r, "github_account_failed")
 		return
@@ -773,35 +798,6 @@ func (s *Server) finishEmailVerification(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, user)
-}
-
-func (s *Server) startMagic(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Email string `json:"email"`
-	}
-	if !s.decode(w, r, &req) {
-		return
-	}
-	resp, err := s.app.StartMagicLink(r.Context(), req.Email)
-	if s.handleErr(w, err) {
-		return
-	}
-	writeJSON(w, http.StatusOK, resp)
-}
-
-func (s *Server) finishMagic(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Token string `json:"token"`
-	}
-	if !s.decode(w, r, &req) {
-		return
-	}
-	result, err := s.app.ConsumeMagicLink(r.Context(), req.Token)
-	if s.handleErr(w, err) {
-		return
-	}
-	s.setSessionCookie(w, r, result.SessionID, result.ExpiresAt)
-	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) startPasswordReset(w http.ResponseWriter, r *http.Request) {
@@ -1545,11 +1541,13 @@ func (s *Server) adminSetUserPlan(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		PlanID    string     `json:"planId"`
 		ExpiresAt *time.Time `json:"expiresAt"`
+		Reason    string     `json:"reason"`
+		TicketID  string     `json:"ticketId"`
 	}
 	if !s.decode(w, r, &req) {
 		return
 	}
-	updated, err := s.app.AdminSetUserPlan(user.ID, chi.URLParam(r, "userID"), req.PlanID, req.ExpiresAt)
+	updated, err := s.app.AdminSetUserPlan(user.ID, chi.URLParam(r, "userID"), req.PlanID, req.ExpiresAt, req.Reason, req.TicketID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1850,7 +1848,7 @@ func (s *Server) secureHeaders(next http.Handler) http.Handler {
 		header.Set("X-Frame-Options", "DENY")
 		header.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
-		header.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'")
+		header.Set("Content-Security-Policy", "default-src 'self'; script-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -1942,7 +1940,7 @@ func (s *Server) rateLimit(next http.Handler) http.Handler {
 }
 
 func (s *Server) rateLimitRule(r *http.Request) (rateLimitRule, bool) {
-	cfg := s.cfg.RateLimit
+	cfg := s.app.PublicRateLimitsConfig()
 	if !cfg.Enabled || cfg.WindowSeconds <= 0 || !strings.HasPrefix(r.URL.Path, "/api/v1/") {
 		return rateLimitRule{}, false
 	}
@@ -1956,14 +1954,26 @@ func (s *Server) rateLimitRule(r *http.Request) (rateLimitRule, bool) {
 	switch {
 	case strings.HasPrefix(path, "/api/v1/billing/webhooks/"):
 		return rateLimitRule{Category: "webhook", Limit: cfg.WebhookLimit, Window: window}, cfg.WebhookLimit > 0
+	case path == "/api/v1/auth/registration/email-verification/start" || path == "/api/v1/auth/email-verification/start":
+		return rateLimitRule{Category: "email_verification", Limit: cfg.EmailVerificationLimit, Window: window}, cfg.EmailVerificationLimit > 0
+	case path == "/api/v1/auth/register":
+		return rateLimitRule{Category: "register", Limit: cfg.RegisterLimit, Window: window}, cfg.RegisterLimit > 0
+	case path == "/api/v1/auth/login":
+		return rateLimitRule{Category: "login", Limit: cfg.LoginLimit, Window: window}, cfg.LoginLimit > 0
 	case strings.HasPrefix(path, "/api/v1/auth/"):
-		return rateLimitRule{Category: "auth", Limit: cfg.AuthLimit, Window: window}, cfg.AuthLimit > 0
+		return rateLimitRule{Category: "auth", Limit: cfg.LoginLimit, Window: window}, cfg.LoginLimit > 0
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/api/v1/shares/") && strings.HasSuffix(path, "/access"):
+		return rateLimitRule{Category: "share_access", Limit: cfg.ShareAccessLimit, Window: window}, cfg.ShareAccessLimit > 0
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/download"):
 		return rateLimitRule{Category: "download", Limit: cfg.DownloadLimit, Window: window}, cfg.DownloadLimit > 0
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "/api/v1/pastes/") && strings.HasSuffix(path, "/attachments"):
 		return rateLimitRule{Category: "upload", Limit: cfg.UploadLimit, Window: window}, cfg.UploadLimit > 0
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "/api/v1/guest/pastes/") && strings.HasSuffix(path, "/attachments"):
 		return rateLimitRule{Category: "upload", Limit: cfg.UploadLimit, Window: window}, cfg.UploadLimit > 0
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/api/v1/pastes/") && strings.HasSuffix(path, "/shares"):
+		return rateLimitRule{Category: "share_create", Limit: cfg.ShareCreateLimit, Window: window}, cfg.ShareCreateLimit > 0
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/api/v1/guest/pastes/") && strings.HasSuffix(path, "/shares"):
+		return rateLimitRule{Category: "share_create", Limit: cfg.ShareCreateLimit, Window: window}, cfg.ShareCreateLimit > 0
 	case requiresCSRF(r):
 		return rateLimitRule{Category: "write", Limit: cfg.WriteLimit, Window: window}, cfg.WriteLimit > 0
 	default:
@@ -2133,6 +2143,7 @@ type googleOAuthState struct {
 	State    string `json:"state"`
 	Nonce    string `json:"nonce"`
 	ReturnTo string `json:"returnTo"`
+	Language string `json:"language,omitempty"`
 	IssuedAt int64  `json:"issuedAt"`
 }
 
@@ -2303,7 +2314,7 @@ func (s *Server) verifiedEpusdtWebhookInput(raw []byte) (app.BillingWebhookInput
 		Metadata: map[string]any{
 			"amount":       payload.Amount,
 			"actualAmount": payload.ActualAmount,
-			"raw":          payload.Raw,
+			"tradeId":      payload.TradeID,
 		},
 	}, nil
 }
@@ -2510,6 +2521,15 @@ func sanitizeOAuthReturnTo(value string) string {
 		return "/"
 	}
 	return value
+}
+
+func oauthLanguageFromRequest(r *http.Request) string {
+	for _, key := range []string{"language", "locale", "lang", "hl"} {
+		if value := strings.TrimSpace(r.URL.Query().Get(key)); value != "" {
+			return app.NormalizeUserLanguage(value)
+		}
+	}
+	return app.NormalizeUserLanguage(r.Header.Get("Accept-Language"))
 }
 
 func (s *Server) setGoogleOAuthStateCookie(w http.ResponseWriter, r *http.Request, value string, ttl time.Duration) {

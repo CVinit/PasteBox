@@ -80,8 +80,8 @@ The target production architecture is a modular monolith plus workers:
   and optional session acceleration, but not source-of-truth state.
 - S3-compatible object storage: private object bucket for attachment bytes,
   thumbnails/previews, and export artifacts.
-- Existing SMTP/enterprise email service: verification, password reset, magic
-  link, security notifications, billing notices, support messages, and
+- Existing SMTP/enterprise email service: registration codes, verification,
+  password reset, security notifications, billing notices, support messages, and
   operational messages.
 - Scanner service: ClamAV-compatible scanner worker boundary.
 - Billing providers: Stripe for card/subscription payments and Epusdt for USDT
@@ -112,10 +112,10 @@ The target production architecture is a modular monolith plus workers:
   allowlist, and secret redaction in logs.
 - Development auth token output must be disabled outside explicit development
   mode.
-- Auth tokens, reset tokens, magic links, sessions, OAuth state/nonce values,
+- Auth tokens, registration codes, reset tokens, sessions, OAuth state/nonce values,
   webhook idempotency keys, and admin credentials must be persisted and stored
   with appropriate hashing or one-way verification where applicable.
-- Rate limits must cover login, signup, verification, magic links, password
+- Rate limits must cover login, signup, verification, registration codes, password
   reset, OAuth callback abuse, upload, download, share creation, payment
   callback surfaces, and report/support forms.
 - Audit logs must cover auth, billing, admin, support, abuse, deletion, export,

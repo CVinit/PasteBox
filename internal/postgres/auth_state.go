@@ -93,10 +93,14 @@ func NewAuthTokenStore(pool *pgxpool.Pool) *AuthTokenStore {
 }
 
 func (s *AuthTokenStore) CreateAuthToken(ctx context.Context, kind string, token app.AuthToken) error {
+	var userID any = token.UserID
+	if token.UserID == "" {
+		userID = nil
+	}
 	if _, err := s.pool.Exec(ctx, `
 INSERT INTO auth_tokens (hash, user_id, email, kind, expires_at, used_at)
 VALUES ($1, $2, $3, $4, $5, $6)
-`, token.Hash, token.UserID, token.Email, kind, token.ExpiresAt, token.UsedAt); err != nil {
+`, token.Hash, userID, token.Email, kind, token.ExpiresAt, token.UsedAt); err != nil {
 		return fmt.Errorf("create auth token: %w", err)
 	}
 	return nil
@@ -104,18 +108,20 @@ VALUES ($1, $2, $3, $4, $5, $6)
 
 func (s *AuthTokenStore) AuthToken(ctx context.Context, kind string, hash string) (app.AuthToken, error) {
 	var token app.AuthToken
+	var userID pgtype.Text
 	var usedAt pgtype.Timestamptz
 	err := s.pool.QueryRow(ctx, `
 SELECT hash, user_id, email, expires_at, used_at
 FROM auth_tokens
 WHERE kind = $1 AND hash = $2
-`, kind, hash).Scan(&token.Hash, &token.UserID, &token.Email, &token.ExpiresAt, &usedAt)
+`, kind, hash).Scan(&token.Hash, &userID, &token.Email, &token.ExpiresAt, &usedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return app.AuthToken{}, ErrAuthTokenNotFound
 		}
 		return app.AuthToken{}, fmt.Errorf("read auth token: %w", err)
 	}
+	token.UserID = userID.String
 	token.UsedAt = optionalTime(usedAt)
 	return token, nil
 }

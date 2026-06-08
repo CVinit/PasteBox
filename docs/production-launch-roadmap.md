@@ -136,7 +136,7 @@ Work:
 - Add mail provider adapter and templates.
 - Use the user's existing SMTP/enterprise email service for first launch while
   keeping the adapter provider-neutral for later Resend/SES migration.
-- Send verification, magic-link, reset, security, and admin notification emails.
+- Send registration-code, verification, reset, security, and admin notification emails.
 - Hide dev tokens outside explicit development mode.
 - Add real Google OAuth for first beta, including OAuth app configuration,
   redirect-domain validation, secure state/nonce handling, account

@@ -118,7 +118,7 @@ func TestAuthStateStoresPersistSessionTokenAndLoginFailure(t *testing.T) {
 	if usedToken.UsedAt == nil || !usedToken.UsedAt.Equal(usedAt) {
 		t.Fatalf("expected auth token used at %s, got %#v", usedAt, usedToken.UsedAt)
 	}
-	if _, err := authTokenStore.AuthToken(ctx, "magic_link", tokenHash); !errors.Is(err, ErrAuthTokenNotFound) {
+	if _, err := authTokenStore.AuthToken(ctx, "wrong_kind", tokenHash); !errors.Is(err, ErrAuthTokenNotFound) {
 		t.Fatalf("expected wrong-kind token miss, got %v", err)
 	}
 

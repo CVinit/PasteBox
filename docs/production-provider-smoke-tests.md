@@ -13,7 +13,7 @@ This runbook covers the provider evidence required by
 
 - Managed S3-compatible object storage upload, private read, and delete through
   the application path.
-- SMTP delivery for verification, magic-link, reset, security, billing, and
+- SMTP delivery for registration-code, verification, reset, security, billing, and
   account-deletion messages.
 - Google OAuth login and state-mismatch failure against the production OAuth
   application.
@@ -91,7 +91,7 @@ Record:
 Trigger and verify controlled test mailbox delivery for these subjects:
 
 - `Verify your PasteBox email`
-- `Your PasteBox magic link`
+- `Your PasteBox registration code`
 - `Reset your PasteBox password`
 - `New PasteBox login`
 - `PasteBox payment received`
@@ -99,8 +99,9 @@ Trigger and verify controlled test mailbox delivery for these subjects:
 
 Steps:
 
-1. Register the disposable user and confirm the verification email arrives.
-2. Request a magic link and confirm the magic-link email arrives.
+1. Register the disposable user and confirm the registration-code email arrives.
+2. Finish registration and confirm the verification email arrives when profile
+   verification is requested.
 3. Request password reset and confirm the reset email arrives.
 4. Log in from a fresh browser/session and confirm the security notification
    arrives.

@@ -253,7 +253,13 @@ func TestSecurityHeadersApplyToAPIAndStaticResponses(t *testing.T) {
 				}
 			}
 			csp := res.Header().Get("Content-Security-Policy")
-			for _, expected := range []string{"default-src 'self'", "frame-ancestors 'none'", "object-src 'none'"} {
+			for _, expected := range []string{
+				"default-src 'self'",
+				"script-src 'self' https://challenges.cloudflare.com",
+				"frame-src https://challenges.cloudflare.com",
+				"frame-ancestors 'none'",
+				"object-src 'none'",
+			} {
 				if !strings.Contains(csp, expected) {
 					t.Fatalf("expected CSP to contain %q, got %q", expected, csp)
 				}
@@ -413,6 +419,40 @@ func TestRateLimitCanBeDisabledForLocalDevelopment(t *testing.T) {
 	}
 }
 
+func TestRuntimeRateLimitConfigAppliesImmediately(t *testing.T) {
+	cfg := rateLimitTestConfig()
+	service := app.New(cfg)
+	admin, err := service.SeedAdmin("rate-admin@example.com", "password123")
+	if err != nil {
+		t.Fatalf("seed admin: %v", err)
+	}
+	runtimeCfg, err := service.AdminRuntimeConfig(admin.ID)
+	if err != nil {
+		t.Fatalf("runtime config: %v", err)
+	}
+	runtimeCfg.RateLimits.Enabled = true
+	runtimeCfg.RateLimits.WindowSeconds = 60
+	runtimeCfg.RateLimits.LoginLimit = 1
+	if _, err := service.AdminUpdateRuntimeConfig(admin.ID, app.RuntimeConfigPatch{RateLimits: runtimeRateLimitConfigPatch(runtimeCfg.RateLimits)}); err != nil {
+		t.Fatalf("update rate limits: %v", err)
+	}
+	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), service)
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"email":"nobody@example.com","password":"wrong"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "203.0.113.25:1234"
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		if i == 0 && res.Code == http.StatusTooManyRequests {
+			t.Fatalf("first request should reach handler, got %d: %s", res.Code, res.Body.String())
+		}
+		if i == 1 {
+			assertRateLimited(t, res)
+		}
+	}
+}
+
 func TestStaticFallbackServesAssetsAndFrontendRoutes(t *testing.T) {
 	handler := New(config.FromEnv(), slog.New(slog.NewTextHandler(testWriter{t: t}, nil)))
 
@@ -475,7 +515,20 @@ func TestSessionCookieSecureFollowsProductionRequestScheme(t *testing.T) {
 	cfg.AppEnv = "production"
 	cfg.BootstrapAdminEmail = ""
 	cfg.BootstrapAdminPassword = ""
-	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), app.New(cfg))
+	service := app.New(cfg)
+	admin, err := service.SeedAdmin("cookie-admin@example.com", "password123")
+	if err != nil {
+		t.Fatalf("seed admin: %v", err)
+	}
+	runtimeCfg, err := service.AdminRuntimeConfig(admin.ID)
+	if err != nil {
+		t.Fatalf("runtime config: %v", err)
+	}
+	runtimeCfg.Registration.RequireEmailVerification = false
+	if _, err := service.AdminUpdateRuntimeConfig(admin.ID, app.RuntimeConfigPatch{Registration: registrationConfigPatch(runtimeCfg.Registration)}); err != nil {
+		t.Fatalf("disable registration verification for cookie test: %v", err)
+	}
+	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), service)
 
 	plain := httptest.NewRecorder()
 	plainReq := httptest.NewRequest(
@@ -533,13 +586,26 @@ func TestProductionAuthResponsesDoNotExposeDevTokens(t *testing.T) {
 	cfg.DevAuthTokens = true
 	cfg.MetricsToken = "production-auth-metrics-token"
 	service := app.New(cfg)
-	if _, err := service.SeedAdmin("prod-auth-admin@example.com", "password123"); err != nil {
+	admin, err := service.SeedAdmin("prod-auth-admin@example.com", "password123")
+	if err != nil {
 		t.Fatalf("seed admin: %v", err)
 	}
 	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), service)
 	initialMailDepth := mailQueueDepthMetric(t, handler, cfg.MetricsToken)
 
 	client := newHTTPTestClient(t, handler)
+	startRegistrationVerify := client.json(http.MethodPost, "/api/v1/auth/registration/email-verification/start", `{"email":"prod-auth-user@example.com"}`)
+	assertStatus(t, startRegistrationVerify, http.StatusOK)
+	assertNoDevTokenFields(t, startRegistrationVerify)
+
+	runtimeCfg, err := service.AdminRuntimeConfig(admin.ID)
+	if err != nil {
+		t.Fatalf("runtime config: %v", err)
+	}
+	runtimeCfg.Registration.RequireEmailVerification = false
+	if _, err := service.AdminUpdateRuntimeConfig(admin.ID, app.RuntimeConfigPatch{Registration: registrationConfigPatch(runtimeCfg.Registration)}); err != nil {
+		t.Fatalf("disable registration verification for production auth response test: %v", err)
+	}
 	register := client.json(http.MethodPost, "/api/v1/auth/register", `{"email":"prod-auth-user@example.com","password":"password123","displayName":"Prod Auth"}`)
 	assertStatus(t, register, http.StatusCreated)
 	assertNoDevTokenFields(t, register)
@@ -548,15 +614,11 @@ func TestProductionAuthResponsesDoNotExposeDevTokens(t *testing.T) {
 	assertStatus(t, startVerify, http.StatusOK)
 	assertNoDevTokenFields(t, startVerify)
 
-	startMagic := client.json(http.MethodPost, "/api/v1/auth/magic/start", `{"email":"prod-auth-user@example.com"}`)
-	assertStatus(t, startMagic, http.StatusOK)
-	assertNoDevTokenFields(t, startMagic)
-
 	passwordReset := client.json(http.MethodPost, "/api/v1/auth/password-reset/start", `{"email":"prod-auth-admin@example.com"}`)
 	assertStatus(t, passwordReset, http.StatusOK)
 	assertNoDevTokenFields(t, passwordReset)
 
-	if got := mailQueueDepthMetric(t, handler, cfg.MetricsToken); got < initialMailDepth+5 {
+	if got := mailQueueDepthMetric(t, handler, cfg.MetricsToken); got < initialMailDepth+3 {
 		t.Fatalf("expected production auth flows to queue delivery emails, depth before=%d after=%d", initialMailDepth, got)
 	}
 }
@@ -566,7 +628,20 @@ func TestCSRFTokenProtectsUnsafeBrowserRoutes(t *testing.T) {
 	cfg.BootstrapAdminEmail = ""
 	cfg.BootstrapAdminPassword = ""
 	cfg.Stripe.WebhookSecret = "whsec_test_csrf_exclusion"
-	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), app.New(cfg))
+	service := app.New(cfg)
+	admin, err := service.SeedAdmin("csrf-admin@example.com", "password123")
+	if err != nil {
+		t.Fatalf("seed admin: %v", err)
+	}
+	runtimeCfg, err := service.AdminRuntimeConfig(admin.ID)
+	if err != nil {
+		t.Fatalf("runtime config: %v", err)
+	}
+	runtimeCfg.Registration.RequireEmailVerification = false
+	if _, err := service.AdminUpdateRuntimeConfig(admin.ID, app.RuntimeConfigPatch{Registration: registrationConfigPatch(runtimeCfg.Registration)}); err != nil {
+		t.Fatalf("disable registration verification for csrf test: %v", err)
+	}
+	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), service)
 
 	missing := httptest.NewRecorder()
 	missingReq := httptest.NewRequest(
@@ -670,7 +745,7 @@ func TestGoogleOAuthRedirectFlowCreatesSession(t *testing.T) {
 	})
 
 	start := httptest.NewRecorder()
-	startReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/google/start?returnTo=%2Fbilling", nil)
+	startReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/google/start?returnTo=%2Fbilling&language=zh-TW", nil)
 	handler.ServeHTTP(start, startReq)
 	assertStatus(t, start, http.StatusSeeOther)
 	location, err := url.Parse(start.Header().Get("Location"))
@@ -694,7 +769,7 @@ func TestGoogleOAuthRedirectFlowCreatesSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode signed oauth state: %v", err)
 	}
-	if decodedState.State != state || decodedState.ReturnTo != "/billing" {
+	if decodedState.State != state || decodedState.ReturnTo != "/billing" || decodedState.Language != "zh-TW" {
 		t.Fatalf("unexpected signed oauth state: %#v", decodedState)
 	}
 	wantedNonce = decodedState.Nonce
@@ -723,7 +798,7 @@ func TestGoogleOAuthRedirectFlowCreatesSession(t *testing.T) {
 	assertStatus(t, me, http.StatusOK)
 	var user app.UserView
 	decodeResponse(t, me, &user)
-	if user.Email != "oauth-redirect@example.com" || !user.EmailVerified || user.DisplayName != "OAuth Redirect" {
+	if user.Email != "oauth-redirect@example.com" || !user.EmailVerified || user.DisplayName != "OAuth Redirect" || user.Language != "zh-TW" {
 		t.Fatalf("unexpected oauth user: %#v", user)
 	}
 }
@@ -781,7 +856,7 @@ func TestGitHubOAuthRedirectFlowCreatesSession(t *testing.T) {
 	})
 
 	start := httptest.NewRecorder()
-	startReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/github/start?returnTo=%2Fapp", nil)
+	startReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/github/start?returnTo=%2Fapp&locale=es", nil)
 	handler.ServeHTTP(start, startReq)
 	assertStatus(t, start, http.StatusSeeOther)
 	location, err := url.Parse(start.Header().Get("Location"))
@@ -798,6 +873,15 @@ func TestGitHubOAuthRedirectFlowCreatesSession(t *testing.T) {
 	oauthCookie := cookieFromResponse(t, start, githubOAuthStateCookieName)
 	if !oauthCookie.HttpOnly || oauthCookie.Value == "" {
 		t.Fatalf("expected signed HttpOnly github state cookie, got %#v", oauthCookie)
+	}
+	stateReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/github/callback", nil)
+	stateReq.AddCookie(oauthCookie)
+	decodedState, err := (&Server{cfg: cfg}).oauthStateFromRequest(stateReq, githubOAuthStateCookieName, cfg.GitHubOAuth.ClientSecret)
+	if err != nil {
+		t.Fatalf("decode signed github oauth state: %v", err)
+	}
+	if decodedState.State != state || decodedState.ReturnTo != "/app" || decodedState.Language != "es" {
+		t.Fatalf("unexpected signed github oauth state: %#v", decodedState)
 	}
 
 	callback := httptest.NewRecorder()
@@ -821,7 +905,7 @@ func TestGitHubOAuthRedirectFlowCreatesSession(t *testing.T) {
 	assertStatus(t, me, http.StatusOK)
 	var user app.UserView
 	decodeResponse(t, me, &user)
-	if user.Email != "github-redirect@example.com" || !user.EmailVerified || user.DisplayName != "GitHub Redirect" {
+	if user.Email != "github-redirect@example.com" || !user.EmailVerified || user.DisplayName != "GitHub Redirect" || user.Language != "es" {
 		t.Fatalf("unexpected github oauth user: %#v", user)
 	}
 	if got := user.OAuthProviders; len(got) != 1 || got[0] != "github" {
@@ -870,28 +954,18 @@ func TestAuthPasteUploadShareAndQuotaHTTPContracts(t *testing.T) {
 	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), app.New(cfg))
 	client := newHTTPTestClient(t, handler)
 
-	register := client.json(http.MethodPost, "/api/v1/auth/register", `{"email":"owner@example.com","password":"password123","displayName":"Owner"}`)
-	assertStatus(t, register, http.StatusCreated)
+	register := registerHTTPUser(t, client, "owner@example.com", "Owner")
 	sessionCookie := register.Result().Cookies()[0]
 	if sessionCookie.Name != sessionCookieName || !sessionCookie.HttpOnly {
 		t.Fatalf("expected HttpOnly session cookie, got %#v", sessionCookie)
 	}
 	var authBody struct {
-		User                      app.UserView `json:"user"`
-		SessionExpiresAt          string       `json:"sessionExpiresAt"`
-		DevEmailVerificationToken string       `json:"devEmailVerificationToken"`
+		User             app.UserView `json:"user"`
+		SessionExpiresAt string       `json:"sessionExpiresAt"`
 	}
 	decodeResponse(t, register, &authBody)
-	if authBody.User.Email != "owner@example.com" || authBody.User.PlanID != "free" || authBody.User.EmailVerified || authBody.SessionExpiresAt == "" || authBody.DevEmailVerificationToken == "" {
+	if authBody.User.Email != "owner@example.com" || authBody.User.PlanID != "free" || !authBody.User.EmailVerified || authBody.SessionExpiresAt == "" {
 		t.Fatalf("unexpected register body: %#v", authBody)
-	}
-
-	verify := client.json(http.MethodPost, "/api/v1/auth/email-verification/finish", `{"token":"`+authBody.DevEmailVerificationToken+`"}`)
-	assertStatus(t, verify, http.StatusOK)
-	var verifiedUser app.UserView
-	decodeResponse(t, verify, &verifiedUser)
-	if !verifiedUser.EmailVerified {
-		t.Fatalf("expected verified user, got %#v", verifiedUser)
 	}
 
 	quota := client.json(http.MethodGet, "/api/v1/quota", "")
@@ -979,15 +1053,14 @@ func TestAdminHTTPContractsWriteAuditLogs(t *testing.T) {
 	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), service)
 
 	owner := newHTTPTestClient(t, handler)
-	register := owner.json(http.MethodPost, "/api/v1/auth/register", `{"email":"owner-admin@example.com","password":"password123","displayName":"Owner"}`)
-	assertStatus(t, register, http.StatusCreated)
+	register := registerHTTPUser(t, owner, "owner-admin@example.com", "Owner")
 	var ownerAuth struct {
-		User                      app.UserView `json:"user"`
-		DevEmailVerificationToken string       `json:"devEmailVerificationToken"`
+		User app.UserView `json:"user"`
 	}
 	decodeResponse(t, register, &ownerAuth)
-	verify := owner.json(http.MethodPost, "/api/v1/auth/email-verification/finish", `{"token":"`+ownerAuth.DevEmailVerificationToken+`"}`)
-	assertStatus(t, verify, http.StatusOK)
+	if !ownerAuth.User.EmailVerified {
+		t.Fatalf("expected owner to be verified after registration, got %#v", ownerAuth.User)
+	}
 
 	createPaste := owner.json(http.MethodPost, "/api/v1/pastes", `{"title":"Admin target","text":"binary","tags":[],"expiresInSeconds":3600}`)
 	assertStatus(t, createPaste, http.StatusCreated)
@@ -1027,7 +1100,11 @@ func TestAdminHTTPContractsWriteAuditLogs(t *testing.T) {
 		t.Fatalf("expected admin scanJobs field to return an array, got %s", got)
 	}
 
-	setPlan := admin.json(http.MethodPatch, "/api/v1/admin/users/"+ownerAuth.User.ID+"/plan", `{"planId":"plus"}`)
+	missingPlanReason := admin.json(http.MethodPatch, "/api/v1/admin/users/"+ownerAuth.User.ID+"/plan", `{"planId":"plus"}`)
+	assertStatus(t, missingPlanReason, http.StatusBadRequest)
+
+	setPlanReason := "SUP-456 trial upgrade"
+	setPlan := admin.json(http.MethodPatch, "/api/v1/admin/users/"+ownerAuth.User.ID+"/plan", `{"planId":"plus","reason":"`+setPlanReason+`","ticketId":"SUP-456"}`)
 	assertStatus(t, setPlan, http.StatusOK)
 	var updatedUser app.UserView
 	decodeResponse(t, setPlan, &updatedUser)
@@ -1077,6 +1154,11 @@ func TestAdminHTTPContractsWriteAuditLogs(t *testing.T) {
 	if !containsAuditAction(auditBody.AuditLogs, "admin.user_plan_set") || !containsAuditAction(auditBody.AuditLogs, "admin.scan_retry") {
 		t.Fatalf("expected admin audit actions, got %#v", auditBody.AuditLogs)
 	}
+	if !containsAuditMetadata(auditBody.AuditLogs, "admin.user_plan_set", ownerAuth.User.ID, "reason", setPlanReason) ||
+		!containsAuditMetadata(auditBody.AuditLogs, "admin.user_plan_set", ownerAuth.User.ID, "ticketId", "SUP-456") ||
+		!containsAuditMetadata(auditBody.AuditLogs, "admin.user_plan_set", ownerAuth.User.ID, "newPlanId", "plus") {
+		t.Fatalf("expected admin plan audit metadata, got %#v", auditBody.AuditLogs)
+	}
 	if !containsAuditMetadata(auditBody.AuditLogs, "billing.order_paid", order.ID, "reason", manualReason) {
 		t.Fatalf("expected manual payment reason audit metadata, got %#v", auditBody.AuditLogs)
 	}
@@ -1096,8 +1178,7 @@ func TestAdminRuntimeGuestRedemptionAndAlertHTTPContracts(t *testing.T) {
 	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), service)
 
 	user := newHTTPTestClient(t, handler)
-	register := user.json(http.MethodPost, "/api/v1/auth/register", `{"email":"runtime-user@example.com","password":"password123","displayName":"Runtime User"}`)
-	assertStatus(t, register, http.StatusCreated)
+	registerHTTPUser(t, user, "runtime-user@example.com", "Runtime User")
 	nonAdminRuntime := user.json(http.MethodGet, "/api/v1/admin/runtime-panel", "")
 	assertStatus(t, nonAdminRuntime, http.StatusForbidden)
 	var nonAdminErr map[string]string
@@ -1339,11 +1420,11 @@ func TestBillingWebhookRequiresProviderSignatures(t *testing.T) {
 	cfg.BootstrapAdminPassword = ""
 	cfg.Stripe.WebhookSecret = "whsec_test_signature"
 	service := app.New(cfg)
+	disableRegistrationEmailVerification(t, service)
 	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), service)
 	user := newHTTPTestClient(t, handler)
 
-	register := user.json(http.MethodPost, "/api/v1/auth/register", `{"email":"stripe-sig@example.com","password":"password123","displayName":"Stripe Sig"}`)
-	assertStatus(t, register, http.StatusCreated)
+	registerHTTPUser(t, user, "stripe-sig@example.com", "Stripe Sig")
 	orderRes := user.json(http.MethodPost, "/api/v1/billing/orders", `{"provider":"stripe","planId":"plus","period":"monthly"}`)
 	assertStatus(t, orderRes, http.StatusCreated)
 	var order app.Order
@@ -1401,11 +1482,15 @@ func TestEpusdtWebhookSignatureAndPlainOKResponse(t *testing.T) {
 	cfg.Epusdt.PID = "1000"
 	cfg.Epusdt.SecretKey = "epusdt-test-secret"
 	service := app.New(cfg)
+	disableRegistrationEmailVerification(t, service)
+	adminUser, err := service.SeedAdmin("epusdt-admin@example.com", "password123")
+	if err != nil {
+		t.Fatalf("seed epusdt admin: %v", err)
+	}
 	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), service)
 	user := newHTTPTestClient(t, handler)
 
-	register := user.json(http.MethodPost, "/api/v1/auth/register", `{"email":"epusdt-sig@example.com","password":"password123","displayName":"Epusdt Sig"}`)
-	assertStatus(t, register, http.StatusCreated)
+	registerHTTPUser(t, user, "epusdt-sig@example.com", "Epusdt Sig")
 	orderRes := user.json(http.MethodPost, "/api/v1/billing/orders", `{"provider":"epusdt","planId":"plus","period":"monthly"}`)
 	assertStatus(t, orderRes, http.StatusCreated)
 	var order app.Order
@@ -1434,6 +1519,29 @@ func TestEpusdtWebhookSignatureAndPlainOKResponse(t *testing.T) {
 	paidOrder := requireServiceOrderStatus(t, service, order.UserID, order.ID, "paid")
 	if paidOrder.TxID != "tx_epusdt_1" {
 		t.Fatalf("expected signed epusdt webhook to store tx id, got %#v", paidOrder)
+	}
+	webhookEvents, err := service.AdminWebhookEvents(adminUser.ID)
+	if err != nil {
+		t.Fatalf("list epusdt webhook events: %v", err)
+	}
+	var paidEvent *app.WebhookEvent
+	for i := range webhookEvents {
+		if webhookEvents[i].IdempotencyKey == "trade_epusdt_1" {
+			paidEvent = &webhookEvents[i]
+			break
+		}
+	}
+	if paidEvent == nil {
+		t.Fatalf("expected paid epusdt webhook event in %#v", webhookEvents)
+	}
+	if _, ok := paidEvent.Metadata["raw"]; ok {
+		t.Fatalf("epusdt webhook metadata must not persist raw payload: %#v", paidEvent.Metadata)
+	}
+	if _, ok := paidEvent.Metadata["signature"]; ok {
+		t.Fatalf("epusdt webhook metadata must not persist signature: %#v", paidEvent.Metadata)
+	}
+	if paidEvent.Metadata["tradeId"] != "trade_epusdt_1" || paidEvent.Metadata["txId"] != "tx_epusdt_1" {
+		t.Fatalf("expected sanitized epusdt identifiers in metadata, got %#v", paidEvent.Metadata)
 	}
 
 	canceledPayload := map[string]any{
@@ -1614,6 +1722,39 @@ func (c *httpTestClient) ensureCSRF() {
 		c.t.Fatalf("expected csrf token response, got %#v", body)
 	}
 	c.csrfToken = body.CSRFToken
+}
+
+func registerHTTPUser(t *testing.T, client *httpTestClient, email string, displayName string) *httptest.ResponseRecorder {
+	t.Helper()
+	start := client.json(http.MethodPost, "/api/v1/auth/registration/email-verification/start", `{"email":"`+email+`"}`)
+	assertStatus(t, start, http.StatusOK)
+	var startBody struct {
+		DevToken string `json:"devToken"`
+	}
+	decodeResponse(t, start, &startBody)
+	registerBody := `{"email":"` + email + `","password":"password123","displayName":"` + displayName + `"}`
+	if startBody.DevToken != "" {
+		registerBody = `{"email":"` + email + `","password":"password123","displayName":"` + displayName + `","emailVerificationCode":"` + startBody.DevToken + `"}`
+	}
+	register := client.json(http.MethodPost, "/api/v1/auth/register", registerBody)
+	assertStatus(t, register, http.StatusCreated)
+	return register
+}
+
+func disableRegistrationEmailVerification(t *testing.T, service *app.Service) {
+	t.Helper()
+	admin, err := service.SeedAdmin("test-admin@example.com", "password123")
+	if err != nil {
+		t.Fatalf("seed admin: %v", err)
+	}
+	runtimeCfg, err := service.AdminRuntimeConfig(admin.ID)
+	if err != nil {
+		t.Fatalf("runtime config: %v", err)
+	}
+	runtimeCfg.Registration.RequireEmailVerification = false
+	if _, err := service.AdminUpdateRuntimeConfig(admin.ID, app.RuntimeConfigPatch{Registration: registrationConfigPatch(runtimeCfg.Registration)}); err != nil {
+		t.Fatalf("disable registration verification: %v", err)
+	}
 }
 
 func (c *httpTestClient) doWithoutCSRF(req *http.Request) *httptest.ResponseRecorder {
@@ -1833,6 +1974,35 @@ func containsAuditMetadata(logs []app.AuditLog, action string, target string, ke
 		}
 	}
 	return false
+}
+
+func ptr[T any](value T) *T {
+	return &value
+}
+
+func registrationConfigPatch(cfg app.RegistrationConfig) *app.RegistrationConfigPatch {
+	return &app.RegistrationConfigPatch{
+		AllowedDomains:           ptr(append([]string{}, cfg.AllowedDomains...)),
+		RequireEmailVerification: ptr(cfg.RequireEmailVerification),
+		RequireTurnstile:         ptr(cfg.RequireTurnstile),
+		TurnstileSiteKey:         ptr(cfg.TurnstileSiteKey),
+	}
+}
+
+func runtimeRateLimitConfigPatch(cfg app.RuntimeRateLimitConfig) *app.RuntimeRateLimitConfigPatch {
+	return &app.RuntimeRateLimitConfigPatch{
+		Enabled:                ptr(cfg.Enabled),
+		WindowSeconds:          ptr(cfg.WindowSeconds),
+		EmailVerificationLimit: ptr(cfg.EmailVerificationLimit),
+		RegisterLimit:          ptr(cfg.RegisterLimit),
+		LoginLimit:             ptr(cfg.LoginLimit),
+		WriteLimit:             ptr(cfg.WriteLimit),
+		UploadLimit:            ptr(cfg.UploadLimit),
+		ShareCreateLimit:       ptr(cfg.ShareCreateLimit),
+		ShareAccessLimit:       ptr(cfg.ShareAccessLimit),
+		DownloadLimit:          ptr(cfg.DownloadLimit),
+		WebhookLimit:           ptr(cfg.WebhookLimit),
+	}
 }
 
 type testWriter struct {

@@ -124,7 +124,8 @@ requireIncludes("web/src/App.tsx supported locale type", appSource, 'type Locale
 for (const locale of ['value: "zh-CN"', 'value: "zh-TW"', 'value: "es"']) {
   requireIncludes("web/src/App.tsx locale selector option", appSource, locale);
 }
-requireIncludes("web/src/App.tsx registration language payload", appSource, "client.register({ ...auth, language: locale })");
+requireIncludes("web/src/App.tsx registration language payload", appSource, "language: locale");
+requireIncludes("web/src/App.tsx registration email code payload", appSource, "emailVerificationCode: auth.emailVerificationCode");
 for (const copy of ["简体中文", "繁體中文", "Español", "Crea una entrega segura."]) {
   requireIncludes("production JS bundle multilingual copy", bundle, copy);
 }

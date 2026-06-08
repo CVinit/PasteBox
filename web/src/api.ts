@@ -16,6 +16,7 @@ export type PlanCatalog = {
   plans: Plan[];
   prices: Price[];
   guestUploads?: GuestUploadConfig;
+  registration?: RegistrationConfig;
 };
 
 export type Price = {
@@ -225,6 +226,27 @@ export type GuestUploadConfig = {
   shareDownloadsEnabled: boolean;
 };
 
+export type RegistrationConfig = {
+  allowedDomains: string[];
+  requireEmailVerification: boolean;
+  requireTurnstile: boolean;
+  turnstileSiteKey?: string;
+};
+
+export type RuntimeRateLimitConfig = {
+  enabled: boolean;
+  windowSeconds: number;
+  emailVerificationLimit: number;
+  registerLimit: number;
+  loginLimit: number;
+  writeLimit: number;
+  uploadLimit: number;
+  shareCreateLimit: number;
+  shareAccessLimit: number;
+  downloadLimit: number;
+  webhookLimit: number;
+};
+
 export type AlertConfig = {
   enabled: boolean;
   telegramEnabled: boolean;
@@ -263,6 +285,8 @@ export type ProviderStatus = {
 export type RuntimeConfig = {
   id: string;
   guestUploads: GuestUploadConfig;
+  registration: RegistrationConfig;
+  rateLimits: RuntimeRateLimitConfig;
   limits: {
     freePlanId: string;
     paidPlanIds: string[];
@@ -463,20 +487,30 @@ export const client = {
     password: string;
     displayName: string;
     language: string;
+    emailVerificationCode?: string;
+    turnstileToken?: string;
   }) =>
     api<AuthResult>("/auth/register", {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  startRegistrationVerification: (email: string) =>
+    api<{ devToken?: string; message: string }>(
+      "/auth/registration/email-verification/start",
+      {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      },
+    ),
   login: (body: { email: string; password: string }) =>
     api<AuthResult>("/auth/login", {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  googleOAuthStartPath: (returnTo = "/") =>
-    `/api/v1/auth/google/start?${new URLSearchParams({ returnTo }).toString()}`,
-  githubOAuthStartPath: (returnTo = "/") =>
-    `/api/v1/auth/github/start?${new URLSearchParams({ returnTo }).toString()}`,
+  googleOAuthStartPath: (returnTo = "/", language = "") =>
+    `/api/v1/auth/google/start?${new URLSearchParams({ returnTo, language }).toString()}`,
+  githubOAuthStartPath: (returnTo = "/", language = "") =>
+    `/api/v1/auth/github/start?${new URLSearchParams({ returnTo, language }).toString()}`,
   logout: () => api<{ status: string }>("/auth/logout", { method: "POST" }),
   logoutAll: () =>
     api<{ status: string }>("/auth/logout-all", { method: "POST" }),
@@ -489,16 +523,6 @@ export const client = {
     ),
   finishEmailVerification: (token: string) =>
     api<User>("/auth/email-verification/finish", {
-      method: "POST",
-      body: JSON.stringify({ token }),
-    }),
-  startMagic: (email: string) =>
-    api<{ devToken?: string; message: string }>("/auth/magic/start", {
-      method: "POST",
-      body: JSON.stringify({ email }),
-    }),
-  finishMagic: (token: string) =>
-    api<AuthResult>("/auth/magic/finish", {
       method: "POST",
       body: JSON.stringify({ token }),
     }),
@@ -650,6 +674,8 @@ export const client = {
   adminRuntimeConfig: () => api<RuntimeConfig>("/admin/runtime-config"),
   adminUpdateRuntimeConfig: (body: {
     guestUploads?: Partial<GuestUploadConfig>;
+    registration?: Partial<RegistrationConfig>;
+    rateLimits?: Partial<RuntimeRateLimitConfig>;
     alerts?: Partial<AlertConfig>;
   }) =>
     api<RuntimeConfig>("/admin/runtime-config", {
@@ -701,6 +727,19 @@ export const client = {
       body: JSON.stringify({ message }),
     }),
   adminUsers: () => api<{ users: User[] }>("/admin/users"),
+  adminSetUserPlan: (
+    userId: string,
+    body: {
+      planId: string;
+      expiresAt?: string;
+      reason?: string;
+      ticketId?: string;
+    },
+  ) =>
+    api<User>(`/admin/users/${encodeURIComponent(userId)}/plan`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
   adminPastes: () => api<{ pastes: Paste[] }>("/admin/pastes"),
   adminAttachments: (query: string) =>
     api<{ attachments: AdminAttachment[] }>(
