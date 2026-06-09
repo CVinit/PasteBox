@@ -1083,22 +1083,15 @@ func (s *Server) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseMultipartForm(64 << 20); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_multipart", "message": "invalid multipart form"})
-		return
-	}
-	file, header, err := r.FormFile("file")
+	upload, _, err := readAttachmentMultipart(r)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_file", "message": "file is required"})
+		if s.handleErr(w, err) {
+			return
+		}
 		return
 	}
-	defer file.Close()
-	content, err := io.ReadAll(io.LimitReader(file, 5<<30))
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "read_failed", "message": "failed to read file"})
-		return
-	}
-	attachment, err := s.app.AddAttachment(user.ID, chi.URLParam(r, "pasteID"), header.Filename, contentType(header), content)
+	defer upload.Close()
+	attachment, err := s.app.AddPreparedAttachment(user.ID, chi.URLParam(r, "pasteID"), upload)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1106,28 +1099,19 @@ func (s *Server) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) uploadGuestAttachment(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(64 << 20); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_multipart", "message": "invalid multipart form"})
-		return
-	}
-	file, header, err := r.FormFile("file")
+	upload, fields, err := readAttachmentMultipart(r)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_file", "message": "file is required"})
+		if s.handleErr(w, err) {
+			return
+		}
 		return
 	}
-	defer file.Close()
-	content, err := io.ReadAll(io.LimitReader(file, 5<<30))
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "read_failed", "message": "failed to read file"})
-		return
-	}
-	attachment, err := s.app.AddGuestAttachment(
-		firstNonEmpty(r.FormValue("guestToken"), guestTokenFromRequest(r)),
+	defer upload.Close()
+	attachment, err := s.app.AddPreparedGuestAttachment(
+		firstNonEmpty(fields["guestToken"], guestTokenFromRequest(r)),
 		chi.URLParam(r, "pasteID"),
-		header.Filename,
-		contentType(header),
-		content,
-		r.FormValue("turnstileToken"),
+		upload,
+		fields["turnstileToken"],
 		clientIP(r),
 	)
 	if s.handleErr(w, err) {
@@ -1169,11 +1153,11 @@ func (s *Server) downloadAttachment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	attachment, content, err := s.app.DownloadAttachment(user.ID, chi.URLParam(r, "attachmentID"))
+	download, err := s.app.OpenAttachment(user.ID, chi.URLParam(r, "attachmentID"))
 	if s.handleErr(w, err) {
 		return
 	}
-	s.writeDownload(w, attachment, content)
+	s.writeDownloadStream(w, download)
 }
 
 func (s *Server) createShare(w http.ResponseWriter, r *http.Request) {
@@ -1245,11 +1229,11 @@ func (s *Server) accessShare(w http.ResponseWriter, r *http.Request) {
 func (s *Server) downloadSharedAttachment(w http.ResponseWriter, r *http.Request) {
 	viewerID := s.optionalUserID(r)
 	password := r.URL.Query().Get("password")
-	attachment, content, err := s.app.DownloadSharedAttachment(chi.URLParam(r, "token"), password, chi.URLParam(r, "attachmentID"), viewerID)
+	download, err := s.app.OpenSharedAttachment(chi.URLParam(r, "token"), password, chi.URLParam(r, "attachmentID"), viewerID)
 	if s.handleErr(w, err) {
 		return
 	}
-	s.writeDownload(w, attachment, content)
+	s.writeDownloadStream(w, download)
 }
 
 func (s *Server) prices(w http.ResponseWriter, _ *http.Request) {
@@ -2933,7 +2917,9 @@ func (s *Server) handleErr(w http.ResponseWriter, err error) bool {
 	return true
 }
 
-func (s *Server) writeDownload(w http.ResponseWriter, attachment app.AttachmentView, content []byte) {
+func (s *Server) writeDownloadStream(w http.ResponseWriter, download app.AttachmentDownload) {
+	defer download.Body.Close()
+	attachment := download.Attachment
 	contentType := attachment.ContentType
 	if contentType == "" {
 		contentType = "application/octet-stream"
@@ -2941,9 +2927,69 @@ func (s *Server) writeDownload(w http.ResponseWriter, attachment app.AttachmentV
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Disposition", `attachment; filename="`+sanitizeHeaderValue(attachment.FileName)+`"`)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+	if download.Size >= 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(download.Size, 10))
+	}
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(content)
+	_, _ = io.Copy(w, download.Body)
+}
+
+func readAttachmentMultipart(r *http.Request) (*app.PreparedAttachmentUpload, map[string]string, error) {
+	reader, err := r.MultipartReader()
+	if err != nil {
+		return nil, nil, app.E(http.StatusBadRequest, "invalid_multipart", "invalid multipart form")
+	}
+	fields := map[string]string{}
+	var upload *app.PreparedAttachmentUpload
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			if upload != nil {
+				_ = upload.Close()
+			}
+			return nil, nil, app.E(http.StatusBadRequest, "invalid_multipart", "invalid multipart form")
+		}
+		if part.FormName() == "file" && upload == nil {
+			upload, err = app.PrepareAttachmentUpload(part.FileName(), part.Header.Get("Content-Type"), part)
+			_ = part.Close()
+			if err != nil {
+				return nil, nil, err
+			}
+			continue
+		}
+		if part.FormName() != "" && part.FileName() == "" {
+			value, err := readMultipartField(part)
+			_ = part.Close()
+			if err != nil {
+				if upload != nil {
+					_ = upload.Close()
+				}
+				return nil, nil, err
+			}
+			fields[part.FormName()] = value
+			continue
+		}
+		_ = part.Close()
+	}
+	if upload == nil {
+		return nil, nil, app.E(http.StatusBadRequest, "missing_file", "file is required")
+	}
+	return upload, fields, nil
+}
+
+func readMultipartField(part *multipart.Part) (string, error) {
+	const maxMultipartFieldBytes = 64 * 1024
+	data, err := io.ReadAll(io.LimitReader(part, maxMultipartFieldBytes+1))
+	if err != nil {
+		return "", app.E(http.StatusBadRequest, "invalid_multipart", "invalid multipart form")
+	}
+	if len(data) > maxMultipartFieldBytes {
+		return "", app.E(http.StatusBadRequest, "invalid_multipart", "invalid multipart form")
+	}
+	return string(data), nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
@@ -2952,13 +2998,6 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 	}
-}
-
-func contentType(header *multipart.FileHeader) string {
-	if values := header.Header.Values("Content-Type"); len(values) > 0 {
-		return values[0]
-	}
-	return "application/octet-stream"
 }
 
 func sanitizeHeaderValue(value string) string {

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"io"
 	"time"
 )
 
@@ -19,6 +20,17 @@ type ObjectStore interface {
 	PutObject(ctx context.Context, key string, content []byte, contentType string) error
 	GetObject(ctx context.Context, key string) ([]byte, error)
 	DeleteObject(ctx context.Context, key string) error
+}
+
+type ObjectStream struct {
+	Body        io.ReadCloser
+	Size        int64
+	ContentType string
+}
+
+type StreamingObjectStore interface {
+	PutObjectStream(ctx context.Context, key string, content io.Reader, size int64, contentType string) error
+	OpenObject(ctx context.Context, key string) (ObjectStream, error)
 }
 
 type ScanResult struct {

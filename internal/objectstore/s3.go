@@ -48,11 +48,15 @@ func NewS3Store(cfg config.S3Config) (*S3Store, error) {
 }
 
 func (s *S3Store) PutObject(ctx context.Context, key string, content []byte, contentType string) error {
+	return s.PutObjectStream(ctx, key, bytes.NewReader(content), int64(len(content)), contentType)
+}
+
+func (s *S3Store) PutObjectStream(ctx context.Context, key string, content io.Reader, size int64, contentType string) error {
 	input := &s3.PutObjectInput{
 		Bucket:        aws.String(s.bucket),
 		Key:           aws.String(key),
-		Body:          bytes.NewReader(content),
-		ContentLength: aws.Int64(int64(len(content))),
+		Body:          content,
+		ContentLength: aws.Int64(size),
 	}
 	if contentType != "" {
 		input.ContentType = aws.String(contentType)
@@ -64,23 +68,39 @@ func (s *S3Store) PutObject(ctx context.Context, key string, content []byte, con
 }
 
 func (s *S3Store) GetObject(ctx context.Context, key string) ([]byte, error) {
+	object, err := s.OpenObject(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	defer object.Body.Close()
+
+	content, err := io.ReadAll(object.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read s3 object %q: %w", key, err)
+	}
+	return content, nil
+}
+
+func (s *S3Store) OpenObject(ctx context.Context, key string) (app.ObjectStream, error) {
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 	})
 	if err != nil {
 		if isS3NotFound(err) {
-			return nil, app.ErrObjectNotFound
+			return app.ObjectStream{}, app.ErrObjectNotFound
 		}
-		return nil, fmt.Errorf("s3 get object %q: %w", key, err)
+		return app.ObjectStream{}, fmt.Errorf("s3 get object %q: %w", key, err)
 	}
-	defer out.Body.Close()
-
-	content, err := io.ReadAll(out.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read s3 object %q: %w", key, err)
+	contentType := ""
+	if out.ContentType != nil {
+		contentType = *out.ContentType
 	}
-	return content, nil
+	size := int64(-1)
+	if out.ContentLength != nil {
+		size = *out.ContentLength
+	}
+	return app.ObjectStream{Body: out.Body, Size: size, ContentType: contentType}, nil
 }
 
 func (s *S3Store) DeleteObject(ctx context.Context, key string) error {

@@ -6,9 +6,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"pastebox/internal/app"
 	"pastebox/internal/config"
@@ -62,18 +64,30 @@ func TestS3StoreRoundTripHealthAndNotFoundMapping(t *testing.T) {
 	if err := store.Health(ctx); err != nil {
 		t.Fatalf("health: %v", err)
 	}
-	if err := store.PutObject(ctx, "objects/paste.txt", []byte("stored payload"), "text/plain"); err != nil {
+	if err := store.PutObjectStream(ctx, "objects/paste.txt", strings.NewReader("stored payload"), int64(len("stored payload")), "text/plain"); err != nil {
 		t.Fatalf("put object: %v", err)
 	}
 	if got := fake.contentType("objects/paste.txt"); got != "text/plain" {
 		t.Fatalf("expected content type to be forwarded, got %q", got)
 	}
-	content, err := store.GetObject(ctx, "objects/paste.txt")
+	object, err := store.OpenObject(ctx, "objects/paste.txt")
 	if err != nil {
-		t.Fatalf("get object: %v", err)
+		t.Fatalf("open object: %v", err)
+	}
+	content, err := io.ReadAll(object.Body)
+	_ = object.Body.Close()
+	if err != nil {
+		t.Fatalf("read object: %v", err)
 	}
 	if string(content) != "stored payload" {
 		t.Fatalf("expected stored payload, got %q", string(content))
+	}
+	content, err = store.GetObject(ctx, "objects/paste.txt")
+	if err != nil {
+		t.Fatalf("legacy get object: %v", err)
+	}
+	if string(content) != "stored payload" {
+		t.Fatalf("expected stored payload from legacy get, got %q", string(content))
 	}
 	if err := store.DeleteObject(ctx, "objects/paste.txt"); err != nil {
 		t.Fatalf("delete object: %v", err)
@@ -83,6 +97,65 @@ func TestS3StoreRoundTripHealthAndNotFoundMapping(t *testing.T) {
 	}
 	if err := store.DeleteObject(ctx, "objects/missing.txt"); !errors.Is(err, app.ErrObjectNotFound) {
 		t.Fatalf("expected missing delete to map to ErrObjectNotFound, got %v", err)
+	}
+}
+
+func TestS3StoreExternalEndpoint(t *testing.T) {
+	endpoint := os.Getenv("PASTEBOX_TEST_S3_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set PASTEBOX_TEST_S3_ENDPOINT to run external S3-compatible endpoint test")
+	}
+	bucket := os.Getenv("PASTEBOX_TEST_S3_BUCKET")
+	accessKey := os.Getenv("PASTEBOX_TEST_S3_ACCESS_KEY")
+	secretKey := os.Getenv("PASTEBOX_TEST_S3_SECRET_KEY")
+	if bucket == "" || accessKey == "" || secretKey == "" {
+		t.Skip("set PASTEBOX_TEST_S3_BUCKET, PASTEBOX_TEST_S3_ACCESS_KEY, and PASTEBOX_TEST_S3_SECRET_KEY")
+	}
+	region := os.Getenv("PASTEBOX_TEST_S3_REGION")
+	if region == "" {
+		region = "us-east-1"
+	}
+	store, err := NewS3Store(config.S3Config{
+		Endpoint:     endpoint,
+		Bucket:       bucket,
+		Region:       region,
+		AccessKey:    accessKey,
+		SecretKey:    secretKey,
+		UsePathStyle: true,
+	})
+	if err != nil {
+		t.Fatalf("new s3 store: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := store.Health(ctx); err != nil {
+		t.Fatalf("health: %v", err)
+	}
+	key := "pastebox-external-test/" + strings.ReplaceAll(t.Name(), "/", "-") + "-" + time.Now().UTC().Format("20060102150405.000000000")
+	payload := "streamed payload through external s3 endpoint"
+	if err := store.PutObjectStream(ctx, key, strings.NewReader(payload), int64(len(payload)), "text/plain"); err != nil {
+		t.Fatalf("put object stream: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.DeleteObject(context.Background(), key)
+	})
+	object, err := store.OpenObject(ctx, key)
+	if err != nil {
+		t.Fatalf("open object: %v", err)
+	}
+	content, err := io.ReadAll(object.Body)
+	_ = object.Body.Close()
+	if err != nil {
+		t.Fatalf("read object: %v", err)
+	}
+	if string(content) != payload {
+		t.Fatalf("expected %q, got %q", payload, string(content))
+	}
+	if err := store.DeleteObject(ctx, key); err != nil {
+		t.Fatalf("delete object: %v", err)
+	}
+	if _, err := store.OpenObject(ctx, key); !errors.Is(err, app.ErrObjectNotFound) {
+		t.Fatalf("expected missing object to map to ErrObjectNotFound, got %v", err)
 	}
 }
 
