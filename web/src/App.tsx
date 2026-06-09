@@ -7116,7 +7116,7 @@ function PublicPageScreen({
           <p>{page.summary}</p>
         </div>
         <div className="public-hero-actions">
-          <a className="ghost-button" href="/">
+          <a className="ghost-button" href="/app">
             <ClipboardCopy size={16} aria-hidden="true" />
             {t("openApp")}
           </a>
