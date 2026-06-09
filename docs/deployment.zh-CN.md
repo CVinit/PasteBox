@@ -2,6 +2,11 @@
 
 本文说明当前 PasteBox MVP 的演示部署范围、GitHub Actions 自动构建镜像流程，以及使用 GHCR 镜像通过 Docker Compose 部署的方法。
 
+如果你准备把本项目部署到公网，并使用宿主机 Nginx 反代、Cloudflare CDN/WAF
+接入，请直接使用
+[Docker + Nginx + Cloudflare 生产部署教程](production-docker-nginx-cloudflare.zh-CN.md)。
+本文下面的 `compose.deploy.yaml` 路径主要用于演示、内部评审和低风险试用。
+
 ## 当前可用边界
 
 当前版本可以通过演示 Compose 栈部署用于演示、内部评审、功能走查和低风险试用。API 容器提供 Go API 和内置 React/Vite 前端，旁路容器提供 PostgreSQL、Redis、MinIO 兼容对象存储、数据库迁移、bucket 初始化、ClamAV 扫描、Mailpit SMTP 和 PasteBox worker。

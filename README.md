@@ -100,7 +100,9 @@ boundary. Use `sha-*` tags or digests for deployments; `latest` is only a
 convenience tag.
 
 中文部署说明见 [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md)，其中包含
-GitHub Actions 自动构建镜像后的 Docker Compose 部署方式。
+GitHub Actions 自动构建镜像后的 Docker Compose 部署方式。若要用 Docker
+部署到公网，并通过宿主机 Nginx 反代、Cloudflare CDN/WAF 接入，使用
+[docs/production-docker-nginx-cloudflare.zh-CN.md](docs/production-docker-nginx-cloudflare.zh-CN.md)。
 
 The production launch baseline now lives in
 [docs/production-deployment-runbook.md](docs/production-deployment-runbook.md)
