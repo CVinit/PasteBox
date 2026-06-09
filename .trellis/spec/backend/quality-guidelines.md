@@ -377,6 +377,131 @@ out := []PasteView{}
 writeJSON(w, http.StatusOK, map[string]any{"pastes": out})
 ```
 
+## Scenario: S3-Compatible Attachment Streaming
+
+### 1. Scope / Trigger
+
+- Trigger: Any backend change that touches attachment upload handlers,
+  attachment download handlers, object-storage adapters, S3-compatible gateway
+  configuration, or attachment byte transfer between HTTP, service, and object
+  storage.
+
+### 2. Signatures
+
+- Upload APIs:
+  `POST /api/v1/pastes/{pasteID}/attachments` and
+  `POST /api/v1/guest/pastes/{pasteID}/attachments`.
+- Download APIs:
+  `GET /api/v1/attachments/{attachmentID}/download` and
+  `GET /api/v1/shares/{token}/attachments/{attachmentID}/download`.
+- App helper:
+  `PrepareAttachmentUpload(fileName, contentType string, body io.Reader)`.
+- Service upload methods:
+  `AddPreparedAttachment(userID, pasteID string, upload *PreparedAttachmentUpload)`
+  and `AddPreparedGuestAttachment(token, pasteID string, upload *PreparedAttachmentUpload, turnstileToken, remoteIP string)`.
+- Service download methods:
+  `OpenAttachment(userID, attachmentID string)` and
+  `OpenSharedAttachment(token, password, attachmentID, viewerUserID string)`.
+- Optional object-store extension:
+  `StreamingObjectStore.PutObjectStream` and `StreamingObjectStore.OpenObject`.
+- S3 env keys:
+  `PASTEBOX_S3_ENDPOINT`, `PASTEBOX_S3_BUCKET`, `PASTEBOX_S3_REGION`,
+  `PASTEBOX_S3_ACCESS_KEY`, `PASTEBOX_S3_SECRET_KEY`,
+  `PASTEBOX_S3_USE_PATH_STYLE`.
+
+### 3. Contracts
+
+- HTTP attachment upload handlers must read multipart bodies with
+  `MultipartReader` or an equivalent streaming parser. They must not use
+  `ParseMultipartForm`, `FormFile`, or file-part `io.ReadAll` as the main
+  upload path.
+- Upload preparation may spool to a temporary file to calculate size, SHA-256,
+  content type, and image dimensions before storage. The temporary file must be
+  closed and removed after the service call.
+- S3-compatible stores should implement `StreamingObjectStore`. When available,
+  service upload uses `PutObjectStream` and service download uses `OpenObject`.
+- Legacy `[]byte` object-store methods may remain for unit tests, scanner
+  paths, and compatibility, but HTTP upload/download must use the prepared
+  upload and stream download methods.
+- Download responses must preserve the existing attachment response headers:
+  `Content-Type`, `Content-Disposition`, `Content-Length` when known, and
+  `X-Content-Type-Options: nosniff`.
+- s3-orchestrator and similar path-style gateways must be configured with the
+  virtual bucket name, its credentials, a valid region such as `us-east-1`, and
+  `PASTEBOX_S3_USE_PATH_STYLE=true`.
+- Production preflight still requires `PASTEBOX_S3_ENDPOINT` to be a real
+  HTTPS domain; local HTTP s3-orchestrator endpoints are for development and
+  tests only.
+
+### 4. Validation & Error Matrix
+
+- Missing multipart file -> `400 missing_file`.
+- Invalid multipart body -> `400 invalid_multipart`.
+- Upload stream read failure -> `400 read_failed`.
+- Upload exceeds the hard stream cap -> `413 file_too_large`.
+- Upload exceeds plan single-file limit -> `413 file_too_large`.
+- Upload exceeds plan paste/account quota -> existing quota error code.
+- Object missing while opening a download -> `410 attachment_unavailable`.
+- Wrong s3-orchestrator virtual bucket for credentials -> readiness
+  `HeadBucket` or object operation fails with S3 access/bucket error.
+
+### 5. Good/Base/Bad Cases
+
+- Good: The HTTP handler streams the multipart file into
+  `PrepareAttachmentUpload`, then the service streams that temp file into S3
+  through `PutObjectStream`.
+- Good: The download handler calls `OpenAttachment`/`OpenSharedAttachment` and
+  copies the returned body with `io.Copy`.
+- Base: Tests without a streaming object store fall back to the legacy in-memory
+  object store for small payloads.
+- Bad: Reintroducing `io.ReadAll(file)` in upload handlers or `io.ReadAll` on
+  S3 response bodies in HTTP download handlers.
+
+### 6. Tests Required
+
+- Object-store tests must cover `PutObjectStream`, `OpenObject`, `DeleteObject`,
+  and `Health` against a fake S3-compatible server.
+- Keep an env-gated external S3-compatible endpoint test for real gateway
+  smoke checks. It should be skipped unless endpoint, bucket, and credentials
+  env vars are set.
+- HTTP upload/download contract tests must continue to cover user uploads,
+  guest uploads, owner downloads, and shared downloads.
+- Run `make test` after changing upload/download handlers or object-store
+  adapters.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+file, header, _ := r.FormFile("file")
+content, _ := io.ReadAll(file)
+attachment, err := s.app.AddAttachment(user.ID, pasteID, header.Filename, contentType(header), content)
+```
+
+#### Correct
+
+```go
+upload, fields, err := readAttachmentMultipart(r)
+defer upload.Close()
+attachment, err := s.app.AddPreparedGuestAttachment(fields["guestToken"], pasteID, upload, fields["turnstileToken"], clientIP(r))
+```
+
+#### Wrong
+
+```go
+content, err := s.app.DownloadAttachment(user.ID, attachmentID)
+w.Write(content)
+```
+
+#### Correct
+
+```go
+download, err := s.app.OpenAttachment(user.ID, attachmentID)
+defer download.Body.Close()
+_, _ = io.Copy(w, download.Body)
+```
+
 ## Scenario: OAuth Deployment Env Wiring
 
 ### 1. Scope / Trigger
