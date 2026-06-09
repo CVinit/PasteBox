@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -2822,6 +2823,7 @@ function App() {
     emailVerificationCode: "",
     turnstileToken: "",
   });
+  const attachmentInputId = useId();
   const [resetToken, setResetToken] = useState("");
   const [profileDraft, setProfileDraft] = useState({
     displayName: "",
@@ -4097,6 +4099,7 @@ function App() {
               </div>
               <label
                 className="drop-zone"
+                htmlFor={attachmentInputId}
                 onDragOver={(event) => event.preventDefault()}
                 onDrop={(event) => {
                   event.preventDefault();
@@ -4106,6 +4109,8 @@ function App() {
               >
                 <UploadCloud size={20} aria-hidden="true" />
                 <input
+                  className="visually-hidden-file-input"
+                  id={attachmentInputId}
                   type="file"
                   onChange={(event) =>
                     event.target.files?.[0] &&
@@ -6406,6 +6411,7 @@ function GuestWorkbench({
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [limitMessage, setLimitMessage] = useState("");
+  const uploadInputId = useId();
   const textBytes = byteSize(text);
   const fileBytes = file?.size ?? 0;
   const totalBytes = textBytes + fileBytes;
@@ -6594,7 +6600,7 @@ function GuestWorkbench({
             </small>
           </label>
         ) : (
-          <label className="guest-upload-box">
+          <label className="guest-upload-box" htmlFor={uploadInputId}>
             <UploadCloud size={22} aria-hidden="true" />
             <strong>
               {file?.name ??
@@ -6609,6 +6615,8 @@ function GuestWorkbench({
             </span>
             <input
               accept={mode === "image" ? "image/*" : undefined}
+              className="visually-hidden-file-input"
+              id={uploadInputId}
               type="file"
               onChange={(event) => {
                 const nextFile = event.target.files?.[0] ?? null;
