@@ -4153,7 +4153,6 @@ function App() {
                   onCreate={createShare}
                   onOpen={() => void openShare()}
                   access={shareAccess}
-                  sharePassword={shareDraft.password}
                   locale={locale}
                 />
               </aside>
@@ -7068,11 +7067,7 @@ function PublicShareScreen({
                 <AttachmentDownloadItem
                   attachment={attachment}
                   context="public"
-                  href={sharedAttachmentDownloadPath(
-                    access.share.token,
-                    attachment.id,
-                    password,
-                  )}
+                  href={sharedAttachmentDownloadPath(access.share.token, attachment.id)}
                   icon="download"
                   key={attachment.id}
                   locale={locale}
@@ -7352,7 +7347,6 @@ function ShareBox({
   onDraft,
   onCreate,
   onOpen,
-  sharePassword,
   locale,
 }: {
   paste?: Paste;
@@ -7362,7 +7356,6 @@ function ShareBox({
   onDraft: (value: ShareDraft) => void;
   onCreate: () => void;
   onOpen: () => void;
-  sharePassword: string;
   locale: Locale;
 }) {
   const t = copyFor(locale);
@@ -7447,11 +7440,7 @@ function ShareBox({
             <AttachmentDownloadItem
               attachment={attachment}
               context="public"
-              href={sharedAttachmentDownloadPath(
-                access.share.token,
-                attachment.id,
-                sharePassword,
-              )}
+              href={sharedAttachmentDownloadPath(access.share.token, attachment.id)}
               icon="download"
               key={attachment.id}
               locale={locale}

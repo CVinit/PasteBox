@@ -188,10 +188,18 @@ func (s *Service) OpenAttachment(userID string, attachmentID string) (Attachment
 }
 
 func (s *Service) OpenSharedAttachment(token string, password string, attachmentID string, viewerUserID string) (AttachmentDownload, error) {
+	return s.openSharedAttachment(token, password, attachmentID, viewerUserID, false)
+}
+
+func (s *Service) OpenSharedAttachmentWithAccessGrant(token string, attachmentID string, viewerUserID string) (AttachmentDownload, error) {
+	return s.openSharedAttachment(token, "", attachmentID, viewerUserID, true)
+}
+
+func (s *Service) openSharedAttachment(token string, password string, attachmentID string, viewerUserID string, passwordVerified bool) (AttachmentDownload, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	share, paste, err := s.validShareLocked(token, password, viewerUserID, true)
+	share, paste, err := s.validShareAccessLocked(token, password, viewerUserID, true, passwordVerified)
 	if err != nil {
 		return AttachmentDownload{}, err
 	}

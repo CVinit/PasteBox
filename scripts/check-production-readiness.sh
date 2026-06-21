@@ -83,6 +83,9 @@ run sh scripts/check-production-preflight.sh
 section "Project tests"
 run make test
 
+section "Frontend dependency audit"
+run npm --prefix web --cache "$repo_root/.cache/npm" audit --audit-level=high
+
 section "Web launch surfaces"
 run node scripts/check-web-launch-surfaces.mjs
 

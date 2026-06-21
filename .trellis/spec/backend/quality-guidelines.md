@@ -270,6 +270,8 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
   `/api/v1/attachments/{attachmentID}/download`; share access at
   `/api/v1/shares/{token}/access`; shared download at
   `/api/v1/shares/{token}/attachments/{attachmentID}/download`.
+- Share access grant: `pastebox_share_access` HttpOnly cookie, signed by the
+  server, scoped to `/api/v1/shares/{token}/attachments`, and short-lived.
 - Billing/admin: `/api/v1/billing/prices`, `/billing/orders`, and the
   `/api/v1/admin/...` dashboard, list, mutation, queue, audit, cleanup, and
   manual payment routes.
@@ -296,6 +298,11 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
 - Production rate limits must stay enabled with positive limits for auth,
   browser write, upload, download, and provider webhook buckets.
 - API errors use `{"error": "<code>", "message": "<human message>"}`.
+- Shared attachment downloads must not accept share passwords in the URL query.
+  Successful `POST /api/v1/shares/{token}/access` sets a signed
+  `pastebox_share_access` cookie; later clean `GET .../download` requests use
+  that cookie for authorization. Login-required shares bind the grant to the
+  viewer user ID; anonymous grants may omit `viewerId`.
 - `GET /api/v1/plans` returns `plans` and `prices`; `GET
   /api/v1/billing/prices` returns the same catalog plus provider-enabled flags
   on prices.
@@ -320,6 +327,9 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
 - Bad JSON -> `400 invalid_json`; missing upload file -> `400 missing_file`.
 - Share password mismatch -> `401 invalid_share_password`; login-required
   anonymous access -> `401 login_required`.
+- Missing, expired, wrong-token, wrong-user, or tampered share access cookie on
+  shared attachment download -> `401 share_access_required`. A download URL
+  with `?password=...` must still return `401 share_access_required`.
 - Non-admin access to admin routes -> `403 admin_required`.
 
 ### 5. Good/Base/Bad Cases
@@ -327,8 +337,14 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
 - Good: Register through HTTP, receive the session cookie, create a paste,
   upload a file, create a share, and access the share anonymously with the
   expected JSON shapes.
+- Good: Access a password-protected share by POSTing the password, receive the
+  scoped HttpOnly share access cookie, and download a clean attachment through
+  the same URL without password query parameters.
 - Base: Admin login can query dashboard/list endpoints and admin mutations write
   audit logs.
+- Bad: Building shared attachment download links as
+  `/download?password=<share password>` because URLs leak through browser
+  history, logs, referrers, and metrics.
 - Bad: A frontend field rename or route rename compiles only if the typed client
   and backend handler tests are updated together.
 
@@ -346,6 +362,9 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
 - Handler tests must assert empty list and nested collection fields serialize as
   JSON arrays (`[]`) rather than `null`, because React call sites use array
   methods such as `.find()` and `.join()`.
+- Handler tests must assert shared attachment downloads reject password query
+  strings, require the signed share access cookie, and accept clean URLs after a
+  successful share access POST.
 - Domain-heavy quota, expiry, dedupe, scan, cleanup, and billing behavior stays
   in `internal/app` tests.
 - Cross-layer changes require both `make test-api` and `make test-web`; run full
@@ -365,6 +384,12 @@ var out []PasteView
 writeJSON(w, http.StatusOK, map[string]any{"pastes": out})
 ```
 
+Read a shared attachment password from the URL:
+
+```go
+password := r.URL.Query().Get("password")
+```
+
 #### Correct
 
 Keep the backend handler, typed `web/src/api.ts` client, and handler contract
@@ -376,6 +401,9 @@ Initialize empty response collections before encoding:
 out := []PasteView{}
 writeJSON(w, http.StatusOK, map[string]any{"pastes": out})
 ```
+
+Set the share access grant during `POST /access`, then require the signed cookie
+on shared attachment downloads.
 
 ## Scenario: S3-Compatible Attachment Streaming
 

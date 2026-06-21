@@ -8,7 +8,7 @@ include .env
 export
 endif
 
-.PHONY: help dev api web db-up object-bucket db-status db-migrate db-reset test test-api test-postgres test-web build build-api build-web production-readiness release-evidence fmt clean
+.PHONY: help dev api web db-up object-bucket db-status db-migrate db-reset test test-api test-postgres test-web build build-api build-web sync-static production-readiness release-evidence fmt clean
 
 help:
 	@printf '%s\n' 'PasteBox commands:'
@@ -67,13 +67,17 @@ test-web:
 	$(NPM) run typecheck
 	$(NPM) run build
 
-build: build-api build-web
+build: build-api
 
-build-api:
+build-api: build-web sync-static
 	$(GO_ENV) go build -o bin/pastebox ./cmd/pastebox
 
 build-web:
 	$(NPM) run build
+
+sync-static:
+	mkdir -p internal/httpserver/static
+	cp -R web/dist/. internal/httpserver/static/
 
 production-readiness:
 	sh scripts/check-production-readiness.sh

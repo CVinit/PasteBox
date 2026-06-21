@@ -4325,6 +4325,10 @@ func (s *Service) viewShareLocked(share *Share) ShareView {
 }
 
 func (s *Service) validShareLocked(token string, password string, viewerUserID string, forDownload bool) (*Share, *Paste, error) {
+	return s.validShareAccessLocked(token, password, viewerUserID, forDownload, false)
+}
+
+func (s *Service) validShareAccessLocked(token string, password string, viewerUserID string, forDownload bool, passwordVerified bool) (*Share, *Paste, error) {
 	share, err := s.shareByTokenHashLocked(tokenHash(token))
 	if err != nil {
 		return nil, nil, E(http.StatusNotFound, "share_not_found", "share not found")
@@ -4342,7 +4346,7 @@ func (s *Service) validShareLocked(token string, password string, viewerUserID s
 	if share.MaxDownloads > 0 && forDownload && share.DownloadCount >= share.MaxDownloads {
 		return nil, nil, E(http.StatusGone, "download_limit_reached", "share download limit reached")
 	}
-	if share.PasswordHash != "" && optionalPasswordHash(password) != share.PasswordHash {
+	if share.PasswordHash != "" && !passwordVerified && optionalPasswordHash(password) != share.PasswordHash {
 		share.LastAccessFailure = &now
 		if err := s.updateShareLocked(share); err != nil {
 			return nil, nil, err

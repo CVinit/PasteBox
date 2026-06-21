@@ -42,8 +42,15 @@ const (
 	googleOAuthStateCookieName = "pastebox_google_oauth_state"
 	githubOAuthStateCookieName = "pastebox_github_oauth_state"
 	csrfCookieName             = "pastebox_csrf"
+	shareAccessCookieName      = "pastebox_share_access"
 	csrfHeaderName             = "X-CSRF-Token"
+	shareAccessCookieTTL       = 15 * time.Minute
 )
+
+type shareAccessGrant struct {
+	ViewerID  string `json:"viewerId,omitempty"`
+	ExpiresAt int64  `json:"exp"`
+}
 
 var (
 	googleOAuthAuthorizeURL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -1223,13 +1230,22 @@ func (s *Server) accessShare(w http.ResponseWriter, r *http.Request) {
 	if s.handleErr(w, err) {
 		return
 	}
+	grantViewerID := ""
+	if share.LoginRequired {
+		grantViewerID = viewerID
+	}
+	s.setShareAccessCookie(w, r, chi.URLParam(r, "token"), grantViewerID)
 	writeJSON(w, http.StatusOK, map[string]any{"paste": paste, "share": share})
 }
 
 func (s *Server) downloadSharedAttachment(w http.ResponseWriter, r *http.Request) {
 	viewerID := s.optionalUserID(r)
-	password := r.URL.Query().Get("password")
-	download, err := s.app.OpenSharedAttachment(chi.URLParam(r, "token"), password, chi.URLParam(r, "attachmentID"), viewerID)
+	token := chi.URLParam(r, "token")
+	if !s.validShareAccessCookie(r, token, viewerID) {
+		_ = s.handleErr(w, app.E(http.StatusUnauthorized, "share_access_required", "open this share before downloading attachments"))
+		return
+	}
+	download, err := s.app.OpenSharedAttachmentWithAccessGrant(token, chi.URLParam(r, "attachmentID"), viewerID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -2577,6 +2593,64 @@ func (s *Server) setCSRFCookie(w http.ResponseWriter, r *http.Request, value str
 		Secure:   s.secureSessionCookie(r),
 		SameSite: http.SameSiteLaxMode,
 	})
+}
+
+func (s *Server) setShareAccessCookie(w http.ResponseWriter, r *http.Request, token string, viewerID string) {
+	expiresAt := time.Now().UTC().Add(shareAccessCookieTTL)
+	payload, err := json.Marshal(shareAccessGrant{ViewerID: viewerID, ExpiresAt: expiresAt.Unix()})
+	if err != nil {
+		return
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(payload)
+	http.SetCookie(w, &http.Cookie{
+		Name:     shareAccessCookieName,
+		Value:    encoded + "." + s.signShareAccessGrant(token, encoded),
+		Path:     shareAccessCookiePath(token),
+		Expires:  expiresAt,
+		HttpOnly: true,
+		Secure:   s.secureSessionCookie(r),
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func (s *Server) validShareAccessCookie(r *http.Request, token string, viewerID string) bool {
+	cookie, err := r.Cookie(shareAccessCookieName)
+	if err != nil || cookie.Value == "" {
+		return false
+	}
+	payload, signature, ok := strings.Cut(cookie.Value, ".")
+	if !ok || payload == "" || signature == "" {
+		return false
+	}
+	want := s.signShareAccessGrant(token, payload)
+	if subtle.ConstantTimeCompare([]byte(signature), []byte(want)) != 1 {
+		return false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		return false
+	}
+	var grant shareAccessGrant
+	if err := json.Unmarshal(raw, &grant); err != nil {
+		return false
+	}
+	if grant.ExpiresAt <= time.Now().UTC().Unix() {
+		return false
+	}
+	return grant.ViewerID == "" || grant.ViewerID == viewerID
+}
+
+func (s *Server) signShareAccessGrant(token string, payload string) string {
+	mac := hmac.New(sha256.New, []byte(s.cfg.CSRFSecret))
+	_, _ = mac.Write([]byte("share-access\n"))
+	_, _ = mac.Write([]byte(token))
+	_, _ = mac.Write([]byte("\n"))
+	_, _ = mac.Write([]byte(payload))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func shareAccessCookiePath(token string) string {
+	return "/api/v1/shares/" + url.PathEscape(token) + "/attachments"
 }
 
 func (s *Server) clearGoogleOAuthStateCookie(w http.ResponseWriter, r *http.Request) {

@@ -789,14 +789,8 @@ export function attachmentDownloadPath(id: string): string {
 export function sharedAttachmentDownloadPath(
   token: string,
   attachmentID: string,
-  password: string,
 ): string {
-  const params = new URLSearchParams();
-  if (password) {
-    params.set("password", password);
-  }
-  const query = params.toString();
-  return `/api/v1/shares/${encodeURIComponent(token)}/attachments/${encodeURIComponent(attachmentID)}/download${query ? `?${query}` : ""}`;
+  return `/api/v1/shares/${encodeURIComponent(token)}/attachments/${encodeURIComponent(attachmentID)}/download`;
 }
 
 export function formatBytes(bytes: number): string {

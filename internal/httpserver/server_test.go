@@ -951,7 +951,8 @@ func TestAuthPasteUploadShareAndQuotaHTTPContracts(t *testing.T) {
 	cfg.BootstrapAdminEmail = ""
 	cfg.BootstrapAdminPassword = ""
 	cfg.DevAuthTokens = true
-	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), app.New(cfg))
+	service := app.New(cfg)
+	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), service)
 	client := newHTTPTestClient(t, handler)
 
 	register := registerHTTPUser(t, client, "owner@example.com", "Owner")
@@ -1019,6 +1020,9 @@ func TestAuthPasteUploadShareAndQuotaHTTPContracts(t *testing.T) {
 	if attachment.ID == "" || attachment.PasteID != paste.ID || attachment.Size != int64(len("attachment")) || attachment.SHA256 != hex.EncodeToString(wantSHA[:]) {
 		t.Fatalf("unexpected attachment body: %#v", attachment)
 	}
+	if err := service.RunAttachmentScan(staticHTTPScanner{result: app.ScanResult{Status: "clean"}}, attachment.ID); err != nil {
+		t.Fatalf("scan attachment: %v", err)
+	}
 
 	createShare := client.json(http.MethodPost, "/api/v1/pastes/"+paste.ID+"/shares", `{"password":"pw","loginRequired":false,"maxVisits":2,"maxDownloads":1,"expiresInSeconds":1800}`)
 	assertStatus(t, createShare, http.StatusCreated)
@@ -1028,9 +1032,21 @@ func TestAuthPasteUploadShareAndQuotaHTTPContracts(t *testing.T) {
 		t.Fatalf("unexpected share body: %#v", share)
 	}
 
+	leakyDownload := newHTTPTestClient(t, handler).json(http.MethodGet, "/api/v1/shares/"+share.Token+"/attachments/"+attachment.ID+"/download?password=pw", "")
+	assertStatus(t, leakyDownload, http.StatusUnauthorized)
+	var leakyDownloadBody map[string]string
+	decodeResponse(t, leakyDownload, &leakyDownloadBody)
+	if leakyDownloadBody["error"] != "share_access_required" {
+		t.Fatalf("expected share access cookie to be required for attachment downloads, got %#v", leakyDownloadBody)
+	}
+
 	anonymous := newHTTPTestClient(t, handler)
 	accessShare := anonymous.json(http.MethodPost, "/api/v1/shares/"+share.Token+"/access", `{"password":"pw"}`)
 	assertStatus(t, accessShare, http.StatusOK)
+	grantCookie := cookieFromResponse(t, accessShare, shareAccessCookieName)
+	if grantCookie.Value == "" || !grantCookie.HttpOnly || grantCookie.Path != shareAccessCookiePath(share.Token) {
+		t.Fatalf("expected scoped HttpOnly share access cookie, got %#v", grantCookie)
+	}
 	var shareAccess struct {
 		Paste app.PasteView `json:"paste"`
 		Share app.ShareView `json:"share"`
@@ -1038,6 +1054,12 @@ func TestAuthPasteUploadShareAndQuotaHTTPContracts(t *testing.T) {
 	decodeResponse(t, accessShare, &shareAccess)
 	if shareAccess.Paste.ID != paste.ID || shareAccess.Share.VisitCount != 1 {
 		t.Fatalf("unexpected share access body: %#v", shareAccess)
+	}
+
+	download := anonymous.json(http.MethodGet, "/api/v1/shares/"+share.Token+"/attachments/"+attachment.ID+"/download", "")
+	assertStatus(t, download, http.StatusOK)
+	if got := download.Body.String(); got != "attachment" {
+		t.Fatalf("unexpected shared attachment body: %q", got)
 	}
 }
 
@@ -1610,6 +1632,14 @@ type fakeHTTPAlertSender struct {
 func (s *fakeHTTPAlertSender) SendAlert(_ context.Context, _ string, _ bool) error {
 	s.calls++
 	return nil
+}
+
+type staticHTTPScanner struct {
+	result app.ScanResult
+}
+
+func (s staticHTTPScanner) Scan(_ context.Context, _ string, _ string, _ []byte) (app.ScanResult, error) {
+	return s.result, nil
 }
 
 func newHTTPTestClient(t *testing.T, handler http.Handler) *httpTestClient {

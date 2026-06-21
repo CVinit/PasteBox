@@ -289,7 +289,7 @@ const status = orderStatusDetail(order.status, locale);
   `web/src/App.tsx`.
 - UI component: `AttachmentDownloadItem` in `web/src/App.tsx`.
 - Download paths: `attachmentDownloadPath()` and
-  `sharedAttachmentDownloadPath()` in `web/src/api.ts`.
+  `sharedAttachmentDownloadPath(token, attachmentID)` in `web/src/api.ts`.
 
 ### 3. Contracts
 
@@ -309,6 +309,9 @@ const status = orderStatusDetail(order.status, locale);
 - Backend-provided `Attachment.risk` must use the same locale as the scan
   status copy, including `Risk` for English, `风险` for Simplified Chinese,
   `風險` for Traditional Chinese, and `Riesgo` for Spanish.
+- Public share attachment links must use clean URLs only. The share password is
+  posted through `/api/v1/shares/{token}/access`; the backend authorizes later
+  attachment downloads with the scoped HttpOnly share access cookie.
 
 ### 4. Validation & Error Matrix
 
@@ -319,21 +322,31 @@ const status = orderStatusDetail(order.status, locale);
   link blocked until retry succeeds.
 - `malicious` -> danger badge; owner and public links blocked.
 - Unknown non-empty scan status -> neutral badge and blocked public link.
+- Public share attachment URL containing `?password=` -> security bug.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: A pending owner attachment says public sharing waits for a clean scan
   while preserving the owner download link.
+- Good: A clean public share attachment link uses
+  `sharedAttachmentDownloadPath(token, attachment.id)` with no password
+  argument and no query string.
 - Base: A clean attachment still renders as a normal downloadable file with a
   clean badge.
 - Bad: Rendering a raw `<a>` for every attachment, because public share links
   would invite users to click downloads that are known to fail the scan gate.
+- Bad: Passing the share password into `sharedAttachmentDownloadPath()` because
+  the resulting URL can leak through browser history, logs, referrers, and
+  metrics.
 
 ### 6. Tests Required
 
 - Run `make test-web` after changing attachment scan presentation.
 - Run full `make test` when the frontend consumes backend scan fields or when
   backend scan policy changes in the same slice.
+- When shared attachment URL generation changes, keep `web/src/api.ts`,
+  `web/src/App.tsx`, and backend handler contract tests in the same slice so
+  tests assert passwords never appear in download links.
 
 ### 7. Wrong vs Correct
 
@@ -350,7 +363,7 @@ const status = orderStatusDetail(order.status, locale);
 ```tsx
 const scan = attachmentScanDetail(attachment, locale, "public");
 return scan.canDownload ? (
-  <a href={sharedAttachmentDownloadPath(token, attachment.id, password)}>
+  <a href={sharedAttachmentDownloadPath(token, attachment.id)}>
     <span className={`scan-badge scan-badge--${scan.tone}`}>{scan.label}</span>
   </a>
 ) : (
