@@ -175,3 +175,42 @@ Improved the localized compose textarea affordance, replaced generic English pas
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: Production blocker security review fixes
+
+**Date**: 2026-06-22
+**Task**: Production blocker security review fixes
+**Branch**: `main`
+
+### Summary
+
+Fixed shared attachment password leakage by replacing URL password parameters with signed HttpOnly share access cookies, added frontend high-severity audit readiness gate, refreshed embedded assets, and verified tests/build.
+
+### Main Changes
+
+- Replaced shared attachment password-in-query downloads with a short-lived signed `pastebox_share_access` HttpOnly cookie issued by successful share access.
+- Updated frontend shared attachment links to use clean URLs and refreshed embedded static assets.
+- Added a high-severity frontend dependency audit to `make production-readiness`.
+- Captured the contract in backend/frontend Trellis quality guidelines and archived the task.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b631f1d` | (see git log) |
+
+### Testing
+
+- [OK] `make test`
+- [OK] `make build`
+- [OK] `npm --prefix web --cache ... audit --audit-level=high`
+- [OK] `make production-readiness`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
