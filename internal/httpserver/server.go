@@ -45,6 +45,7 @@ const (
 	shareAccessCookieName      = "pastebox_share_access"
 	csrfHeaderName             = "X-CSRF-Token"
 	shareAccessCookieTTL       = 15 * time.Minute
+	shareAccessBodyLimitBytes  = 64 << 10
 )
 
 type shareAccessGrant struct {
@@ -1098,7 +1099,7 @@ func (s *Server) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer upload.Close()
-	attachment, err := s.app.AddPreparedAttachment(user.ID, chi.URLParam(r, "pasteID"), upload)
+	attachment, err := s.app.AddPreparedAttachmentWithContext(r.Context(), user.ID, chi.URLParam(r, "pasteID"), upload)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1114,7 +1115,8 @@ func (s *Server) uploadGuestAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer upload.Close()
-	attachment, err := s.app.AddPreparedGuestAttachment(
+	attachment, err := s.app.AddPreparedGuestAttachmentWithContext(
+		r.Context(),
 		firstNonEmpty(fields["guestToken"], guestTokenFromRequest(r)),
 		chi.URLParam(r, "pasteID"),
 		upload,
@@ -1223,8 +1225,8 @@ func (s *Server) accessShare(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Password string `json:"password"`
 	}
-	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&req)
+	if !s.decodeOptionalLimited(w, r, &req, shareAccessBodyLimitBytes) {
+		return
 	}
 	paste, share, err := s.app.AccessShare(chi.URLParam(r, "token"), req.Password, viewerID)
 	if s.handleErr(w, err) {
@@ -2108,6 +2110,34 @@ func (s *Server) decode(w http.ResponseWriter, r *http.Request, target any) bool
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 2<<20))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json", "message": "request body is invalid"})
+		return false
+	}
+	return true
+}
+
+func (s *Server) decodeOptionalLimited(w http.ResponseWriter, r *http.Request, target any, limit int64) bool {
+	defer r.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json", "message": "request body is invalid"})
+		return false
+	}
+	if int64(len(body)) > limit {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "request_body_too_large", "message": "request body exceeds limit"})
+		return false
+	}
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return true
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json", "message": "request body is invalid"})
+		return false
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json", "message": "request body is invalid"})
 		return false
 	}

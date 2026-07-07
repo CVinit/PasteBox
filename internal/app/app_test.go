@@ -8,10 +8,12 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -689,6 +691,59 @@ func TestObjectStoreWriteFailureDoesNotCreateAttachmentMetadata(t *testing.T) {
 	}
 	if quota, err := svc.Quota(owner.User.ID); err != nil || quota.DailyUploadBytes != int64(len("base")) {
 		t.Fatalf("failed object write must not consume attachment daily quota, quota=%#v err=%v", quota, err)
+	}
+}
+
+func TestPreparedAttachmentUploadDoesNotHoldServiceLockDuringObjectWrite(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	objectStore := newBlockingStreamingObjectStore()
+	svc := newTestServiceWithStorage(t, &now, Stores{
+		Objects:      objectStore,
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	owner := registerTestUser(t, svc, "nonblocking-upload@example.com")
+	paste := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "upload", Text: "base", ExpiresInSeconds: 3600})
+	upload, err := PrepareAttachmentUpload("slow.txt", "text/plain", strings.NewReader("slow object"))
+	if err != nil {
+		t.Fatalf("prepare attachment upload: %v", err)
+	}
+	defer upload.Close()
+	defer objectStore.unblock()
+
+	uploadErr := make(chan error, 1)
+	go func() {
+		_, err := svc.AddPreparedAttachmentWithContext(context.Background(), owner.User.ID, paste.ID, upload)
+		uploadErr <- err
+	}()
+
+	select {
+	case <-objectStore.started:
+	case <-time.After(time.Second):
+		t.Fatal("object store write did not start")
+	}
+
+	quotaErr := make(chan error, 1)
+	go func() {
+		_, err := svc.Quota(owner.User.ID)
+		quotaErr <- err
+	}()
+	select {
+	case err := <-quotaErr:
+		if err != nil {
+			t.Fatalf("quota while object write is blocked: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("service lock was held while object store write was blocked")
+	}
+
+	objectStore.unblock()
+	select {
+	case err := <-uploadErr:
+		if err != nil {
+			t.Fatalf("finish blocked upload: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked upload did not finish")
 	}
 }
 
@@ -2505,6 +2560,80 @@ func (s *memoryObjectStore) DeleteObject(_ context.Context, key string) error {
 func (s *memoryObjectStore) has(key string) bool {
 	_, ok := s.objects[key]
 	return ok
+}
+
+type blockingStreamingObjectStore struct {
+	mu          sync.Mutex
+	objects     map[string][]byte
+	started     chan struct{}
+	release     chan struct{}
+	startedOnce sync.Once
+	releaseOnce sync.Once
+}
+
+func newBlockingStreamingObjectStore() *blockingStreamingObjectStore {
+	return &blockingStreamingObjectStore{
+		objects: map[string][]byte{},
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (s *blockingStreamingObjectStore) PutObject(ctx context.Context, key string, content []byte, contentType string) error {
+	return s.PutObjectStream(ctx, key, bytes.NewReader(content), int64(len(content)), contentType)
+}
+
+func (s *blockingStreamingObjectStore) PutObjectStream(ctx context.Context, key string, content io.Reader, _ int64, _ string) error {
+	s.startedOnce.Do(func() {
+		close(s.started)
+	})
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	data, err := io.ReadAll(content)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.objects[key] = append([]byte(nil), data...)
+	return nil
+}
+
+func (s *blockingStreamingObjectStore) GetObject(_ context.Context, key string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	content, ok := s.objects[key]
+	if !ok {
+		return nil, ErrObjectNotFound
+	}
+	return append([]byte(nil), content...), nil
+}
+
+func (s *blockingStreamingObjectStore) OpenObject(_ context.Context, key string) (ObjectStream, error) {
+	content, err := s.GetObject(context.Background(), key)
+	if err != nil {
+		return ObjectStream{}, err
+	}
+	return ObjectStream{Body: io.NopCloser(bytes.NewReader(content)), Size: int64(len(content)), ContentType: "application/octet-stream"}, nil
+}
+
+func (s *blockingStreamingObjectStore) DeleteObject(_ context.Context, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.objects[key]; !ok {
+		return ErrObjectNotFound
+	}
+	delete(s.objects, key)
+	return nil
+}
+
+func (s *blockingStreamingObjectStore) unblock() {
+	s.releaseOnce.Do(func() {
+		close(s.release)
+	})
 }
 
 type memoryOperationalStores struct {

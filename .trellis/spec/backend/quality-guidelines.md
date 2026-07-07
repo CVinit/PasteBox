@@ -539,6 +539,16 @@ paste.Tags = tags
 - Legacy `[]byte` object-store methods may remain for unit tests, scanner
   paths, and compatibility, but HTTP upload/download must use the prepared
   upload and stream download methods.
+- HTTP handlers must pass `r.Context()` into prepared attachment service calls
+  so client disconnects and request cancellations can stop object-store writes.
+- Service upload paths must not hold the global service mutex while streaming
+  bytes to S3-compatible storage. Do preflight validation under the service
+  mutex, write the object outside it, then reacquire the mutex and revalidate
+  before creating attachment metadata.
+- Object writes and metadata commits must remain atomic for rollback purposes:
+  if uploads can happen concurrently, protect the object write plus metadata
+  commit/rollback with a dedicated object-write guard so a failed upload cannot
+  delete another in-flight upload of the same content-addressed object key.
 - Download responses must preserve the existing attachment response headers:
   `Content-Type`, `Content-Disposition`, `Content-Length` when known, and
   `X-Content-Type-Options: nosniff`.
@@ -558,6 +568,8 @@ paste.Tags = tags
 - Upload exceeds plan single-file limit -> `413 file_too_large`.
 - Upload exceeds plan paste/account quota -> existing quota error code.
 - Object missing while opening a download -> `410 attachment_unavailable`.
+- Request context canceled during object write -> attachment metadata is not
+  created and daily upload quota is not consumed.
 - Wrong s3-orchestrator virtual bucket for credentials -> readiness
   `HeadBucket` or object operation fails with S3 access/bucket error.
 
@@ -582,6 +594,9 @@ paste.Tags = tags
   env vars are set.
 - HTTP upload/download contract tests must continue to cover user uploads,
   guest uploads, owner downloads, and shared downloads.
+- App-level tests must prove a blocked or slow object-store upload does not
+  block unrelated service reads such as quota/list calls, and that metadata and
+  daily quota are still rolled back on object/ref/metadata failures.
 - Run `make test` after changing upload/download handlers or object-store
   adapters.
 
@@ -601,6 +616,24 @@ attachment, err := s.app.AddAttachment(user.ID, pasteID, header.Filename, conten
 upload, fields, err := readAttachmentMultipart(r)
 defer upload.Close()
 attachment, err := s.app.AddPreparedGuestAttachment(fields["guestToken"], pasteID, upload, fields["turnstileToken"], clientIP(r))
+```
+
+#### Wrong
+
+```go
+s.mu.Lock()
+defer s.mu.Unlock()
+err := streaming.PutObjectStream(context.Background(), key, reader, size, contentType)
+```
+
+#### Correct
+
+```go
+objectKey, err := s.preflightPreparedAttachment(userID, pasteID, upload)
+s.objectWriteMu.Lock()
+defer s.objectWriteMu.Unlock()
+stored, err := s.storePreparedObject(ctx, objectKey, upload)
+attachment, err := s.finalizePreparedAttachment(userID, pasteID, upload, stored)
 ```
 
 #### Wrong

@@ -11,11 +11,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"image"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
-	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -54,19 +52,21 @@ func ErrorResponse(err error) (int, map[string]any) {
 }
 
 type Service struct {
-	mu           sync.Mutex
-	cfg          config.Config
-	now          func() time.Time
-	catalog      plans.Catalog
-	catalogStore CatalogStore
-	auth         AuthStores
-	content      ContentStores
-	objectStore  ObjectStore
-	ops          OperationalStores
-	audit        AuditLogStore
-	runtime      RuntimeConfigStore
-	redemptions  RedemptionStore
-	alerts       AlertEventStore
+	mu sync.Mutex
+	// objectWriteMu keeps object writes and metadata commits atomic without holding mu across network I/O.
+	objectWriteMu sync.Mutex
+	cfg           config.Config
+	now           func() time.Time
+	catalog       plans.Catalog
+	catalogStore  CatalogStore
+	auth          AuthStores
+	content       ContentStores
+	objectStore   ObjectStore
+	ops           OperationalStores
+	audit         AuditLogStore
+	runtime       RuntimeConfigStore
+	redemptions   RedemptionStore
+	alerts        AlertEventStore
 
 	usersByID             map[string]*User
 	userIDByEmail         map[string]string
@@ -1325,94 +1325,12 @@ func (s *Service) ExtendPaste(userID string, id string, expiresInSeconds int64) 
 }
 
 func (s *Service) AddAttachment(userID string, pasteID string, fileName string, contentType string, content []byte) (AttachmentView, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	paste, err := s.ownerPasteLocked(userID, pasteID)
+	upload, err := PrepareAttachmentUpload(fileName, contentType, bytes.NewReader(content))
 	if err != nil {
 		return AttachmentView{}, err
 	}
-	if !s.isPasteVisibleLocked(paste) {
-		return AttachmentView{}, E(http.StatusGone, "paste_expired", "cannot attach to expired paste")
-	}
-	user := s.usersByID[userID]
-	plan, _ := s.planForUserLocked(user)
-	if len(paste.AttachmentIDs)+1 > plan.AttachmentsPerPasteLimit {
-		return AttachmentView{}, E(http.StatusBadRequest, "too_many_attachments", "attachment count exceeds plan limit")
-	}
-	if int64(len(content)) > plan.SingleFileBytes {
-		return AttachmentView{}, E(http.StatusRequestEntityTooLarge, "file_too_large", "file exceeds plan limit")
-	}
-	if s.pasteSizeLocked(paste)+int64(len(content)) > plan.SinglePasteBytes {
-		return AttachmentView{}, E(http.StatusRequestEntityTooLarge, "paste_too_large", "paste exceeds plan total size")
-	}
-	if err := s.ensureCanCreatePasteLocked(user, plan, PasteInput{ExpiresInSeconds: int64(paste.ExpiresAt.Sub(s.now().UTC()).Seconds())}, int64(len(content)), 1); err != nil {
-		return AttachmentView{}, err
-	}
-	sha := sha256.Sum256(content)
-	shaHex := hex.EncodeToString(sha[:])
-	if contentType == "" || contentType == "application/octet-stream" {
-		contentType = http.DetectContentType(content)
-	}
-	if ext := strings.ToLower(filepath.Ext(fileName)); contentType == "application/octet-stream" && ext != "" {
-		if guessed := mime.TypeByExtension(ext); guessed != "" {
-			contentType = guessed
-		}
-	}
-	now := s.now().UTC()
-	status, scanStatus, risk := "active", "pending", classifyAttachmentRisk(fileName, contentType)
-	objectKey := userID + "/" + shaHex
-	width, height := imageDimensions(contentType, content)
-	existingObjectRefs := s.objectRefs[objectKey]
-	if err := s.putObjectLocked(objectKey, content, contentType); err != nil {
-		return AttachmentView{}, err
-	}
-	attachment := &Attachment{
-		ID:          s.newID("att"),
-		UserID:      userID,
-		PasteID:     pasteID,
-		FileName:    sanitizeFileName(fileName),
-		ContentType: contentType,
-		Size:        int64(len(content)),
-		SHA256:      shaHex,
-		ObjectKey:   objectKey,
-		Status:      status,
-		ScanStatus:  scanStatus,
-		Risk:        risk,
-		ImageWidth:  width,
-		ImageHeight: height,
-		CreatedAt:   now,
-	}
-	if err := s.createAttachmentLocked(attachment); err != nil {
-		s.rollbackUnreferencedStoredObjectLocked(attachment.ObjectKey, existingObjectRefs)
-		return AttachmentView{}, err
-	}
-	attachmentCreated := true
-	if err := s.incrementObjectRefLocked(attachment, existingObjectRefs, now); err != nil {
-		_ = s.deleteAttachmentLocked(attachment)
-		s.rollbackUnreferencedStoredObjectLocked(attachment.ObjectKey, existingObjectRefs)
-		return AttachmentView{}, err
-	}
-	previousPasteScanStatus := paste.ScanStatus
-	previousPasteUpdatedAt := paste.UpdatedAt
-	paste.ScanStatus = aggregateScanStatus(s.attachmentsForPasteLocked(paste))
-	paste.UpdatedAt = now
-	if err := s.updatePasteLocked(paste); err != nil {
-		s.rollbackAttachmentCreateLocked(paste, previousPasteScanStatus, previousPasteUpdatedAt, attachment, attachmentCreated, false, false)
-		return AttachmentView{}, err
-	}
-	pasteUpdated := true
-	scanQueueCreated := false
-	if err := s.scheduleScanJobLocked(attachment.ID, now); err != nil {
-		s.rollbackAttachmentCreateLocked(paste, previousPasteScanStatus, previousPasteUpdatedAt, attachment, attachmentCreated, pasteUpdated, false)
-		return AttachmentView{}, err
-	}
-	scanQueueCreated = true
-	if err := s.recordDailyUploadLocked(userID, int64(len(content))); err != nil {
-		s.rollbackAttachmentCreateLocked(paste, previousPasteScanStatus, previousPasteUpdatedAt, attachment, attachmentCreated, pasteUpdated, scanQueueCreated)
-		return AttachmentView{}, err
-	}
-	return viewAttachment(attachment), nil
+	defer upload.Close()
+	return s.AddPreparedAttachment(userID, pasteID, upload)
 }
 
 func (s *Service) DownloadAttachment(userID string, attachmentID string) (AttachmentView, []byte, error) {
@@ -4888,17 +4806,6 @@ func classifyAttachmentRisk(fileName string, contentType string) string {
 	return ""
 }
 
-func (s *Service) putObjectLocked(key string, content []byte, contentType string) error {
-	if s.objectStore != nil {
-		if err := s.objectStore.PutObject(context.Background(), key, content, contentType); err != nil {
-			return fmt.Errorf("put object: %w", err)
-		}
-		return nil
-	}
-	s.objects[key] = append([]byte(nil), content...)
-	return nil
-}
-
 func (s *Service) objectContentLocked(attachment *Attachment) ([]byte, error) {
 	if s.objectStore != nil {
 		content, err := s.objectStore.GetObject(context.Background(), attachment.ObjectKey)
@@ -4923,17 +4830,6 @@ func (s *Service) deleteObjectLocked(key string) error {
 	}
 	delete(s.objects, key)
 	return nil
-}
-
-func imageDimensions(contentType string, content []byte) (int, int) {
-	if !strings.HasPrefix(strings.ToLower(contentType), "image/") {
-		return 0, 0
-	}
-	cfg, _, err := image.DecodeConfig(bytes.NewReader(content))
-	if err != nil {
-		return 0, 0
-	}
-	return cfg.Width, cfg.Height
 }
 
 func aggregateScanStatus(attachments []*Attachment) string {

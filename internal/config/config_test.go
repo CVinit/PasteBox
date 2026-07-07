@@ -18,6 +18,9 @@ func TestFromEnvUsesPasteBoxDefaults(t *testing.T) {
 	if cfg.HTTPAddr != ":8080" {
 		t.Fatalf("expected default HTTP address, got %q", cfg.HTTPAddr)
 	}
+	if cfg.HTTPReadTimeoutSeconds != 0 || cfg.HTTPWriteTimeoutSeconds != 0 {
+		t.Fatalf("expected streaming HTTP timeouts to default to 0, got read=%d write=%d", cfg.HTTPReadTimeoutSeconds, cfg.HTTPWriteTimeoutSeconds)
+	}
 	if cfg.StripeEnabled {
 		t.Fatal("expected Stripe to be disabled by default")
 	}
@@ -31,6 +34,8 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	t.Setenv("PASTEBOX_CLAMAV_TIMEOUT_SECONDS", "45")
 	t.Setenv("PASTEBOX_EPUSDT_ENABLED", "true")
 	t.Setenv("PASTEBOX_LOG_LEVEL", "DEBUG")
+	t.Setenv("PASTEBOX_HTTP_READ_TIMEOUT_SECONDS", "120")
+	t.Setenv("PASTEBOX_HTTP_WRITE_TIMEOUT_SECONDS", "300")
 	t.Setenv("PASTEBOX_PUBLIC_URL", "https://pastebox.example.com")
 	t.Setenv("PASTEBOX_CORS_ALLOWED_ORIGINS", "https://pastebox.example.com, https://admin.pastebox.example.com, https://pastebox.example.com")
 	t.Setenv("PASTEBOX_RATE_LIMIT_ENABLED", "true")
@@ -83,6 +88,9 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	}
 	if cfg.LogLevel != slog.LevelDebug {
 		t.Fatalf("expected debug log level, got %s", cfg.LogLevel)
+	}
+	if cfg.HTTPReadTimeoutSeconds != 120 || cfg.HTTPWriteTimeoutSeconds != 300 {
+		t.Fatalf("expected HTTP timeout settings from env, got read=%d write=%d", cfg.HTTPReadTimeoutSeconds, cfg.HTTPWriteTimeoutSeconds)
 	}
 	if cfg.CSRFSecret != "test-csrf-secret" {
 		t.Fatalf("expected CSRF secret from env, got %q", cfg.CSRFSecret)

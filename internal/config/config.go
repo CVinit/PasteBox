@@ -8,17 +8,19 @@ import (
 )
 
 type Config struct {
-	AppName            string
-	AppEnv             string
-	HTTPAddr           string
-	PublicURL          string
-	LogLevel           slog.Level
-	SupportEmail       string
-	AbuseEmail         string
-	CSRFSecret         string
-	MetricsToken       string
-	CORSAllowedOrigins []string
-	RateLimit          RateLimitConfig
+	AppName                 string
+	AppEnv                  string
+	HTTPAddr                string
+	HTTPReadTimeoutSeconds  int
+	HTTPWriteTimeoutSeconds int
+	PublicURL               string
+	LogLevel                slog.Level
+	SupportEmail            string
+	AbuseEmail              string
+	CSRFSecret              string
+	MetricsToken            string
+	CORSAllowedOrigins      []string
+	RateLimit               RateLimitConfig
 
 	DatabaseURL                  string
 	RedisAddr                    string
@@ -117,16 +119,18 @@ type RateLimitConfig struct {
 func FromEnv() Config {
 	publicURL := envString("PASTEBOX_PUBLIC_URL", "http://localhost:5173")
 	return Config{
-		AppName:            envString("PASTEBOX_APP_NAME", "PasteBox"),
-		AppEnv:             envString("PASTEBOX_APP_ENV", "development"),
-		HTTPAddr:           envString("PASTEBOX_HTTP_ADDR", ":8080"),
-		PublicURL:          publicURL,
-		LogLevel:           envLogLevel("PASTEBOX_LOG_LEVEL", slog.LevelInfo),
-		SupportEmail:       envString("PASTEBOX_SUPPORT_EMAIL", "support@localhost"),
-		AbuseEmail:         envString("PASTEBOX_ABUSE_EMAIL", "abuse@localhost"),
-		CSRFSecret:         envString("PASTEBOX_CSRF_SECRET", "development-csrf-secret"),
-		MetricsToken:       envString("PASTEBOX_METRICS_TOKEN", ""),
-		CORSAllowedOrigins: envCSV("PASTEBOX_CORS_ALLOWED_ORIGINS", originFromURL(publicURL)),
+		AppName:                 envString("PASTEBOX_APP_NAME", "PasteBox"),
+		AppEnv:                  envString("PASTEBOX_APP_ENV", "development"),
+		HTTPAddr:                envString("PASTEBOX_HTTP_ADDR", ":8080"),
+		HTTPReadTimeoutSeconds:  envInt("PASTEBOX_HTTP_READ_TIMEOUT_SECONDS", 0),
+		HTTPWriteTimeoutSeconds: envInt("PASTEBOX_HTTP_WRITE_TIMEOUT_SECONDS", 0),
+		PublicURL:               publicURL,
+		LogLevel:                envLogLevel("PASTEBOX_LOG_LEVEL", slog.LevelInfo),
+		SupportEmail:            envString("PASTEBOX_SUPPORT_EMAIL", "support@localhost"),
+		AbuseEmail:              envString("PASTEBOX_ABUSE_EMAIL", "abuse@localhost"),
+		CSRFSecret:              envString("PASTEBOX_CSRF_SECRET", "development-csrf-secret"),
+		MetricsToken:            envString("PASTEBOX_METRICS_TOKEN", ""),
+		CORSAllowedOrigins:      envCSV("PASTEBOX_CORS_ALLOWED_ORIGINS", originFromURL(publicURL)),
 		RateLimit: RateLimitConfig{
 			Enabled:       envBool("PASTEBOX_RATE_LIMIT_ENABLED", true),
 			WindowSeconds: envInt("PASTEBOX_RATE_LIMIT_WINDOW_SECONDS", 60),

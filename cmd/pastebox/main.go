@@ -79,8 +79,8 @@ func runAPI(stdout io.Writer) int {
 		Addr:              cfg.HTTPAddr,
 		Handler:           httpserver.NewWithServiceAndReadiness(cfg, logger, service, productionReadinessChecker(cfg, pool, objects)),
 		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		ReadTimeout:       httpServerTimeout(cfg.HTTPReadTimeoutSeconds),
+		WriteTimeout:      httpServerTimeout(cfg.HTTPWriteTimeoutSeconds),
 		IdleTimeout:       120 * time.Second,
 	}
 
@@ -112,6 +112,13 @@ func runAPI(stdout io.Writer) int {
 
 	logger.Info("api server stopped")
 	return 0
+}
+
+func httpServerTimeout(seconds int) time.Duration {
+	if seconds <= 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 type objectHealthChecker interface {

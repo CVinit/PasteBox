@@ -3,17 +3,13 @@ package app
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
-	"mime"
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -1221,27 +1217,12 @@ func (s *Service) CreateGuestPaste(input GuestCreatePasteInput) (string, PasteVi
 }
 
 func (s *Service) AddGuestAttachment(token string, pasteID string, fileName string, contentType string, content []byte, turnstileToken string, remoteIP string) (AttachmentView, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	cfg := s.runtimeConfig.GuestUploads
-	if !cfg.Enabled {
-		return AttachmentView{}, E(http.StatusForbidden, "guest_uploads_disabled", "guest uploads are disabled")
-	}
-	if cfg.RequireTurnstile {
-		if err := s.verifyTurnstileLocked(context.Background(), turnstileToken, remoteIP); err != nil {
-			return AttachmentView{}, err
-		}
-	}
-	user, err := s.guestUserForTokenLocked(strings.TrimSpace(token))
+	upload, err := PrepareAttachmentUpload(fileName, contentType, bytes.NewReader(content))
 	if err != nil {
 		return AttachmentView{}, err
 	}
-	paste, err := s.pasteByIDLocked(pasteID)
-	if err != nil || paste.UserID != user.ID {
-		return AttachmentView{}, E(http.StatusNotFound, "paste_not_found", "paste not found")
-	}
-	plan := guestPlan(cfg)
-	return s.addAttachmentLocked(user, paste, plan, fileName, contentType, content)
+	defer upload.Close()
+	return s.AddPreparedGuestAttachment(token, pasteID, upload, turnstileToken, remoteIP)
 }
 
 func (s *Service) CreateGuestShare(token string, pasteID string, input ShareInput) (ShareView, error) {
@@ -1341,92 +1322,6 @@ func (s *Service) verifyTurnstileLocked(ctx context.Context, token string, remot
 	}
 	s.turnstileTokenHashes[hash] = now
 	return nil
-}
-
-func (s *Service) addAttachmentLocked(user *User, paste *Paste, plan plans.Plan, fileName string, contentType string, content []byte) (AttachmentView, error) {
-	if !s.isPasteVisibleLocked(paste) {
-		return AttachmentView{}, E(http.StatusGone, "paste_expired", "cannot attach to expired paste")
-	}
-	if len(paste.AttachmentIDs)+1 > plan.AttachmentsPerPasteLimit {
-		return AttachmentView{}, E(http.StatusBadRequest, "too_many_attachments", "attachment count exceeds plan limit")
-	}
-	if int64(len(content)) > plan.SingleFileBytes {
-		return AttachmentView{}, E(http.StatusRequestEntityTooLarge, "file_too_large", "file exceeds plan limit")
-	}
-	if s.pasteSizeLocked(paste)+int64(len(content)) > plan.SinglePasteBytes {
-		return AttachmentView{}, E(http.StatusRequestEntityTooLarge, "paste_too_large", "paste exceeds plan total size")
-	}
-	if err := s.ensureCanCreatePasteLocked(user, plan, PasteInput{ExpiresInSeconds: int64(paste.ExpiresAt.Sub(s.now().UTC()).Seconds())}, int64(len(content)), 1); err != nil {
-		return AttachmentView{}, err
-	}
-	return s.createAttachmentForPasteLocked(user.ID, paste, fileName, contentType, content)
-}
-
-func (s *Service) createAttachmentForPasteLocked(userID string, paste *Paste, fileName string, contentType string, content []byte) (AttachmentView, error) {
-	sha := sha256.Sum256(content)
-	shaHex := hex.EncodeToString(sha[:])
-	if contentType == "" || contentType == "application/octet-stream" {
-		contentType = http.DetectContentType(content)
-	}
-	if ext := strings.ToLower(filepath.Ext(fileName)); contentType == "application/octet-stream" && ext != "" {
-		if guessed := mime.TypeByExtension(ext); guessed != "" {
-			contentType = guessed
-		}
-	}
-	now := s.now().UTC()
-	status, scanStatus, risk := "active", "pending", classifyAttachmentRisk(fileName, contentType)
-	objectKey := userID + "/" + shaHex
-	width, height := imageDimensions(contentType, content)
-	existingObjectRefs := s.objectRefs[objectKey]
-	if err := s.putObjectLocked(objectKey, content, contentType); err != nil {
-		return AttachmentView{}, err
-	}
-	attachment := &Attachment{
-		ID:          s.newID("att"),
-		UserID:      userID,
-		PasteID:     paste.ID,
-		FileName:    sanitizeFileName(fileName),
-		ContentType: contentType,
-		Size:        int64(len(content)),
-		SHA256:      shaHex,
-		ObjectKey:   objectKey,
-		Status:      status,
-		ScanStatus:  scanStatus,
-		Risk:        risk,
-		ImageWidth:  width,
-		ImageHeight: height,
-		CreatedAt:   now,
-	}
-	if err := s.createAttachmentLocked(attachment); err != nil {
-		s.rollbackUnreferencedStoredObjectLocked(attachment.ObjectKey, existingObjectRefs)
-		return AttachmentView{}, err
-	}
-	attachmentCreated := true
-	if err := s.incrementObjectRefLocked(attachment, existingObjectRefs, now); err != nil {
-		_ = s.deleteAttachmentLocked(attachment)
-		s.rollbackUnreferencedStoredObjectLocked(attachment.ObjectKey, existingObjectRefs)
-		return AttachmentView{}, err
-	}
-	previousPasteScanStatus := paste.ScanStatus
-	previousPasteUpdatedAt := paste.UpdatedAt
-	paste.ScanStatus = aggregateScanStatus(s.attachmentsForPasteLocked(paste))
-	paste.UpdatedAt = now
-	if err := s.updatePasteLocked(paste); err != nil {
-		s.rollbackAttachmentCreateLocked(paste, previousPasteScanStatus, previousPasteUpdatedAt, attachment, attachmentCreated, false, false)
-		return AttachmentView{}, err
-	}
-	pasteUpdated := true
-	scanQueueCreated := false
-	if err := s.scheduleScanJobLocked(attachment.ID, now); err != nil {
-		s.rollbackAttachmentCreateLocked(paste, previousPasteScanStatus, previousPasteUpdatedAt, attachment, attachmentCreated, pasteUpdated, false)
-		return AttachmentView{}, err
-	}
-	scanQueueCreated = true
-	if err := s.recordDailyUploadLocked(userID, int64(len(content))); err != nil {
-		s.rollbackAttachmentCreateLocked(paste, previousPasteScanStatus, previousPasteUpdatedAt, attachment, attachmentCreated, pasteUpdated, scanQueueCreated)
-		return AttachmentView{}, err
-	}
-	return viewAttachment(attachment), nil
 }
 
 func (s *Service) SetAlertSender(sender AlertSender) {

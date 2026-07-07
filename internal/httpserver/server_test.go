@@ -1045,6 +1045,27 @@ func TestAuthPasteUploadShareAndQuotaHTTPContracts(t *testing.T) {
 	}
 
 	anonymous := newHTTPTestClient(t, handler)
+	malformedAccess := anonymous.json(http.MethodPost, "/api/v1/shares/"+share.Token+"/access", `{"password":`)
+	assertStatus(t, malformedAccess, http.StatusBadRequest)
+	var malformedAccessBody map[string]string
+	decodeResponse(t, malformedAccess, &malformedAccessBody)
+	if malformedAccessBody["error"] != "invalid_json" {
+		t.Fatalf("expected malformed share access body to be rejected, got %#v", malformedAccessBody)
+	}
+	unknownFieldAccess := anonymous.json(http.MethodPost, "/api/v1/shares/"+share.Token+"/access", `{"password":"pw","extra":true}`)
+	assertStatus(t, unknownFieldAccess, http.StatusBadRequest)
+	var unknownFieldAccessBody map[string]string
+	decodeResponse(t, unknownFieldAccess, &unknownFieldAccessBody)
+	if unknownFieldAccessBody["error"] != "invalid_json" {
+		t.Fatalf("expected unknown share access field to be rejected, got %#v", unknownFieldAccessBody)
+	}
+	oversizedAccess := anonymous.json(http.MethodPost, "/api/v1/shares/"+share.Token+"/access", strings.Repeat("x", int(shareAccessBodyLimitBytes)+1))
+	assertStatus(t, oversizedAccess, http.StatusRequestEntityTooLarge)
+	var oversizedAccessBody map[string]string
+	decodeResponse(t, oversizedAccess, &oversizedAccessBody)
+	if oversizedAccessBody["error"] != "request_body_too_large" {
+		t.Fatalf("expected oversized share access body to be rejected, got %#v", oversizedAccessBody)
+	}
 	accessShare := anonymous.json(http.MethodPost, "/api/v1/shares/"+share.Token+"/access", `{"password":"pw"}`)
 	assertStatus(t, accessShare, http.StatusOK)
 	grantCookie := cookieFromResponse(t, accessShare, shareAccessCookieName)

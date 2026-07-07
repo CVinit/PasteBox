@@ -79,6 +79,18 @@ func TestScannerReadinessCanSkipClamAVOutsideProduction(t *testing.T) {
 	}
 }
 
+func TestHTTPServerTimeoutAllowsStreamingByDefault(t *testing.T) {
+	if got := httpServerTimeout(0); got != 0 {
+		t.Fatalf("expected zero timeout to stay disabled, got %s", got)
+	}
+	if got := httpServerTimeout(-1); got != 0 {
+		t.Fatalf("expected negative timeout to be clamped to disabled, got %s", got)
+	}
+	if got := httpServerTimeout(45); got != 45*time.Second {
+		t.Fatalf("expected configured timeout in seconds, got %s", got)
+	}
+}
+
 func TestScannerReadinessChecksClamAVTCPReachability(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
