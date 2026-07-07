@@ -14,6 +14,7 @@ type Plan struct {
 	SingleFileBytes          int64  `json:"singleFileBytes"`
 	SinglePasteBytes         int64  `json:"singlePasteBytes"`
 	AttachmentsPerPasteLimit int    `json:"attachmentsPerPasteLimit"`
+	TagsPerPasteLimit        int    `json:"tagsPerPasteLimit"`
 	MaxRetentionSeconds      int64  `json:"maxRetentionSeconds"`
 	DailyUploadBytes         int64  `json:"dailyUploadBytes"`
 	DailyShareDownloadBytes  int64  `json:"dailyShareDownloadBytes"`
@@ -48,6 +49,7 @@ func DefaultCatalog() Catalog {
 				SingleFileBytes:          25 * mib,
 				SinglePasteBytes:         50 * mib,
 				AttachmentsPerPasteLimit: 5,
+				TagsPerPasteLimit:        0,
 				MaxRetentionSeconds:      24 * 60 * 60,
 				DailyUploadBytes:         1 * gib,
 				DailyShareDownloadBytes:  2 * gib,
@@ -61,6 +63,7 @@ func DefaultCatalog() Catalog {
 				SingleFileBytes:          250 * mib,
 				SinglePasteBytes:         1 * gib,
 				AttachmentsPerPasteLimit: 20,
+				TagsPerPasteLimit:        5,
 				MaxRetentionSeconds:      30 * 24 * 60 * 60,
 				DailyUploadBytes:         20 * gib,
 				DailyShareDownloadBytes:  100 * gib,
@@ -74,6 +77,7 @@ func DefaultCatalog() Catalog {
 				SingleFileBytes:          2 * gib,
 				SinglePasteBytes:         5 * gib,
 				AttachmentsPerPasteLimit: 100,
+				TagsPerPasteLimit:        20,
 				MaxRetentionSeconds:      180 * 24 * 60 * 60,
 				DailyUploadBytes:         200 * gib,
 				DailyShareDownloadBytes:  1 * tib,

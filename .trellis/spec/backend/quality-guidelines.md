@@ -270,8 +270,9 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
   `/api/v1/attachments/{attachmentID}/download`; share access at
   `/api/v1/shares/{token}/access`; shared download at
   `/api/v1/shares/{token}/attachments/{attachmentID}/download`.
-- Share access grant: `pastebox_share_access` HttpOnly cookie, signed by the
-  server, scoped to `/api/v1/shares/{token}/attachments`, and short-lived.
+- Share access grant cookie: `pastebox_share_access`, scoped to
+  `/api/v1/shares/{token}/attachments`, HttpOnly, SameSite=Lax, and signed
+  against the share token plus grant payload.
 - Billing/admin: `/api/v1/billing/prices`, `/billing/orders`, and the
   `/api/v1/admin/...` dashboard, list, mutation, queue, audit, cleanup, and
   manual payment routes.
@@ -298,11 +299,6 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
 - Production rate limits must stay enabled with positive limits for auth,
   browser write, upload, download, and provider webhook buckets.
 - API errors use `{"error": "<code>", "message": "<human message>"}`.
-- Shared attachment downloads must not accept share passwords in the URL query.
-  Successful `POST /api/v1/shares/{token}/access` sets a signed
-  `pastebox_share_access` cookie; later clean `GET .../download` requests use
-  that cookie for authorization. Login-required shares bind the grant to the
-  viewer user ID; anonymous grants may omit `viewerId`.
 - `GET /api/v1/plans` returns `plans` and `prices`; `GET
   /api/v1/billing/prices` returns the same catalog plus provider-enabled flags
   on prices.
@@ -315,6 +311,12 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
 - Attachments are uploaded as multipart form field `file`; download responses
   must set `Content-Type`, `Content-Disposition`, `Content-Length`, and
   `X-Content-Type-Options: nosniff`.
+- Shared attachment downloads must not accept share passwords in URL query
+  strings. A successful `POST /api/v1/shares/{token}/access` sets a short-lived
+  signed `pastebox_share_access` cookie; the follow-up shared attachment
+  `GET` uses that cookie and a clean URL. Login-required share grants must bind
+  to the authenticated viewer; anonymous password-only grants may omit
+  `viewerId`.
 - The frontend API client in `web/src/api.ts` must mirror backend response
   fields with explicit TypeScript types and use `credentials: "include"`.
 
@@ -327,9 +329,10 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
 - Bad JSON -> `400 invalid_json`; missing upload file -> `400 missing_file`.
 - Share password mismatch -> `401 invalid_share_password`; login-required
   anonymous access -> `401 login_required`.
-- Missing, expired, wrong-token, wrong-user, or tampered share access cookie on
-  shared attachment download -> `401 share_access_required`. A download URL
-  with `?password=...` must still return `401 share_access_required`.
+- Missing, expired, wrong-token, wrong-viewer, or tampered shared download
+  grant cookie -> `401 share_access_required`.
+- `GET /api/v1/shares/{token}/attachments/{attachmentID}/download?password=...`
+  -> `401 share_access_required`; the query password is ignored.
 - Non-admin access to admin routes -> `403 admin_required`.
 
 ### 5. Good/Base/Bad Cases
@@ -337,16 +340,15 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
 - Good: Register through HTTP, receive the session cookie, create a paste,
   upload a file, create a share, and access the share anonymously with the
   expected JSON shapes.
-- Good: Access a password-protected share by POSTing the password, receive the
-  scoped HttpOnly share access cookie, and download a clean attachment through
-  the same URL without password query parameters.
+- Good: After successful share access, the browser receives an HttpOnly scoped
+  grant cookie and downloads a clean shared attachment URL without query
+  secrets.
 - Base: Admin login can query dashboard/list endpoints and admin mutations write
   audit logs.
-- Bad: Building shared attachment download links as
-  `/download?password=<share password>` because URLs leak through browser
-  history, logs, referrers, and metrics.
 - Bad: A frontend field rename or route rename compiles only if the typed client
   and backend handler tests are updated together.
+- Bad: Putting `password=<share password>` in a shared attachment download URL,
+  because URLs leak through logs, history, referrers, and diagnostics.
 
 ### 6. Tests Required
 
@@ -363,8 +365,8 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
   JSON arrays (`[]`) rather than `null`, because React call sites use array
   methods such as `.find()` and `.join()`.
 - Handler tests must assert shared attachment downloads reject password query
-  strings, require the signed share access cookie, and accept clean URLs after a
-  successful share access POST.
+  strings, set a scoped HttpOnly `pastebox_share_access` cookie on successful
+  share access, and then allow clean shared download URLs.
 - Domain-heavy quota, expiry, dedupe, scan, cleanup, and billing behavior stays
   in `internal/app` tests.
 - Cross-layer changes require both `make test-api` and `make test-web`; run full
@@ -377,6 +379,13 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
 Add a handler route and update only the React call site, relying on manual
 browser clicks to notice shape drift.
 
+Put share passwords in shared attachment URLs:
+
+```go
+password := r.URL.Query().Get("password")
+download, err := s.app.OpenSharedAttachment(token, password, attachmentID, viewerID)
+```
+
 Return a nil Go slice from an API list response:
 
 ```go
@@ -384,16 +393,18 @@ var out []PasteView
 writeJSON(w, http.StatusOK, map[string]any{"pastes": out})
 ```
 
-Read a shared attachment password from the URL:
-
-```go
-password := r.URL.Query().Get("password")
-```
-
 #### Correct
 
 Keep the backend handler, typed `web/src/api.ts` client, and handler contract
 tests in sync in the same change, then run the backend and web checks.
+
+Issue a signed, scoped access grant on share access and require it for the
+download:
+
+```go
+s.setShareAccessCookie(w, r, token, viewerID)
+download, err := s.app.OpenSharedAttachmentWithAccessGrant(token, attachmentID, viewerID)
+```
 
 Initialize empty response collections before encoding:
 
@@ -402,8 +413,85 @@ out := []PasteView{}
 writeJSON(w, http.StatusOK, map[string]any{"pastes": out})
 ```
 
-Set the share access grant during `POST /access`, then require the signed cookie
-on shared attachment downloads.
+## Scenario: Plan-Scoped Paste Tag Limits
+
+### 1. Scope / Trigger
+
+- Trigger: Any backend or frontend change that touches paste `tags`, plan
+  catalog fields, `/api/v1/plans`, `GET /api/v1/pastes?tag=...`, paste
+  create/update handlers, or PostgreSQL `plans`/`pastes` metadata.
+
+### 2. Signatures
+
+- Plan field: `plans.Plan.TagsPerPasteLimit int` serialized as
+  `tagsPerPasteLimit`.
+- Database column: `plans.tags_per_paste_limit integer NOT NULL DEFAULT 0`.
+- Service create/update: `CreatePaste(userID string, input PasteInput)` and
+  `UpdatePaste(userID string, id string, patch PastePatch)`.
+- Owner list filter: `ListPastes(userID string, opts ListOptions)` with
+  `ListOptions.Tag`, exposed as `GET /api/v1/pastes?tag=<tag>`.
+
+### 3. Contracts
+
+- Default launch catalog tag limits are `free=0`, `plus=5`, and `pro=20`, all
+  counted per paste/content item, not per account.
+- Tags must be normalized once through the service convention: comma-split,
+  trim, lower-case, de-duplicate, and sort before storage or comparison.
+- Create and tag-changing update paths must reject normalized tag counts above
+  the current plan's `TagsPerPasteLimit`.
+- Existing tags remain stored, listed, and searchable after plan expiry or
+  downgrade. If the existing tag set exceeds the current plan limit, tag edits
+  are read-only, but non-tag paste edits may still succeed.
+- `/api/v1/plans` and `/api/v1/billing/prices` must expose
+  `tagsPerPasteLimit` so the frontend does not duplicate plan limits.
+
+### 4. Validation & Error Matrix
+
+- Free user creates or updates a paste with any tag -> `403 tag_limit`.
+- Plus user saves more than 5 tags -> `403 tag_limit`.
+- Pro user saves more than 20 tags -> `403 tag_limit`.
+- Downgraded user keeps unchanged over-limit tags -> allowed.
+- Downgraded user changes an over-limit tag set -> `403 tag_limit`.
+- `GET /api/v1/pastes?tag=<existing>` must still find downgraded pastes with
+  retained tags.
+
+### 5. Good/Base/Bad Cases
+
+- Good: A Pro paste with 20 tags remains searchable after the user is moved to
+  Plus, while attempts to replace those tags are rejected.
+- Base: A Plus user can create and edit a paste with up to 5 normalized tags.
+- Bad: The frontend hard-codes `plus=5` and `pro=20` while the backend catalog
+  becomes configurable through admin catalog editing.
+
+### 6. Tests Required
+
+- `internal/plans` tests assert the default catalog tag limits.
+- `internal/app` tests cover create/update `tag_limit` failures and downgraded
+  read-only-but-searchable retained tags.
+- Handler tests assert plan catalog responses include `tagsPerPasteLimit`.
+- PostgreSQL migration/catalog tests assert `plans.tags_per_paste_limit` is
+  added and read/written through `CatalogStore`.
+- Run full `make test` because this contract spans database, service, HTTP,
+  typed frontend API fields, and UI behavior.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+paste.Tags = normalizeTags(input.Tags)
+return s.createPasteLocked(paste)
+```
+
+#### Correct
+
+```go
+tags := normalizeTags(input.Tags)
+if err := ensureTagsWithinPlan(plan, paste.Tags, tags); err != nil {
+    return PasteView{}, err
+}
+paste.Tags = tags
+```
 
 ## Scenario: S3-Compatible Attachment Streaming
 

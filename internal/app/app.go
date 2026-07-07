@@ -1113,6 +1113,7 @@ func (s *Service) CreatePaste(userID string, input PasteInput) (PasteView, error
 	if err := s.ensureCanCreatePasteLocked(user, plan, input, 0, 0); err != nil {
 		return PasteView{}, err
 	}
+	tags := normalizeTags(input.Tags)
 	now := s.now().UTC()
 	expiresAt := resolveExpiresAt(now, input.ExpiresInSeconds, plan)
 	paste := &Paste{
@@ -1120,7 +1121,7 @@ func (s *Service) CreatePaste(userID string, input PasteInput) (PasteView, error
 		UserID:     user.ID,
 		Title:      strings.TrimSpace(input.Title),
 		Text:       input.Text,
-		Tags:       normalizeTags(input.Tags),
+		Tags:       tags,
 		Pinned:     input.Pinned,
 		Favorite:   input.Favorite,
 		Status:     "active",
@@ -1224,6 +1225,13 @@ func (s *Service) UpdatePaste(userID string, id string, patch PastePatch) (Paste
 	if textDelta := nextTextBytes - currentTextBytes; textDelta > 0 && quota.DailyUploadBytes+textDelta > plan.DailyUploadBytes {
 		return PasteView{}, E(http.StatusForbidden, "daily_upload_limit", "daily upload traffic exceeds plan limit")
 	}
+	var nextTags []string
+	if patch.HasTags {
+		nextTags = normalizeTags(patch.Tags)
+		if err := ensureTagsWithinPlan(plan, paste.Tags, nextTags); err != nil {
+			return PasteView{}, err
+		}
+	}
 	if textDelta := nextTextBytes - currentTextBytes; textDelta > 0 {
 		if err := s.recordDailyUploadLocked(user.ID, textDelta); err != nil {
 			return PasteView{}, err
@@ -1236,7 +1244,7 @@ func (s *Service) UpdatePaste(userID string, id string, patch PastePatch) (Paste
 		paste.Text = *patch.Text
 	}
 	if patch.HasTags {
-		paste.Tags = normalizeTags(patch.Tags)
+		paste.Tags = nextTags
 	}
 	if patch.Pinned != nil {
 		paste.Pinned = *patch.Pinned
@@ -4198,6 +4206,9 @@ func (s *Service) ensureCanCreatePasteLocked(user *User, plan plans.Plan, input 
 	if err := s.ensureUserCanWriteLocked(user, plan); err != nil {
 		return err
 	}
+	if err := ensureTagsWithinPlan(plan, nil, normalizeTags(input.Tags)); err != nil {
+		return err
+	}
 	textBytes := int64(len([]byte(input.Text)))
 	if textBytes > plan.SingleTextBytes {
 		return E(http.StatusRequestEntityTooLarge, "text_too_large", "text exceeds plan limit; upload it as a .txt attachment")
@@ -4217,6 +4228,19 @@ func (s *Service) ensureCanCreatePasteLocked(user *User, plan plans.Plan, input 
 	}
 	if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
 		return E(http.StatusForbidden, "daily_upload_limit", "daily upload traffic exceeds plan limit")
+	}
+	return nil
+}
+
+func ensureTagsWithinPlan(plan plans.Plan, currentTags []string, nextTags []string) error {
+	if tagsEqual(currentTags, nextTags) {
+		return nil
+	}
+	if len(currentTags) > plan.TagsPerPasteLimit {
+		return E(http.StatusForbidden, "tag_limit", "existing tags are read-only on the current plan")
+	}
+	if len(nextTags) > plan.TagsPerPasteLimit {
+		return E(http.StatusForbidden, "tag_limit", "tags exceed plan limit")
 	}
 	return nil
 }
@@ -4953,6 +4977,18 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func tagsEqual(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func removeString(values []string, target string) []string {

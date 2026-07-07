@@ -76,6 +76,13 @@ func TestServiceWithPostgresStoresPreservesLaunchStateAcrossRestart(t *testing.T
 	if auth.SessionID == "" || !auth.User.EmailVerified {
 		t.Fatalf("expected verified session, got %#v", auth)
 	}
+	order, err := service.CreateOrder(auth.User.ID, "stripe", "plus", "monthly")
+	if err != nil {
+		t.Fatalf("create order: %v", err)
+	}
+	if _, err := service.MarkOrderPaid(admin.ID, order.ID, "tx-service-persistence", "SUP-456 persisted manual payment correction"); err != nil {
+		t.Fatalf("mark order paid: %v", err)
+	}
 	created, err := service.CreatePaste(auth.User.ID, app.PasteInput{
 		Title:            "Launch state",
 		Text:             "hello",
@@ -109,13 +116,6 @@ func TestServiceWithPostgresStoresPreservesLaunchStateAcrossRestart(t *testing.T
 	}
 	if _, _, err := service.AccessShare(share.Token, "share-password", ""); err != nil {
 		t.Fatalf("access share before restart: %v", err)
-	}
-	order, err := service.CreateOrder(auth.User.ID, "stripe", "plus", "monthly")
-	if err != nil {
-		t.Fatalf("create order: %v", err)
-	}
-	if _, err := service.MarkOrderPaid(admin.ID, order.ID, "tx-service-persistence", "SUP-456 persisted manual payment correction"); err != nil {
-		t.Fatalf("mark order paid: %v", err)
 	}
 	if _, err := service.Report(auth.User.ID, "share:"+share.Token, "abuse"); err != nil {
 		t.Fatalf("create report: %v", err)

@@ -29,4 +29,20 @@ func TestFreePlanLimits(t *testing.T) {
 	if free.MaxRetentionSeconds != 24*60*60 {
 		t.Fatalf("expected 24 hour retention, got %d", free.MaxRetentionSeconds)
 	}
+	if free.TagsPerPasteLimit != 0 {
+		t.Fatalf("expected free plan to disallow tags, got %d", free.TagsPerPasteLimit)
+	}
+}
+
+func TestPaidPlanTagLimits(t *testing.T) {
+	catalog := DefaultCatalog()
+	plus := catalog.Plans[1]
+	pro := catalog.Plans[2]
+
+	if plus.TagsPerPasteLimit != 5 {
+		t.Fatalf("expected plus tag limit 5, got %d", plus.TagsPerPasteLimit)
+	}
+	if pro.TagsPerPasteLimit != 20 {
+		t.Fatalf("expected pro tag limit 20, got %d", pro.TagsPerPasteLimit)
+	}
 }

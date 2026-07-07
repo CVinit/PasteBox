@@ -993,7 +993,7 @@ func validateCatalogUpdate(update AdminPlanUpdate) (plans.Catalog, error) {
 			return plans.Catalog{}, E(http.StatusBadRequest, "duplicate_plan", "plan IDs must be unique")
 		}
 		planIDs[plan.ID] = struct{}{}
-		if plan.ActivePasteLimit < 0 || plan.ActiveStorageBytes < 0 || plan.SingleTextBytes < 0 || plan.SingleFileBytes < 0 || plan.SinglePasteBytes < 0 || plan.AttachmentsPerPasteLimit < 0 || plan.MaxRetentionSeconds <= 0 || plan.DailyUploadBytes < 0 || plan.DailyShareDownloadBytes < 0 {
+		if plan.ActivePasteLimit < 0 || plan.ActiveStorageBytes < 0 || plan.SingleTextBytes < 0 || plan.SingleFileBytes < 0 || plan.SinglePasteBytes < 0 || plan.AttachmentsPerPasteLimit < 0 || plan.TagsPerPasteLimit < 0 || plan.MaxRetentionSeconds <= 0 || plan.DailyUploadBytes < 0 || plan.DailyShareDownloadBytes < 0 {
 			return plans.Catalog{}, E(http.StatusBadRequest, "invalid_plan_limits", "plan limits must be non-negative and retention must be positive")
 		}
 		if plan.SingleTextBytes > plan.SinglePasteBytes || plan.SingleFileBytes > plan.SinglePasteBytes {
@@ -1188,7 +1188,8 @@ func (s *Service) CreateGuestPaste(input GuestCreatePasteInput) (string, PasteVi
 		return "", PasteView{}, err
 	}
 	plan := guestPlan(cfg)
-	if err := s.ensureCanCreatePasteLocked(user, plan, PasteInput{Title: input.Title, Text: input.Text, Tags: input.Tags, ExpiresInSeconds: input.ExpiresInSeconds}, 0, 0); err != nil {
+	tags := normalizeTags(input.Tags)
+	if err := s.ensureCanCreatePasteLocked(user, plan, PasteInput{Title: input.Title, Text: input.Text, Tags: tags, ExpiresInSeconds: input.ExpiresInSeconds}, 0, 0); err != nil {
 		return "", PasteView{}, err
 	}
 	now := s.now().UTC()
@@ -1201,7 +1202,7 @@ func (s *Service) CreateGuestPaste(input GuestCreatePasteInput) (string, PasteVi
 		UserID:     user.ID,
 		Title:      strings.TrimSpace(input.Title),
 		Text:       input.Text,
-		Tags:       normalizeTags(input.Tags),
+		Tags:       tags,
 		Status:     "active",
 		ScanStatus: "clean",
 		ExpiresAt:  now.Add(time.Duration(expiresSeconds) * time.Second),
@@ -1277,6 +1278,7 @@ func guestPlan(cfg GuestUploadConfig) plans.Plan {
 		SingleFileBytes:          cfg.SingleFileBytes,
 		SinglePasteBytes:         cfg.SinglePasteBytes,
 		AttachmentsPerPasteLimit: cfg.AttachmentsPerPasteLimit,
+		TagsPerPasteLimit:        0,
 		MaxRetentionSeconds:      cfg.RetentionSeconds,
 		DailyUploadBytes:         cfg.DailyUploadBytes,
 		DailyShareDownloadBytes:  cfg.DailyShareDownloadBytes,

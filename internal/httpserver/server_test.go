@@ -202,7 +202,8 @@ func TestPlanCatalogEndpoint(t *testing.T) {
 
 	var body struct {
 		Plans []struct {
-			ID string `json:"id"`
+			ID                string `json:"id"`
+			TagsPerPasteLimit int    `json:"tagsPerPasteLimit"`
 		} `json:"plans"`
 	}
 	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
@@ -213,6 +214,9 @@ func TestPlanCatalogEndpoint(t *testing.T) {
 	}
 	if body.Plans[0].ID != "free" {
 		t.Fatalf("expected free plan first, got %q", body.Plans[0].ID)
+	}
+	if body.Plans[0].TagsPerPasteLimit != 0 || body.Plans[1].TagsPerPasteLimit != 5 || body.Plans[2].TagsPerPasteLimit != 20 {
+		t.Fatalf("unexpected tag limits: %#v", body.Plans)
 	}
 }
 
@@ -994,11 +998,11 @@ func TestAuthPasteUploadShareAndQuotaHTTPContracts(t *testing.T) {
 		}
 	}
 
-	createPaste := client.json(http.MethodPost, "/api/v1/pastes", `{"title":"Contract","text":"hello","tags":["alpha"],"pinned":true,"favorite":false,"expiresInSeconds":3600}`)
+	createPaste := client.json(http.MethodPost, "/api/v1/pastes", `{"title":"Contract","text":"hello","tags":[],"pinned":true,"favorite":false,"expiresInSeconds":3600}`)
 	assertStatus(t, createPaste, http.StatusCreated)
 	var paste app.PasteView
 	decodeResponse(t, createPaste, &paste)
-	if paste.ID == "" || paste.Title != "Contract" || paste.Text != "hello" || len(paste.Tags) != 1 || paste.Tags[0] != "alpha" {
+	if paste.ID == "" || paste.Title != "Contract" || paste.Text != "hello" || len(paste.Tags) != 0 {
 		t.Fatalf("unexpected paste body: %#v", paste)
 	}
 
@@ -1021,7 +1025,7 @@ func TestAuthPasteUploadShareAndQuotaHTTPContracts(t *testing.T) {
 		t.Fatalf("unexpected attachment body: %#v", attachment)
 	}
 	if err := service.RunAttachmentScan(staticHTTPScanner{result: app.ScanResult{Status: "clean"}}, attachment.ID); err != nil {
-		t.Fatalf("scan attachment: %v", err)
+		t.Fatalf("run clean scan: %v", err)
 	}
 
 	createShare := client.json(http.MethodPost, "/api/v1/pastes/"+paste.ID+"/shares", `{"password":"pw","loginRequired":false,"maxVisits":2,"maxDownloads":1,"expiresInSeconds":1800}`)
@@ -1037,7 +1041,7 @@ func TestAuthPasteUploadShareAndQuotaHTTPContracts(t *testing.T) {
 	var leakyDownloadBody map[string]string
 	decodeResponse(t, leakyDownload, &leakyDownloadBody)
 	if leakyDownloadBody["error"] != "share_access_required" {
-		t.Fatalf("expected share access cookie to be required for attachment downloads, got %#v", leakyDownloadBody)
+		t.Fatalf("expected query password to be ignored, got %#v", leakyDownloadBody)
 	}
 
 	anonymous := newHTTPTestClient(t, handler)
@@ -1059,7 +1063,7 @@ func TestAuthPasteUploadShareAndQuotaHTTPContracts(t *testing.T) {
 	download := anonymous.json(http.MethodGet, "/api/v1/shares/"+share.Token+"/attachments/"+attachment.ID+"/download", "")
 	assertStatus(t, download, http.StatusOK)
 	if got := download.Body.String(); got != "attachment" {
-		t.Fatalf("unexpected shared attachment body: %q", got)
+		t.Fatalf("expected shared attachment download body, got %q", got)
 	}
 }
 
@@ -1239,13 +1243,14 @@ func TestAdminRuntimeGuestRedemptionAndAlertHTTPContracts(t *testing.T) {
 	assertStatus(t, publicPlans, http.StatusOK)
 	var publicCatalog struct {
 		Plans []struct {
-			ID               string `json:"id"`
-			ActivePasteLimit int    `json:"activePasteLimit"`
+			ID                string `json:"id"`
+			ActivePasteLimit  int    `json:"activePasteLimit"`
+			TagsPerPasteLimit int    `json:"tagsPerPasteLimit"`
 		} `json:"plans"`
 		GuestUploads app.GuestUploadConfig `json:"guestUploads"`
 	}
 	decodeResponse(t, publicPlans, &publicCatalog)
-	if len(publicCatalog.Plans) == 0 || publicCatalog.Plans[0].ActivePasteLimit != 7 {
+	if len(publicCatalog.Plans) == 0 || publicCatalog.Plans[0].ActivePasteLimit != 7 || publicCatalog.Plans[0].TagsPerPasteLimit != catalog.Plans[0].TagsPerPasteLimit {
 		t.Fatalf("expected public plans to use updated catalog, got %#v", publicCatalog.Plans)
 	}
 	if !publicCatalog.GuestUploads.Enabled || publicCatalog.GuestUploads.SingleTextBytes == 0 {

@@ -37,6 +37,7 @@ import {
   Snowflake,
   Sparkles,
   Star,
+  Tags,
   TimerReset,
   Trash2,
   Undo2,
@@ -877,6 +878,12 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     private: "Private",
     title: "Title",
     tags: "tags",
+    tagsPerPaste: "Tags per paste",
+    tagLimit: "Tag limit",
+    upgradeForTags: "Upgrade to add tags",
+    tagReadOnly: "Tags are read-only on this plan",
+    filteredByTag: "Filtered by tag",
+    clearTagFilter: "Clear tag filter",
     create: "Create",
     upload: "Upload",
     recentPastes: "Recent pastes",
@@ -1196,6 +1203,12 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     private: "私有",
     title: "标题",
     tags: "标签",
+    tagsPerPaste: "每条标签数",
+    tagLimit: "标签上限",
+    upgradeForTags: "升级后可添加标签",
+    tagReadOnly: "当前套餐下标签只读",
+    filteredByTag: "按标签筛选",
+    clearTagFilter: "清除标签筛选",
     create: "创建",
     upload: "上传",
     recentPastes: "最近内容",
@@ -1509,6 +1522,12 @@ const copy: Record<Locale, Record<string, string>> = {
     private: "私有",
     title: "標題",
     tags: "標籤",
+    tagsPerPaste: "每則標籤數",
+    tagLimit: "標籤上限",
+    upgradeForTags: "升級後可新增標籤",
+    tagReadOnly: "目前方案下標籤唯讀",
+    filteredByTag: "依標籤篩選",
+    clearTagFilter: "清除標籤篩選",
     create: "建立",
     upload: "上傳",
     recentPastes: "最近內容",
@@ -1776,6 +1795,12 @@ const copy: Record<Locale, Record<string, string>> = {
     private: "Privado",
     title: "Título",
     tags: "etiquetas",
+    tagsPerPaste: "Etiquetas por paste",
+    tagLimit: "Límite de etiquetas",
+    upgradeForTags: "Mejora para añadir etiquetas",
+    tagReadOnly: "Etiquetas de solo lectura en este plan",
+    filteredByTag: "Filtrado por etiqueta",
+    clearTagFilter: "Quitar filtro de etiqueta",
     create: "Crear",
     upload: "Subir",
     recentPastes: "Pastes recientes",
@@ -2791,6 +2816,7 @@ function App() {
   const [view, setView] = useState<View>("inbox");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
+  const [tagFilter, setTagFilter] = useState("");
   const [draft, setDraft] = useState<Draft>(defaultDraft);
   const [selectedPasteId, setSelectedPasteId] = useState<string>("");
   const [editDraft, setEditDraft] = useState({
@@ -2873,6 +2899,13 @@ function App() {
     () => pastes.find((paste) => paste.id === selectedPasteId) ?? pastes[0],
     [pastes, selectedPasteId],
   );
+  const tagsPerPasteLimit = activePlan?.tagsPerPasteLimit ?? 0;
+  const canCreateTags = tagsPerPasteLimit > 0;
+  const draftTagCount = parseTagInput(draft.tags).length;
+  const selectedTagsReadOnly = Boolean(
+    selectedPaste && selectedPaste.tags.length > tagsPerPasteLimit,
+  );
+  const canEditSelectedTags = tagsPerPasteLimit > 0 && !selectedTagsReadOnly;
 
   const expiringCount = useMemo(
     () => pastes.filter((paste) => paste.secondsToLive <= 24 * 60 * 60).length,
@@ -2971,7 +3004,7 @@ function App() {
     const [quotaResult, pasteResult, shareResult, orderResult] =
       await Promise.allSettled([
         client.quota(),
-        client.pastes(searchParams(query, filter)),
+        client.pastes(searchParams(query, filter, tagFilter)),
         client.shares(),
         client.orders(),
       ]);
@@ -2984,7 +3017,7 @@ function App() {
     }
     if (shareResult.status === "fulfilled") setShares(shareResult.value.shares);
     if (orderResult.status === "fulfilled") setOrders(orderResult.value.orders);
-  }, [filter, query, selectedPasteId]);
+  }, [filter, query, selectedPasteId, tagFilter]);
 
   const refreshAdmin = useCallback(async () => {
     if (user?.role !== "admin") return;
@@ -3310,9 +3343,10 @@ function App() {
           title: draft.title,
           text: draft.text,
           tags: draft.tags
-            .split(",")
-            .map((tag) => tag.trim())
-            .filter(Boolean),
+            ? canCreateTags
+              ? parseTagInput(draft.tags)
+              : []
+            : [],
           pinned: draft.pinned,
           favorite: draft.favorite,
           expiresInSeconds: draft.expiresInSeconds,
@@ -3395,10 +3429,9 @@ function App() {
         client.updatePaste(selectedPaste.id, {
           title: editDraft.title,
           text: editDraft.text,
-          tags: editDraft.tags
-            .split(",")
-            .map((tag) => tag.trim())
-            .filter(Boolean),
+          tags: canEditSelectedTags
+            ? parseTagInput(editDraft.tags)
+            : selectedPaste.tags,
         }),
       t("pasteUpdated"),
     );
@@ -3980,6 +4013,19 @@ function App() {
               <option value="favorite">{t("favorites")}</option>
             </select>
           </label>
+          {tagFilter ? (
+            <button
+              className="status-pill tag-filter-pill"
+              type="button"
+              onClick={() => setTagFilter("")}
+              aria-label={`${t("clearTagFilter")}: ${tagFilter}`}
+            >
+              <Tags size={14} aria-hidden="true" />
+              <span>
+                {t("filteredByTag")}: {tagFilter}
+              </span>
+            </button>
+          ) : null}
           {message ? <span className="status-pill">{message}</span> : null}
         </header>
 
@@ -4085,13 +4131,26 @@ function App() {
                     </option>
                   </select>
                 </label>
-                <input
-                  value={draft.tags}
-                  onChange={(event) =>
-                    setDraft({ ...draft, tags: event.target.value })
-                  }
-                  placeholder={t("tagsSeparatedByComma")}
-                />
+                <label className="tag-input-wrap">
+                  <Tags size={16} aria-hidden="true" />
+                  <input
+                    value={draft.tags}
+                    onChange={(event) =>
+                      setDraft({ ...draft, tags: event.target.value })
+                    }
+                    placeholder={
+                      canCreateTags
+                        ? t("tagsSeparatedByComma")
+                        : t("upgradeForTags")
+                    }
+                    disabled={!canCreateTags}
+                  />
+                  <span className="tag-limit-note">
+                    {canCreateTags
+                      ? `${draftTagCount}/${tagsPerPasteLimit}`
+                      : t("upgradeForTags")}
+                  </span>
+                </label>
                 <button type="button" onClick={createPaste} disabled={busy}>
                   <Sparkles size={16} aria-hidden="true" />
                   {t("create")}
@@ -4135,6 +4194,8 @@ function App() {
                 onToggleFlag={(paste, field) =>
                   void updatePasteFlag(paste, field)
                 }
+                onFilterTag={setTagFilter}
+                activeTag={tagFilter}
                 locale={locale}
               />
               <aside className="side-panel">
@@ -4143,6 +4204,9 @@ function App() {
                   draft={editDraft}
                   onDraft={setEditDraft}
                   onSave={saveSelectedPaste}
+                  tagLimit={tagsPerPasteLimit}
+                  canEditTags={canEditSelectedTags}
+                  tagsReadOnly={selectedTagsReadOnly}
                   locale={locale}
                 />
                 <ShareBox
@@ -5385,6 +5449,17 @@ function App() {
                               })
                             }
                           />
+                          <AdminNumberField
+                            label={t("tagsPerPaste")}
+                            min={0}
+                            unitLabel={t("tags")}
+                            value={plan.tagsPerPasteLimit}
+                            onChange={(value) =>
+                              updateCatalogPlan(plan.id, {
+                                tagsPerPasteLimit: value,
+                              })
+                            }
+                          />
                           <AdminTimeField
                             label={t("retentionSeconds")}
                             minSeconds={1}
@@ -5952,6 +6027,8 @@ function PasteList({
   onDelete,
   onExtend,
   onToggleFlag,
+  onFilterTag,
+  activeTag,
   locale,
 }: {
   pastes: Paste[];
@@ -5961,6 +6038,8 @@ function PasteList({
   onDelete: (id: string) => void;
   onExtend: (paste: Paste, expiresInSeconds: number) => void;
   onToggleFlag: (paste: Paste, field: "pinned" | "favorite") => void;
+  onFilterTag: (tag: string) => void;
+  activeTag: string;
   locale: Locale;
 }) {
   const t = copyFor(locale);
@@ -6038,6 +6117,22 @@ function PasteList({
           </div>
           {paste.shareCount ? (
             <span className="share-chip">{t("shared")}</span>
+          ) : null}
+          {paste.tags.length ? (
+            <div className="paste-tags" aria-label={t("tags")}>
+              {paste.tags.map((tag) => (
+                <button
+                  className={`tag-chip ${activeTag === tag ? "active" : ""}`}
+                  type="button"
+                  key={tag}
+                  aria-pressed={activeTag === tag}
+                  onClick={() => onFilterTag(activeTag === tag ? "" : tag)}
+                >
+                  <Tags size={13} aria-hidden="true" />
+                  <span>{tag}</span>
+                </button>
+              ))}
+            </div>
           ) : null}
           {paste.attachments.map((attachment) => (
             <AttachmentDownloadItem
@@ -7293,6 +7388,9 @@ function PasteEditor({
   draft,
   onDraft,
   onSave,
+  tagLimit,
+  canEditTags,
+  tagsReadOnly,
   locale,
 }: {
   paste?: Paste;
@@ -7304,9 +7402,18 @@ function PasteEditor({
     tags: string;
   }) => void;
   onSave: () => void;
+  tagLimit: number;
+  canEditTags: boolean;
+  tagsReadOnly: boolean;
   locale: Locale;
 }) {
   const t = copyFor(locale);
+  const tagCount = parseTagInput(draft.tags).length;
+  const tagNote = canEditTags
+    ? `${tagCount}/${tagLimit}`
+    : tagsReadOnly
+      ? t("tagReadOnly")
+      : t("upgradeForTags");
   return (
     <Panel
       title={t("edit")}
@@ -7329,8 +7436,9 @@ function PasteEditor({
           value={draft.tags}
           onChange={(event) => onDraft({ ...draft, tags: event.target.value })}
           placeholder={t("tags")}
-          disabled={!paste}
+          disabled={!paste || !canEditTags}
         />
+        <small className="tag-field-note">{tagNote}</small>
       </div>
       <button type="button" onClick={onSave} disabled={!paste}>
         {t("save")}
@@ -7529,10 +7637,28 @@ function navClass(current: View, view: View): string {
   return current === view ? "nav-item active" : "nav-item";
 }
 
-function searchParams(query: string, filter: string): URLSearchParams {
+function parseTagInput(value: string): string[] {
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const raw of value.split(",")) {
+    const tag = raw.trim().toLowerCase();
+    if (tag && !seen.has(tag)) {
+      seen.add(tag);
+      tags.push(tag);
+    }
+  }
+  return tags.sort();
+}
+
+function searchParams(
+  query: string,
+  filter: string,
+  tag: string,
+): URLSearchParams {
   const params = new URLSearchParams();
   if (query) params.set("query", query);
   if (filter) params.set("filter", filter);
+  if (tag) params.set("tag", tag);
   return params;
 }
 

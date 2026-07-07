@@ -288,7 +288,7 @@ const status = orderStatusDetail(order.status, locale);
 - UI helper: `attachmentScanDetail(attachment, locale, context)` in
   `web/src/App.tsx`.
 - UI component: `AttachmentDownloadItem` in `web/src/App.tsx`.
-- Download paths: `attachmentDownloadPath()` and
+- Download paths: `attachmentDownloadPath(id)` and
   `sharedAttachmentDownloadPath(token, attachmentID)` in `web/src/api.ts`.
 
 ### 3. Contracts
@@ -302,6 +302,10 @@ const status = orderStatusDetail(order.status, locale);
   `clean` files. Pending, failed, malicious, and unknown scan states must render
   as blocked or non-downloadable rows rather than links that the backend will
   reject.
+- Public share attachment links must use clean URLs only. Do not pass the share
+  password to `sharedAttachmentDownloadPath()` and do not append password query
+  parameters; the backend authorizes downloads through the scoped
+  `pastebox_share_access` HttpOnly cookie set by share access.
 - `malicious` files must appear blocked in owner and public contexts, matching
   the backend global malicious-file gate.
 - Scan status copy must be available for English and Chinese locales when the
@@ -309,9 +313,6 @@ const status = orderStatusDetail(order.status, locale);
 - Backend-provided `Attachment.risk` must use the same locale as the scan
   status copy, including `Risk` for English, `风险` for Simplified Chinese,
   `風險` for Traditional Chinese, and `Riesgo` for Spanish.
-- Public share attachment links must use clean URLs only. The share password is
-  posted through `/api/v1/shares/{token}/access`; the backend authorizes later
-  attachment downloads with the scoped HttpOnly share access cookie.
 
 ### 4. Validation & Error Matrix
 
@@ -322,31 +323,27 @@ const status = orderStatusDetail(order.status, locale);
   link blocked until retry succeeds.
 - `malicious` -> danger badge; owner and public links blocked.
 - Unknown non-empty scan status -> neutral badge and blocked public link.
-- Public share attachment URL containing `?password=` -> security bug.
+- Shared attachment URL includes `?password=` -> security bug; keep the helper
+  signature to `(token, attachmentID)` and rely on credentials-included cookies.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: A pending owner attachment says public sharing waits for a clean scan
   while preserving the owner download link.
-- Good: A clean public share attachment link uses
-  `sharedAttachmentDownloadPath(token, attachment.id)` with no password
-  argument and no query string.
 - Base: A clean attachment still renders as a normal downloadable file with a
-  clean badge.
+  clean badge and a clean shared download URL.
 - Bad: Rendering a raw `<a>` for every attachment, because public share links
   would invite users to click downloads that are known to fail the scan gate.
-- Bad: Passing the share password into `sharedAttachmentDownloadPath()` because
-  the resulting URL can leak through browser history, logs, referrers, and
-  metrics.
+- Bad: Passing the share password into a download helper, because browser URLs
+  can leak through history, logs, referrers, screenshots, and support traces.
 
 ### 6. Tests Required
 
 - Run `make test-web` after changing attachment scan presentation.
 - Run full `make test` when the frontend consumes backend scan fields or when
   backend scan policy changes in the same slice.
-- When shared attachment URL generation changes, keep `web/src/api.ts`,
-  `web/src/App.tsx`, and backend handler contract tests in the same slice so
-  tests assert passwords never appear in download links.
+- Cross-layer shared download changes must include handler assertions that
+  password query strings are rejected and clean URLs work after share access.
 
 ### 7. Wrong vs Correct
 
@@ -468,6 +465,75 @@ client.register(auth)
 <option value="zh-CN">简体中文</option>
 <option value="zh-TW">繁體中文</option>
 client.register({ ...auth, language: locale })
+```
+
+## Scenario: Plan-Backed Tag Controls
+
+### 1. Scope / Trigger
+
+- Trigger: Any frontend change that touches paste tag inputs, paste cards,
+  topbar search/filter state, plan catalog rendering, or admin plan editing.
+
+### 2. Signatures
+
+- API type: `Plan.tagsPerPasteLimit: number` in `web/src/api.ts`.
+- Paste data: `Paste.tags: string[]`.
+- List query: `GET /api/v1/pastes?query=&filter=&tag=` through the typed
+  client.
+- UI components: composer tag input, `PasteEditor`, and `PasteList` tag chips.
+
+### 3. Contracts
+
+- The UI must derive tag limits from the active plan returned by the backend,
+  never from duplicated hard-coded Plus/Pro numbers.
+- When the active plan has `tagsPerPasteLimit === 0`, tag inputs remain visible
+  but disabled with upgrade-oriented product copy.
+- Existing over-limit tags after downgrade remain visible and searchable; the
+  editor must treat them as read-only while allowing non-tag paste edits.
+- Paste cards render tag chips from `Paste.tags`; clicking a chip applies the
+  backend `tag` list filter and keeps the normal search/filter controls usable.
+- Admin plan editing must include `tagsPerPasteLimit` with the same typed
+  catalog object sent back to `/api/v1/admin/catalog`.
+
+### 4. Validation & Error Matrix
+
+- Missing `tagsPerPasteLimit` in the API type -> TypeScript contract bug.
+- Free plan active -> tag input disabled, create submits no new tags.
+- Downgraded paste with retained over-limit tags -> chips display and filter,
+  editor tag input disabled.
+- Tag chip clicked -> subsequent paste list request includes `tag=<tag>`.
+- Backend `tag_limit` response -> normal API error display path, no custom
+  frontend bypass.
+
+### 5. Good/Base/Bad Cases
+
+- Good: A Plus user sees `2/5` near the tag input, and clicking `invoice` on a
+  paste card filters the list by `invoice`.
+- Base: A free user sees the disabled tag field with upgrade copy and can still
+  create an untagged paste.
+- Bad: Hiding the tag field for free users or enforcing the limit only in React
+  while sending over-limit tags to the backend.
+
+### 6. Tests Required
+
+- Run `make test-web` after changing tag UI or typed API fields.
+- Run full `make test` when backend catalog or paste tag behavior changes in
+  the same slice.
+- Browser-check the composer, paste list, and editor if CSS or layout changes
+  are visually substantial.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+const tagLimit = user.planId === "pro" ? 20 : 5;
+```
+
+#### Correct
+
+```tsx
+const tagLimit = activePlan?.tagsPerPasteLimit ?? 0;
 ```
 
 ---

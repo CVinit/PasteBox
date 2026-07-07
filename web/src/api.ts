@@ -7,6 +7,7 @@ export type Plan = {
   singleFileBytes: number;
   singlePasteBytes: number;
   attachmentsPerPasteLimit: number;
+  tagsPerPasteLimit: number;
   maxRetentionSeconds: number;
   dailyUploadBytes: number;
   dailyShareDownloadBytes: number;

@@ -10,6 +10,7 @@ import (
 	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -109,6 +110,65 @@ func TestPlanQuotasAreEnforcedServerSide(t *testing.T) {
 	now = now.Add(61 * time.Second)
 	if _, err := svc.CreatePaste(user.User.ID, PasteInput{Text: "allowed after expiry", ExpiresInSeconds: 60}); err != nil {
 		t.Fatalf("expired content should release logical quota: %v", err)
+	}
+}
+
+func TestPasteTagLimitsFollowCurrentPlan(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	user := registerTestUser(t, svc, "tags@example.com")
+
+	if _, err := svc.CreatePaste(user.User.ID, PasteInput{Text: "free", Tags: []string{"alpha"}, ExpiresInSeconds: 60}); !hasAppCode(err, "tag_limit") {
+		t.Fatalf("expected free plan tag limit error, got %v", err)
+	}
+
+	svc.usersByID[user.User.ID].PlanID = "plus"
+	created := createTestPaste(t, svc, user.User.ID, PasteInput{Text: "plus", Tags: []string{"alpha", "beta", "gamma", "delta", "epsilon"}, ExpiresInSeconds: 60})
+	if len(created.Tags) != 5 {
+		t.Fatalf("expected five normalized tags, got %#v", created.Tags)
+	}
+
+	if _, err := svc.CreatePaste(user.User.ID, PasteInput{Text: "too many", Tags: []string{"a", "b", "c", "d", "e", "f"}, ExpiresInSeconds: 60}); !hasAppCode(err, "tag_limit") {
+		t.Fatalf("expected create tag limit error, got %v", err)
+	}
+	if _, err := svc.UpdatePaste(user.User.ID, created.ID, PastePatch{Tags: []string{"a", "b", "c", "d", "e", "f"}, HasTags: true}); !hasAppCode(err, "tag_limit") {
+		t.Fatalf("expected update tag limit error, got %v", err)
+	}
+	updated, err := svc.UpdatePaste(user.User.ID, created.ID, PastePatch{Tags: []string{"new", "alpha"}, HasTags: true})
+	if err != nil {
+		t.Fatalf("expected in-limit tag update: %v", err)
+	}
+	if len(updated.Tags) != 2 || updated.Tags[0] != "alpha" || updated.Tags[1] != "new" {
+		t.Fatalf("expected sorted normalized tags, got %#v", updated.Tags)
+	}
+}
+
+func TestDowngradedPasteTagsRemainSearchableButReadOnly(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	user := registerTestUser(t, svc, "downgrade-tags@example.com")
+	svc.usersByID[user.User.ID].PlanID = "pro"
+
+	created := createTestPaste(t, svc, user.User.ID, PasteInput{Title: "Tagged", Text: "body", Tags: testTags(20), ExpiresInSeconds: 60})
+	svc.usersByID[user.User.ID].PlanID = "plus"
+
+	items, err := svc.ListPastes(user.User.ID, ListOptions{Tag: "tag-19"})
+	if err != nil {
+		t.Fatalf("list by tag after downgrade: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != created.ID || len(items[0].Tags) != 20 {
+		t.Fatalf("expected downgraded tags to remain searchable, got %#v", items)
+	}
+
+	renamed := "Renamed"
+	if _, err := svc.UpdatePaste(user.User.ID, created.ID, PastePatch{Title: &renamed}); err != nil {
+		t.Fatalf("expected non-tag edit after downgrade to succeed: %v", err)
+	}
+	if _, err := svc.UpdatePaste(user.User.ID, created.ID, PastePatch{Tags: testTags(20), HasTags: true}); err != nil {
+		t.Fatalf("expected unchanged tags after downgrade to be accepted: %v", err)
+	}
+	if _, err := svc.UpdatePaste(user.User.ID, created.ID, PastePatch{Tags: []string{"tag-0", "tag-1"}, HasTags: true}); !hasAppCode(err, "tag_limit") {
+		t.Fatalf("expected downgraded tag edit to be read-only, got %v", err)
 	}
 }
 
@@ -461,7 +521,11 @@ func TestStoreBackedContentMetadataSurvivesServiceRestart(t *testing.T) {
 		Content:      contentStores.contentStores(),
 		DailyMetrics: newMemoryDailyMetricStore(),
 	})
+	admin := seedAdminTestUser(t, svc, "content-durable-admin@example.com")
 	owner := registerTestUser(t, svc, "content-durable@example.com")
+	if _, err := svc.AdminSetUserPlan(admin.ID, owner.User.ID, "plus", nil, "test plus tag persistence", ""); err != nil {
+		t.Fatalf("set plus plan for tagged persistence test: %v", err)
+	}
 	paste := createTestPaste(t, svc, owner.User.ID, PasteInput{
 		Title:            "durable paste",
 		Text:             "metadata survives",
@@ -2785,6 +2849,14 @@ func createTestPaste(t *testing.T, svc *Service, userID string, input PasteInput
 		t.Fatalf("create paste: %v", err)
 	}
 	return paste
+}
+
+func testTags(count int) []string {
+	tags := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		tags = append(tags, "tag-"+strconv.Itoa(i))
+	}
+	return tags
 }
 
 func addTestAttachment(t *testing.T, svc *Service, userID string, pasteID string, fileName string, content []byte) AttachmentView {

@@ -33,6 +33,7 @@ SELECT
 	single_file_bytes,
 	single_paste_bytes,
 	attachments_per_paste_limit,
+	tags_per_paste_limit,
 	max_retention_seconds,
 	daily_upload_bytes,
 	daily_share_download_bytes
@@ -57,6 +58,7 @@ ORDER BY
 			&plan.SingleFileBytes,
 			&plan.SinglePasteBytes,
 			&plan.AttachmentsPerPasteLimit,
+			&plan.TagsPerPasteLimit,
 			&plan.MaxRetentionSeconds,
 			&plan.DailyUploadBytes,
 			&plan.DailyShareDownloadBytes,
@@ -130,10 +132,11 @@ INSERT INTO plans (
 	single_file_bytes,
 	single_paste_bytes,
 	attachments_per_paste_limit,
+	tags_per_paste_limit,
 	max_retention_seconds,
 	daily_upload_bytes,
 	daily_share_download_bytes
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT (id) DO UPDATE SET
 	name = EXCLUDED.name,
 	active_paste_limit = EXCLUDED.active_paste_limit,
@@ -142,11 +145,12 @@ ON CONFLICT (id) DO UPDATE SET
 	single_file_bytes = EXCLUDED.single_file_bytes,
 	single_paste_bytes = EXCLUDED.single_paste_bytes,
 	attachments_per_paste_limit = EXCLUDED.attachments_per_paste_limit,
+	tags_per_paste_limit = EXCLUDED.tags_per_paste_limit,
 	max_retention_seconds = EXCLUDED.max_retention_seconds,
 	daily_upload_bytes = EXCLUDED.daily_upload_bytes,
 	daily_share_download_bytes = EXCLUDED.daily_share_download_bytes,
 	updated_at = now()
-`, plan.ID, plan.Name, plan.ActivePasteLimit, plan.ActiveStorageBytes, plan.SingleTextBytes, plan.SingleFileBytes, plan.SinglePasteBytes, plan.AttachmentsPerPasteLimit, plan.MaxRetentionSeconds, plan.DailyUploadBytes, plan.DailyShareDownloadBytes); err != nil {
+`, plan.ID, plan.Name, plan.ActivePasteLimit, plan.ActiveStorageBytes, plan.SingleTextBytes, plan.SingleFileBytes, plan.SinglePasteBytes, plan.AttachmentsPerPasteLimit, plan.TagsPerPasteLimit, plan.MaxRetentionSeconds, plan.DailyUploadBytes, plan.DailyShareDownloadBytes); err != nil {
 			return fmt.Errorf("upsert plan %s: %w", plan.ID, err)
 		}
 	}

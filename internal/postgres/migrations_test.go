@@ -153,3 +153,29 @@ func TestLoadMigrationsIncludesAdminRuntimeControls(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadMigrationsIncludesPlanTagLimits(t *testing.T) {
+	migrations, err := LoadMigrations()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	var migration Migration
+	for _, item := range migrations {
+		if item.Version == 7 {
+			migration = item
+			break
+		}
+	}
+	if migration.Name != "plan_tag_limits" || migration.Filename != "000007_plan_tag_limits.sql" {
+		t.Fatalf("expected plan tag limits migration, got %#v", migration)
+	}
+	for _, expected := range []string{
+		"ADD COLUMN IF NOT EXISTS tags_per_paste_limit",
+		"WHERE id = 'plus'",
+		"WHERE id = 'pro'",
+	} {
+		if !strings.Contains(migration.SQL, expected) {
+			t.Fatalf("expected plan tag limits migration to contain %q", expected)
+		}
+	}
+}
