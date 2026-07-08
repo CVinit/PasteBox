@@ -94,6 +94,7 @@ type Service struct {
 	failedJobs            []*QueueItem
 	mails                 []*Mail
 	runtimeConfig         RuntimeConfig
+	runtimeConfigChange   func(RuntimeConfig)
 	redemptionBatches     map[string]*RedemptionBatch
 	redemptionCodesByHash map[string]*RedemptionCode
 	redemptionRecords     []*RedemptionRecord

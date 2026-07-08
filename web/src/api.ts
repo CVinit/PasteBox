@@ -283,8 +283,11 @@ export type ProviderStatus = {
   s3: ProviderConfigStatus;
 };
 
+export type LogLevel = "debug" | "info" | "warn" | "error";
+
 export type RuntimeConfig = {
   id: string;
+  logLevel: LogLevel;
   guestUploads: GuestUploadConfig;
   registration: RegistrationConfig;
   rateLimits: RuntimeRateLimitConfig;
@@ -674,6 +677,7 @@ export const client = {
   adminDashboard: () => api<Record<string, unknown>>("/admin/dashboard"),
   adminRuntimeConfig: () => api<RuntimeConfig>("/admin/runtime-config"),
   adminUpdateRuntimeConfig: (body: {
+    logLevel?: LogLevel;
     guestUploads?: Partial<GuestUploadConfig>;
     registration?: Partial<RegistrationConfig>;
     rateLimits?: Partial<RuntimeRateLimitConfig>;

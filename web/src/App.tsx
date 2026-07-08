@@ -59,6 +59,7 @@ import {
   type ApiError,
   type AuditLog,
   type GuestUploadConfig,
+  type LogLevel,
   type ManualWorkItem,
   type Order,
   type Paste,
@@ -270,6 +271,7 @@ const adminTabOptions: Array<{ value: AdminTab; labelKey: string }> = [
   { value: "services", labelKey: "adminTabServices" },
   { value: "queues", labelKey: "adminTabQueues" },
 ];
+const logLevelOptions: LogLevel[] = ["debug", "info", "warn", "error"];
 
 const clayHeroAsset = "/assets/clay-hero-ai.png";
 const clayFooterAsset = "/assets/clay-footer-ai.png";
@@ -991,6 +993,12 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     adminTabQueues: "Queues & audit",
     adminControlPanel: "Control panel",
     runtimeConfig: "Runtime config",
+    processLogs: "Process logs",
+    logLevel: "Log level",
+    logLevelDebug: "Debug",
+    logLevelInfo: "Info",
+    logLevelWarn: "Warn",
+    logLevelError: "Error",
     resourcePanel: "Resources",
     planCatalog: "Plans and prices",
     providerStatus: "Provider status",
@@ -1314,6 +1322,12 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     adminTabQueues: "队列/审计",
     adminControlPanel: "控制面板",
     runtimeConfig: "运行配置",
+    processLogs: "进程日志",
+    logLevel: "日志等级",
+    logLevelDebug: "Debug",
+    logLevelInfo: "Info",
+    logLevelWarn: "Warn",
+    logLevelError: "Error",
     resourcePanel: "资源面板",
     planCatalog: "套餐和价格",
     providerStatus: "服务配置状态",
@@ -1620,6 +1634,12 @@ const copy: Record<Locale, Record<string, string>> = {
     auditQueuesCleanup: "稽核、佇列、清理",
     adminControlPanel: "控制面板",
     runtimeConfig: "執行設定",
+    processLogs: "程序日誌",
+    logLevel: "日誌等級",
+    logLevelDebug: "Debug",
+    logLevelInfo: "Info",
+    logLevelWarn: "Warn",
+    logLevelError: "Error",
     resourcePanel: "資源面板",
     planCatalog: "方案和價格",
     providerStatus: "服務設定狀態",
@@ -1901,6 +1921,12 @@ const copy: Record<Locale, Record<string, string>> = {
     auditQueuesCleanup: "Auditoría, colas y limpieza",
     adminControlPanel: "Panel de control",
     runtimeConfig: "Configuración runtime",
+    processLogs: "Logs del proceso",
+    logLevel: "Nivel de log",
+    logLevelDebug: "Debug",
+    logLevelInfo: "Info",
+    logLevelWarn: "Warn",
+    logLevelError: "Error",
     resourcePanel: "Recursos",
     planCatalog: "Planes y precios",
     providerStatus: "Estado de proveedores",
@@ -3713,6 +3739,19 @@ function App() {
     });
   }
 
+  function updateRuntimeLogLevel(logLevel: LogLevel) {
+    setAdminData((previous) => {
+      if (!previous.runtimeConfig) return previous;
+      return {
+        ...previous,
+        runtimeConfig: {
+          ...previous.runtimeConfig,
+          logLevel,
+        },
+      };
+    });
+  }
+
   function adminSizeUnitFor(key: string, valueBytes: number): SizeUnit {
     return adminSizeUnits[key] ?? preferredSizeUnit(valueBytes);
   }
@@ -3770,6 +3809,7 @@ function App() {
     const updated = await run(
       () =>
         client.adminUpdateRuntimeConfig({
+          logLevel: cfg.logLevel,
           guestUploads: cfg.guestUploads,
           registration: cfg.registration,
           rateLimits: cfg.rateLimits,
@@ -4798,6 +4838,37 @@ function App() {
                               )
                             }
                           />
+                        </div>
+                      </article>
+                    ) : null}
+                    {adminTab === "services" ? (
+                      <article className="list-card">
+                        <strong>{t("processLogs")}</strong>
+                        <div className="form-grid">
+                          <label className="field-row">
+                            <span>{t("logLevel")}</span>
+                            <select
+                              value={
+                                adminData.runtimeConfig?.logLevel ?? "info"
+                              }
+                              onChange={(event) =>
+                                updateRuntimeLogLevel(
+                                  event.target.value as LogLevel,
+                                )
+                              }
+                            >
+                              {logLevelOptions.map((level) => (
+                                <option key={level} value={level}>
+                                  {t(
+                                    `logLevel${
+                                      level.charAt(0).toUpperCase() +
+                                      level.slice(1)
+                                    }`,
+                                  )}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
                         </div>
                       </article>
                     ) : null}

@@ -128,13 +128,16 @@ func (r *Runner) RunOnce(ctx context.Context) (Summary, error) {
 	if err != nil {
 		return Summary{}, fmt.Errorf("list runnable jobs: %w", err)
 	}
+	r.cfg.Logger.Debug("worker jobs polled", "count", len(jobs), "batch_size", r.cfg.BatchSize)
 
 	summary := Summary{Seen: len(jobs)}
 	for _, job := range jobs {
+		r.cfg.Logger.Debug("worker job started", "kind", job.Kind, "attempts", job.Attempts)
 		if err := r.handleJob(ctx, job); err != nil {
 			if updateErr := r.markJobFailedOrRetry(ctx, job, err); updateErr != nil {
 				return summary, updateErr
 			}
+			r.cfg.Logger.Debug("worker job retry scheduled", "kind", job.Kind, "attempts", job.Attempts+1)
 			if job.Attempts+1 >= r.cfg.MaxAttempts {
 				summary.Failed++
 			} else {
@@ -145,6 +148,7 @@ func (r *Runner) RunOnce(ctx context.Context) (Summary, error) {
 		if err := r.markJobCompleted(ctx, job); err != nil {
 			return summary, err
 		}
+		r.cfg.Logger.Debug("worker job completed", "kind", job.Kind, "attempts", job.Attempts+1)
 		summary.Completed++
 	}
 	if r.mails == nil || r.mailSender == nil {
@@ -159,12 +163,15 @@ func (r *Runner) RunOnce(ctx context.Context) (Summary, error) {
 	if err != nil {
 		return summary, fmt.Errorf("list runnable mail: %w", err)
 	}
+	r.cfg.Logger.Debug("worker mail polled", "count", len(mails), "batch_size", r.cfg.BatchSize)
 	summary.MailSeen = len(mails)
 	for _, mail := range mails {
+		r.cfg.Logger.Debug("worker mail started", "attempts", mail.Attempts)
 		if err := r.mailSender.Send(ctx, mail.To, mail.Subject, mail.Body); err != nil {
 			if updateErr := r.markMailFailedOrRetry(ctx, mail, err); updateErr != nil {
 				return summary, updateErr
 			}
+			r.cfg.Logger.Debug("worker mail retry scheduled", "attempts", mail.Attempts+1)
 			if mail.Attempts+1 >= r.cfg.MaxAttempts {
 				summary.MailFailed++
 			} else {
@@ -175,6 +182,7 @@ func (r *Runner) RunOnce(ctx context.Context) (Summary, error) {
 		if err := r.markMailSent(ctx, mail); err != nil {
 			return summary, err
 		}
+		r.cfg.Logger.Debug("worker mail sent", "attempts", mail.Attempts+1)
 		summary.MailSent++
 	}
 	if summary.Seen > 0 || summary.MailSeen > 0 {

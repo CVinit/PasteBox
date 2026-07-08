@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"log/slog"
 	"net"
 	"strings"
 	"testing"
@@ -88,6 +89,24 @@ func TestHTTPServerTimeoutAllowsStreamingByDefault(t *testing.T) {
 	}
 	if got := httpServerTimeout(45); got != 45*time.Second {
 		t.Fatalf("expected configured timeout in seconds, got %s", got)
+	}
+}
+
+func TestApplyRuntimeLogLevel(t *testing.T) {
+	levelVar := newLogLevelVar(slog.LevelInfo)
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+
+	applyRuntimeLogLevel("DEBUG", levelVar, logger)
+	if got := levelVar.Level(); got != slog.LevelDebug {
+		t.Fatalf("expected debug level, got %s", got)
+	}
+	applyRuntimeLogLevel("trace", levelVar, logger)
+	if got := levelVar.Level(); got != slog.LevelDebug {
+		t.Fatalf("invalid level should leave current level unchanged, got %s", got)
+	}
+	applyRuntimeLogLevel("warn", levelVar, logger)
+	if got := levelVar.Level(); got != slog.LevelWarn {
+		t.Fatalf("expected warn level, got %s", got)
 	}
 }
 

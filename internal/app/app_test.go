@@ -1949,6 +1949,33 @@ func TestGuestUploadsRespectRuntimeConfigAndTurnstile(t *testing.T) {
 	}
 }
 
+func TestRuntimeConfigLogLevelPatchAndHook(t *testing.T) {
+	now := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	admin := seedAdminTestUser(t, svc, "log-level-admin@example.com")
+	observed := []string{}
+	svc.SetRuntimeConfigChangeHook(func(cfg RuntimeConfig) {
+		observed = append(observed, cfg.LogLevel)
+	})
+	if len(observed) != 1 || observed[0] != RuntimeLogLevelInfo {
+		t.Fatalf("expected initial info log level hook, got %#v", observed)
+	}
+
+	cfg, err := svc.AdminUpdateRuntimeConfig(admin.ID, RuntimeConfigPatch{LogLevel: ptr("DEBUG")})
+	if err != nil {
+		t.Fatalf("set debug log level: %v", err)
+	}
+	if cfg.LogLevel != RuntimeLogLevelDebug {
+		t.Fatalf("expected debug log level, got %#v", cfg.LogLevel)
+	}
+	if len(observed) != 2 || observed[1] != RuntimeLogLevelDebug {
+		t.Fatalf("expected hook to observe debug log level, got %#v", observed)
+	}
+	if _, err := svc.AdminUpdateRuntimeConfig(admin.ID, RuntimeConfigPatch{LogLevel: ptr("trace")}); !hasAppCode(err, "invalid_log_level") {
+		t.Fatalf("expected invalid_log_level, got %v", err)
+	}
+}
+
 func TestTurnstileVerifierSiteverifyResponses(t *testing.T) {
 	successServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]string

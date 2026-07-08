@@ -1238,10 +1238,21 @@ func TestAdminRuntimeGuestRedemptionAndAlertHTTPContracts(t *testing.T) {
 	login := admin.json(http.MethodPost, "/api/v1/auth/login", `{"email":"runtime-admin@example.com","password":"password123"}`)
 	assertStatus(t, login, http.StatusOK)
 
-	updateRuntime := admin.json(http.MethodPatch, "/api/v1/admin/runtime-config", `{"guestUploads":{"enabled":true,"requireTurnstile":false},"alerts":{"enabled":true,"telegramEnabled":true,"cooldownSeconds":60,"cpuPercentThreshold":90,"memoryPercentThreshold":90,"diskPercentThreshold":90,"scanFailureDepthThreshold":10,"failedJobDepthThreshold":10,"mailFailedDepthThreshold":10,"reportsOpenThreshold":10}}`)
+	invalidLogLevel := admin.json(http.MethodPatch, "/api/v1/admin/runtime-config", `{"logLevel":"trace"}`)
+	assertStatus(t, invalidLogLevel, http.StatusBadRequest)
+	var invalidLogLevelErr map[string]string
+	decodeResponse(t, invalidLogLevel, &invalidLogLevelErr)
+	if invalidLogLevelErr["error"] != "invalid_log_level" {
+		t.Fatalf("expected invalid_log_level, got %#v", invalidLogLevelErr)
+	}
+
+	updateRuntime := admin.json(http.MethodPatch, "/api/v1/admin/runtime-config", `{"logLevel":"debug","guestUploads":{"enabled":true,"requireTurnstile":false},"alerts":{"enabled":true,"telegramEnabled":true,"cooldownSeconds":60,"cpuPercentThreshold":90,"memoryPercentThreshold":90,"diskPercentThreshold":90,"scanFailureDepthThreshold":10,"failedJobDepthThreshold":10,"mailFailedDepthThreshold":10,"reportsOpenThreshold":10}}`)
 	assertStatus(t, updateRuntime, http.StatusOK)
 	var runtimeCfg app.RuntimeConfig
 	decodeResponse(t, updateRuntime, &runtimeCfg)
+	if runtimeCfg.LogLevel != "debug" {
+		t.Fatalf("expected debug log level, got %#v", runtimeCfg.LogLevel)
+	}
 	if !runtimeCfg.GuestUploads.Enabled || runtimeCfg.GuestUploads.RequireTurnstile {
 		t.Fatalf("expected guest uploads enabled without turnstile, got %#v", runtimeCfg.GuestUploads)
 	}

@@ -553,6 +553,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setSessionCookie(w, r, result.SessionID, result.ExpiresAt)
+	s.logger.Debug("user registered", "user_id", result.User.ID, "plan_id", result.User.PlanID, "email_verified", result.User.EmailVerified)
 	writeJSON(w, http.StatusCreated, result)
 }
 
@@ -583,6 +584,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setSessionCookie(w, r, result.SessionID, result.ExpiresAt)
+	s.logger.Debug("user logged in", "user_id", result.User.ID, "plan_id", result.User.PlanID, "role", result.User.Role)
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -992,6 +994,7 @@ func (s *Server) createPaste(w http.ResponseWriter, r *http.Request) {
 	if s.handleErr(w, err) {
 		return
 	}
+	s.logger.Debug("paste created", "user_id", user.ID, "paste_id", paste.ID, "text_bytes", len([]byte(req.Text)), "tag_count", len(paste.Tags), "attachment_count", len(paste.Attachments))
 	writeJSON(w, http.StatusCreated, paste)
 }
 
@@ -1019,6 +1022,7 @@ func (s *Server) createGuestPaste(w http.ResponseWriter, r *http.Request) {
 	if s.handleErr(w, err) {
 		return
 	}
+	s.logger.Debug("guest paste created", "paste_id", paste.ID, "text_bytes", len([]byte(req.Text)), "tag_count", len(paste.Tags), "attachment_count", len(paste.Attachments))
 	writeJSON(w, http.StatusCreated, map[string]any{"guestToken": token, "paste": paste})
 }
 
@@ -1054,6 +1058,7 @@ func (s *Server) updatePaste(w http.ResponseWriter, r *http.Request) {
 	if s.handleErr(w, err) {
 		return
 	}
+	s.logger.Debug("paste updated", "user_id", user.ID, "paste_id", paste.ID, "text_changed", req.Text != nil, "tag_count", len(paste.Tags), "attachment_count", len(paste.Attachments))
 	writeJSON(w, http.StatusOK, paste)
 }
 
@@ -1103,6 +1108,7 @@ func (s *Server) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 	if s.handleErr(w, err) {
 		return
 	}
+	s.logger.Debug("attachment uploaded", "user_id", user.ID, "paste_id", attachment.PasteID, "attachment_id", attachment.ID, "size", attachment.Size, "content_type", attachment.ContentType)
 	writeJSON(w, http.StatusCreated, attachment)
 }
 
@@ -1126,6 +1132,7 @@ func (s *Server) uploadGuestAttachment(w http.ResponseWriter, r *http.Request) {
 	if s.handleErr(w, err) {
 		return
 	}
+	s.logger.Debug("guest attachment uploaded", "paste_id", attachment.PasteID, "attachment_id", attachment.ID, "size", attachment.Size, "content_type", attachment.ContentType)
 	writeJSON(w, http.StatusCreated, attachment)
 }
 
@@ -1166,6 +1173,7 @@ func (s *Server) downloadAttachment(w http.ResponseWriter, r *http.Request) {
 	if s.handleErr(w, err) {
 		return
 	}
+	s.logger.Debug("attachment download opened", "user_id", user.ID, "attachment_id", download.Attachment.ID, "size", download.Size, "content_type", download.Attachment.ContentType)
 	s.writeDownloadStream(w, download)
 }
 
@@ -1194,6 +1202,7 @@ func (s *Server) createShare(w http.ResponseWriter, r *http.Request) {
 	if s.handleErr(w, err) {
 		return
 	}
+	s.logger.Debug("share created", "user_id", user.ID, "paste_id", share.PasteID, "share_id", share.ID, "login_required", share.LoginRequired, "has_password", share.HasPassword)
 	writeJSON(w, http.StatusCreated, share)
 }
 
@@ -1237,6 +1246,7 @@ func (s *Server) accessShare(w http.ResponseWriter, r *http.Request) {
 		grantViewerID = viewerID
 	}
 	s.setShareAccessCookie(w, r, chi.URLParam(r, "token"), grantViewerID)
+	s.logger.Debug("share access granted", "share_id", share.ID, "paste_id", share.PasteID, "viewer_authenticated", viewerID != "", "login_required", share.LoginRequired, "has_password", share.HasPassword)
 	writeJSON(w, http.StatusOK, map[string]any{"paste": paste, "share": share})
 }
 
@@ -1251,6 +1261,7 @@ func (s *Server) downloadSharedAttachment(w http.ResponseWriter, r *http.Request
 	if s.handleErr(w, err) {
 		return
 	}
+	s.logger.Debug("shared attachment download opened", "attachment_id", download.Attachment.ID, "share_token_route", "/api/v1/shares/{token}/attachments/{attachmentID}/download", "viewer_authenticated", viewerID != "", "size", download.Size)
 	s.writeDownloadStream(w, download)
 }
 
@@ -1369,6 +1380,7 @@ func (s *Server) adminUpdateRuntimeConfig(w http.ResponseWriter, r *http.Request
 	if s.handleErr(w, err) {
 		return
 	}
+	s.logger.Debug("runtime config updated", "actor_id", user.ID, "log_level", cfg.LogLevel, "guest_uploads_enabled", cfg.GuestUploads.Enabled, "rate_limits_enabled", cfg.RateLimits.Enabled, "alerts_enabled", cfg.Alerts.Enabled)
 	writeJSON(w, http.StatusOK, cfg)
 }
 

@@ -34,7 +34,8 @@ func TestRuntimeControlStoresPersistConfigRedemptionsAndAlerts(t *testing.T) {
 	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
 	runtimeStore := NewRuntimeConfigStore(pool)
 	cfg := app.RuntimeConfig{
-		ID: "default",
+		ID:       "default",
+		LogLevel: app.RuntimeLogLevelDebug,
 		GuestUploads: app.GuestUploadConfig{
 			Enabled:            true,
 			RequireTurnstile:   true,
@@ -63,7 +64,7 @@ func TestRuntimeControlStoresPersistConfigRedemptionsAndAlerts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read runtime config: %v", err)
 	}
-	if !ok || !loaded.GuestUploads.Enabled || !loaded.Alerts.TelegramEnabled {
+	if !ok || loaded.LogLevel != app.RuntimeLogLevelDebug || !loaded.GuestUploads.Enabled || !loaded.Alerts.TelegramEnabled {
 		t.Fatalf("unexpected loaded runtime config: ok=%v cfg=%#v", ok, loaded)
 	}
 

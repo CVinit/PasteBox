@@ -62,8 +62,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 func runAPI(stdout io.Writer) int {
 	cfg := config.FromEnv()
+	logLevel := newLogLevelVar(cfg.LogLevel)
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: cfg.LogLevel,
+		Level: logLevel,
 	}))
 
 	startupCtx, startupCancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -74,6 +75,9 @@ func runAPI(stdout io.Writer) int {
 		return 1
 	}
 	defer pool.Close()
+	service.SetRuntimeConfigChangeHook(func(runtimeCfg app.RuntimeConfig) {
+		applyRuntimeLogLevel(runtimeCfg.LogLevel, logLevel, logger)
+	})
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -94,6 +98,7 @@ func runAPI(stdout io.Writer) int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go runRuntimeLogLevelSyncLoop(ctx, service, logLevel, logger, 10*time.Second)
 	go runRuntimeAlertLoop(ctx, service, logger, time.Minute)
 
 	select {
@@ -119,6 +124,52 @@ func httpServerTimeout(seconds int) time.Duration {
 		return 0
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+func newLogLevelVar(level slog.Level) *slog.LevelVar {
+	var levelVar slog.LevelVar
+	levelVar.Set(level)
+	return &levelVar
+}
+
+func runtimeSlogLevel(levelName string) (slog.Level, string, bool) {
+	normalized, ok := app.NormalizeRuntimeLogLevel(levelName)
+	if !ok {
+		return slog.LevelInfo, "", false
+	}
+	switch normalized {
+	case app.RuntimeLogLevelDebug:
+		return slog.LevelDebug, normalized, true
+	case app.RuntimeLogLevelInfo:
+		return slog.LevelInfo, normalized, true
+	case app.RuntimeLogLevelWarn:
+		return slog.LevelWarn, normalized, true
+	case app.RuntimeLogLevelError:
+		return slog.LevelError, normalized, true
+	default:
+		return slog.LevelInfo, "", false
+	}
+}
+
+func applyRuntimeLogLevel(levelName string, levelVar *slog.LevelVar, logger *slog.Logger) {
+	if levelVar == nil {
+		return
+	}
+	level, normalized, ok := runtimeSlogLevel(levelName)
+	if !ok {
+		if logger != nil {
+			logger.Warn("runtime log level ignored", "level", levelName)
+		}
+		return
+	}
+	if levelVar.Level() == level {
+		return
+	}
+	oldLevel := strings.ToLower(levelVar.Level().String())
+	levelVar.Set(level)
+	if logger != nil {
+		logger.Info("runtime log level changed", "old_level", oldLevel, "new_level", normalized)
+	}
 }
 
 type objectHealthChecker interface {
@@ -302,6 +353,37 @@ func runRuntimeAlertLoop(ctx context.Context, service *app.Service, logger *slog
 			}
 		}
 	}
+}
+
+func runRuntimeLogLevelSyncLoop(ctx context.Context, service *app.Service, levelVar *slog.LevelVar, logger *slog.Logger, interval time.Duration) {
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	syncRuntimeLogLevel(ctx, service, levelVar, logger)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			syncRuntimeLogLevel(ctx, service, levelVar, logger)
+		}
+	}
+}
+
+func syncRuntimeLogLevel(ctx context.Context, service *app.Service, levelVar *slog.LevelVar, logger *slog.Logger) {
+	if service == nil {
+		return
+	}
+	cfg, err := service.RefreshRuntimeConfig(ctx)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("runtime log level sync failed", "error", err)
+		}
+		return
+	}
+	applyRuntimeLogLevel(cfg.LogLevel, levelVar, logger)
 }
 
 func runAdmin(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -984,8 +1066,9 @@ func runWorker(args []string, stdout io.Writer, stderr io.Writer) int {
 	cfg := config.FromEnv()
 	workerID := configuredWorkerID(cfg)
 	cfg = workerServiceConfig(cfg)
+	logLevel := newLogLevelVar(cfg.LogLevel)
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: cfg.LogLevel,
+		Level: logLevel,
 	}))
 
 	startupCtx, startupCancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -996,6 +1079,9 @@ func runWorker(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	defer pool.Close()
+	service.SetRuntimeConfigChangeHook(func(runtimeCfg app.RuntimeConfig) {
+		applyRuntimeLogLevel(runtimeCfg.LogLevel, logLevel, logger)
+	})
 
 	mailSender, err := mailer.NewSender(cfg, logger)
 	if err != nil {
@@ -1018,6 +1104,7 @@ func runWorker(args []string, stdout io.Writer, stderr io.Writer) int {
 	})
 
 	if *once {
+		syncRuntimeLogLevel(context.Background(), service, logLevel, logger)
 		summary, err := runner.RunOnce(context.Background())
 		if err != nil {
 			fmt.Fprintf(stderr, "worker run once failed: %v\n", err)
@@ -1031,6 +1118,7 @@ func runWorker(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go runRuntimeLogLevelSyncLoop(ctx, service, logLevel, logger, 10*time.Second)
 	if err := runner.Run(ctx); err != nil {
 		logger.Error("pastebox worker failed", "error", err)
 		return 1

@@ -22,12 +22,18 @@ import (
 )
 
 const (
+	RuntimeLogLevelDebug = "debug"
+	RuntimeLogLevelInfo  = "info"
+	RuntimeLogLevelWarn  = "warn"
+	RuntimeLogLevelError = "error"
+
 	runtimeConfigID  = "default"
 	guestEmailDomain = "guest.localhost"
 )
 
 type RuntimeConfig struct {
 	ID             string                 `json:"id"`
+	LogLevel       string                 `json:"logLevel"`
 	GuestUploads   GuestUploadConfig      `json:"guestUploads"`
 	Registration   RegistrationConfig     `json:"registration"`
 	RateLimits     RuntimeRateLimitConfig `json:"rateLimits"`
@@ -123,6 +129,7 @@ type CatalogWriter interface {
 }
 
 type RuntimeConfigPatch struct {
+	LogLevel     *string                      `json:"logLevel,omitempty"`
 	GuestUploads *GuestUploadConfigPatch      `json:"guestUploads,omitempty"`
 	Registration *RegistrationConfigPatch     `json:"registration,omitempty"`
 	RateLimits   *RuntimeRateLimitConfigPatch `json:"rateLimits,omitempty"`
@@ -372,7 +379,8 @@ func (s *TelegramSender) SendAlert(ctx context.Context, message string, silent b
 func defaultRuntimeConfig(cfg config.Config) RuntimeConfig {
 	turnstileConfigured := strings.TrimSpace(cfg.Turnstile.SiteKey) != "" && strings.TrimSpace(cfg.Turnstile.SecretKey) != ""
 	return RuntimeConfig{
-		ID: runtimeConfigID,
+		ID:       runtimeConfigID,
+		LogLevel: runtimeLogLevelFromConfig(cfg),
 		GuestUploads: GuestUploadConfig{
 			Enabled:                  true,
 			RequireTurnstile:         false,
@@ -529,6 +537,28 @@ func cloneRuntimeConfig(cfg RuntimeConfig) RuntimeConfig {
 	return cfg
 }
 
+func NormalizeRuntimeLogLevel(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case RuntimeLogLevelDebug:
+		return RuntimeLogLevelDebug, true
+	case RuntimeLogLevelInfo:
+		return RuntimeLogLevelInfo, true
+	case RuntimeLogLevelWarn, "warning":
+		return RuntimeLogLevelWarn, true
+	case RuntimeLogLevelError:
+		return RuntimeLogLevelError, true
+	default:
+		return "", false
+	}
+}
+
+func runtimeLogLevelFromConfig(cfg config.Config) string {
+	if level, ok := NormalizeRuntimeLogLevel(cfg.LogLevel.String()); ok {
+		return level
+	}
+	return RuntimeLogLevelInfo
+}
+
 func cloneProviderStatus(status ProviderStatus) ProviderStatus {
 	status.Mailer = cloneProviderConfigStatus(status.Mailer)
 	status.Google = cloneProviderConfigStatus(status.Google)
@@ -622,6 +652,39 @@ func (s *Service) loadRuntimeConfig(ctx context.Context) error {
 	return nil
 }
 
+func (s *Service) RefreshRuntimeConfig(ctx context.Context) (RuntimeConfig, error) {
+	s.mu.Lock()
+	store := s.runtime
+	current := cloneRuntimeConfig(s.runtimeConfig)
+	s.mu.Unlock()
+	if store == nil {
+		return current, nil
+	}
+
+	loaded, ok, err := store.RuntimeConfig(ctx)
+	if err != nil {
+		return RuntimeConfig{}, fmt.Errorf("refresh runtime config: %w", err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ok {
+		loaded.ProviderStatus = providerStatusFromConfig(s.cfg, providerTestStatuses(loaded.ProviderStatus))
+		s.runtimeConfig = normalizeRuntimeConfig(loaded, s.cfg)
+	}
+	return cloneRuntimeConfig(s.runtimeConfig), nil
+}
+
+func (s *Service) SetRuntimeConfigChangeHook(hook func(RuntimeConfig)) {
+	s.mu.Lock()
+	s.runtimeConfigChange = hook
+	cfg := cloneRuntimeConfig(s.runtimeConfig)
+	s.mu.Unlock()
+	if hook != nil {
+		hook(cfg)
+	}
+}
+
 func providerTestStatuses(status ProviderStatus) map[string]string {
 	return map[string]string{
 		"mailer":    status.Mailer.LastTestStatus,
@@ -637,6 +700,11 @@ func normalizeRuntimeConfig(cfg RuntimeConfig, env config.Config) RuntimeConfig 
 	base := defaultRuntimeConfig(env)
 	if strings.TrimSpace(cfg.ID) == "" {
 		cfg.ID = runtimeConfigID
+	}
+	if level, ok := NormalizeRuntimeLogLevel(cfg.LogLevel); ok {
+		cfg.LogLevel = level
+	} else {
+		cfg.LogLevel = base.LogLevel
 	}
 	if cfg.GuestUploads.RetentionSeconds <= 0 {
 		cfg.GuestUploads.RetentionSeconds = base.GuestUploads.RetentionSeconds
@@ -757,11 +825,29 @@ func (s *Service) AdminRuntimeConfig(actorID string) (RuntimeConfig, error) {
 
 func (s *Service) AdminUpdateRuntimeConfig(actorID string, patch RuntimeConfigPatch) (RuntimeConfig, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.requireAdminLocked(actorID); err != nil {
+	updated, hook, err := s.adminUpdateRuntimeConfigLocked(actorID, patch)
+	s.mu.Unlock()
+	if err != nil {
 		return RuntimeConfig{}, err
 	}
+	if hook != nil {
+		hook(updated)
+	}
+	return updated, nil
+}
+
+func (s *Service) adminUpdateRuntimeConfigLocked(actorID string, patch RuntimeConfigPatch) (RuntimeConfig, func(RuntimeConfig), error) {
+	if err := s.requireAdminLocked(actorID); err != nil {
+		return RuntimeConfig{}, nil, err
+	}
 	next := cloneRuntimeConfig(s.runtimeConfig)
+	if patch.LogLevel != nil {
+		level, ok := NormalizeRuntimeLogLevel(*patch.LogLevel)
+		if !ok {
+			return RuntimeConfig{}, nil, E(http.StatusBadRequest, "invalid_log_level", "log level must be debug, info, warn, or error")
+		}
+		next.LogLevel = level
+	}
 	if patch.GuestUploads != nil {
 		next.GuestUploads = applyGuestUploadConfigPatch(next.GuestUploads, *patch.GuestUploads)
 	}
@@ -778,12 +864,12 @@ func (s *Service) AdminUpdateRuntimeConfig(actorID string, patch RuntimeConfigPa
 	next.UpdatedAt = s.now().UTC()
 	next = normalizeRuntimeConfig(next, s.cfg)
 	if err := s.saveRuntimeConfigLocked(next); err != nil {
-		return RuntimeConfig{}, err
+		return RuntimeConfig{}, nil, err
 	}
 	if err := s.auditLocked(actorID, "admin.runtime_config_update", runtimeConfigID, runtimeConfigAuditMetadata(next)); err != nil {
-		return RuntimeConfig{}, err
+		return RuntimeConfig{}, nil, err
 	}
-	return cloneRuntimeConfig(s.runtimeConfig), nil
+	return cloneRuntimeConfig(s.runtimeConfig), s.runtimeConfigChange, nil
 }
 
 func applyGuestUploadConfigPatch(cfg GuestUploadConfig, patch GuestUploadConfigPatch) GuestUploadConfig {
@@ -921,6 +1007,7 @@ func applyAlertConfigPatch(cfg AlertConfig, patch AlertConfigPatch) AlertConfig 
 
 func runtimeConfigAuditMetadata(cfg RuntimeConfig) map[string]any {
 	return map[string]any{
+		"logLevel":                     cfg.LogLevel,
 		"guestUploadsEnabled":          cfg.GuestUploads.Enabled,
 		"guestRequireTurnstile":        cfg.GuestUploads.RequireTurnstile,
 		"registrationDomains":          cfg.Registration.AllowedDomains,
