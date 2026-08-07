@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Follow the repository frontend quality and dependency conventions before updating the lockfile."}
+{"file":".trellis/tasks/08-07-fix-github-docker-build-dependency-audit-failure/research/github-actions-audit-failure.md","reason":"Use the confirmed GitHub Actions failure and npm dependency evidence."}

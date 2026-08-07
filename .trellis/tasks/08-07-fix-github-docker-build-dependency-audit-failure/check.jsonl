@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Apply the frontend quality checks to the resolved dependency change."}
+{"file":".trellis/tasks/08-07-fix-github-docker-build-dependency-audit-failure/research/github-actions-audit-failure.md","reason":"Verify the fixed dependency versions and reproduce the CI audit gate."}
