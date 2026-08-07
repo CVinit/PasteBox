@@ -50,3 +50,12 @@ The following checks passed on 2026-08-07:
 * `npm audit --audit-level=high` with zero vulnerabilities.
 * `make test-web` including TypeScript and Vite production build.
 * `make production-readiness`, including Go tests, PostgreSQL integration tests, deployment configuration checks, project build, and local Docker image build.
+
+## Remote verification
+
+Commit `1989de2944e374af7441dd701321211a15832490` was pushed to `origin/main`.
+GitHub Actions run [`31156743159`](https://github.com/CVinit/PasteBox/actions/runs/31156743159) completed successfully on 2026-08-07:
+
+* `Run production readiness gate` passed.
+* `Build and optionally push` passed for the configured multi-platform image build.
+* The `Build and publish image` job completed with conclusion `success` in 13 minutes and 1 second.

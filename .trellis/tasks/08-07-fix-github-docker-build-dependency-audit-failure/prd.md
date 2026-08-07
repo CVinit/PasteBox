@@ -20,9 +20,9 @@
 * [x] `npm --prefix web audit --audit-level=high` 退出码为 0。
 * [x] `npm --prefix web run typecheck` 和 `npm --prefix web run build` 通过。
 * [x] `make production-readiness` 通过。
-* [ ] 提交仅包含锁文件和本任务 Trellis 材料，不包含其他工作区改动。
-* [ ] 修复提交推送到 `origin/main`。
-* [ ] 修复提交触发的 GitHub `Docker image` workflow 构建并发布镜像成功。
+* [x] 提交仅包含锁文件和本任务 Trellis 材料，不包含其他工作区改动。
+* [x] 修复提交推送到 `origin/main`。
+* [x] 修复提交触发的 GitHub `Docker image` workflow 构建并发布镜像成功。
 
 ## Definition of Done
 
