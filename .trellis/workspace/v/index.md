@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 7
-- **Last Active**: 2026-07-07
+- **Total Sessions**: 8
+- **Last Active**: 2026-08-05
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~249 | Active |
+| `journal-1.md` | ~286 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 8 | 2026-08-05 | Expand R2 and Docker deployment guide | `87a3b82` | `main` |
 | 7 | 2026-07-07 | Document S3 orchestrator R2 Docker deployment | `467cf1c` | `main` |
 | 6 | 2026-06-22 | Production blocker security review fixes | `b631f1d` | `main` |
 | 5 | 2026-06-06 | Polish localized compose form UX | `fbafc00` | `main` |

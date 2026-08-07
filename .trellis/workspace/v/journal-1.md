@@ -56,7 +56,9 @@ Implemented the PasteBox MVP, added single-image deployment support, stabilized 
 
 ### Main Changes
 
-(Add details)
+- Expanded the Chinese guide from a concise reference into a from-zero deployment tutorial.
+- Documented Cloudflare R2 bucket and credential setup, isolated S3Orchestrator and PasteBox Compose projects, same-host Nginx routing, GHCR image pinning, validation, backup, rotation, upgrade, and rollback.
+- Added deployment research and acceptance evidence under the archived Trellis task.
 
 ### Git Commits
 
@@ -70,7 +72,10 @@ Implemented the PasteBox MVP, added single-image deployment support, stabilized 
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] S3Orchestrator Compose rendered successfully with placeholder credentials.
+- [OK] PasteBox production Compose and the documented host-Nginx override rendered successfully together.
+- [OK] Upstream S3Orchestrator `v0.62.28` accepted the documented configuration via `validate -config`.
+- [OK] Markdown fence balance, stale-path scan, secret-pattern scan, and `git diff --check` passed.
 
 ### Status
 
@@ -239,6 +244,39 @@ Added Chinese Docker deployment guide for s3-orchestrator aggregating multiple C
 | Hash | Message |
 |------|---------|
 | `467cf1c` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 8: Expand R2 and Docker deployment guide
+
+**Date**: 2026-08-05
+**Task**: Expand R2 and Docker deployment guide
+**Branch**: `main`
+
+### Summary
+
+Expanded the Chinese deployment guide for Cloudflare R2, S3Orchestrator, PasteBox GHCR images, same-host Nginx routing, verification, backup, and rollback; validated both Compose configurations and the upstream S3Orchestrator config.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `87a3b82` | (see git log) |
 
 ### Testing
 
