@@ -289,3 +289,42 @@ Expanded the Chinese deployment guide for Cloudflare R2, S3Orchestrator, PasteBo
 ### Next Steps
 
 - None - task complete
+
+
+## Session 9: 修复 GitHub Docker 镜像自动构建
+
+**Date**: 2026-08-07
+**Task**: 修复 GitHub Docker 镜像自动构建
+**Branch**: `main`
+
+### Summary
+
+定位 npm 安全公告导致的生产门禁失败，更新前端锁文件，完成本地生产就绪验证，并确认 GitHub Actions 多架构镜像构建及 GHCR 推送成功。
+
+### Main Changes
+
+- Confirmed two failed Docker image runs stopped at `npm audit --audit-level=high` because the existing lockfile resolved newly vulnerable `postcss` and `esbuild` versions.
+- Refreshed only `web/package-lock.json`, resolving `postcss@8.5.26`, `nanoid@3.3.17`, and `esbuild@0.27.2` without weakening the audit gate or upgrading application dependencies.
+- Recorded the successful GitHub Actions run and archived the completed Trellis task.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1989de2` | fix: refresh audited frontend dependencies |
+| `dbabf79` | chore(task): record Docker build verification |
+
+### Testing
+
+- [OK] Clean `npm ci` and `npm audit --audit-level=high` reported zero vulnerabilities.
+- [OK] `make test-web` passed TypeScript type checking and the Vite production build.
+- [OK] `make production-readiness` passed all application, deployment, integration, and local image build checks.
+- [OK] GitHub Actions run `31156743159` built and published the multi-platform image successfully.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
