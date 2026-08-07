@@ -328,3 +328,42 @@ Expanded the Chinese deployment guide for Cloudflare R2, S3Orchestrator, PasteBo
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: 升级 GitHub Actions Node.js 24 运行时
+
+**Date**: 2026-08-07
+**Task**: 升级 GitHub Actions Node.js 24 运行时
+**Branch**: `main`
+
+### Summary
+
+升级 Docker 镜像 workflow 的 GitHub 与 Docker Action 主版本，消除 Node.js 20 弃用警告，并完成本地生产门禁和远端多架构镜像发布验证。
+
+### Main Changes
+
+- Upgraded seven GitHub and Docker Action references to their current Node.js 24-compatible major versions while preserving every workflow input and trigger.
+- Added an executable CI runtime migration contract to the backend quality spec, including validation, remote verification, and the insecure-runtime opt-out prohibition.
+- Confirmed the hosted workflow completed without any Node.js 20 deprecation warning and published the multi-platform GHCR image.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f658c9e` | ci: upgrade actions to Node 24 runtimes |
+| `c6b99c3` | chore(task): record Node 24 workflow verification |
+
+### Testing
+
+- [OK] Workflow YAML parsing and `git diff --check` passed; no stale Action versions remained.
+- [OK] `make production-readiness` passed all tests, audits, integration checks, builds, and the local image build.
+- [OK] GitHub Actions run `31159123249` completed successfully and published the multi-platform image.
+- [OK] Full remote logs contained no Node.js 20 or deprecation warning matches.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
