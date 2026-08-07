@@ -59,3 +59,14 @@ GitHub 官方公告说明：
 
 * <https://github.com/actions/setup-node/blob/main/README.md>
 * <https://github.com/docker/metadata-action/releases/tag/v6.0.0>
+
+## Remote verification
+
+Commit `f658c9e519b5b4a147b535b65eced2a7bf3186d0` was pushed to `origin/main`.
+GitHub Actions run [`31159123249`](https://github.com/CVinit/PasteBox/actions/runs/31159123249) completed successfully on 2026-08-07:
+
+* All seven upgraded Action setup steps completed successfully.
+* `Run production readiness gate` passed.
+* `Build and optionally push` passed for the configured multi-platform image.
+* The complete `Build and publish image` job finished with conclusion `success` in 1 minute and 59 seconds.
+* A full run-log search returned no matches for `Node.js 20`, `node20`, `deprecated`, or `deprecation`.

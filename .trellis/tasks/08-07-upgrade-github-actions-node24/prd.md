@@ -25,9 +25,9 @@
 * [x] 版本升级以外的 workflow 内容没有变化。
 * [x] workflow YAML 可解析；若本机有 `actionlint`，其检查通过。
 * [x] `make production-readiness` 通过。
-* [ ] 只提交 workflow 和本任务 Trellis 材料，不包含其他工作区改动。
-* [ ] 提交推送到 `origin/main`。
-* [ ] 最新提交触发的 `Docker image` workflow 完整成功，且不再出现 Node.js 20 弃用警告。
+* [x] 只提交 workflow 和本任务 Trellis 材料，不包含其他工作区改动。
+* [x] 提交推送到 `origin/main`。
+* [x] 最新提交触发的 `Docker image` workflow 完整成功，且不再出现 Node.js 20 弃用警告。
 
 ## Definition of Done
 
