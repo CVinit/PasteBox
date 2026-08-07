@@ -1759,6 +1759,77 @@ validateEvidenceConsistency(checklist, releaseNotes);
 validateChecklistPathReference(options.checklist, releaseNotes);
 ```
 
+## Scenario: GitHub Actions JavaScript Runtime Migration
+
+### 1. Scope / Trigger
+
+- Trigger: Any change prompted by a GitHub-hosted runner deprecation warning,
+  an Action's bundled Node.js runtime reaching end of life, or a major-version
+  upgrade in `.github/workflows/`.
+
+### 2. Signatures
+
+- Workflow: `.github/workflows/docker-image.yml`
+- Action reference: `uses: <owner>/<action>@<supported-major>`
+- Local release gate: `make production-readiness`
+
+### 3. Contracts
+
+- Resolve supported major versions from each Action's official repository or
+  release notes at implementation time; do not preserve stale version numbers
+  in this spec.
+- Keep workflow triggers, permissions, conditions, inputs, image tags,
+  platforms, and cache settings unchanged unless the major-version release
+  notes require a reviewed migration.
+- Do not use `ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION` to extend an end-of-life
+  runtime. Upgrade the affected Actions instead.
+- A GitHub-hosted run is the final compatibility check because local project
+  tests cannot execute the hosted Action bundles or publish to GHCR.
+
+### 4. Validation & Error Matrix
+
+- Old runtime warning remains in the latest run -> migration is incomplete.
+- YAML or `actionlint` failure -> reject the workflow change before push.
+- Production readiness failure -> fix the project regression before push.
+- Hosted image build or GHCR push failure -> inspect the upgraded Action step;
+  do not mark the migration complete.
+
+### 5. Good/Base/Bad Cases
+
+- Good: Every warned Action is upgraded from official release guidance,
+  `make production-readiness` passes, and the hosted multi-platform publish
+  completes without the runtime warning.
+- Base: An Action already uses the current supported major and remains
+  unchanged.
+- Bad: Set an insecure-runtime opt-out flag or remove the warning from logs
+  without upgrading the Action references.
+
+### 6. Tests Required
+
+- Search all `.github/workflows/` files for every affected Action before and
+  after editing so no stale occurrence remains.
+- Parse the workflow YAML and run `actionlint` when it is available.
+- Run `make production-readiness`.
+- Push the isolated workflow change, then require the latest `Docker image`
+  workflow to pass its readiness, multi-platform build, and GHCR push steps
+  without the original runtime warning.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```yaml
+env:
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: "true"
+```
+
+#### Correct
+
+```yaml
+steps:
+  - uses: actions/checkout@<current-supported-major>
+```
+
 ---
 
 ## Testing Requirements
