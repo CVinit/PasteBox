@@ -12,6 +12,7 @@ import (
 	"net/smtp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"pastebox/internal/config"
@@ -19,6 +20,37 @@ import (
 
 type Sender interface {
 	Send(ctx context.Context, to string, subject string, body string) error
+}
+
+type DynamicSender struct {
+	mu     sync.RWMutex
+	sender Sender
+	logger *slog.Logger
+}
+
+func NewDynamicSender(logger *slog.Logger) *DynamicSender {
+	return &DynamicSender{sender: LogSender{Logger: logger}, logger: logger}
+}
+
+func (s *DynamicSender) Update(cfg config.Config) error {
+	next, err := NewSender(cfg, s.logger)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.sender = next
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *DynamicSender) Send(ctx context.Context, to string, subject string, body string) error {
+	s.mu.RLock()
+	sender := s.sender
+	s.mu.RUnlock()
+	if sender == nil {
+		return fmt.Errorf("mailer is not configured")
+	}
+	return sender.Send(ctx, to, subject, body)
 }
 
 type LogSender struct {

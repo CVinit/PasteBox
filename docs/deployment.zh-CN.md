@@ -88,9 +88,6 @@ cp compose.deploy.yaml compose.yaml
 
 ```sh
 PASTEBOX_IMAGE=ghcr.io/cvinit/pastebox:sha-<commit>
-PASTEBOX_PUBLIC_URL=http://localhost:8080
-PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=<long-random-password>
 ```
 
 启动：
@@ -105,8 +102,9 @@ docker compose logs -f pastebox
 
 ```sh
 PASTEBOX_HTTP_PORT=18080
-PASTEBOX_PUBLIC_URL=http://localhost:18080
 ```
+
+修改端口后，到 **管理后台 > 应用配置** 同步修改公网地址和 CORS origin。
 
 然后访问 `http://localhost:18080`。演示 Compose 默认启动本地 ClamAV 和
 Mailpit，并在 development 模式下启用 `PASTEBOX_DEV_AUTH_TOKENS=true`，便于浏览器测试直接完成邮箱验证且不依赖外部邮箱；不要把该设置带入真实生产环境。
@@ -117,9 +115,9 @@ Mailpit 的浏览器收件箱默认暴露在 `http://localhost:18025`。如果�
 PASTEBOX_MAILPIT_HTTP_PORT=18026
 ```
 
-如果通过自己的 HTTPS 反向代理做演示，把 `PASTEBOX_PUBLIC_URL` 设置为
-`https://pastebox.example.com`，并把 `X-Forwarded-Proto: https` 转发给
-`pastebox` 服务。
+如果通过自己的 HTTPS 反向代理做演示，在 **管理后台 > 应用配置** 中把公网
+地址设置为 `https://pastebox.example.com`，并把 `X-Forwarded-Proto: https`
+转发给 `pastebox` 服务。
 
 本机验证：
 
@@ -192,21 +190,26 @@ server {
 
 ```yaml
 PASTEBOX_APP_ENV: development
-PASTEBOX_PUBLIC_URL: http://localhost:8080
 ```
+
+公网 URL 在 **管理后台 > 应用配置** 中设置。
 
 真实生产环境仍应使用 HTTPS，并保留上方 `X-Forwarded-Proto: https` 代理头。
 
-## 管理员账号
+## 管理员账号和应用配置
 
-演示部署会在进程启动时根据以下环境变量创建或更新管理员账号：
+显式创建或重置管理员账号：
 
 ```sh
-PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=<long-random-password>
+docker compose run --rm pastebox admin create \
+  --email admin@example.com \
+  --password '<long-random-password>'
 ```
 
-管理员账号保存在 PostgreSQL 中，演示栈正常重启后会保留。
+管理员账号保存在 PostgreSQL 中，演示栈正常重启后会保留。登录后到
+**管理后台 > 应用配置** 填写公网地址、本地 MinIO（endpoint 为
+`http://minio:9000`、bucket 为 `pastebox`、access key 为 `pastebox`、secret
+key 为 `pastebox-secret`）、Mailpit SMTP、ClamAV、OAuth 等配置。
 
 ## 升级
 

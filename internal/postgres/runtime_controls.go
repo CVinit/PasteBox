@@ -13,36 +13,46 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"pastebox/internal/app"
+	"pastebox/internal/config"
+	"pastebox/internal/configcrypto"
 )
 
 type RuntimeConfigStore struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	cipher *configcrypto.Cipher
 }
 
-func NewRuntimeConfigStore(pool *pgxpool.Pool) *RuntimeConfigStore {
-	return &RuntimeConfigStore{pool: pool}
+func NewRuntimeConfigStore(pool *pgxpool.Pool, cipher *configcrypto.Cipher) *RuntimeConfigStore {
+	return &RuntimeConfigStore{pool: pool, cipher: cipher}
 }
 
-func (s *RuntimeConfigStore) RuntimeConfig(ctx context.Context) (app.RuntimeConfig, bool, error) {
+func (s *RuntimeConfigStore) RuntimeConfig(ctx context.Context) (app.RuntimeConfig, config.ManagedSecrets, bool, error) {
 	var raw []byte
 	if err := s.pool.QueryRow(ctx, `
 SELECT config
 FROM system_configs
 WHERE id = $1
-`, "default").Scan(&raw); err != nil {
+	`, "default").Scan(&raw); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return app.RuntimeConfig{}, false, nil
+			return app.RuntimeConfig{}, config.ManagedSecrets{}, false, nil
 		}
-		return app.RuntimeConfig{}, false, fmt.Errorf("read runtime config: %w", err)
+		return app.RuntimeConfig{}, config.ManagedSecrets{}, false, fmt.Errorf("read runtime config: %w", err)
 	}
 	var cfg app.RuntimeConfig
 	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return app.RuntimeConfig{}, false, fmt.Errorf("decode runtime config: %w", err)
+		return app.RuntimeConfig{}, config.ManagedSecrets{}, false, fmt.Errorf("decode runtime config: %w", err)
 	}
-	return cfg, true, nil
+	secrets, err := s.loadManagedSecrets(ctx, "default")
+	if err != nil {
+		return app.RuntimeConfig{}, config.ManagedSecrets{}, false, err
+	}
+	return cfg, secrets, true, nil
 }
 
-func (s *RuntimeConfigStore) SaveRuntimeConfig(ctx context.Context, cfg app.RuntimeConfig) error {
+func (s *RuntimeConfigStore) SaveRuntimeConfig(ctx context.Context, cfg app.RuntimeConfig, secrets config.ManagedSecrets) error {
+	if s.cipher == nil {
+		return fmt.Errorf("save runtime config: config cipher is not initialized")
+	}
 	raw, err := json.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("encode runtime config: %w", err)
@@ -51,7 +61,12 @@ func (s *RuntimeConfigStore) SaveRuntimeConfig(ctx context.Context, cfg app.Runt
 	if updatedAt.IsZero() {
 		updatedAt = time.Now().UTC()
 	}
-	if _, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin runtime config save: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
 INSERT INTO system_configs (id, config, created_at, updated_at)
 VALUES ($1, $2, $3, $3)
 ON CONFLICT (id) DO UPDATE SET
@@ -60,7 +75,98 @@ ON CONFLICT (id) DO UPDATE SET
 `, "default", string(raw), updatedAt); err != nil {
 		return fmt.Errorf("save runtime config: %w", err)
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM system_config_secrets WHERE config_id = $1`, "default"); err != nil {
+		return fmt.Errorf("clear runtime config secrets: %w", err)
+	}
+	for name, plaintext := range managedSecretValues(secrets) {
+		if plaintext == "" {
+			continue
+		}
+		encrypted, err := s.cipher.Encrypt(name, plaintext)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+INSERT INTO system_config_secrets (config_id, name, version, nonce, ciphertext, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+`, "default", name, encrypted.Version, encrypted.Nonce, encrypted.Ciphertext, updatedAt); err != nil {
+			return fmt.Errorf("save runtime config secret %q: %w", name, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit runtime config: %w", err)
+	}
 	return nil
+}
+
+func (s *RuntimeConfigStore) loadManagedSecrets(ctx context.Context, configID string) (config.ManagedSecrets, error) {
+	if s.cipher == nil {
+		return config.ManagedSecrets{}, fmt.Errorf("load runtime config secrets: config cipher is not initialized")
+	}
+	rows, err := s.pool.Query(ctx, `
+SELECT name, version, nonce, ciphertext
+FROM system_config_secrets
+WHERE config_id = $1
+ORDER BY name
+`, configID)
+	if err != nil {
+		return config.ManagedSecrets{}, fmt.Errorf("read runtime config secrets: %w", err)
+	}
+	defer rows.Close()
+	secrets := config.ManagedSecrets{}
+	for rows.Next() {
+		var name string
+		var encrypted configcrypto.EncryptedValue
+		if err := rows.Scan(&name, &encrypted.Version, &encrypted.Nonce, &encrypted.Ciphertext); err != nil {
+			return config.ManagedSecrets{}, fmt.Errorf("scan runtime config secret: %w", err)
+		}
+		plaintext, err := s.cipher.Decrypt(name, encrypted)
+		if err != nil {
+			return config.ManagedSecrets{}, err
+		}
+		setManagedSecret(&secrets, name, plaintext)
+	}
+	if err := rows.Err(); err != nil {
+		return config.ManagedSecrets{}, fmt.Errorf("read runtime config secrets: %w", err)
+	}
+	return secrets, nil
+}
+
+func managedSecretValues(secrets config.ManagedSecrets) map[string]string {
+	return map[string]string{
+		"s3.access_key":         secrets.S3AccessKey,
+		"s3.secret_key":         secrets.S3SecretKey,
+		"google.client_secret":  secrets.GoogleClientSecret,
+		"github.client_secret":  secrets.GitHubClientSecret,
+		"turnstile.secret_key":  secrets.TurnstileSecretKey,
+		"telegram.bot_token":    secrets.TelegramBotToken,
+		"smtp.password":         secrets.SMTPPassword,
+		"stripe.webhook_secret": secrets.StripeWebhookSecret,
+		"epusdt.secret_key":     secrets.EpusdtSecretKey,
+	}
+}
+
+func setManagedSecret(secrets *config.ManagedSecrets, name string, value string) {
+	switch name {
+	case "s3.access_key":
+		secrets.S3AccessKey = value
+	case "s3.secret_key":
+		secrets.S3SecretKey = value
+	case "google.client_secret":
+		secrets.GoogleClientSecret = value
+	case "github.client_secret":
+		secrets.GitHubClientSecret = value
+	case "turnstile.secret_key":
+		secrets.TurnstileSecretKey = value
+	case "telegram.bot_token":
+		secrets.TelegramBotToken = value
+	case "smtp.password":
+		secrets.SMTPPassword = value
+	case "stripe.webhook_secret":
+		secrets.StripeWebhookSecret = value
+	case "epusdt.secret_key":
+		secrets.EpusdtSecretKey = value
+	}
 }
 
 type RedemptionStore struct {

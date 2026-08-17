@@ -138,6 +138,13 @@ TypeScript strict, and build with Vite.
 - Admin sections must use explicit semantic classes for grid span decisions;
   do not rely on `section:nth-child(...)` because adding or reordering admin
   sections silently breaks layout.
+- API-provided metric names, provider fields, queue kinds, and statuses must go
+  through locale-aware label helpers; never render raw camelCase, snake_case,
+  or dotted config keys as visible admin copy.
+- Sections with independently sized card groups must use a full-width content
+  flow and an internal tile/column layout. Do not place unrelated sections in
+  one equal-height grid row, because the tallest section creates large empty
+  areas below shorter sections.
 - Admin list cards that mix text, status badges, inputs, and action buttons
   must use admin-scoped grid constraints so content wraps instead of clipping.
 - Admin form controls and action buttons must keep at least 44px touch/click
@@ -154,6 +161,8 @@ TypeScript strict, and build with Vite.
   rows rather than forcing a wide flex row.
 - Long webhook, queue, email, or redemption-code text -> wraps or scrolls inside
   its own code block, not the whole page.
+- Switching locale -> dynamic metric, provider, config-field, status, and alert
+  labels change with the rest of the page; technical brand names may remain.
 
 ### 5. Good/Base/Bad Cases
 
@@ -172,6 +181,9 @@ TypeScript strict, and build with Vite.
   admin behavior changes are part of the same slice.
 - Browser-check the admin view at 375px and desktop width; assert no console
   errors and no admin panel/grid horizontal overflow.
+- Switch through every supported locale and assert known backend identifiers
+  such as `activeStorageBytes`, `smtp.password`, and `unitSeconds` are absent
+  from visible admin text.
 
 ### 7. Wrong vs Correct
 
@@ -196,6 +208,11 @@ TypeScript strict, and build with Vite.
 .admin-panel .admin-section--wide {
   grid-column: span 8;
 }
+```
+
+```tsx
+<strong>{adminMetricLabel(metric, t)}</strong>
+<span>{providerFieldLabel(field, t)}</span>
 ```
 
 ---

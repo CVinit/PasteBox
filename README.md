@@ -43,12 +43,19 @@ This repository contains the first executable single-node MVP. It keeps the prod
 
 The API listens on `http://localhost:8080`. The Vite dev server listens on `http://localhost:5173` and proxies `/api` to the API.
 
-Optional bootstrap admin credentials can be set in `.env`:
+Create or reset a local administrator explicitly after the database migrations
+have run:
 
 ```sh
-PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=<dev-admin-password>
+go run ./cmd/pastebox admin create \
+  --email admin@example.com \
+  --password '<dev-admin-password>'
 ```
+
+Application and provider settings are managed from **Admin > Application
+config**. The `.env` file only contains startup roots such as the database,
+Redis, application environment, and the production configuration-encryption
+key.
 
 The development auth flows return dev tokens in JSON responses for registration codes, email verification, and password reset so the complete flow can be exercised without a live mail provider.
 
@@ -78,8 +85,10 @@ If port 8080 is already occupied, set a host-port override and open that port
 instead:
 
 ```sh
-PASTEBOX_IMAGE=pastebox:local PASTEBOX_HTTP_PORT=18080 PASTEBOX_PUBLIC_URL=http://localhost:18080 docker compose -f compose.deploy.yaml up -d
+PASTEBOX_IMAGE=pastebox:local PASTEBOX_HTTP_PORT=18080 docker compose -f compose.deploy.yaml up -d
 ```
+
+Then update the public URL in **Admin > Application config**.
 
 The demo Compose stack uses local ClamAV and Mailpit containers by default, and
 keeps `PASTEBOX_DEV_AUTH_TOKENS=true` in development mode so browser smoke tests

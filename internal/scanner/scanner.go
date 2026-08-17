@@ -10,6 +10,7 @@ import (
 	"net"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"pastebox/internal/app"
@@ -26,6 +27,36 @@ const (
 
 type Scanner interface {
 	Scan(ctx context.Context, fileName string, contentType string, content []byte) (app.ScanResult, error)
+}
+
+type Dynamic struct {
+	mu      sync.RWMutex
+	scanner Scanner
+}
+
+func NewDynamic() *Dynamic {
+	return &Dynamic{scanner: Heuristic{}}
+}
+
+func (s *Dynamic) Update(cfg config.ScannerConfig) error {
+	next, err := New(cfg)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.scanner = next
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *Dynamic) Scan(ctx context.Context, fileName string, contentType string, content []byte) (app.ScanResult, error) {
+	s.mu.RLock()
+	current := s.scanner
+	s.mu.RUnlock()
+	if current == nil {
+		return app.ScanResult{}, fmt.Errorf("scanner is not configured")
+	}
+	return current.Scan(ctx, fileName, contentType, content)
 }
 
 func New(cfg config.ScannerConfig) (Scanner, error) {

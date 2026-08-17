@@ -15,7 +15,7 @@ services:
     expose:
       - "8080"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -163,7 +163,7 @@ services:
         condition: service_started
     entrypoint: ["/bin/sh", "-c"]
     command:
-      - "sed 's#__PASTEBOX_PUBLIC_URL__#${PASTEBOX_PUBLIC_URL:?set PASTEBOX_PUBLIC_URL}#g' /etc/prometheus/prometheus.yml > /tmp/prometheus.yml && exec /bin/prometheus --config.file=/tmp/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=${PASTEBOX_PROMETHEUS_RETENTION:-15d} --web.listen-address=0.0.0.0:9090"
+      - "sed 's#__PASTEBOX_PUBLIC_URL__#https://${PASTEBOX_DOMAIN:?set PASTEBOX_DOMAIN}#g' /etc/prometheus/prometheus.yml > /tmp/prometheus.yml && exec /bin/prometheus --config.file=/tmp/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=${PASTEBOX_PROMETHEUS_RETENTION:-15d} --web.listen-address=0.0.0.0:9090"
     expose:
       - "9090"
     volumes:
@@ -219,6 +219,8 @@ services:
     profiles: ["maintenance"]
     env_file:
       - ${PASTEBOX_ENV_FILE:-./deploy/production.env}
+    environment:
+      PASTEBOX_PREFLIGHT_ROOT_ONLY: ${PASTEBOX_PREFLIGHT_ROOT_ONLY:-false}
 
   migrate:
     image: ${PASTEBOX_IMAGE:?set PASTEBOX_IMAGE to a pinned ghcr.io/cvinit/pastebox:sha-* tag or digest}

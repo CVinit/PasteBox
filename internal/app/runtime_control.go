@@ -9,6 +9,8 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/mail"
+	"net/url"
 	"os"
 	"runtime"
 	"sort"
@@ -40,6 +42,7 @@ type RuntimeConfig struct {
 	Limits         LimitConfig            `json:"limits"`
 	ProviderStatus ProviderStatus         `json:"providerStatus"`
 	Alerts         AlertConfig            `json:"alerts"`
+	Managed        config.ManagedConfig   `json:"managed"`
 	UpdatedAt      time.Time              `json:"updatedAt"`
 }
 
@@ -91,6 +94,8 @@ type ProviderStatus struct {
 	Turnstile ProviderConfigStatus `json:"turnstile"`
 	Telegram  ProviderConfigStatus `json:"telegram"`
 	S3        ProviderConfigStatus `json:"s3"`
+	Stripe    ProviderConfigStatus `json:"stripe"`
+	Epusdt    ProviderConfigStatus `json:"epusdt"`
 }
 
 type ProviderConfigStatus struct {
@@ -120,8 +125,8 @@ type AlertConfig struct {
 }
 
 type RuntimeConfigStore interface {
-	RuntimeConfig(ctx context.Context) (RuntimeConfig, bool, error)
-	SaveRuntimeConfig(ctx context.Context, cfg RuntimeConfig) error
+	RuntimeConfig(ctx context.Context) (RuntimeConfig, config.ManagedSecrets, bool, error)
+	SaveRuntimeConfig(ctx context.Context, cfg RuntimeConfig, secrets config.ManagedSecrets) error
 }
 
 type CatalogWriter interface {
@@ -134,6 +139,41 @@ type RuntimeConfigPatch struct {
 	Registration *RegistrationConfigPatch     `json:"registration,omitempty"`
 	RateLimits   *RuntimeRateLimitConfigPatch `json:"rateLimits,omitempty"`
 	Alerts       *AlertConfigPatch            `json:"alerts,omitempty"`
+}
+
+type ManagedConfigView struct {
+	Config    config.ManagedConfig `json:"config"`
+	Secrets   ManagedSecretStatus  `json:"secrets"`
+	UpdatedAt time.Time            `json:"updatedAt"`
+}
+
+type ManagedConfigUpdate struct {
+	Config  config.ManagedConfig `json:"config"`
+	Secrets ManagedSecretPatch   `json:"secrets"`
+}
+
+type ManagedSecretStatus struct {
+	S3AccessKey         bool `json:"s3AccessKey"`
+	S3SecretKey         bool `json:"s3SecretKey"`
+	GoogleClientSecret  bool `json:"googleClientSecret"`
+	GitHubClientSecret  bool `json:"githubClientSecret"`
+	TurnstileSecretKey  bool `json:"turnstileSecretKey"`
+	TelegramBotToken    bool `json:"telegramBotToken"`
+	SMTPPassword        bool `json:"smtpPassword"`
+	StripeWebhookSecret bool `json:"stripeWebhookSecret"`
+	EpusdtSecretKey     bool `json:"epusdtSecretKey"`
+}
+
+type ManagedSecretPatch struct {
+	S3AccessKey         *string `json:"s3AccessKey,omitempty"`
+	S3SecretKey         *string `json:"s3SecretKey,omitempty"`
+	GoogleClientSecret  *string `json:"googleClientSecret,omitempty"`
+	GitHubClientSecret  *string `json:"githubClientSecret,omitempty"`
+	TurnstileSecretKey  *string `json:"turnstileSecretKey,omitempty"`
+	TelegramBotToken    *string `json:"telegramBotToken,omitempty"`
+	SMTPPassword        *string `json:"smtpPassword,omitempty"`
+	StripeWebhookSecret *string `json:"stripeWebhookSecret,omitempty"`
+	EpusdtSecretKey     *string `json:"epusdtSecretKey,omitempty"`
 }
 
 type GuestUploadConfigPatch struct {
@@ -353,7 +393,7 @@ func (s *TelegramSender) SendAlert(ctx context.Context, message string, silent b
 	}
 	payload := map[string]any{
 		"chat_id":              chatID,
-		"text":                 sanitizeAlertMessage(message),
+		"text":                 sanitizeAlertMessage(message, token),
 		"disable_notification": silent,
 	}
 	body, err := json.Marshal(payload)
@@ -378,6 +418,7 @@ func (s *TelegramSender) SendAlert(ctx context.Context, message string, silent b
 
 func defaultRuntimeConfig(cfg config.Config) RuntimeConfig {
 	turnstileConfigured := strings.TrimSpace(cfg.Turnstile.SiteKey) != "" && strings.TrimSpace(cfg.Turnstile.SecretKey) != ""
+	managed, _ := config.ManagedFromConfig(cfg)
 	return RuntimeConfig{
 		ID:       runtimeConfigID,
 		LogLevel: runtimeLogLevelFromConfig(cfg),
@@ -430,6 +471,7 @@ func defaultRuntimeConfig(cfg config.Config) RuntimeConfig {
 			MailFailedDepthThreshold:    1,
 			ReportsOpenThreshold:        10,
 		},
+		Managed:   managed,
 		UpdatedAt: time.Now().UTC(),
 	}
 }
@@ -439,68 +481,101 @@ func providerStatusFromConfig(cfg config.Config, tests map[string]string) Provid
 		Mailer: ProviderConfigStatus{
 			Provider:      cfg.MailerProvider,
 			SecretManaged: true,
-			RequiredEnv:   []string{"PASTEBOX_MAILER_PROVIDER", "PASTEBOX_SMTP_HOST", "PASTEBOX_SMTP_FROM_EMAIL"},
+			RequiredEnv:   []string{"mailer.provider", "smtp.host", "smtp.from_email", "smtp.password"},
 			NonSensitive:  map[string]string{"fromEmail": cfg.SMTP.FromEmail, "host": cfg.SMTP.Host, "tlsMode": cfg.SMTP.TLSMode},
 		},
 		Google: ProviderConfigStatus{
 			Provider:      "google",
 			SecretManaged: true,
-			RequiredEnv:   []string{"PASTEBOX_GOOGLE_OAUTH_CLIENT_ID", "PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET", "PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL"},
+			RequiredEnv:   []string{"google.client_id", "google.client_secret", "google.redirect_url"},
 			NonSensitive:  map[string]string{"clientIdConfigured": strconv.FormatBool(strings.TrimSpace(cfg.GoogleOAuth.ClientID) != ""), "redirectUrl": cfg.GoogleOAuth.RedirectURL},
 		},
 		GitHub: ProviderConfigStatus{
 			Provider:      "github",
 			SecretManaged: true,
-			RequiredEnv:   []string{"PASTEBOX_GITHUB_OAUTH_CLIENT_ID", "PASTEBOX_GITHUB_OAUTH_CLIENT_SECRET", "PASTEBOX_GITHUB_OAUTH_REDIRECT_URL"},
+			RequiredEnv:   []string{"github.client_id", "github.client_secret", "github.redirect_url"},
 			NonSensitive:  map[string]string{"clientIdConfigured": strconv.FormatBool(strings.TrimSpace(cfg.GitHubOAuth.ClientID) != ""), "redirectUrl": cfg.GitHubOAuth.RedirectURL},
 		},
 		Turnstile: ProviderConfigStatus{
 			Provider:      "cloudflare_turnstile",
 			SecretManaged: true,
-			RequiredEnv:   []string{"PASTEBOX_TURNSTILE_SITE_KEY", "PASTEBOX_TURNSTILE_SECRET_KEY"},
+			RequiredEnv:   []string{"turnstile.site_key", "turnstile.secret_key"},
 			NonSensitive:  map[string]string{"siteKeyConfigured": strconv.FormatBool(strings.TrimSpace(cfg.Turnstile.SiteKey) != "")},
 		},
 		Telegram: ProviderConfigStatus{
 			Provider:      "telegram",
 			SecretManaged: true,
-			RequiredEnv:   []string{"PASTEBOX_TELEGRAM_BOT_TOKEN", "PASTEBOX_TELEGRAM_CHAT_ID"},
+			RequiredEnv:   []string{"telegram.bot_token", "telegram.chat_id"},
 			NonSensitive:  map[string]string{"chatIdConfigured": strconv.FormatBool(strings.TrimSpace(cfg.Telegram.ChatID) != "")},
 		},
 		S3: ProviderConfigStatus{
 			Provider:      "s3",
 			SecretManaged: true,
-			RequiredEnv:   []string{"PASTEBOX_S3_ENDPOINT", "PASTEBOX_S3_BUCKET", "PASTEBOX_S3_ACCESS_KEY", "PASTEBOX_S3_SECRET_KEY"},
+			RequiredEnv:   []string{"s3.endpoint", "s3.bucket", "s3.access_key", "s3.secret_key"},
 			NonSensitive:  map[string]string{"endpoint": cfg.S3.Endpoint, "bucket": cfg.S3.Bucket, "region": cfg.S3.Region},
+		},
+		Stripe: ProviderConfigStatus{
+			Provider:      "stripe",
+			SecretManaged: true,
+			RequiredEnv:   []string{"stripe.enabled", "stripe.webhook_secret", "stripe.checkout_url_template"},
+			NonSensitive:  map[string]string{"enabled": strconv.FormatBool(cfg.StripeEnabled), "checkoutUrlConfigured": strconv.FormatBool(strings.TrimSpace(cfg.Stripe.CheckoutURLTemplate) != "")},
+		},
+		Epusdt: ProviderConfigStatus{
+			Provider:      "epusdt",
+			SecretManaged: true,
+			RequiredEnv:   []string{"epusdt.enabled", "epusdt.pid", "epusdt.secret_key", "epusdt.checkout_url_template", "epusdt.address"},
+			NonSensitive:  map[string]string{"enabled": strconv.FormatBool(cfg.EpusdtEnabled), "chain": cfg.Epusdt.Chain},
 		},
 	}
 	fillProviderConfigured(&status.Mailer, map[string]string{
-		"PASTEBOX_MAILER_PROVIDER": cfg.MailerProvider,
-		"PASTEBOX_SMTP_HOST":       cfg.SMTP.Host,
-		"PASTEBOX_SMTP_FROM_EMAIL": cfg.SMTP.FromEmail,
+		"mailer.provider": cfg.MailerProvider,
+		"smtp.host":       cfg.SMTP.Host,
+		"smtp.from_email": cfg.SMTP.FromEmail,
+		"smtp.password":   cfg.SMTP.Password,
 	})
 	fillProviderConfigured(&status.Google, map[string]string{
-		"PASTEBOX_GOOGLE_OAUTH_CLIENT_ID":     cfg.GoogleOAuth.ClientID,
-		"PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET": cfg.GoogleOAuth.ClientSecret,
-		"PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL":  cfg.GoogleOAuth.RedirectURL,
+		"google.client_id":     cfg.GoogleOAuth.ClientID,
+		"google.client_secret": cfg.GoogleOAuth.ClientSecret,
+		"google.redirect_url":  cfg.GoogleOAuth.RedirectURL,
 	})
 	fillProviderConfigured(&status.GitHub, map[string]string{
-		"PASTEBOX_GITHUB_OAUTH_CLIENT_ID":     cfg.GitHubOAuth.ClientID,
-		"PASTEBOX_GITHUB_OAUTH_CLIENT_SECRET": cfg.GitHubOAuth.ClientSecret,
-		"PASTEBOX_GITHUB_OAUTH_REDIRECT_URL":  cfg.GitHubOAuth.RedirectURL,
+		"github.client_id":     cfg.GitHubOAuth.ClientID,
+		"github.client_secret": cfg.GitHubOAuth.ClientSecret,
+		"github.redirect_url":  cfg.GitHubOAuth.RedirectURL,
 	})
 	fillProviderConfigured(&status.Turnstile, map[string]string{
-		"PASTEBOX_TURNSTILE_SITE_KEY":   cfg.Turnstile.SiteKey,
-		"PASTEBOX_TURNSTILE_SECRET_KEY": cfg.Turnstile.SecretKey,
+		"turnstile.site_key":   cfg.Turnstile.SiteKey,
+		"turnstile.secret_key": cfg.Turnstile.SecretKey,
 	})
 	fillProviderConfigured(&status.Telegram, map[string]string{
-		"PASTEBOX_TELEGRAM_BOT_TOKEN": cfg.Telegram.BotToken,
-		"PASTEBOX_TELEGRAM_CHAT_ID":   cfg.Telegram.ChatID,
+		"telegram.bot_token": cfg.Telegram.BotToken,
+		"telegram.chat_id":   cfg.Telegram.ChatID,
 	})
 	fillProviderConfigured(&status.S3, map[string]string{
-		"PASTEBOX_S3_ENDPOINT":   cfg.S3.Endpoint,
-		"PASTEBOX_S3_BUCKET":     cfg.S3.Bucket,
-		"PASTEBOX_S3_ACCESS_KEY": cfg.S3.AccessKey,
-		"PASTEBOX_S3_SECRET_KEY": cfg.S3.SecretKey,
+		"s3.endpoint":   cfg.S3.Endpoint,
+		"s3.bucket":     cfg.S3.Bucket,
+		"s3.access_key": cfg.S3.AccessKey,
+		"s3.secret_key": cfg.S3.SecretKey,
+	})
+	stripeEnabled := ""
+	if cfg.StripeEnabled {
+		stripeEnabled = "true"
+	}
+	fillProviderConfigured(&status.Stripe, map[string]string{
+		"stripe.enabled":               stripeEnabled,
+		"stripe.webhook_secret":        cfg.Stripe.WebhookSecret,
+		"stripe.checkout_url_template": cfg.Stripe.CheckoutURLTemplate,
+	})
+	epusdtEnabled := ""
+	if cfg.EpusdtEnabled {
+		epusdtEnabled = "true"
+	}
+	fillProviderConfigured(&status.Epusdt, map[string]string{
+		"epusdt.enabled":               epusdtEnabled,
+		"epusdt.pid":                   cfg.Epusdt.PID,
+		"epusdt.secret_key":            cfg.Epusdt.SecretKey,
+		"epusdt.checkout_url_template": cfg.Epusdt.CheckoutURLTemplate,
+		"epusdt.address":               cfg.Epusdt.Address,
 	})
 	applyProviderTestStatus(&status.Mailer, tests["mailer"])
 	applyProviderTestStatus(&status.Google, tests["google"])
@@ -508,6 +583,8 @@ func providerStatusFromConfig(cfg config.Config, tests map[string]string) Provid
 	applyProviderTestStatus(&status.Turnstile, tests["turnstile"])
 	applyProviderTestStatus(&status.Telegram, tests["telegram"])
 	applyProviderTestStatus(&status.S3, tests["s3"])
+	applyProviderTestStatus(&status.Stripe, tests["stripe"])
+	applyProviderTestStatus(&status.Epusdt, tests["epusdt"])
 	return status
 }
 
@@ -534,6 +611,7 @@ func cloneRuntimeConfig(cfg RuntimeConfig) RuntimeConfig {
 	cfg.Registration.AllowedDomains = append([]string(nil), cfg.Registration.AllowedDomains...)
 	cfg.Limits.PaidPlanIDs = append([]string(nil), cfg.Limits.PaidPlanIDs...)
 	cfg.ProviderStatus = cloneProviderStatus(cfg.ProviderStatus)
+	cfg.Managed.Site.CORSAllowedOrigins = append([]string(nil), cfg.Managed.Site.CORSAllowedOrigins...)
 	return cfg
 }
 
@@ -566,6 +644,8 @@ func cloneProviderStatus(status ProviderStatus) ProviderStatus {
 	status.Turnstile = cloneProviderConfigStatus(status.Turnstile)
 	status.Telegram = cloneProviderConfigStatus(status.Telegram)
 	status.S3 = cloneProviderConfigStatus(status.S3)
+	status.Stripe = cloneProviderConfigStatus(status.Stripe)
+	status.Epusdt = cloneProviderConfigStatus(status.Epusdt)
 	return status
 }
 
@@ -641,15 +721,22 @@ func (s *Service) loadRuntimeConfig(ctx context.Context) error {
 	if s.runtime == nil {
 		return nil
 	}
-	loaded, ok, err := s.runtime.RuntimeConfig(ctx)
+	loaded, secrets, ok, err := s.runtime.RuntimeConfig(ctx)
 	if err != nil {
 		return fmt.Errorf("load runtime config: %w", err)
 	}
 	if ok {
-		loaded.ProviderStatus = providerStatusFromConfig(s.cfg, providerTestStatuses(loaded.ProviderStatus))
-		s.runtimeConfig = normalizeRuntimeConfig(loaded, s.cfg)
+		legacyImport := loaded.Managed.Version == 0
+		if legacyImport {
+			loaded.Managed, secrets = config.ManagedFromConfig(s.rootConfig)
+		}
+		s.applyLoadedRuntimeConfigLocked(loaded, secrets)
+		if legacyImport {
+			return s.runtime.SaveRuntimeConfig(ctx, s.runtimeConfig, s.managedSecrets)
+		}
+		return nil
 	}
-	return nil
+	return s.runtime.SaveRuntimeConfig(ctx, s.runtimeConfig, s.managedSecrets)
 }
 
 func (s *Service) RefreshRuntimeConfig(ctx context.Context) (RuntimeConfig, error) {
@@ -661,28 +748,58 @@ func (s *Service) RefreshRuntimeConfig(ctx context.Context) (RuntimeConfig, erro
 		return current, nil
 	}
 
-	loaded, ok, err := store.RuntimeConfig(ctx)
+	loaded, secrets, ok, err := store.RuntimeConfig(ctx)
 	if err != nil {
 		return RuntimeConfig{}, fmt.Errorf("refresh runtime config: %w", err)
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if ok {
-		loaded.ProviderStatus = providerStatusFromConfig(s.cfg, providerTestStatuses(loaded.ProviderStatus))
-		s.runtimeConfig = normalizeRuntimeConfig(loaded, s.cfg)
+		s.applyLoadedRuntimeConfigLocked(loaded, secrets)
 	}
-	return cloneRuntimeConfig(s.runtimeConfig), nil
+	current = cloneRuntimeConfig(s.runtimeConfig)
+	effective := cloneEffectiveConfig(s.cfg)
+	hook := s.runtimeConfigChange
+	s.mu.Unlock()
+	if hook != nil {
+		hook(current, effective)
+	}
+	return current, nil
 }
 
-func (s *Service) SetRuntimeConfigChangeHook(hook func(RuntimeConfig)) {
+func (s *Service) SetRuntimeConfigChangeHook(hook func(RuntimeConfig, config.Config)) {
 	s.mu.Lock()
 	s.runtimeConfigChange = hook
 	cfg := cloneRuntimeConfig(s.runtimeConfig)
+	effective := cloneEffectiveConfig(s.cfg)
 	s.mu.Unlock()
 	if hook != nil {
-		hook(cfg)
+		hook(cfg, effective)
 	}
+}
+
+func (s *Service) EffectiveConfig() config.Config {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneEffectiveConfig(s.cfg)
+}
+
+func (s *Service) applyLoadedRuntimeConfigLocked(loaded RuntimeConfig, secrets config.ManagedSecrets) {
+	loaded = normalizeRuntimeConfig(loaded, s.rootConfig)
+	effective := config.ApplyManaged(s.rootConfig, loaded.Managed, secrets)
+	loaded.Registration.TurnstileSiteKey = strings.TrimSpace(effective.Turnstile.SiteKey)
+	loaded.ProviderStatus = providerStatusFromConfig(effective, providerTestStatuses(loaded.ProviderStatus))
+	s.managedSecrets = secrets
+	s.cfg = effective
+	if !s.turnstileVerifierCustom {
+		s.turnstileVerifier = NewTurnstileVerifier(effective)
+	}
+	s.runtimeConfig = cloneRuntimeConfig(loaded)
+}
+
+func cloneEffectiveConfig(cfg config.Config) config.Config {
+	cfg.CORSAllowedOrigins = append([]string(nil), cfg.CORSAllowedOrigins...)
+	return cfg
 }
 
 func providerTestStatuses(status ProviderStatus) map[string]string {
@@ -693,6 +810,8 @@ func providerTestStatuses(status ProviderStatus) map[string]string {
 		"turnstile": status.Turnstile.LastTestStatus,
 		"telegram":  status.Telegram.LastTestStatus,
 		"s3":        status.S3.LastTestStatus,
+		"stripe":    status.Stripe.LastTestStatus,
+		"epusdt":    status.Epusdt.LastTestStatus,
 	}
 }
 
@@ -700,6 +819,9 @@ func normalizeRuntimeConfig(cfg RuntimeConfig, env config.Config) RuntimeConfig 
 	base := defaultRuntimeConfig(env)
 	if strings.TrimSpace(cfg.ID) == "" {
 		cfg.ID = runtimeConfigID
+	}
+	if cfg.Managed.Version == 0 {
+		cfg.Managed = base.Managed
 	}
 	if level, ok := NormalizeRuntimeLogLevel(cfg.LogLevel); ok {
 		cfg.LogLevel = level
@@ -742,7 +864,7 @@ func normalizeRuntimeConfig(cfg RuntimeConfig, env config.Config) RuntimeConfig 
 		cfg.Registration.RequireEmailVerification = base.Registration.RequireEmailVerification
 		cfg.Registration.RequireTurnstile = base.Registration.RequireTurnstile
 	}
-	cfg.Registration.TurnstileSiteKey = strings.TrimSpace(env.Turnstile.SiteKey)
+	cfg.Registration.TurnstileSiteKey = strings.TrimSpace(cfg.Managed.Turnstile.SiteKey)
 	rateLimitsWereEmpty := cfg.RateLimits.WindowSeconds <= 0 &&
 		cfg.RateLimits.EmailVerificationLimit <= 0 &&
 		cfg.RateLimits.RegisterLimit <= 0 &&
@@ -823,6 +945,195 @@ func (s *Service) AdminRuntimeConfig(actorID string) (RuntimeConfig, error) {
 	return cloneRuntimeConfig(s.runtimeConfig), nil
 }
 
+func (s *Service) AdminManagedConfig(actorID string) (ManagedConfigView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.requireAdminLocked(actorID); err != nil {
+		return ManagedConfigView{}, err
+	}
+	return s.managedConfigViewLocked(), nil
+}
+
+func (s *Service) AdminUpdateManagedConfig(actorID string, update ManagedConfigUpdate) (ManagedConfigView, error) {
+	s.mu.Lock()
+	if err := s.requireAdminLocked(actorID); err != nil {
+		s.mu.Unlock()
+		return ManagedConfigView{}, err
+	}
+	managed, err := normalizeManagedConfig(update.Config, s.rootConfig.AppEnv)
+	if err != nil {
+		s.mu.Unlock()
+		return ManagedConfigView{}, err
+	}
+	secrets := applyManagedSecretPatch(s.managedSecrets, update.Secrets)
+	next := cloneRuntimeConfig(s.runtimeConfig)
+	next.Managed = managed
+	next.Registration.TurnstileSiteKey = managed.Turnstile.SiteKey
+	next.UpdatedAt = s.now().UTC()
+	oldSecrets := s.managedSecrets
+	s.managedSecrets = secrets
+	if err := s.saveRuntimeConfigLocked(next); err != nil {
+		s.managedSecrets = oldSecrets
+		s.mu.Unlock()
+		return ManagedConfigView{}, err
+	}
+	if err := s.auditLocked(actorID, "admin.managed_config_update", runtimeConfigID, managedConfigAuditMetadata(managed, secrets)); err != nil {
+		s.mu.Unlock()
+		return ManagedConfigView{}, err
+	}
+	view := s.managedConfigViewLocked()
+	hook := s.runtimeConfigChange
+	runtimeCfg := cloneRuntimeConfig(s.runtimeConfig)
+	effective := cloneEffectiveConfig(s.cfg)
+	s.mu.Unlock()
+	if hook != nil {
+		hook(runtimeCfg, effective)
+	}
+	return view, nil
+}
+
+func (s *Service) managedConfigViewLocked() ManagedConfigView {
+	managed := cloneRuntimeConfig(s.runtimeConfig).Managed
+	return ManagedConfigView{
+		Config:    managed,
+		Secrets:   managedSecretStatus(s.managedSecrets),
+		UpdatedAt: s.runtimeConfig.UpdatedAt,
+	}
+}
+
+func managedSecretStatus(secrets config.ManagedSecrets) ManagedSecretStatus {
+	return ManagedSecretStatus{
+		S3AccessKey: strings.TrimSpace(secrets.S3AccessKey) != "", S3SecretKey: strings.TrimSpace(secrets.S3SecretKey) != "",
+		GoogleClientSecret: strings.TrimSpace(secrets.GoogleClientSecret) != "", GitHubClientSecret: strings.TrimSpace(secrets.GitHubClientSecret) != "",
+		TurnstileSecretKey: strings.TrimSpace(secrets.TurnstileSecretKey) != "", TelegramBotToken: strings.TrimSpace(secrets.TelegramBotToken) != "",
+		SMTPPassword: strings.TrimSpace(secrets.SMTPPassword) != "", StripeWebhookSecret: strings.TrimSpace(secrets.StripeWebhookSecret) != "",
+		EpusdtSecretKey: strings.TrimSpace(secrets.EpusdtSecretKey) != "",
+	}
+}
+
+func applyManagedSecretPatch(current config.ManagedSecrets, patch ManagedSecretPatch) config.ManagedSecrets {
+	apply := func(target *string, value *string) {
+		if value != nil {
+			*target = strings.TrimSpace(*value)
+		}
+	}
+	apply(&current.S3AccessKey, patch.S3AccessKey)
+	apply(&current.S3SecretKey, patch.S3SecretKey)
+	apply(&current.GoogleClientSecret, patch.GoogleClientSecret)
+	apply(&current.GitHubClientSecret, patch.GitHubClientSecret)
+	apply(&current.TurnstileSecretKey, patch.TurnstileSecretKey)
+	apply(&current.TelegramBotToken, patch.TelegramBotToken)
+	apply(&current.SMTPPassword, patch.SMTPPassword)
+	apply(&current.StripeWebhookSecret, patch.StripeWebhookSecret)
+	apply(&current.EpusdtSecretKey, patch.EpusdtSecretKey)
+	return current
+}
+
+func normalizeManagedConfig(managed config.ManagedConfig, appEnv string) (config.ManagedConfig, error) {
+	managed.Version = config.ManagedConfigVersion
+	managed.Site.AppName = strings.TrimSpace(managed.Site.AppName)
+	managed.Site.PublicURL = strings.TrimRight(strings.TrimSpace(managed.Site.PublicURL), "/")
+	managed.Site.SupportEmail = strings.TrimSpace(managed.Site.SupportEmail)
+	managed.Site.AbuseEmail = strings.TrimSpace(managed.Site.AbuseEmail)
+	if managed.Site.AppName == "" {
+		return config.ManagedConfig{}, E(http.StatusBadRequest, "invalid_site_config", "application name is required")
+	}
+	if err := validateManagedHTTPURL(managed.Site.PublicURL, appEnv == "production"); err != nil {
+		return config.ManagedConfig{}, E(http.StatusBadRequest, "invalid_public_url", err.Error())
+	}
+	for _, address := range []string{managed.Site.SupportEmail, managed.Site.AbuseEmail} {
+		if _, err := mail.ParseAddress(address); err != nil {
+			return config.ManagedConfig{}, E(http.StatusBadRequest, "invalid_support_email", "support and abuse email addresses must be valid")
+		}
+	}
+	managed.Site.CORSAllowedOrigins = normalizeOrigins(managed.Site.CORSAllowedOrigins)
+	if len(managed.Site.CORSAllowedOrigins) == 0 {
+		managed.Site.CORSAllowedOrigins = []string{managed.Site.PublicURL}
+	}
+	if managed.WorkerHeartbeatMaxAgeSeconds <= 0 {
+		return config.ManagedConfig{}, E(http.StatusBadRequest, "invalid_worker_config", "worker heartbeat max age must be positive")
+	}
+	managed.S3.Endpoint = strings.TrimRight(strings.TrimSpace(managed.S3.Endpoint), "/")
+	managed.S3.Bucket = strings.TrimSpace(managed.S3.Bucket)
+	managed.S3.Region = strings.TrimSpace(managed.S3.Region)
+	if managed.S3.Endpoint != "" {
+		if err := validateManagedHTTPURL(managed.S3.Endpoint, appEnv == "production"); err != nil {
+			return config.ManagedConfig{}, E(http.StatusBadRequest, "invalid_s3_config", err.Error())
+		}
+	}
+	managed.Scanner.Provider = strings.ToLower(strings.TrimSpace(managed.Scanner.Provider))
+	if managed.Scanner.Provider != "heuristic" && managed.Scanner.Provider != "clamav" {
+		return config.ManagedConfig{}, E(http.StatusBadRequest, "invalid_scanner_config", "scanner provider must be heuristic or clamav")
+	}
+	if managed.Scanner.ClamAV.Timeout <= 0 {
+		return config.ManagedConfig{}, E(http.StatusBadRequest, "invalid_scanner_config", "scanner timeout must be positive")
+	}
+	managed.MailerProvider = strings.ToLower(strings.TrimSpace(managed.MailerProvider))
+	if managed.MailerProvider != "log" && managed.MailerProvider != "smtp" {
+		return config.ManagedConfig{}, E(http.StatusBadRequest, "invalid_mailer_config", "mailer provider must be log or smtp")
+	}
+	managed.SMTP.TLSMode = strings.ToLower(strings.TrimSpace(managed.SMTP.TLSMode))
+	if managed.SMTP.TLSMode != "none" && managed.SMTP.TLSMode != "starttls" && managed.SMTP.TLSMode != "tls" {
+		return config.ManagedConfig{}, E(http.StatusBadRequest, "invalid_mailer_config", "SMTP TLS mode must be none, starttls, or tls")
+	}
+	if managed.SMTP.Port <= 0 || managed.SMTP.Port > 65535 {
+		return config.ManagedConfig{}, E(http.StatusBadRequest, "invalid_mailer_config", "SMTP port is invalid")
+	}
+	if _, err := mail.ParseAddress(managed.SMTP.FromEmail); err != nil {
+		return config.ManagedConfig{}, E(http.StatusBadRequest, "invalid_mailer_config", "SMTP from email is invalid")
+	}
+	for _, candidate := range []string{managed.GoogleOAuth.RedirectURL, managed.GitHubOAuth.RedirectURL, managed.Turnstile.VerifyURL, managed.Telegram.APIBaseURL} {
+		if strings.TrimSpace(candidate) != "" {
+			if err := validateManagedHTTPURL(candidate, appEnv == "production"); err != nil {
+				return config.ManagedConfig{}, E(http.StatusBadRequest, "invalid_provider_url", err.Error())
+			}
+		}
+	}
+	return managed, nil
+}
+
+func validateManagedHTTPURL(raw string, requireHTTPS bool) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("URL must be an absolute HTTP or HTTPS URL")
+	}
+	if requireHTTPS && parsed.Scheme != "https" {
+		return fmt.Errorf("production URL must use HTTPS")
+	}
+	return nil
+}
+
+func normalizeOrigins(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimRight(strings.TrimSpace(value), "/")
+		parsed, err := url.Parse(value)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Path != "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func managedConfigAuditMetadata(managed config.ManagedConfig, secrets config.ManagedSecrets) map[string]any {
+	status := managedSecretStatus(secrets)
+	return map[string]any{
+		"publicUrl":         managed.Site.PublicURL,
+		"mailerProvider":    managed.MailerProvider,
+		"scannerProvider":   managed.Scanner.Provider,
+		"stripeEnabled":     managed.StripeEnabled,
+		"epusdtEnabled":     managed.EpusdtEnabled,
+		"secretsConfigured": status,
+	}
+}
+
 func (s *Service) AdminUpdateRuntimeConfig(actorID string, patch RuntimeConfigPatch) (RuntimeConfig, error) {
 	s.mu.Lock()
 	updated, hook, err := s.adminUpdateRuntimeConfigLocked(actorID, patch)
@@ -831,12 +1142,12 @@ func (s *Service) AdminUpdateRuntimeConfig(actorID string, patch RuntimeConfigPa
 		return RuntimeConfig{}, err
 	}
 	if hook != nil {
-		hook(updated)
+		hook(updated, s.EffectiveConfig())
 	}
 	return updated, nil
 }
 
-func (s *Service) adminUpdateRuntimeConfigLocked(actorID string, patch RuntimeConfigPatch) (RuntimeConfig, func(RuntimeConfig), error) {
+func (s *Service) adminUpdateRuntimeConfigLocked(actorID string, patch RuntimeConfigPatch) (RuntimeConfig, func(RuntimeConfig, config.Config), error) {
 	if err := s.requireAdminLocked(actorID); err != nil {
 		return RuntimeConfig{}, nil, err
 	}
@@ -862,7 +1173,7 @@ func (s *Service) adminUpdateRuntimeConfigLocked(actorID string, patch RuntimeCo
 	}
 	next.ProviderStatus = providerStatusFromConfig(s.cfg, providerTestStatuses(next.ProviderStatus))
 	next.UpdatedAt = s.now().UTC()
-	next = normalizeRuntimeConfig(next, s.cfg)
+	next = normalizeRuntimeConfig(next, s.rootConfig)
 	if err := s.saveRuntimeConfigLocked(next); err != nil {
 		return RuntimeConfig{}, nil, err
 	}
@@ -1020,13 +1331,13 @@ func runtimeConfigAuditMetadata(cfg RuntimeConfig) map[string]any {
 }
 
 func (s *Service) saveRuntimeConfigLocked(cfg RuntimeConfig) error {
-	cfg = normalizeRuntimeConfig(cfg, s.cfg)
+	cfg = normalizeRuntimeConfig(cfg, s.rootConfig)
 	if s.runtime != nil {
-		if err := s.runtime.SaveRuntimeConfig(context.Background(), cfg); err != nil {
+		if err := s.runtime.SaveRuntimeConfig(context.Background(), cfg, s.managedSecrets); err != nil {
 			return err
 		}
 	}
-	s.runtimeConfig = cloneRuntimeConfig(cfg)
+	s.applyLoadedRuntimeConfigLocked(cfg, s.managedSecrets)
 	return nil
 }
 
@@ -1126,6 +1437,10 @@ func (s *Service) AdminProviderTest(actorID string, provider string) (RuntimeCon
 		if strings.TrimSpace(s.cfg.GoogleOAuth.ClientID) == "" || strings.TrimSpace(s.cfg.GoogleOAuth.ClientSecret) == "" {
 			status = "missing_google_oauth_config"
 		}
+	case "github":
+		if strings.TrimSpace(s.cfg.GitHubOAuth.ClientID) == "" || strings.TrimSpace(s.cfg.GitHubOAuth.ClientSecret) == "" {
+			status = "missing_github_oauth_config"
+		}
 	case "turnstile":
 		if strings.TrimSpace(s.cfg.Turnstile.SecretKey) == "" {
 			status = "missing_turnstile_secret"
@@ -1139,8 +1454,16 @@ func (s *Service) AdminProviderTest(actorID string, provider string) (RuntimeCon
 			}
 		}
 	case "s3":
-		if strings.TrimSpace(s.cfg.S3.Endpoint) == "" || strings.TrimSpace(s.cfg.S3.Bucket) == "" {
+		if strings.TrimSpace(s.cfg.S3.Endpoint) == "" || strings.TrimSpace(s.cfg.S3.Bucket) == "" || strings.TrimSpace(s.cfg.S3.AccessKey) == "" || strings.TrimSpace(s.cfg.S3.SecretKey) == "" {
 			status = "missing_s3_config"
+		}
+	case "stripe":
+		if !s.cfg.StripeEnabled || strings.TrimSpace(s.cfg.Stripe.WebhookSecret) == "" || strings.TrimSpace(s.cfg.Stripe.CheckoutURLTemplate) == "" {
+			status = "missing_stripe_config"
+		}
+	case "epusdt":
+		if !s.cfg.EpusdtEnabled || strings.TrimSpace(s.cfg.Epusdt.PID) == "" || strings.TrimSpace(s.cfg.Epusdt.SecretKey) == "" || strings.TrimSpace(s.cfg.Epusdt.CheckoutURLTemplate) == "" || strings.TrimSpace(s.cfg.Epusdt.Address) == "" {
+			status = "missing_epusdt_config"
 		}
 	default:
 		return RuntimeConfig{}, E(http.StatusBadRequest, "invalid_provider", "provider is not supported")
@@ -1421,6 +1744,7 @@ func (s *Service) SetTurnstileVerifier(verifier TurnstileVerifier) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.turnstileVerifier = verifier
+	s.turnstileVerifierCustom = verifier != nil
 }
 
 func (s *Service) SetRuntimeResourceSnapshot(snapshot func() RuntimeResourceSnapshot) {
@@ -1509,7 +1833,7 @@ func (s *Service) EvaluateRuntimeAlerts(ctx context.Context) ([]AlertEvent, erro
 		s.mu.Lock()
 		if sendErr != nil {
 			event.Status = "failed"
-			event.LastError = sanitizeAlertMessage(sendErr.Error())
+			event.LastError = sanitizeAlertMessage(sendErr.Error(), managedSecretValues(s.managedSecrets)...)
 		} else if cfg.TelegramEnabled {
 			event.Status = "sent"
 			sentAt := s.now().UTC()
@@ -1553,7 +1877,7 @@ func (s *Service) buildRuntimeAlertsLocked(cfg AlertConfig, resources RuntimeRes
 			ID:          s.newID("alrt"),
 			Fingerprint: item.fingerprint,
 			Level:       "warning",
-			Message:     sanitizeAlertMessage(item.message),
+			Message:     sanitizeAlertMessage(item.message, managedSecretValues(s.managedSecrets)...),
 			Status:      "pending",
 			CreatedAt:   now,
 			UpdatedAt:   now,
@@ -1619,7 +1943,7 @@ func (s *Service) AdminSendTestAlert(actorID string, message string) (AlertEvent
 		sender = NewTelegramSender(s.cfg)
 	}
 	now := s.now().UTC()
-	event := AlertEvent{ID: s.newID("alrt"), Fingerprint: "manual_test", Level: "info", Message: sanitizeAlertMessage(message), Status: "pending", CreatedAt: now, UpdatedAt: now}
+	event := AlertEvent{ID: s.newID("alrt"), Fingerprint: "manual_test", Level: "info", Message: sanitizeAlertMessage(message, managedSecretValues(s.managedSecrets)...), Status: "pending", CreatedAt: now, UpdatedAt: now}
 	s.mu.Unlock()
 
 	err := sender.SendAlert(context.Background(), event.Message, cfg.Silent)
@@ -1627,7 +1951,7 @@ func (s *Service) AdminSendTestAlert(actorID string, message string) (AlertEvent
 	defer s.mu.Unlock()
 	if err != nil {
 		event.Status = "failed"
-		event.LastError = sanitizeAlertMessage(err.Error())
+		event.LastError = sanitizeAlertMessage(err.Error(), managedSecretValues(s.managedSecrets)...)
 	} else {
 		event.Status = "sent"
 		sentAt := s.now().UTC()
@@ -1643,12 +1967,32 @@ func (s *Service) AdminSendTestAlert(actorID string, message string) (AlertEvent
 	return event, nil
 }
 
-func sanitizeAlertMessage(message string) string {
+func managedSecretValues(secrets config.ManagedSecrets) []string {
+	return []string{
+		secrets.S3AccessKey,
+		secrets.S3SecretKey,
+		secrets.GoogleClientSecret,
+		secrets.GitHubClientSecret,
+		secrets.TurnstileSecretKey,
+		secrets.TelegramBotToken,
+		secrets.SMTPPassword,
+		secrets.StripeWebhookSecret,
+		secrets.EpusdtSecretKey,
+	}
+}
+
+func sanitizeAlertMessage(message string, managedSecrets ...string) string {
 	message = strings.TrimSpace(message)
 	if len(message) > 1000 {
 		message = message[:1000]
 	}
-	for _, secret := range []string{os.Getenv("PASTEBOX_TELEGRAM_BOT_TOKEN"), os.Getenv("PASTEBOX_SMTP_PASSWORD"), os.Getenv("PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET"), os.Getenv("PASTEBOX_TURNSTILE_SECRET_KEY")} {
+	secrets := append([]string{
+		os.Getenv("PASTEBOX_TELEGRAM_BOT_TOKEN"),
+		os.Getenv("PASTEBOX_SMTP_PASSWORD"),
+		os.Getenv("PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET"),
+		os.Getenv("PASTEBOX_TURNSTILE_SECRET_KEY"),
+	}, managedSecrets...)
+	for _, secret := range secrets {
 		secret = strings.TrimSpace(secret)
 		if secret != "" {
 			message = strings.ReplaceAll(message, secret, "[redacted]")

@@ -1,6 +1,9 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
@@ -18,6 +21,7 @@ type Config struct {
 	SupportEmail            string
 	AbuseEmail              string
 	CSRFSecret              string
+	ConfigEncryptionKey     string
 	MetricsToken            string
 	CORSAllowedOrigins      []string
 	RateLimit               RateLimitConfig
@@ -56,13 +60,13 @@ type S3Config struct {
 }
 
 type ScannerConfig struct {
-	Provider string
-	ClamAV   ClamAVConfig
+	Provider string       `json:"provider"`
+	ClamAV   ClamAVConfig `json:"clamav"`
 }
 
 type ClamAVConfig struct {
-	Addr    string
-	Timeout int
+	Addr    string `json:"addr"`
+	Timeout int    `json:"timeout"`
 }
 
 type OAuthConfig struct {
@@ -118,7 +122,7 @@ type RateLimitConfig struct {
 
 func FromEnv() Config {
 	publicURL := envString("PASTEBOX_PUBLIC_URL", "http://localhost:5173")
-	return Config{
+	cfg := Config{
 		AppName:                 envString("PASTEBOX_APP_NAME", "PasteBox"),
 		AppEnv:                  envString("PASTEBOX_APP_ENV", "development"),
 		HTTPAddr:                envString("PASTEBOX_HTTP_ADDR", ":8080"),
@@ -128,7 +132,8 @@ func FromEnv() Config {
 		LogLevel:                envLogLevel("PASTEBOX_LOG_LEVEL", slog.LevelInfo),
 		SupportEmail:            envString("PASTEBOX_SUPPORT_EMAIL", "support@localhost"),
 		AbuseEmail:              envString("PASTEBOX_ABUSE_EMAIL", "abuse@localhost"),
-		CSRFSecret:              envString("PASTEBOX_CSRF_SECRET", "development-csrf-secret"),
+		CSRFSecret:              envString("PASTEBOX_CSRF_SECRET", ""),
+		ConfigEncryptionKey:     envString("PASTEBOX_CONFIG_ENCRYPTION_KEY", ""),
 		MetricsToken:            envString("PASTEBOX_METRICS_TOKEN", ""),
 		CORSAllowedOrigins:      envCSV("PASTEBOX_CORS_ALLOWED_ORIGINS", originFromURL(publicURL)),
 		RateLimit: RateLimitConfig{
@@ -210,6 +215,32 @@ func FromEnv() Config {
 		BootstrapAdminEmail:    envString("PASTEBOX_BOOTSTRAP_ADMIN_EMAIL", ""),
 		BootstrapAdminPassword: envString("PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD", ""),
 	}
+	if cfg.CSRFSecret == "" {
+		if key, err := cfg.DecodeConfigEncryptionKey(); err == nil {
+			derived := sha256.Sum256(append([]byte("pastebox/csrf/v1\x00"), key...))
+			cfg.CSRFSecret = base64.RawURLEncoding.EncodeToString(derived[:])
+		}
+	}
+	return cfg
+}
+
+func (c Config) DecodeConfigEncryptionKey() ([]byte, error) {
+	value := strings.TrimSpace(c.ConfigEncryptionKey)
+	if value == "" {
+		if c.AppEnv == "production" {
+			return nil, fmt.Errorf("PASTEBOX_CONFIG_ENCRYPTION_KEY is required in production")
+		}
+		key := sha256.Sum256([]byte("pastebox-development-config-encryption-key"))
+		return key[:], nil
+	}
+	key, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return nil, fmt.Errorf("PASTEBOX_CONFIG_ENCRYPTION_KEY must be Base64 encoded: %w", err)
+	}
+	if len(key) != 32 {
+		return nil, fmt.Errorf("PASTEBOX_CONFIG_ENCRYPTION_KEY must decode to 32 bytes")
+	}
+	return key, nil
 }
 
 func (c Config) ExposeDevAuthTokens() bool {

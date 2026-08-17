@@ -1,7 +1,8 @@
 # PasteBox Production Secrets
 
-Production secrets live only on the server and in provider dashboards. They must
-not be committed to the repository.
+Production root secrets live only on the server. Application/provider secrets
+are entered through the administrator console and encrypted in PostgreSQL. No
+secret may be committed to the repository.
 
 ## Files
 
@@ -11,34 +12,40 @@ not be committed to the repository.
 The real `deploy/production.env` file should be owned by the deploy user and
 mode `600`.
 
-## Required Secret Classes
+## Startup Roots In The Environment
 
 - PostgreSQL password and `PASTEBOX_DATABASE_URL`.
-- Managed S3-compatible object storage access key and secret key.
+- Redis address.
+- Configuration-encryption key (`PASTEBOX_CONFIG_ENCRYPTION_KEY`), encoded as
+  Base64 for exactly 32 bytes.
 - Restic repository password and backup object-storage credentials.
-- Bootstrap admin password.
-- CSRF signing secret.
 - Metrics bearer token (`PASTEBOX_METRICS_TOKEN`).
-- Public support and abuse inboxes (`PASTEBOX_SUPPORT_EMAIL` and
-  `PASTEBOX_ABUSE_EMAIL`) are not secrets, but they must route to monitored
-  operator inboxes before public beta traffic is accepted.
-- Browser API allowlist (`PASTEBOX_CORS_ALLOWED_ORIGINS`) is not secret, but it
-  must be reviewed with production domain changes because credentialed browser
-  API requests are only allowed for exact listed origins.
+- Immutable image reference, production domain, and administrator contact.
+
+These values are required before PostgreSQL and the application can start or
+before encrypted configuration can be read. The CSRF secret is derived from the
+configuration-encryption key unless a legacy deployment still supplies an
+explicit value.
+
+## Admin-Managed Secrets
+
+- Managed S3-compatible object-storage access key and secret key.
 - SMTP credentials.
-- Stripe webhook signing secret (`PASTEBOX_STRIPE_WEBHOOK_SECRET`) and API keys.
-  `PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE` is not itself a secret, but it must
-  point to the production Stripe checkout/session creation surface and must not
-  embed API keys or bearer tokens.
-- Epusdt merchant id (`PASTEBOX_EPUSDT_PID`) and callback secret
-  (`PASTEBOX_EPUSDT_SECRET_KEY`). `PASTEBOX_EPUSDT_ADDRESS` is public payment
-  routing data, but it must be verified against the operator-owned Epusdt
-  merchant account before launch.
-- Google OAuth client secret once Phase 4 enables production OAuth.
+- Google and GitHub OAuth client secrets.
+- Turnstile secret.
+- Telegram bot token.
+- Stripe webhook signing secret.
+- Epusdt merchant id and callback secret.
+
+Enter these values in **Admin > Application config**. The API returns only a
+configured/not-configured status, never plaintext. Leaving a secret input blank
+keeps the current value; the clear action removes it.
 
 ## Handling Rules
 
-- Use `PASTEBOX_` environment variables for application runtime config.
+- Back up `PASTEBOX_CONFIG_ENCRYPTION_KEY` separately from PostgreSQL. Database
+  restores require the same key. Do not rotate it until a supported
+  decrypt-and-re-encrypt procedure is available.
 - Use pinned image tags or digests in `PASTEBOX_IMAGE`; never deploy `latest`.
 - Rotate a secret immediately if it appears in logs, shell history, screenshots,
   chat, issue trackers, or committed files.

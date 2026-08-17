@@ -22,6 +22,7 @@ import (
 
 	"pastebox/internal/app"
 	"pastebox/internal/config"
+	"pastebox/internal/configcrypto"
 	"pastebox/internal/httpserver"
 	"pastebox/internal/mailer"
 	"pastebox/internal/objectstore"
@@ -75,13 +76,16 @@ func runAPI(stdout io.Writer) int {
 		return 1
 	}
 	defer pool.Close()
-	service.SetRuntimeConfigChangeHook(func(runtimeCfg app.RuntimeConfig) {
+	service.SetRuntimeConfigChangeHook(func(runtimeCfg app.RuntimeConfig, effective config.Config) {
 		applyRuntimeLogLevel(runtimeCfg.LogLevel, logLevel, logger)
+		if err := objects.Update(effective.S3); err != nil {
+			logger.Warn("object storage config update ignored", "error", err)
+		}
 	})
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpserver.NewWithServiceAndReadiness(cfg, logger, service, productionReadinessChecker(cfg, pool, objects)),
+		Handler:           httpserver.NewWithServiceAndReadiness(cfg, logger, service, productionReadinessChecker(cfg, service, pool, objects)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       httpServerTimeout(cfg.HTTPReadTimeoutSeconds),
 		WriteTimeout:      httpServerTimeout(cfg.HTTPWriteTimeoutSeconds),
@@ -176,8 +180,12 @@ type objectHealthChecker interface {
 	Health(ctx context.Context) error
 }
 
-func productionReadinessChecker(cfg config.Config, pool *pgxpool.Pool, objects objectHealthChecker) httpserver.ReadinessChecker {
+func productionReadinessChecker(root config.Config, service *app.Service, pool *pgxpool.Pool, objects objectHealthChecker) httpserver.ReadinessChecker {
 	return func(ctx context.Context) []httpserver.ReadinessComponent {
+		cfg := root
+		if service != nil {
+			cfg = service.EffectiveConfig()
+		}
 		components := []httpserver.ReadinessComponent{
 			readinessCheck(ctx, "database", func(checkCtx context.Context) error {
 				return pool.Ping(checkCtx)
@@ -287,16 +295,20 @@ func tcpReadiness(ctx context.Context, address string) error {
 	return conn.Close()
 }
 
-func newProductionService(ctx context.Context, cfg config.Config) (*app.Service, *pgxpool.Pool, objectHealthChecker, error) {
+func newProductionService(ctx context.Context, cfg config.Config) (*app.Service, *pgxpool.Pool, *objectstore.DynamicS3Store, error) {
+	key, err := cfg.DecodeConfigEncryptionKey()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	cipher, err := configcrypto.New(key)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("postgres pool setup: %w", err)
 	}
-	objects, err := objectstore.NewS3Store(cfg.S3)
-	if err != nil {
-		pool.Close()
-		return nil, nil, nil, fmt.Errorf("object store setup: %w", err)
-	}
+	objects := objectstore.NewDynamicS3Store()
 	attachmentStore := postgres.NewAttachmentStore(pool)
 	service, err := app.NewWithStorage(ctx, cfg, app.Stores{
 		Auth: app.AuthStores{
@@ -323,13 +335,17 @@ func newProductionService(ctx context.Context, cfg config.Config) (*app.Service,
 		DailyMetrics:   postgres.NewDailyMetricStore(pool),
 		Catalog:        postgres.NewCatalogStore(pool),
 		AuditLogs:      postgres.NewAuditLogStore(pool),
-		RuntimeConfigs: postgres.NewRuntimeConfigStore(pool),
+		RuntimeConfigs: postgres.NewRuntimeConfigStore(pool, cipher),
 		Redemptions:    postgres.NewRedemptionStore(pool),
 		AlertEvents:    postgres.NewAlertEventStore(pool),
 	})
 	if err != nil {
 		pool.Close()
 		return nil, nil, nil, err
+	}
+	if err := objects.Update(service.EffectiveConfig().S3); err != nil {
+		pool.Close()
+		return nil, nil, nil, fmt.Errorf("object store setup: %w", err)
 	}
 	return service, pool, objects, nil
 }
@@ -489,53 +505,13 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 	for _, key := range []string{
 		"PASTEBOX_IMAGE",
 		"PASTEBOX_APP_ENV",
-		"PASTEBOX_PUBLIC_URL",
-		"PASTEBOX_SUPPORT_EMAIL",
-		"PASTEBOX_ABUSE_EMAIL",
-		"PASTEBOX_CSRF_SECRET",
+		"PASTEBOX_CONFIG_ENCRYPTION_KEY",
 		"PASTEBOX_METRICS_TOKEN",
-		"PASTEBOX_CORS_ALLOWED_ORIGINS",
-		"PASTEBOX_RATE_LIMIT_ENABLED",
-		"PASTEBOX_RATE_LIMIT_WINDOW_SECONDS",
-		"PASTEBOX_RATE_LIMIT_AUTH",
-		"PASTEBOX_RATE_LIMIT_WRITE",
-		"PASTEBOX_RATE_LIMIT_UPLOAD",
-		"PASTEBOX_RATE_LIMIT_DOWNLOAD",
-		"PASTEBOX_RATE_LIMIT_WEBHOOK",
 		"PASTEBOX_DOMAIN",
 		"PASTEBOX_ADMIN_EMAIL",
 		"PASTEBOX_POSTGRES_PASSWORD",
 		"PASTEBOX_DATABASE_URL",
 		"PASTEBOX_REDIS_ADDR",
-		"PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS",
-		"PASTEBOX_S3_ENDPOINT",
-		"PASTEBOX_S3_BUCKET",
-		"PASTEBOX_S3_REGION",
-		"PASTEBOX_S3_ACCESS_KEY",
-		"PASTEBOX_S3_SECRET_KEY",
-		"PASTEBOX_SCANNER_PROVIDER",
-		"PASTEBOX_CLAMAV_ADDR",
-		"PASTEBOX_GOOGLE_OAUTH_CLIENT_ID",
-		"PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET",
-		"PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL",
-		"PASTEBOX_MAILER_PROVIDER",
-		"PASTEBOX_SMTP_HOST",
-		"PASTEBOX_SMTP_PORT",
-		"PASTEBOX_SMTP_USERNAME",
-		"PASTEBOX_SMTP_PASSWORD",
-		"PASTEBOX_SMTP_FROM_EMAIL",
-		"PASTEBOX_SMTP_TLS_MODE",
-		"PASTEBOX_STRIPE_ENABLED",
-		"PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE",
-		"PASTEBOX_STRIPE_WEBHOOK_SECRET",
-		"PASTEBOX_EPUSDT_ENABLED",
-		"PASTEBOX_EPUSDT_PID",
-		"PASTEBOX_EPUSDT_SECRET_KEY",
-		"PASTEBOX_EPUSDT_CHECKOUT_URL_TEMPLATE",
-		"PASTEBOX_EPUSDT_ADDRESS",
-		"PASTEBOX_EPUSDT_CHAIN",
-		"PASTEBOX_BOOTSTRAP_ADMIN_EMAIL",
-		"PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD",
 		"PASTEBOX_RESTIC_REPOSITORY",
 		"PASTEBOX_RESTIC_PASSWORD",
 		"PASTEBOX_BACKUP_S3_ACCESS_KEY",
@@ -565,71 +541,19 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "production preflight failed: PASTEBOX_APP_ENV must be production, got %q\n", cfg.AppEnv)
 		return 1
 	}
-	if err := validateProductionPublicURL(cfg.PublicURL); err != nil {
+	if _, err := cfg.DecodeConfigEncryptionKey(); err != nil {
 		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
-		return 1
-	}
-	if err := validateProductionDomainConfig(cfg.PublicURL); err != nil {
-		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
-		return 1
-	}
-	if err := validatePublicContactEmails(cfg); err != nil {
-		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
-		return 1
-	}
-	if err := validateBootstrapAdminConfig(cfg); err != nil {
-		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
-		return 1
-	}
-	if len(strings.TrimSpace(cfg.CSRFSecret)) < 32 || cfg.CSRFSecret == "development-csrf-secret" {
-		fmt.Fprintln(stderr, "production preflight failed: PASTEBOX_CSRF_SECRET must be a production random secret at least 32 characters long")
 		return 1
 	}
 	if len(strings.TrimSpace(cfg.MetricsToken)) < 32 {
 		fmt.Fprintln(stderr, "production preflight failed: PASTEBOX_METRICS_TOKEN must be a production random token at least 32 characters long")
 		return 1
 	}
-	if err := validateCORSOrigins(cfg); err != nil {
-		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
-		return 1
-	}
-	if err := validateRateLimitConfig(cfg); err != nil {
-		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
-		return 1
-	}
-	if err := validateWorkerHeartbeatConfig(); err != nil {
-		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
-		return 1
-	}
-	if err := validateGoogleOAuthRedirectURL(cfg.GoogleOAuth.RedirectURL, cfg.PublicURL); err != nil {
-		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
-		return 1
-	}
-	if err := validateSMTPConfig(cfg); err != nil {
-		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
-		return 1
-	}
 	if image := strings.TrimSpace(os.Getenv("PASTEBOX_IMAGE")); !isPinnedImage(image) {
 		fmt.Fprintf(stderr, "production preflight failed: PASTEBOX_IMAGE must be a sha-* tag or digest, got %q\n", image)
 		return 1
 	}
-	if err := validateRemoteHTTPSEndpoint(cfg.S3.Endpoint, "PASTEBOX_S3_ENDPOINT"); err != nil {
-		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
-		return 1
-	}
 	if err := validateResticRepository(strings.TrimSpace(os.Getenv("PASTEBOX_RESTIC_REPOSITORY"))); err != nil {
-		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
-		return 1
-	}
-	if err := validateBackupCredentialSeparation(); err != nil {
-		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
-		return 1
-	}
-	if err := validateScannerConfig(cfg); err != nil {
-		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
-		return 1
-	}
-	if err := validateBillingConfig(cfg); err != nil {
 		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
 		return 1
 	}
@@ -637,9 +561,132 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
 		return 1
 	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("PASTEBOX_PREFLIGHT_ROOT_ONLY")), "true") {
+		if strings.TrimSpace(os.Getenv("PASTEBOX_PUBLIC_URL")) != "" {
+			if err := validateLegacyManagedProductionConfig(cfg); err != nil {
+				fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
+				return 1
+			}
+		} else {
+			domain := strings.TrimSpace(os.Getenv("PASTEBOX_DOMAIN"))
+			if strings.Contains(domain, "://") || strings.ContainsAny(domain, "/?#") || !isProductionHost(domain) || !strings.Contains(domain, ".") {
+				fmt.Fprintf(stderr, "production preflight failed: PASTEBOX_DOMAIN must be a real production hostname, got %q\n", domain)
+				return 1
+			}
+			if err := validatePublicEmail("PASTEBOX_ADMIN_EMAIL", strings.TrimSpace(os.Getenv("PASTEBOX_ADMIN_EMAIL"))); err != nil {
+				fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
+				return 1
+			}
+		}
+		fmt.Fprintln(stdout, "production preflight passed (startup roots only)")
+		return 0
+	}
+	effective, err := loadManagedProductionConfig(cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
+		return 1
+	}
+	checks := []func() error{
+		func() error { return validateProductionPublicURL(effective.PublicURL) },
+		func() error { return validateProductionDomainConfig(effective.PublicURL) },
+		func() error { return validatePublicContactEmails(effective) },
+		func() error { return validateCORSOrigins(effective) },
+		func() error { return validateRateLimitConfig(effective) },
+		func() error { return validateWorkerHeartbeatConfig(effective) },
+		func() error {
+			return validateGoogleOAuthRedirectURL(effective.GoogleOAuth.RedirectURL, effective.PublicURL)
+		},
+		func() error { return validateSMTPConfig(effective) },
+		func() error { return validateRemoteHTTPSEndpoint(effective.S3.Endpoint, "s3.endpoint") },
+		func() error { return validateBackupCredentialSeparation(effective.S3) },
+		func() error { return validateScannerConfig(effective) },
+		func() error { return validateBillingConfig(effective) },
+	}
+	for _, check := range checks {
+		if err := check(); err != nil {
+			fmt.Fprintf(stderr, "production preflight failed: %v\n", err)
+			return 1
+		}
+	}
 
 	fmt.Fprintln(stdout, "production preflight passed")
 	return 0
+}
+
+func validateLegacyManagedProductionConfig(cfg config.Config) error {
+	for _, entry := range os.Environ() {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok && strings.HasPrefix(key, "PASTEBOX_") && strings.Contains(value, "CHANGE_ME") {
+			return fmt.Errorf("placeholder values remain in %s", key)
+		}
+	}
+	if len(strings.TrimSpace(cfg.CSRFSecret)) < 32 || cfg.CSRFSecret == "development-csrf-secret" {
+		return fmt.Errorf("PASTEBOX_CSRF_SECRET must be a production random secret at least 32 characters long")
+	}
+	checks := []func() error{
+		func() error { return validateProductionPublicURL(cfg.PublicURL) },
+		func() error { return validateProductionDomainConfig(cfg.PublicURL) },
+		func() error { return validatePublicContactEmails(cfg) },
+		func() error { return validateBootstrapAdminConfig(cfg) },
+		func() error { return validateCORSOrigins(cfg) },
+		func() error { return validateRateLimitConfig(cfg) },
+		func() error { return validateLegacyWorkerHeartbeatConfig(cfg) },
+		func() error { return validateGoogleOAuthRedirectURL(cfg.GoogleOAuth.RedirectURL, cfg.PublicURL) },
+		func() error { return validateSMTPConfig(cfg) },
+		func() error { return validateRemoteHTTPSEndpoint(cfg.S3.Endpoint, "PASTEBOX_S3_ENDPOINT") },
+		func() error { return validateBackupCredentialSeparation(cfg.S3) },
+		func() error { return validateScannerConfig(cfg) },
+		func() error { return validateBillingConfig(cfg) },
+	}
+	for _, check := range checks {
+		if err := check(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateLegacyWorkerHeartbeatConfig(cfg config.Config) error {
+	if _, err := positiveIntEnv("PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS"); err != nil {
+		return err
+	}
+	if cfg.WorkerHeartbeatMaxAgeSeconds > 300 {
+		return fmt.Errorf("PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS must be <= 300")
+	}
+	return validateWorkerHeartbeatConfig(cfg)
+}
+
+func loadManagedProductionConfig(root config.Config) (config.Config, error) {
+	key, err := root.DecodeConfigEncryptionKey()
+	if err != nil {
+		return config.Config{}, err
+	}
+	cipher, err := configcrypto.New(key)
+	if err != nil {
+		return config.Config{}, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, root.DatabaseURL)
+	if err != nil {
+		return config.Config{}, fmt.Errorf("connect to managed config database: %w", err)
+	}
+	defer pool.Close()
+	runtimeCfg, secrets, ok, err := postgres.NewRuntimeConfigStore(pool, cipher).RuntimeConfig(ctx)
+	if err != nil {
+		return config.Config{}, err
+	}
+	if !ok || runtimeCfg.Managed.Version == 0 {
+		return config.Config{}, fmt.Errorf("managed application config is missing; sign in as an administrator and save Application config")
+	}
+	effective := config.ApplyManaged(root, runtimeCfg.Managed, secrets)
+	effective.RateLimit = config.RateLimitConfig{
+		Enabled: runtimeCfg.RateLimits.Enabled, WindowSeconds: runtimeCfg.RateLimits.WindowSeconds,
+		AuthLimit: runtimeCfg.RateLimits.LoginLimit, WriteLimit: runtimeCfg.RateLimits.WriteLimit,
+		UploadLimit: runtimeCfg.RateLimits.UploadLimit, DownloadLimit: runtimeCfg.RateLimits.DownloadLimit,
+		WebhookLimit: runtimeCfg.RateLimits.WebhookLimit,
+	}
+	return effective, nil
 }
 
 func isPinnedImage(image string) bool {
@@ -762,13 +809,13 @@ func validateRateLimitConfig(cfg config.Config) error {
 	return nil
 }
 
-func validateWorkerHeartbeatConfig() error {
-	maxAge, err := positiveIntEnv("PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS")
-	if err != nil {
-		return err
+func validateWorkerHeartbeatConfig(cfg config.Config) error {
+	maxAge := cfg.WorkerHeartbeatMaxAgeSeconds
+	if maxAge <= 0 {
+		return fmt.Errorf("worker heartbeat max age must be positive")
 	}
 	if maxAge > 300 {
-		return fmt.Errorf("PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS must be <= 300")
+		return fmt.Errorf("worker heartbeat max age must be <= 300")
 	}
 	return nil
 }
@@ -841,13 +888,8 @@ func validateSMTPConfig(cfg config.Config) error {
 	if !isProductionHost(cfg.SMTP.Host) {
 		return fmt.Errorf("PASTEBOX_SMTP_HOST must point to a real production SMTP service, got %q", cfg.SMTP.Host)
 	}
-	rawPort := strings.TrimSpace(os.Getenv("PASTEBOX_SMTP_PORT"))
-	port, err := strconv.Atoi(rawPort)
-	if err != nil || port <= 0 || port > 65535 {
-		return fmt.Errorf("PASTEBOX_SMTP_PORT must be a valid TCP port, got %q", rawPort)
-	}
-	if cfg.SMTP.Port != port {
-		return fmt.Errorf("PASTEBOX_SMTP_PORT could not be parsed consistently, got %q", rawPort)
+	if cfg.SMTP.Port <= 0 || cfg.SMTP.Port > 65535 {
+		return fmt.Errorf("SMTP port must be a valid TCP port, got %d", cfg.SMTP.Port)
 	}
 	if strings.TrimSpace(cfg.SMTP.Username) == "" || strings.TrimSpace(cfg.SMTP.Password) == "" {
 		return fmt.Errorf("PASTEBOX_SMTP_USERNAME and PASTEBOX_SMTP_PASSWORD are required")
@@ -891,13 +933,13 @@ func validateResticRepository(repository string) error {
 	return validateRemoteHTTPSEndpoint(rawEndpoint, "PASTEBOX_RESTIC_REPOSITORY")
 }
 
-func validateBackupCredentialSeparation() error {
-	objectAccessKey := strings.TrimSpace(os.Getenv("PASTEBOX_S3_ACCESS_KEY"))
+func validateBackupCredentialSeparation(s3Config config.S3Config) error {
+	objectAccessKey := strings.TrimSpace(s3Config.AccessKey)
 	backupAccessKey := strings.TrimSpace(os.Getenv("PASTEBOX_BACKUP_S3_ACCESS_KEY"))
 	if objectAccessKey != "" && backupAccessKey != "" && objectAccessKey == backupAccessKey {
 		return fmt.Errorf("PASTEBOX_BACKUP_S3_ACCESS_KEY must be separate from PASTEBOX_S3_ACCESS_KEY")
 	}
-	objectSecretKey := strings.TrimSpace(os.Getenv("PASTEBOX_S3_SECRET_KEY"))
+	objectSecretKey := strings.TrimSpace(s3Config.SecretKey)
 	backupSecretKey := strings.TrimSpace(os.Getenv("PASTEBOX_BACKUP_S3_SECRET_KEY"))
 	if objectSecretKey != "" && backupSecretKey != "" && objectSecretKey == backupSecretKey {
 		return fmt.Errorf("PASTEBOX_BACKUP_S3_SECRET_KEY must be separate from PASTEBOX_S3_SECRET_KEY")
@@ -1073,26 +1115,26 @@ func runWorker(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	startupCtx, startupCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer startupCancel()
-	service, pool, _, err := newProductionService(startupCtx, cfg)
+	service, pool, objects, err := newProductionService(startupCtx, cfg)
 	if err != nil {
 		logger.Error("worker service setup failed", "error", err)
 		return 1
 	}
 	defer pool.Close()
-	service.SetRuntimeConfigChangeHook(func(runtimeCfg app.RuntimeConfig) {
+	mailSender := mailer.NewDynamicSender(logger)
+	scan := scanner.NewDynamic()
+	service.SetRuntimeConfigChangeHook(func(runtimeCfg app.RuntimeConfig, effective config.Config) {
 		applyRuntimeLogLevel(runtimeCfg.LogLevel, logLevel, logger)
+		if err := mailSender.Update(effective); err != nil {
+			logger.Warn("mailer config update ignored", "error", err)
+		}
+		if err := scan.Update(effective.Scanner); err != nil {
+			logger.Warn("scanner config update ignored", "error", err)
+		}
+		if err := objects.Update(effective.S3); err != nil {
+			logger.Warn("object storage config update ignored", "error", err)
+		}
 	})
-
-	mailSender, err := mailer.NewSender(cfg, logger)
-	if err != nil {
-		logger.Error("worker mailer setup failed", "error", err)
-		return 1
-	}
-	scan, err := scanner.New(cfg.Scanner)
-	if err != nil {
-		logger.Error("worker scanner setup failed", "error", err)
-		return 1
-	}
 
 	runner := worker.NewRunnerWithMail(postgres.NewJobStore(pool), postgres.NewMailStore(pool), mailSender, service, worker.Config{
 		BatchSize:    *batchSize,
@@ -1146,6 +1188,12 @@ func workerServiceConfig(cfg config.Config) config.Config {
 }
 
 func runAdminCreate(args []string, stdout io.Writer, stderr io.Writer) int {
+	return runAdminCreateWith(args, stdout, stderr, createAdminInDatabase)
+}
+
+type adminCreator func(context.Context, string, string) (app.UserView, error)
+
+func runAdminCreateWith(args []string, stdout io.Writer, stderr io.Writer, create adminCreator) int {
 	fs := flag.NewFlagSet("pastebox admin create", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	email := fs.String("email", "", "admin email")
@@ -1158,21 +1206,38 @@ func runAdminCreate(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 2
 	}
 
-	cfg := config.FromEnv()
-	cfg.BootstrapAdminEmail = ""
-	cfg.BootstrapAdminPassword = ""
-	service := app.New(cfg)
-	admin, err := service.SeedAdmin(*email, *password)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	admin, err := create(ctx, *email, *password)
 	if err != nil {
 		fmt.Fprintf(stderr, "admin create failed: %v\n", err)
 		return 1
 	}
 
-	fmt.Fprintf(stdout, "generated bootstrap admin settings for %s\n", admin.Email)
-	fmt.Fprintln(stdout, "set these environment variables before starting pastebox to create or update the admin account:")
-	fmt.Fprintf(stdout, "PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=%s\n", admin.Email)
-	fmt.Fprintln(stdout, "PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=<the password you provided>")
+	fmt.Fprintf(stdout, "admin account created or updated: %s\n", admin.Email)
 	return 0
+}
+
+func createAdminInDatabase(ctx context.Context, email string, password string) (app.UserView, error) {
+	cfg := config.FromEnv()
+	cfg.BootstrapAdminEmail = ""
+	cfg.BootstrapAdminPassword = ""
+	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return app.UserView{}, fmt.Errorf("postgres pool setup: %w", err)
+	}
+	defer pool.Close()
+	service, err := app.NewWithStorage(ctx, cfg, app.Stores{Auth: app.AuthStores{
+		Users:           postgres.NewUserStore(pool),
+		Sessions:        postgres.NewSessionStore(pool),
+		Tokens:          postgres.NewAuthTokenStore(pool),
+		LoginFailures:   postgres.NewLoginFailureStore(pool),
+		OAuthIdentities: postgres.NewOAuthIdentityStore(pool),
+	}})
+	if err != nil {
+		return app.UserView{}, err
+	}
+	return service.SeedAdmin(email, password)
 }
 
 func printUsage(w io.Writer) {

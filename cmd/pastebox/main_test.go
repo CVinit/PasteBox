@@ -9,24 +9,27 @@ import (
 	"testing"
 	"time"
 
+	"pastebox/internal/app"
 	"pastebox/internal/config"
 	"pastebox/internal/postgres"
 )
 
-func TestAdminCreateCommandEmitsBootstrapEnvWithoutPassword(t *testing.T) {
+func TestAdminCreateCommandWritesDatabaseWithoutEchoingPassword(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	code := run([]string{"admin", "create", "--email", "Admin@Example.COM", "--password", "password123"}, &stdout, &stderr)
+	code := runAdminCreateWith([]string{"--email", "Admin@Example.COM", "--password", "password123"}, &stdout, &stderr, func(_ context.Context, email string, _ string) (app.UserView, error) {
+		return app.UserView{Email: strings.ToLower(email)}, nil
+	})
 	if code != 0 {
 		t.Fatalf("expected exit code 0, got %d stderr=%q", code, stderr.String())
 	}
 	output := stdout.String()
-	if !strings.Contains(output, "generated bootstrap admin settings for admin@example.com") {
+	if !strings.Contains(output, "admin account created or updated: admin@example.com") {
 		t.Fatalf("expected normalized admin email in output, got %q", output)
 	}
-	if !strings.Contains(output, "PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=admin@example.com") {
-		t.Fatalf("expected bootstrap email env, got %q", output)
+	if strings.Contains(output, "PASTEBOX_BOOTSTRAP") {
+		t.Fatalf("output must not contain bootstrap environment settings: %q", output)
 	}
 	if strings.Contains(output, "password123") {
 		t.Fatalf("bootstrap output must not echo the password: %q", output)
@@ -196,6 +199,7 @@ func TestProductionPreflightRequiresExplicitProductionEnvironment(t *testing.T) 
 	required := []string{
 		"PASTEBOX_IMAGE",
 		"PASTEBOX_APP_ENV",
+		"PASTEBOX_CONFIG_ENCRYPTION_KEY",
 		"PASTEBOX_PUBLIC_URL",
 		"PASTEBOX_SUPPORT_EMAIL",
 		"PASTEBOX_ABUSE_EMAIL",
@@ -260,7 +264,7 @@ func TestProductionPreflightRequiresExplicitProductionEnvironment(t *testing.T) 
 	if code != 1 {
 		t.Fatalf("expected missing production env to fail, got %d", code)
 	}
-	if !strings.Contains(stderr.String(), "PASTEBOX_APP_ENV") || !strings.Contains(stderr.String(), "PASTEBOX_PUBLIC_URL") {
+	if !strings.Contains(stderr.String(), "PASTEBOX_APP_ENV") || !strings.Contains(stderr.String(), "PASTEBOX_CONFIG_ENCRYPTION_KEY") {
 		t.Fatalf("expected missing env names in stderr, got %q", stderr.String())
 	}
 	if stdout.Len() != 0 {
@@ -282,6 +286,33 @@ func TestProductionPreflightPassesWithRequiredEnvironment(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+}
+
+func TestProductionRootOnlyPreflightValidatesPublicDeployIdentity(t *testing.T) {
+	tests := []struct {
+		name     string
+		key      string
+		value    string
+		expected string
+	}{
+		{name: "domain", key: "PASTEBOX_DOMAIN", value: "localhost", expected: "PASTEBOX_DOMAIN must be a real production hostname"},
+		{name: "admin email", key: "PASTEBOX_ADMIN_EMAIL", value: "admin@localhost", expected: "PASTEBOX_ADMIN_EMAIL must use a production email domain"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setValidProductionEnv(t)
+			t.Setenv("PASTEBOX_PUBLIC_URL", "")
+			t.Setenv(tt.key, tt.value)
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			if code := run([]string{"preflight", "production"}, &stdout, &stderr); code != 1 {
+				t.Fatalf("expected root-only preflight to fail, got %d", code)
+			}
+			if !strings.Contains(stderr.String(), tt.expected) {
+				t.Fatalf("expected %q, got %q", tt.expected, stderr.String())
+			}
+		})
 	}
 }
 
@@ -1147,6 +1178,8 @@ func setValidProductionEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("PASTEBOX_IMAGE", "ghcr.io/cvinit/pastebox:sha-abc123")
 	t.Setenv("PASTEBOX_APP_ENV", "production")
+	t.Setenv("PASTEBOX_CONFIG_ENCRYPTION_KEY", "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=")
+	t.Setenv("PASTEBOX_PREFLIGHT_ROOT_ONLY", "true")
 	t.Setenv("PASTEBOX_PUBLIC_URL", "https://pastebox.app")
 	t.Setenv("PASTEBOX_SUPPORT_EMAIL", "support@pastebox.app")
 	t.Setenv("PASTEBOX_ABUSE_EMAIL", "abuse@pastebox.app")

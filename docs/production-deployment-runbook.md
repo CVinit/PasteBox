@@ -111,7 +111,15 @@ traffic is allowed.
    chmod 600 deploy/production.env
    ```
 
-8. Edit `deploy/production.env` and replace every `CHANGE_ME` value. Set
+8. Edit `deploy/production.env` and replace every `CHANGE_ME` value. Generate
+   the application configuration-encryption key once and keep it backed up:
+
+   ```sh
+   openssl rand -base64 32
+   ```
+
+   Store that value as `PASTEBOX_CONFIG_ENCRYPTION_KEY`. Losing or changing it
+   makes the encrypted application secrets in PostgreSQL unreadable. Set
    `PASTEBOX_IMAGE` to an immutable image reference:
 
    ```text
@@ -135,7 +143,7 @@ Then run these checks from `/opt/pastebox` on the server:
 
 ```sh
 docker compose --env-file deploy/production.env -f compose.production.yaml config
-docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm preflight
+PASTEBOX_PREFLIGHT_ROOT_ONLY=true docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm preflight
 docker compose --env-file deploy/production.env -f compose.production.yaml pull
 ```
 
@@ -160,78 +168,60 @@ the Buildx publish step. A production image tag is not acceptable launch
 evidence unless that workflow passed for the exact release commit or an
 equivalent operator-owned CI job recorded the same checks.
 
-The production preflight fails if `PASTEBOX_IMAGE` is mutable, if
-`PASTEBOX_PUBLIC_URL` is not a root HTTPS production origin, if
-`PASTEBOX_DOMAIN` is not a production hostname matching the
-`PASTEBOX_PUBLIC_URL` host, if `PASTEBOX_ADMIN_EMAIL`,
-`PASTEBOX_SUPPORT_EMAIL`, or `PASTEBOX_ABUSE_EMAIL` is missing, local, or not a
-plain production email address, if `PASTEBOX_CSRF_SECRET` is missing or left at
-the development default, if `PASTEBOX_METRICS_TOKEN` is missing or too short,
-if `PASTEBOX_CORS_ALLOWED_ORIGINS` is missing, wildcarded, local, HTTP, or does
-not include the exact `PASTEBOX_PUBLIC_URL` origin, if production rate limits
-are disabled or non-positive, if Google OAuth client settings are missing, if
-SMTP is not configured for TLS delivery, if the bootstrap admin password is
-short or placeholder-like, if `PASTEBOX_S3_ENDPOINT` points to a local or HTTP
-object store, if `PASTEBOX_RESTIC_REPOSITORY` is not an off-host `s3:https://`
-repository, or if backup S3 credentials reuse the attachment object-storage
-credentials. Use managed S3-compatible storage for attachment objects and a
-separate off-host S3-compatible restic repository for backups.
-Preflight also rejects `CHANGE_ME` placeholders and documentation-only hostnames
-such as `example.com`, `.example.com`, `.test`, `.invalid`, localhost,
-single-label internal hostnames, and IP literals for production-facing URLs,
-email domains, CORS origins, OAuth redirects, SMTP, object storage, backup
-repositories, and payment checkout templates. The committed
-`deploy/production.env.example` is only a key inventory; copy it to the server
-as `deploy/production.env` and replace every placeholder with operator-owned
-real values before running preflight.
+The root-only production preflight validates the immutable image reference,
+domain and administrator contact, configuration-encryption key, metrics token,
+PostgreSQL and Redis roots, and backup/WAL settings. The full preflight reads
+the encrypted application configuration from PostgreSQL and additionally
+validates the public URL, support contacts, CORS, rate limits, worker heartbeat,
+OAuth, TLS SMTP, S3, ClamAV, and billing providers. It rejects `CHANGE_ME`
+placeholders, local or documentation-only production hosts, insecure provider
+URLs, and attachment/backup storage credential reuse.
+
+The committed `deploy/production.env.example` is only a startup-root inventory.
+Application and provider settings are saved in **Admin > Application config**;
+secret values are encrypted with AES-256-GCM before PostgreSQL persistence and
+are never returned by the admin API. Use managed S3-compatible storage for
+attachment objects and a separate off-host S3-compatible restic repository for
+backups.
 `PASTEBOX_WAL_ARCHIVE_TIMEOUT_SECONDS` and
 `PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS` must both be positive and no more than
 `900`; `PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS` must also be positive and no more
 than `900` so the local PostgreSQL topology can support the 15-minute RPO
 target.
 
-The first production launch also requires billing to be enabled with real
-provider callback and checkout settings: `PASTEBOX_STRIPE_ENABLED=true`,
-`PASTEBOX_STRIPE_WEBHOOK_SECRET=whsec_...`,
-`PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE=https://...`,
-`PASTEBOX_EPUSDT_ENABLED=true`, `PASTEBOX_EPUSDT_PID`,
-`PASTEBOX_EPUSDT_SECRET_KEY`, `PASTEBOX_EPUSDT_CHECKOUT_URL_TEMPLATE=https://...`,
-`PASTEBOX_EPUSDT_ADDRESS`, and `PASTEBOX_EPUSDT_CHAIN`. Provider webhook routes
-are excluded from browser CSRF but reject unsigned or incorrectly signed
-callbacks. Production order creation fails closed instead of returning
-development checkout URLs or test USDT addresses when these checkout settings
-are missing or invalid.
+The first production launch also requires billing provider callback, checkout,
+merchant, and signing-secret fields to be configured in the admin console.
+Provider webhook routes are excluded from browser CSRF but reject unsigned or
+incorrectly signed callbacks. Production order creation fails closed instead
+of returning development checkout URLs or test USDT addresses when these
+settings are missing or invalid.
 
 The Google OAuth app must include the production authorized redirect URI for
-the real `PASTEBOX_PUBLIC_URL` host:
+the configured public URL host:
 
 ```text
 https://<production-domain>/api/v1/auth/google/callback
 ```
 
-SMTP must use the confirmed enterprise mail service with
-`PASTEBOX_MAILER_PROVIDER=smtp`, a production host, valid credentials, a
-production sender address, and either `PASTEBOX_SMTP_TLS_MODE=starttls` or
-`PASTEBOX_SMTP_TLS_MODE=tls`. Plain SMTP is rejected in production preflight.
-Scanning must use `PASTEBOX_SCANNER_PROVIDER=clamav` with a reachable
-`PASTEBOX_CLAMAV_ADDR` such as `clamav:3310`.
+SMTP must use the confirmed enterprise mail service with a production host,
+valid credentials, a production sender address, and `starttls` or `tls` mode.
+Plain SMTP is rejected in production preflight. Scanning must use ClamAV with a
+reachable address such as `clamav:3310`.
 
 PasteBox adds app-level browser hardening headers on API and static responses:
 `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`,
 `Permissions-Policy`, and a same-origin Content Security Policy. Keep the Caddy
 headers as the edge defense layer, but do not rely on Caddy as the only source
-of secure headers. API CORS is credentialed only for exact origins listed in
-`PASTEBOX_CORS_ALLOWED_ORIGINS`; do not use wildcard origins with browser
-cookies.
+of secure headers. API CORS is credentialed only for exact origins saved in the
+admin console; do not use wildcard origins with browser cookies.
 
-Production HTTP rate limits are enabled by default through
-`PASTEBOX_RATE_LIMIT_ENABLED=true`. The process-local fixed-window limiter
-covers auth, browser write, upload, download, and provider webhook surfaces by
-IP, and by user ID when a valid session cookie is present. Keep all
-`PASTEBOX_RATE_LIMIT_*` limits positive for production. The current single-VPS
-Compose baseline runs one API replica; if multiple API replicas are introduced,
-replace the process-local buckets with Redis-backed counters before scaling
-traffic horizontally.
+Production HTTP rate limits are enabled in the admin console. The process-local
+fixed-window limiter covers auth, browser write, upload, download, and provider
+webhook surfaces by IP, and by user ID when a valid session cookie is present.
+Keep all rate limits positive for production. The current single-VPS Compose
+baseline runs one API replica; if multiple API replicas are introduced, replace
+the process-local buckets with Redis-backed counters before scaling traffic
+horizontally.
 
 To validate the committed template without creating a real secret file:
 
@@ -250,24 +240,40 @@ The command applies embedded SQL migrations and records applied versions in
 `schema_migrations`. Treat any checksum mismatch or failed migration as a hard
 release stop.
 
-## Bootstrap Admin
+## Create The First Admin
 
-Set `PASTEBOX_BOOTSTRAP_ADMIN_EMAIL` and `PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD`
-in `deploy/production.env` before the first API start. The API process creates
-or updates that account at startup, marks it verified, grants the `admin` role,
-and replaces the password with the configured value. Startup fails instead of
-silently continuing if the bootstrap email or password is invalid.
+Start PostgreSQL and Redis, run migrations, and create the administrator with a
+one-shot command. The password is not stored in `deploy/production.env` and is
+not printed by the command:
 
-After the first successful admin login, rotate the bootstrap password or remove
-the bootstrap variables from the real production environment so routine
-restarts do not keep resetting the administrator password.
+```sh
+docker compose --env-file deploy/production.env -f compose.production.yaml up -d postgres redis
+docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm migrate
+docker compose --env-file deploy/production.env -f compose.production.yaml run --rm api admin create --email admin@<production-domain> --password '<strong-password>'
+```
+
+The command can also reset an existing administrator. Keep the password out of
+shell history by supplying it through an operator-controlled secret mechanism
+where available.
 
 ## Start Or Upgrade
 
 ```sh
-docker compose --env-file deploy/production.env -f compose.production.yaml up -d postgres redis
 docker compose --env-file deploy/production.env -f compose.production.yaml up -d api worker caddy
 docker compose --env-file deploy/production.env -f compose.production.yaml ps
+```
+
+Open `https://<production-domain>/`, sign in as the administrator, and complete
+**Admin > Application config**. Save the site, S3, mail, OAuth, Turnstile,
+scanner, Telegram, billing, rate-limit, and worker settings. Secret fields are
+write-only: leave them blank to retain the current value, enter a replacement,
+or use the clear action.
+
+After saving the configuration, run the full preflight and wait for both
+readiness endpoints:
+
+```sh
+docker compose --env-file deploy/production.env -f compose.production.yaml --profile maintenance run --rm preflight
 ```
 
 Verify local readiness:
@@ -296,9 +302,8 @@ curl -fsS -H "Authorization: Bearer $PASTEBOX_METRICS_TOKEN" https://<production
 
 Do not put `PASTEBOX_METRICS_TOKEN` in dashboards, public URLs, or shared
 screenshots. The optional in-stack Prometheus profile reads this token as a
-Compose secret from `PASTEBOX_METRICS_TOKEN`, renders the configured
-`PASTEBOX_PUBLIC_URL` into the blackbox scrape target, and mounts committed
-scrape, probe, and alert-rule files:
+Compose secret from `PASTEBOX_METRICS_TOKEN`, derives the blackbox target from
+`PASTEBOX_DOMAIN`, and mounts committed scrape, probe, and alert-rule files:
 
 ```sh
 docker compose --env-file deploy/production.env -f compose.production.yaml --profile monitoring up -d prometheus

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -1954,7 +1955,7 @@ func TestRuntimeConfigLogLevelPatchAndHook(t *testing.T) {
 	svc := newTestService(t, &now)
 	admin := seedAdminTestUser(t, svc, "log-level-admin@example.com")
 	observed := []string{}
-	svc.SetRuntimeConfigChangeHook(func(cfg RuntimeConfig) {
+	svc.SetRuntimeConfigChangeHook(func(cfg RuntimeConfig, _ config.Config) {
 		observed = append(observed, cfg.LogLevel)
 	})
 	if len(observed) != 1 || observed[0] != RuntimeLogLevelInfo {
@@ -1974,6 +1975,113 @@ func TestRuntimeConfigLogLevelPatchAndHook(t *testing.T) {
 	if _, err := svc.AdminUpdateRuntimeConfig(admin.ID, RuntimeConfigPatch{LogLevel: ptr("trace")}); !hasAppCode(err, "invalid_log_level") {
 		t.Fatalf("expected invalid_log_level, got %v", err)
 	}
+}
+
+func TestManagedConfigSecretsAreWriteOnlyAndApplyAtRuntime(t *testing.T) {
+	now := time.Date(2026, 8, 17, 10, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	admin := seedAdminTestUser(t, svc, "managed-config-admin@example.com")
+	view, err := svc.AdminManagedConfig(admin.ID)
+	if err != nil {
+		t.Fatalf("managed config: %v", err)
+	}
+	view.Config.Site.AppName = "Managed PasteBox"
+	view.Config.Site.PublicURL = "https://pastebox.test"
+	view.Config.Site.SupportEmail = "support@pastebox.test"
+	view.Config.Site.AbuseEmail = "abuse@pastebox.test"
+	view.Config.Site.CORSAllowedOrigins = []string{"https://pastebox.test"}
+	secret := "smtp-managed-secret"
+	updated, err := svc.AdminUpdateManagedConfig(admin.ID, ManagedConfigUpdate{
+		Config:  view.Config,
+		Secrets: ManagedSecretPatch{SMTPPassword: &secret},
+	})
+	if err != nil {
+		t.Fatalf("update managed config: %v", err)
+	}
+	if !updated.Secrets.SMTPPassword {
+		t.Fatal("expected SMTP password to report configured")
+	}
+	if effective := svc.EffectiveConfig(); effective.AppName != "Managed PasteBox" || effective.SMTP.Password != secret {
+		t.Fatalf("expected managed config to apply at runtime, got %#v", effective)
+	}
+	raw, err := json.Marshal(updated)
+	if err != nil {
+		t.Fatalf("marshal managed config view: %v", err)
+	}
+	if bytes.Contains(raw, []byte(secret)) {
+		t.Fatalf("managed config response leaked plaintext secret: %s", raw)
+	}
+	sender := &fakeAlertSender{err: fmt.Errorf("provider rejected %s", secret)}
+	svc.SetAlertSender(sender)
+	event, err := svc.AdminSendTestAlert(admin.ID, "test "+secret)
+	if err != nil {
+		t.Fatalf("send managed secret alert test: %v", err)
+	}
+	if strings.Contains(event.Message, secret) || strings.Contains(event.LastError, secret) || !strings.Contains(event.Message, "[redacted]") || !strings.Contains(event.LastError, "[redacted]") {
+		t.Fatalf("managed secrets must be redacted from alert records: %#v", event)
+	}
+
+	updated.Config.Site.AppName = "Managed PasteBox 2"
+	kept, err := svc.AdminUpdateManagedConfig(admin.ID, ManagedConfigUpdate{Config: updated.Config})
+	if err != nil {
+		t.Fatalf("update managed config without secret patch: %v", err)
+	}
+	if !kept.Secrets.SMTPPassword || svc.EffectiveConfig().SMTP.Password != secret {
+		t.Fatal("omitted secret patch must retain the existing secret")
+	}
+	empty := ""
+	cleared, err := svc.AdminUpdateManagedConfig(admin.ID, ManagedConfigUpdate{
+		Config:  kept.Config,
+		Secrets: ManagedSecretPatch{SMTPPassword: &empty},
+	})
+	if err != nil {
+		t.Fatalf("clear managed secret: %v", err)
+	}
+	if cleared.Secrets.SMTPPassword || svc.EffectiveConfig().SMTP.Password != "" {
+		t.Fatal("empty secret patch must clear the existing secret")
+	}
+}
+
+func TestLegacyRuntimeConfigImportsEnvironmentManagedValuesOnce(t *testing.T) {
+	root := config.FromEnv()
+	root.SMTP.Password = "legacy-smtp-secret"
+	root.S3.AccessKey = "legacy-access-key"
+	store := &memoryRuntimeConfigStore{
+		cfg: RuntimeConfig{ID: runtimeConfigID, LogLevel: RuntimeLogLevelInfo},
+		ok:  true,
+	}
+	svc, err := NewWithStorage(context.Background(), root, Stores{RuntimeConfigs: store})
+	if err != nil {
+		t.Fatalf("new service with legacy runtime config: %v", err)
+	}
+	if store.saves != 1 || store.cfg.Managed.Version != config.ManagedConfigVersion {
+		t.Fatalf("expected one-time managed config persistence, saves=%d cfg=%#v", store.saves, store.cfg.Managed)
+	}
+	if store.secrets.SMTPPassword != "legacy-smtp-secret" || store.secrets.S3AccessKey != "legacy-access-key" {
+		t.Fatalf("expected legacy secrets to be imported, got %#v", store.secrets)
+	}
+	if svc.EffectiveConfig().SMTP.Password != "legacy-smtp-secret" {
+		t.Fatal("expected imported config to become effective")
+	}
+}
+
+type memoryRuntimeConfigStore struct {
+	cfg     RuntimeConfig
+	secrets config.ManagedSecrets
+	ok      bool
+	saves   int
+}
+
+func (s *memoryRuntimeConfigStore) RuntimeConfig(context.Context) (RuntimeConfig, config.ManagedSecrets, bool, error) {
+	return s.cfg, s.secrets, s.ok, nil
+}
+
+func (s *memoryRuntimeConfigStore) SaveRuntimeConfig(_ context.Context, cfg RuntimeConfig, secrets config.ManagedSecrets) error {
+	s.cfg = cfg
+	s.secrets = secrets
+	s.ok = true
+	s.saves++
+	return nil
 }
 
 func TestTurnstileVerifierSiteverifyResponses(t *testing.T) {

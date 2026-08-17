@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"testing"
@@ -9,6 +10,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"pastebox/internal/app"
+	"pastebox/internal/config"
+	"pastebox/internal/configcrypto"
 )
 
 func TestRuntimeControlStoresPersistConfigRedemptionsAndAlerts(t *testing.T) {
@@ -32,7 +35,11 @@ func TestRuntimeControlStoresPersistConfigRedemptionsAndAlerts(t *testing.T) {
 	cleanupRuntimeControlStoreRows(t, pool)
 
 	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
-	runtimeStore := NewRuntimeConfigStore(pool)
+	cipher, err := configcrypto.New(bytes.Repeat([]byte{0x3c}, 32))
+	if err != nil {
+		t.Fatalf("new config cipher: %v", err)
+	}
+	runtimeStore := NewRuntimeConfigStore(pool, cipher)
 	cfg := app.RuntimeConfig{
 		ID:       "default",
 		LogLevel: app.RuntimeLogLevelDebug,
@@ -57,15 +64,26 @@ func TestRuntimeControlStoresPersistConfigRedemptionsAndAlerts(t *testing.T) {
 		},
 		UpdatedAt: now,
 	}
-	if err := runtimeStore.SaveRuntimeConfig(ctx, cfg); err != nil {
+	secrets := config.ManagedSecrets{SMTPPassword: "smtp-password"}
+	if err := runtimeStore.SaveRuntimeConfig(ctx, cfg, secrets); err != nil {
 		t.Fatalf("save runtime config: %v", err)
 	}
-	loaded, ok, err := runtimeStore.RuntimeConfig(ctx)
+	loaded, loadedSecrets, ok, err := runtimeStore.RuntimeConfig(ctx)
 	if err != nil {
 		t.Fatalf("read runtime config: %v", err)
 	}
 	if !ok || loaded.LogLevel != app.RuntimeLogLevelDebug || !loaded.GuestUploads.Enabled || !loaded.Alerts.TelegramEnabled {
 		t.Fatalf("unexpected loaded runtime config: ok=%v cfg=%#v", ok, loaded)
+	}
+	if loadedSecrets.SMTPPassword != secrets.SMTPPassword {
+		t.Fatalf("expected encrypted secret to round trip")
+	}
+	var storedCiphertext []byte
+	if err := pool.QueryRow(ctx, `SELECT ciphertext FROM system_config_secrets WHERE config_id = 'default' AND name = 'smtp.password'`).Scan(&storedCiphertext); err != nil {
+		t.Fatalf("read stored config ciphertext: %v", err)
+	}
+	if bytes.Contains(storedCiphertext, []byte(secrets.SMTPPassword)) {
+		t.Fatal("stored config ciphertext must not contain plaintext secret")
 	}
 
 	user := app.User{

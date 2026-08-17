@@ -60,6 +60,9 @@ import {
   type AuditLog,
   type GuestUploadConfig,
   type LogLevel,
+  type ManagedConfig,
+  type ManagedConfigView,
+  type ManagedSecretPatch,
   type ManualWorkItem,
   type Order,
   type Paste,
@@ -127,6 +130,7 @@ type AdminData = {
   queues: AdminQueues | null;
   webhookEvents: WebhookEvent[];
   runtimeConfig: RuntimeConfig | null;
+  managedConfig: ManagedConfigView | null;
   runtimePanel: RuntimePanel | null;
   manualWorkItems: ManualWorkItem[];
   redemptionBatches: RedemptionBatch[];
@@ -179,6 +183,7 @@ type AdminTab =
   | "plans"
   | "guest"
   | "security"
+  | "configuration"
   | "services"
   | "queues";
 type SizeUnit = "KB" | "MB" | "GB";
@@ -250,6 +255,7 @@ const emptyAdminData: AdminData = {
   queues: null,
   webhookEvents: [],
   runtimeConfig: null,
+  managedConfig: null,
   runtimePanel: null,
   manualWorkItems: [],
   redemptionBatches: [],
@@ -268,6 +274,7 @@ const adminTabOptions: Array<{ value: AdminTab; labelKey: string }> = [
   { value: "plans", labelKey: "adminTabPlans" },
   { value: "guest", labelKey: "adminTabGuest" },
   { value: "security", labelKey: "adminTabSecurity" },
+  { value: "configuration", labelKey: "adminTabConfiguration" },
   { value: "services", labelKey: "adminTabServices" },
   { value: "queues", labelKey: "adminTabQueues" },
 ];
@@ -319,7 +326,8 @@ const viewSummaries: Record<Locale, Record<View, ViewSummary>> = {
     shared: {
       eyebrow: "分享管理",
       title: "每一条链接都可追踪、可撤销。",
-      description: "访问次数、下载状态和过期时间集中展示，发现风险时可以立即收回分享权限。",
+      description:
+        "访问次数、下载状态和过期时间集中展示，发现风险时可以立即收回分享权限。",
     },
     billing: {
       eyebrow: "套餐权益",
@@ -330,12 +338,14 @@ const viewSummaries: Record<Locale, Record<View, ViewSummary>> = {
     settings: {
       eyebrow: "账号与安全",
       title: "把账号、数据和安全请求放在一起。",
-      description: "绑定登录方式、导出数据、提交举报和删除申请都在这里完成，减少来回切换。",
+      description:
+        "绑定登录方式、导出数据、提交举报和删除申请都在这里完成，减少来回切换。",
     },
     admin: {
       eyebrow: "运营控制台",
       title: "关键状态集中看，问题处理更快。",
-      description: "用户、内容、订单、队列和告警集中在同一处，方便管理员判断风险和推进上线检查。",
+      description:
+        "用户、内容、订单、队列和告警集中在同一处，方便管理员判断风险和推进上线检查。",
     },
   },
   "zh-TW": {
@@ -348,7 +358,8 @@ const viewSummaries: Record<Locale, Record<View, ViewSummary>> = {
     shared: {
       eyebrow: "分享管理",
       title: "每一條連結都可追蹤、可撤銷。",
-      description: "訪問次數、下載狀態和過期時間集中展示，發現風險時可以立即收回分享權限。",
+      description:
+        "訪問次數、下載狀態和過期時間集中展示，發現風險時可以立即收回分享權限。",
     },
     billing: {
       eyebrow: "方案權益",
@@ -359,12 +370,14 @@ const viewSummaries: Record<Locale, Record<View, ViewSummary>> = {
     settings: {
       eyebrow: "帳號與安全",
       title: "把帳號、資料和安全請求放在一起。",
-      description: "綁定登入方式、匯出資料、提交檢舉和刪除申請都在這裡完成，減少來回切換。",
+      description:
+        "綁定登入方式、匯出資料、提交檢舉和刪除申請都在這裡完成，減少來回切換。",
     },
     admin: {
       eyebrow: "營運控制台",
       title: "關鍵狀態集中看，問題處理更快。",
-      description: "使用者、內容、訂單、佇列和警示集中在同一處，方便管理員判斷風險和推進上線檢查。",
+      description:
+        "使用者、內容、訂單、佇列和警示集中在同一處，方便管理員判斷風險和推進上線檢查。",
     },
   },
   es: {
@@ -990,8 +1003,44 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     adminTabGuest: "Guest limits",
     adminTabSecurity: "Security",
     adminTabServices: "Services",
+    adminTabConfiguration: "Application config",
     adminTabQueues: "Queues & audit",
     adminControlPanel: "Control panel",
+    activeStorageUsage: "Active storage",
+    openReports: "Open reports",
+    scanQueue: "Scan queue",
+    clientId: "Client ID",
+    clientSecret: "Client secret",
+    redirectUrl: "Redirect URL",
+    webhookSecret: "Webhook secret",
+    checkoutUrl: "Checkout URL",
+    merchantId: "Merchant ID",
+    provider: "Provider",
+    logMailer: "Log only",
+    scannerHeuristic: "Heuristic scan",
+    configurationReady: "Configured",
+    configurationIncomplete: "Incomplete",
+    missingConfiguration: "Missing",
+    providerTestOk: "Last test passed",
+    providerTestMissingConfig: "Test blocked by missing configuration",
+    providerTestSendFailed: "Test delivery failed",
+    alertCpuHigh: "PasteBox CPU usage high",
+    alertMemoryHigh: "PasteBox memory usage high",
+    alertDiskHigh: "PasteBox disk usage high",
+    alertObjectStorageHigh: "PasteBox object storage usage high",
+    alertScanFailuresHigh: "PasteBox scan failure queue depth",
+    alertFailedJobsHigh: "PasteBox failed job depth",
+    alertFailedMailsHigh: "PasteBox failed mail depth",
+    alertOpenReportsHigh: "PasteBox open report count",
+    maliciousAttachment: "Malicious attachment",
+    statusQueued: "Queued",
+    statusPending: "Pending",
+    statusFailed: "Failed",
+    statusOpen: "Open",
+    statusSent: "Sent",
+    statusSuppressed: "Suppressed",
+    statusResolved: "Resolved",
+    statusDismissed: "Dismissed",
     runtimeConfig: "Runtime config",
     processLogs: "Process logs",
     logLevel: "Log level",
@@ -1009,6 +1058,46 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     catalogSaved: "Catalog saved",
     runtimeConfigSaved: "Runtime config saved",
     saveRuntimeConfig: "Save runtime config",
+    applicationConfig: "Application configuration",
+    applicationName: "Application name",
+    siteSettings: "Site settings",
+    publicUrl: "Public URL",
+    supportEmail: "Support email",
+    abuseEmail: "Abuse email",
+    corsOrigins: "Allowed CORS origins",
+    workerHeartbeatMaxAge: "Worker heartbeat max age",
+    endpoint: "Endpoint",
+    bucket: "Bucket",
+    region: "Region",
+    pathStyle: "Use path-style requests",
+    accessKey: "Access key",
+    secretKey: "Secret key",
+    mailService: "Mail service",
+    smtpHost: "SMTP host",
+    smtpPort: "SMTP port",
+    username: "Username",
+    fromEmail: "From email",
+    fromName: "From name",
+    tlsMode: "TLS mode",
+    oauthAndCaptcha: "OAuth and anti-abuse",
+    turnstileSecretKey: "Turnstile secret key",
+    verifyUrl: "Verification URL",
+    scannerAndNotifications: "Scanner and notifications",
+    scannerProvider: "Scanner provider",
+    clamavAddress: "ClamAV address",
+    scannerTimeout: "Scanner timeout",
+    telegramChatId: "Telegram chat ID",
+    telegramBotToken: "Telegram bot token",
+    apiBaseUrl: "API base URL",
+    paymentProviders: "Payment providers",
+    chain: "Chain",
+    port: "port",
+    secretConfigured: "configured",
+    secretMissing: "not configured",
+    secretKeepPlaceholder: "Leave blank to keep the current value",
+    clearSecret: "Clear saved secret",
+    saveApplicationConfig: "Save application config",
+    managedConfigSaved: "Application config saved",
     guestUploads: "Guest uploads",
     registrationSecurity: "Registration security",
     allowedEmailDomains: "Allowed email domains",
@@ -1319,15 +1408,51 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     adminTabGuest: "游客限制",
     adminTabSecurity: "安全/限流",
     adminTabServices: "服务配置",
+    adminTabConfiguration: "应用配置",
     adminTabQueues: "队列/审计",
     adminControlPanel: "控制面板",
+    activeStorageUsage: "已用存储",
+    openReports: "待处理举报",
+    scanQueue: "扫描队列",
+    clientId: "客户端 ID",
+    clientSecret: "客户端密钥",
+    redirectUrl: "回调地址",
+    webhookSecret: "Webhook 密钥",
+    checkoutUrl: "支付地址",
+    merchantId: "商户 ID",
+    provider: "提供方",
+    logMailer: "仅记录日志",
+    scannerHeuristic: "启发式扫描",
+    configurationReady: "配置完整",
+    configurationIncomplete: "配置不完整",
+    missingConfiguration: "缺少",
+    providerTestOk: "最近测试通过",
+    providerTestMissingConfig: "缺少配置，未执行测试",
+    providerTestSendFailed: "测试发送失败",
+    alertCpuHigh: "PasteBox CPU 使用率过高",
+    alertMemoryHigh: "PasteBox 内存使用率过高",
+    alertDiskHigh: "PasteBox 磁盘使用率过高",
+    alertObjectStorageHigh: "PasteBox 对象存储用量过高",
+    alertScanFailuresHigh: "PasteBox 扫描失败队列数量",
+    alertFailedJobsHigh: "PasteBox 失败任务数量",
+    alertFailedMailsHigh: "PasteBox 失败邮件数量",
+    alertOpenReportsHigh: "PasteBox 待处理举报数量",
+    maliciousAttachment: "恶意附件",
+    statusQueued: "排队中",
+    statusPending: "等待中",
+    statusFailed: "失败",
+    statusOpen: "待处理",
+    statusSent: "已发送",
+    statusSuppressed: "已抑制",
+    statusResolved: "已解决",
+    statusDismissed: "已忽略",
     runtimeConfig: "运行配置",
     processLogs: "进程日志",
     logLevel: "日志等级",
-    logLevelDebug: "Debug",
-    logLevelInfo: "Info",
-    logLevelWarn: "Warn",
-    logLevelError: "Error",
+    logLevelDebug: "调试",
+    logLevelInfo: "信息",
+    logLevelWarn: "警告",
+    logLevelError: "错误",
     resourcePanel: "资源面板",
     planCatalog: "套餐和价格",
     providerStatus: "服务配置状态",
@@ -1338,6 +1463,46 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     catalogSaved: "套餐已保存",
     runtimeConfigSaved: "运行配置已保存",
     saveRuntimeConfig: "保存运行配置",
+    applicationConfig: "应用配置",
+    applicationName: "应用名称",
+    siteSettings: "站点设置",
+    publicUrl: "公开地址",
+    supportEmail: "客服邮箱",
+    abuseEmail: "投诉邮箱",
+    corsOrigins: "允许的 CORS 来源",
+    workerHeartbeatMaxAge: "工作进程心跳最大间隔",
+    endpoint: "服务地址",
+    bucket: "存储桶",
+    region: "区域",
+    pathStyle: "使用路径风格请求",
+    accessKey: "访问密钥",
+    secretKey: "私密密钥",
+    mailService: "邮件服务",
+    smtpHost: "SMTP 主机",
+    smtpPort: "SMTP 端口",
+    username: "用户名",
+    fromEmail: "发件邮箱",
+    fromName: "发件名称",
+    tlsMode: "TLS 模式",
+    oauthAndCaptcha: "第三方登录与人机验证",
+    turnstileSecretKey: "Turnstile 私钥",
+    verifyUrl: "验证地址",
+    scannerAndNotifications: "扫描与通知",
+    scannerProvider: "扫描服务",
+    clamavAddress: "ClamAV 地址",
+    scannerTimeout: "扫描超时",
+    telegramChatId: "Telegram Chat ID",
+    telegramBotToken: "Telegram Bot Token",
+    apiBaseUrl: "API 基础地址",
+    paymentProviders: "支付渠道",
+    chain: "链",
+    port: "端口",
+    secretConfigured: "已配置",
+    secretMissing: "未配置",
+    secretKeepPlaceholder: "留空则保留当前值",
+    clearSecret: "清除已保存密钥",
+    saveApplicationConfig: "保存应用配置",
+    managedConfigSaved: "应用配置已保存",
     guestUploads: "游客上传",
     registrationSecurity: "注册安全",
     allowedEmailDomains: "允许注册的邮箱后缀",
@@ -1632,14 +1797,50 @@ const copy: Record<Locale, Record<string, string>> = {
     reportTarget: "檢舉目標",
     reportReason: "檢舉原因",
     auditQueuesCleanup: "稽核、佇列、清理",
+    adminTabConfiguration: "應用設定",
     adminControlPanel: "控制面板",
+    activeStorageUsage: "已用儲存",
+    openReports: "待處理檢舉",
+    scanQueue: "掃描佇列",
+    clientId: "客戶端 ID",
+    clientSecret: "客戶端密鑰",
+    redirectUrl: "回呼地址",
+    webhookSecret: "Webhook 密鑰",
+    checkoutUrl: "付款地址",
+    merchantId: "商戶 ID",
+    provider: "提供者",
+    logMailer: "僅記錄日誌",
+    scannerHeuristic: "啟發式掃描",
+    configurationReady: "設定完整",
+    configurationIncomplete: "設定不完整",
+    missingConfiguration: "缺少",
+    providerTestOk: "最近測試通過",
+    providerTestMissingConfig: "缺少設定，未執行測試",
+    providerTestSendFailed: "測試傳送失敗",
+    alertCpuHigh: "PasteBox CPU 使用率過高",
+    alertMemoryHigh: "PasteBox 記憶體使用率過高",
+    alertDiskHigh: "PasteBox 磁碟使用率過高",
+    alertObjectStorageHigh: "PasteBox 物件儲存用量過高",
+    alertScanFailuresHigh: "PasteBox 掃描失敗佇列數量",
+    alertFailedJobsHigh: "PasteBox 失敗任務數量",
+    alertFailedMailsHigh: "PasteBox 失敗郵件數量",
+    alertOpenReportsHigh: "PasteBox 待處理檢舉數量",
+    maliciousAttachment: "惡意附件",
+    statusQueued: "排隊中",
+    statusPending: "等待中",
+    statusFailed: "失敗",
+    statusOpen: "待處理",
+    statusSent: "已傳送",
+    statusSuppressed: "已抑制",
+    statusResolved: "已解決",
+    statusDismissed: "已忽略",
     runtimeConfig: "執行設定",
     processLogs: "程序日誌",
     logLevel: "日誌等級",
-    logLevelDebug: "Debug",
-    logLevelInfo: "Info",
-    logLevelWarn: "Warn",
-    logLevelError: "Error",
+    logLevelDebug: "偵錯",
+    logLevelInfo: "資訊",
+    logLevelWarn: "警告",
+    logLevelError: "錯誤",
     resourcePanel: "資源面板",
     planCatalog: "方案和價格",
     providerStatus: "服務設定狀態",
@@ -1650,6 +1851,46 @@ const copy: Record<Locale, Record<string, string>> = {
     catalogSaved: "方案已儲存",
     runtimeConfigSaved: "執行設定已儲存",
     saveRuntimeConfig: "儲存執行設定",
+    applicationConfig: "應用設定",
+    applicationName: "應用名稱",
+    siteSettings: "站點設定",
+    publicUrl: "公開網址",
+    supportEmail: "客服信箱",
+    abuseEmail: "投訴信箱",
+    corsOrigins: "允許的 CORS 來源",
+    workerHeartbeatMaxAge: "工作程序心跳最大間隔",
+    endpoint: "服務位址",
+    bucket: "儲存桶",
+    region: "區域",
+    pathStyle: "使用路徑樣式請求",
+    accessKey: "存取密鑰",
+    secretKey: "私密密鑰",
+    mailService: "郵件服務",
+    smtpHost: "SMTP 主機",
+    smtpPort: "SMTP 連接埠",
+    username: "使用者名稱",
+    fromEmail: "寄件信箱",
+    fromName: "寄件名稱",
+    tlsMode: "TLS 模式",
+    oauthAndCaptcha: "第三方登入與人機驗證",
+    turnstileSecretKey: "Turnstile 私鑰",
+    verifyUrl: "驗證網址",
+    scannerAndNotifications: "掃描與通知",
+    scannerProvider: "掃描服務",
+    clamavAddress: "ClamAV 位址",
+    scannerTimeout: "掃描逾時",
+    telegramChatId: "Telegram Chat ID",
+    telegramBotToken: "Telegram Bot Token",
+    apiBaseUrl: "API 基礎網址",
+    paymentProviders: "付款管道",
+    chain: "鏈",
+    port: "連接埠",
+    secretConfigured: "已設定",
+    secretMissing: "未設定",
+    secretKeepPlaceholder: "留空則保留目前值",
+    clearSecret: "清除已儲存密鑰",
+    saveApplicationConfig: "儲存應用設定",
+    managedConfigSaved: "應用設定已儲存",
     guestUploads: "訪客上傳",
     requireTurnstile: "要求 Turnstile",
     enabled: "已開啟",
@@ -1919,13 +2160,49 @@ const copy: Record<Locale, Record<string, string>> = {
     reportTarget: "objetivo del reporte",
     reportReason: "motivo del reporte",
     auditQueuesCleanup: "Auditoría, colas y limpieza",
+    adminTabConfiguration: "Configuración de la aplicación",
     adminControlPanel: "Panel de control",
+    activeStorageUsage: "Almacenamiento usado",
+    openReports: "Reportes abiertos",
+    scanQueue: "Cola de escaneo",
+    clientId: "ID de cliente",
+    clientSecret: "Secreto de cliente",
+    redirectUrl: "URL de retorno",
+    webhookSecret: "Secreto de webhook",
+    checkoutUrl: "URL de pago",
+    merchantId: "ID de comercio",
+    provider: "Proveedor",
+    logMailer: "Solo registrar",
+    scannerHeuristic: "Escaneo heurístico",
+    configurationReady: "Configurado",
+    configurationIncomplete: "Configuración incompleta",
+    missingConfiguration: "Falta",
+    providerTestOk: "Última prueba correcta",
+    providerTestMissingConfig: "Prueba bloqueada por configuración faltante",
+    providerTestSendFailed: "Falló el envío de prueba",
+    alertCpuHigh: "Uso elevado de CPU de PasteBox",
+    alertMemoryHigh: "Uso elevado de memoria de PasteBox",
+    alertDiskHigh: "Uso elevado de disco de PasteBox",
+    alertObjectStorageHigh: "Uso elevado del almacenamiento de objetos",
+    alertScanFailuresHigh: "Fallos en cola de escaneo de PasteBox",
+    alertFailedJobsHigh: "Trabajos fallidos de PasteBox",
+    alertFailedMailsHigh: "Correos fallidos de PasteBox",
+    alertOpenReportsHigh: "Reportes abiertos de PasteBox",
+    maliciousAttachment: "Adjunto malicioso",
+    statusQueued: "En cola",
+    statusPending: "Pendiente",
+    statusFailed: "Fallido",
+    statusOpen: "Abierto",
+    statusSent: "Enviado",
+    statusSuppressed: "Suprimido",
+    statusResolved: "Resuelto",
+    statusDismissed: "Descartado",
     runtimeConfig: "Configuración runtime",
     processLogs: "Logs del proceso",
     logLevel: "Nivel de log",
-    logLevelDebug: "Debug",
-    logLevelInfo: "Info",
-    logLevelWarn: "Warn",
+    logLevelDebug: "Depuración",
+    logLevelInfo: "Información",
+    logLevelWarn: "Advertencia",
     logLevelError: "Error",
     resourcePanel: "Recursos",
     planCatalog: "Planes y precios",
@@ -1937,6 +2214,46 @@ const copy: Record<Locale, Record<string, string>> = {
     catalogSaved: "Catálogo guardado",
     runtimeConfigSaved: "Configuración guardada",
     saveRuntimeConfig: "Guardar configuración",
+    applicationConfig: "Configuración de la aplicación",
+    applicationName: "Nombre de la aplicación",
+    siteSettings: "Configuración del sitio",
+    publicUrl: "URL pública",
+    supportEmail: "Correo de soporte",
+    abuseEmail: "Correo de abuso",
+    corsOrigins: "Orígenes CORS permitidos",
+    workerHeartbeatMaxAge: "Tiempo máximo del latido del worker",
+    endpoint: "Endpoint",
+    bucket: "Bucket",
+    region: "Región",
+    pathStyle: "Usar solicitudes de estilo ruta",
+    accessKey: "Clave de acceso",
+    secretKey: "Clave secreta",
+    mailService: "Servicio de correo",
+    smtpHost: "Servidor SMTP",
+    smtpPort: "Puerto SMTP",
+    username: "Usuario",
+    fromEmail: "Correo remitente",
+    fromName: "Nombre remitente",
+    tlsMode: "Modo TLS",
+    oauthAndCaptcha: "OAuth y protección contra abuso",
+    turnstileSecretKey: "Clave secreta de Turnstile",
+    verifyUrl: "URL de verificación",
+    scannerAndNotifications: "Escaneo y notificaciones",
+    scannerProvider: "Proveedor de escaneo",
+    clamavAddress: "Dirección de ClamAV",
+    scannerTimeout: "Tiempo límite de escaneo",
+    telegramChatId: "ID de chat de Telegram",
+    telegramBotToken: "Token del bot de Telegram",
+    apiBaseUrl: "URL base de la API",
+    paymentProviders: "Proveedores de pago",
+    chain: "Red",
+    port: "puerto",
+    secretConfigured: "configurado",
+    secretMissing: "sin configurar",
+    secretKeepPlaceholder: "Déjalo vacío para conservar el valor actual",
+    clearSecret: "Borrar secreto guardado",
+    saveApplicationConfig: "Guardar configuración de la aplicación",
+    managedConfigSaved: "Configuración de la aplicación guardada",
     guestUploads: "Subidas invitadas",
     requireTurnstile: "Requerir Turnstile",
     enabled: "Activado",
@@ -2067,6 +2384,162 @@ const copy: Record<Locale, Record<string, string>> = {
 function copyFor(language?: string) {
   const locale = localeFor(language);
   return (key: string) => copy[locale][key] ?? copy.en[key] ?? key;
+}
+
+type Translate = (key: string) => string;
+
+const adminMetricCopyKeys: Record<string, string> = {
+  activePastes: "activePastesLabel",
+  activeStorageBytes: "activeStorageUsage",
+  cleanupQueueDepth: "cleanupJobs",
+  failedJobQueueDepth: "failedJobs",
+  orders: "orders",
+  reportsOpen: "openReports",
+  scanFailureQueueDepth: "scanFailures",
+  scanQueueDepth: "scanQueue",
+  users: "users",
+  webhookEvents: "webhooks",
+};
+
+const providerCopyKeys: Record<string, string> = {
+  mailer: "mailService",
+  log: "logMailer",
+  google: "google",
+  github: "github",
+  cloudflare_turnstile: "turnstileChallenge",
+  turnstile: "turnstileChallenge",
+  s3: "objectStorage",
+};
+
+const providerBrandLabels: Record<string, string> = {
+  smtp: "SMTP",
+  telegram: "Telegram",
+  stripe: "Stripe",
+  epusdt: "Epusdt",
+};
+
+const providerFieldCopyKeys: Record<string, string> = {
+  "mailer.provider": "provider",
+  "smtp.host": "smtpHost",
+  "smtp.from_email": "fromEmail",
+  "smtp.password": "password",
+  "google.client_id": "clientId",
+  "google.client_secret": "clientSecret",
+  "google.redirect_url": "redirectUrl",
+  "github.client_id": "clientId",
+  "github.client_secret": "clientSecret",
+  "github.redirect_url": "redirectUrl",
+  "turnstile.site_key": "turnstileSiteKey",
+  "turnstile.secret_key": "turnstileSecretKey",
+  "telegram.bot_token": "telegramBotToken",
+  "telegram.chat_id": "telegramChatId",
+  "s3.endpoint": "endpoint",
+  "s3.bucket": "bucket",
+  "s3.access_key": "accessKey",
+  "s3.secret_key": "secretKey",
+  "stripe.enabled": "enabled",
+  "stripe.webhook_secret": "webhookSecret",
+  "stripe.checkout_url_template": "checkoutUrl",
+  "epusdt.enabled": "enabled",
+  "epusdt.pid": "merchantId",
+  "epusdt.secret_key": "secretKey",
+  "epusdt.checkout_url_template": "checkoutUrl",
+  "epusdt.address": "paymentAddress",
+};
+
+const adminStatusCopyKeys: Record<string, string> = {
+  queued: "statusQueued",
+  pending: "statusPending",
+  failed: "statusFailed",
+  open: "statusOpen",
+  sent: "statusSent",
+  suppressed: "statusSuppressed",
+  resolved: "statusResolved",
+  dismissed: "statusDismissed",
+  frozen: "frozen",
+  active: "active",
+};
+
+const manualWorkKindCopyKeys: Record<string, string> = {
+  malicious_attachment: "maliciousAttachment",
+  failed_job: "failedJobs",
+  scan_failure: "scanFailures",
+  failed_mail: "failedMails",
+  open_report: "openReports",
+};
+
+const runtimeAlertCopyKeys: Record<string, string> = {
+  cpu_high: "alertCpuHigh",
+  memory_high: "alertMemoryHigh",
+  disk_high: "alertDiskHigh",
+  object_storage_high: "alertObjectStorageHigh",
+  scan_failures_high: "alertScanFailuresHigh",
+  failed_jobs_high: "alertFailedJobsHigh",
+  failed_mails_high: "alertFailedMailsHigh",
+  reports_open_high: "alertOpenReportsHigh",
+};
+
+function humanizeIdentifier(value: string): string {
+  const normalized = value
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[._-]+/g, " ")
+    .trim();
+  return normalized
+    ? normalized.charAt(0).toUpperCase() + normalized.slice(1)
+    : value;
+}
+
+function translatedIdentifier(
+  value: string,
+  keys: Record<string, string>,
+  t: Translate,
+): string {
+  const key = keys[value] ?? keys[value.toLowerCase()];
+  return key ? t(key) : humanizeIdentifier(value);
+}
+
+function adminMetricLabel(metric: string, t: Translate): string {
+  return translatedIdentifier(metric, adminMetricCopyKeys, t);
+}
+
+function adminMetricValue(metric: string, value: unknown): string {
+  if (metric === "activeStorageBytes" && typeof value === "number") {
+    return formatBytes(value);
+  }
+  return String(value);
+}
+
+function providerLabel(provider: string, t: Translate): string {
+  const brand = providerBrandLabels[provider.toLowerCase()];
+  if (brand) return brand;
+  return translatedIdentifier(provider, providerCopyKeys, t);
+}
+
+function providerFieldLabel(field: string, t: Translate): string {
+  return translatedIdentifier(field, providerFieldCopyKeys, t);
+}
+
+function providerTestStatusLabel(status: string, t: Translate): string {
+  if (status === "ok") return t("providerTestOk");
+  if (status === "send_failed") return t("providerTestSendFailed");
+  if (status.startsWith("missing_")) return t("providerTestMissingConfig");
+  return humanizeIdentifier(status);
+}
+
+function adminStatusLabel(status: string, t: Translate): string {
+  return translatedIdentifier(status, adminStatusCopyKeys, t);
+}
+
+function manualWorkKindLabel(kind: string, t: Translate): string {
+  return translatedIdentifier(kind, manualWorkKindCopyKeys, t);
+}
+
+function runtimeAlertMessage(alert: AlertEvent, t: Translate): string {
+  const key = runtimeAlertCopyKeys[alert.fingerprint];
+  if (!key) return alert.message;
+  const separator = alert.message.indexOf(":");
+  const value = separator >= 0 ? alert.message.slice(separator + 1).trim() : "";
+  return value ? `${t(key)}: ${value}` : t(key);
 }
 
 const sizeUnits: SizeUnit[] = ["KB", "MB", "GB"];
@@ -2247,6 +2720,471 @@ function AdminNumberField({
         <span className="field-unit-label">{unitLabel}</span>
       </div>
     </label>
+  );
+}
+
+function ManagedTextField({
+  label,
+  value,
+  type = "text",
+  onChange,
+}: {
+  label: string;
+  value: string;
+  type?: "text" | "url" | "email";
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="field-row">
+      <span>{label}</span>
+      <input
+        type={type}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </label>
+  );
+}
+
+function ManagedSecretField({
+  label,
+  name,
+  configured,
+  draft,
+  t,
+  onChange,
+}: {
+  label: string;
+  name: keyof ManagedSecretPatch;
+  configured: boolean;
+  draft: ManagedSecretPatch;
+  t: (key: string) => string;
+  onChange: (name: keyof ManagedSecretPatch, value: string) => void;
+}) {
+  return (
+    <div className="field-row managed-secret-field">
+      <span>
+        {label} · {configured ? t("secretConfigured") : t("secretMissing")}
+      </span>
+      <div className="managed-secret-input">
+        <input
+          autoComplete="new-password"
+          type="password"
+          value={draft[name] ?? ""}
+          placeholder={configured ? t("secretKeepPlaceholder") : ""}
+          onChange={(event) => onChange(name, event.target.value)}
+        />
+        <button
+          aria-label={t("clearSecret")}
+          title={t("clearSecret")}
+          type="button"
+          onClick={() => onChange(name, "")}
+        >
+          <Trash2 size={16} aria-hidden="true" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ManagedConfigEditor({
+  view,
+  secretDraft,
+  t,
+  onChange,
+  onSecretChange,
+  onSave,
+}: {
+  view: ManagedConfigView;
+  secretDraft: ManagedSecretPatch;
+  t: (key: string) => string;
+  onChange: (config: ManagedConfig) => void;
+  onSecretChange: (name: keyof ManagedSecretPatch, value: string) => void;
+  onSave: () => void;
+}) {
+  const cfg = view.config;
+  const patch = (value: Partial<ManagedConfig>) =>
+    onChange({ ...cfg, ...value });
+  const secret = (label: string, name: keyof ManagedSecretPatch) => (
+    <ManagedSecretField
+      configured={view.secrets[name]}
+      draft={secretDraft}
+      label={label}
+      name={name}
+      t={t}
+      onChange={onSecretChange}
+    />
+  );
+
+  return (
+    <section className="admin-section admin-section--wide managed-config-editor">
+      <h3>{t("applicationConfig")}</h3>
+      <div className="managed-config-grid">
+        <article className="list-card">
+          <strong>{t("siteSettings")}</strong>
+          <div className="form-grid">
+            <ManagedTextField
+              label={t("applicationName")}
+              value={cfg.site.appName}
+              onChange={(appName) => patch({ site: { ...cfg.site, appName } })}
+            />
+            <ManagedTextField
+              label={t("publicUrl")}
+              type="url"
+              value={cfg.site.publicUrl}
+              onChange={(publicUrl) =>
+                patch({ site: { ...cfg.site, publicUrl } })
+              }
+            />
+            <ManagedTextField
+              label={t("supportEmail")}
+              type="email"
+              value={cfg.site.supportEmail}
+              onChange={(supportEmail) =>
+                patch({ site: { ...cfg.site, supportEmail } })
+              }
+            />
+            <ManagedTextField
+              label={t("abuseEmail")}
+              type="email"
+              value={cfg.site.abuseEmail}
+              onChange={(abuseEmail) =>
+                patch({ site: { ...cfg.site, abuseEmail } })
+              }
+            />
+            <label className="field-row field-row--wide">
+              <span>{t("corsOrigins")}</span>
+              <textarea
+                value={cfg.site.corsAllowedOrigins.join("\n")}
+                onChange={(event) =>
+                  patch({
+                    site: {
+                      ...cfg.site,
+                      corsAllowedOrigins: event.target.value
+                        .split(/[\n,]+/)
+                        .map((value) => value.trim())
+                        .filter(Boolean),
+                    },
+                  })
+                }
+              />
+            </label>
+            <AdminNumberField
+              label={t("workerHeartbeatMaxAge")}
+              min={1}
+              unitLabel={t("unitseconds")}
+              value={cfg.workerHeartbeatMaxAgeSeconds}
+              onChange={(workerHeartbeatMaxAgeSeconds) =>
+                patch({ workerHeartbeatMaxAgeSeconds })
+              }
+            />
+          </div>
+        </article>
+
+        <article className="list-card">
+          <strong>{t("objectStorage")}</strong>
+          <div className="form-grid">
+            <ManagedTextField
+              label={t("endpoint")}
+              type="url"
+              value={cfg.s3.endpoint}
+              onChange={(endpoint) => patch({ s3: { ...cfg.s3, endpoint } })}
+            />
+            <ManagedTextField
+              label={t("bucket")}
+              value={cfg.s3.bucket}
+              onChange={(bucket) => patch({ s3: { ...cfg.s3, bucket } })}
+            />
+            <ManagedTextField
+              label={t("region")}
+              value={cfg.s3.region}
+              onChange={(region) => patch({ s3: { ...cfg.s3, region } })}
+            />
+            <label className="check-row">
+              <input
+                checked={cfg.s3.usePathStyle}
+                type="checkbox"
+                onChange={(event) =>
+                  patch({
+                    s3: { ...cfg.s3, usePathStyle: event.target.checked },
+                  })
+                }
+              />
+              {t("pathStyle")}
+            </label>
+            {secret(t("accessKey"), "s3AccessKey")}
+            {secret(t("secretKey"), "s3SecretKey")}
+          </div>
+        </article>
+
+        <article className="list-card">
+          <strong>{t("mailService")}</strong>
+          <div className="form-grid">
+            <label className="field-row">
+              <span>{t("provider")}</span>
+              <select
+                value={cfg.mailerProvider}
+                onChange={(event) =>
+                  patch({ mailerProvider: event.target.value })
+                }
+              >
+                <option value="log">{t("logMailer")}</option>
+                <option value="smtp">SMTP</option>
+              </select>
+            </label>
+            <ManagedTextField
+              label={t("smtpHost")}
+              value={cfg.smtp.host}
+              onChange={(host) => patch({ smtp: { ...cfg.smtp, host } })}
+            />
+            <AdminNumberField
+              label={t("smtpPort")}
+              min={1}
+              unitLabel={t("port")}
+              value={cfg.smtp.port}
+              onChange={(port) => patch({ smtp: { ...cfg.smtp, port } })}
+            />
+            <ManagedTextField
+              label={t("username")}
+              value={cfg.smtp.username}
+              onChange={(username) =>
+                patch({ smtp: { ...cfg.smtp, username } })
+              }
+            />
+            {secret(t("password"), "smtpPassword")}
+            <ManagedTextField
+              label={t("fromEmail")}
+              type="email"
+              value={cfg.smtp.fromEmail}
+              onChange={(fromEmail) =>
+                patch({ smtp: { ...cfg.smtp, fromEmail } })
+              }
+            />
+            <ManagedTextField
+              label={t("fromName")}
+              value={cfg.smtp.fromName}
+              onChange={(fromName) =>
+                patch({ smtp: { ...cfg.smtp, fromName } })
+              }
+            />
+            <label className="field-row">
+              <span>{t("tlsMode")}</span>
+              <select
+                value={cfg.smtp.tlsMode}
+                onChange={(event) =>
+                  patch({
+                    smtp: { ...cfg.smtp, tlsMode: event.target.value },
+                  })
+                }
+              >
+                <option value="none">{t("disabled")}</option>
+                <option value="starttls">STARTTLS</option>
+                <option value="tls">TLS</option>
+              </select>
+            </label>
+          </div>
+        </article>
+
+        <article className="list-card">
+          <strong>{t("oauthAndCaptcha")}</strong>
+          <div className="form-grid">
+            <ManagedTextField
+              label={`${t("google")} ${t("clientId")}`}
+              value={cfg.googleOAuth.clientId}
+              onChange={(clientId) =>
+                patch({ googleOAuth: { ...cfg.googleOAuth, clientId } })
+              }
+            />
+            {secret(
+              `${t("google")} ${t("clientSecret")}`,
+              "googleClientSecret",
+            )}
+            <ManagedTextField
+              label={`${t("google")} ${t("redirectUrl")}`}
+              type="url"
+              value={cfg.googleOAuth.redirectUrl}
+              onChange={(redirectUrl) =>
+                patch({ googleOAuth: { ...cfg.googleOAuth, redirectUrl } })
+              }
+            />
+            <ManagedTextField
+              label={`${t("github")} ${t("clientId")}`}
+              value={cfg.githubOAuth.clientId}
+              onChange={(clientId) =>
+                patch({ githubOAuth: { ...cfg.githubOAuth, clientId } })
+              }
+            />
+            {secret(
+              `${t("github")} ${t("clientSecret")}`,
+              "githubClientSecret",
+            )}
+            <ManagedTextField
+              label={`${t("github")} ${t("redirectUrl")}`}
+              type="url"
+              value={cfg.githubOAuth.redirectUrl}
+              onChange={(redirectUrl) =>
+                patch({ githubOAuth: { ...cfg.githubOAuth, redirectUrl } })
+              }
+            />
+            <ManagedTextField
+              label={t("turnstileSiteKey")}
+              value={cfg.turnstile.siteKey}
+              onChange={(siteKey) =>
+                patch({ turnstile: { ...cfg.turnstile, siteKey } })
+              }
+            />
+            {secret(t("turnstileSecretKey"), "turnstileSecretKey")}
+            <ManagedTextField
+              label={t("verifyUrl")}
+              type="url"
+              value={cfg.turnstile.verifyUrl}
+              onChange={(verifyUrl) =>
+                patch({ turnstile: { ...cfg.turnstile, verifyUrl } })
+              }
+            />
+          </div>
+        </article>
+
+        <article className="list-card">
+          <strong>{t("scannerAndNotifications")}</strong>
+          <div className="form-grid">
+            <label className="field-row">
+              <span>{t("scannerProvider")}</span>
+              <select
+                value={cfg.scanner.provider}
+                onChange={(event) =>
+                  patch({
+                    scanner: { ...cfg.scanner, provider: event.target.value },
+                  })
+                }
+              >
+                <option value="heuristic">{t("scannerHeuristic")}</option>
+                <option value="clamav">ClamAV</option>
+              </select>
+            </label>
+            <ManagedTextField
+              label={t("clamavAddress")}
+              value={cfg.scanner.clamav.addr}
+              onChange={(addr) =>
+                patch({
+                  scanner: {
+                    ...cfg.scanner,
+                    clamav: { ...cfg.scanner.clamav, addr },
+                  },
+                })
+              }
+            />
+            <AdminNumberField
+              label={t("scannerTimeout")}
+              min={1}
+              unitLabel={t("unitseconds")}
+              value={cfg.scanner.clamav.timeout}
+              onChange={(timeout) =>
+                patch({
+                  scanner: {
+                    ...cfg.scanner,
+                    clamav: { ...cfg.scanner.clamav, timeout },
+                  },
+                })
+              }
+            />
+            <ManagedTextField
+              label={t("telegramChatId")}
+              value={cfg.telegram.chatId}
+              onChange={(chatId) =>
+                patch({ telegram: { ...cfg.telegram, chatId } })
+              }
+            />
+            {secret(t("telegramBotToken"), "telegramBotToken")}
+            <ManagedTextField
+              label={t("apiBaseUrl")}
+              type="url"
+              value={cfg.telegram.apiBaseUrl}
+              onChange={(apiBaseUrl) =>
+                patch({ telegram: { ...cfg.telegram, apiBaseUrl } })
+              }
+            />
+          </div>
+        </article>
+
+        <article className="list-card">
+          <strong>{t("paymentProviders")}</strong>
+          <div className="form-grid">
+            <label className="check-row">
+              <input
+                checked={cfg.stripeEnabled}
+                type="checkbox"
+                onChange={(event) =>
+                  patch({ stripeEnabled: event.target.checked })
+                }
+              />
+              Stripe
+            </label>
+            {secret(`Stripe ${t("webhookSecret")}`, "stripeWebhookSecret")}
+            <label className="field-row field-row--wide">
+              <span>Stripe {t("checkoutUrl")}</span>
+              <textarea
+                value={cfg.stripe.checkoutUrlTemplate}
+                onChange={(event) =>
+                  patch({
+                    stripe: {
+                      ...cfg.stripe,
+                      checkoutUrlTemplate: event.target.value,
+                    },
+                  })
+                }
+              />
+            </label>
+            <label className="check-row">
+              <input
+                checked={cfg.epusdtEnabled}
+                type="checkbox"
+                onChange={(event) =>
+                  patch({ epusdtEnabled: event.target.checked })
+                }
+              />
+              Epusdt
+            </label>
+            <ManagedTextField
+              label={`Epusdt ${t("merchantId")}`}
+              value={cfg.epusdt.pid}
+              onChange={(pid) => patch({ epusdt: { ...cfg.epusdt, pid } })}
+            />
+            {secret(`Epusdt ${t("secretKey")}`, "epusdtSecretKey")}
+            <ManagedTextField
+              label={t("paymentAddress")}
+              value={cfg.epusdt.address}
+              onChange={(address) =>
+                patch({ epusdt: { ...cfg.epusdt, address } })
+              }
+            />
+            <ManagedTextField
+              label={t("chain")}
+              value={cfg.epusdt.chain}
+              onChange={(chain) => patch({ epusdt: { ...cfg.epusdt, chain } })}
+            />
+            <label className="field-row field-row--wide">
+              <span>Epusdt {t("checkoutUrl")}</span>
+              <textarea
+                value={cfg.epusdt.checkoutUrlTemplate}
+                onChange={(event) =>
+                  patch({
+                    epusdt: {
+                      ...cfg.epusdt,
+                      checkoutUrlTemplate: event.target.value,
+                    },
+                  })
+                }
+              />
+            </label>
+          </div>
+        </article>
+      </div>
+      <button type="button" onClick={onSave}>
+        <ShieldCheck size={16} aria-hidden="true" />
+        {t("saveApplicationConfig")}
+      </button>
+    </section>
   );
 }
 
@@ -2836,6 +3774,8 @@ function App() {
   const [adminTimeUnits, setAdminTimeUnits] = useState<
     Record<string, TimeUnit>
   >({});
+  const [managedSecretDraft, setManagedSecretDraft] =
+    useState<ManagedSecretPatch>({});
   const [alertTestMessage, setAlertTestMessage] = useState(
     "PasteBox alert test",
   );
@@ -2890,6 +3830,9 @@ function App() {
     [requestLocale, user?.language],
   );
   const t = useMemo(() => copyFor(locale), [locale]);
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
   const publicPage = useMemo(
     () =>
       typeof window !== "undefined"
@@ -3056,6 +3999,7 @@ function App() {
       ordersResult,
       queues,
       runtimeConfig,
+      managedConfig,
       runtimePanel,
       manualWorkItems,
       redemptionBatches,
@@ -3071,6 +4015,7 @@ function App() {
       client.adminOrders(),
       client.adminQueues(),
       client.adminRuntimeConfig(),
+      client.adminManagedConfig(),
       client.adminRuntimePanel(),
       client.adminManualWorkItems(),
       client.adminRedemptionBatches(),
@@ -3092,6 +4037,8 @@ function App() {
       queues: queues.status === "fulfilled" ? queues.value : null,
       runtimeConfig:
         runtimeConfig.status === "fulfilled" ? runtimeConfig.value : null,
+      managedConfig:
+        managedConfig.status === "fulfilled" ? managedConfig.value : null,
       runtimePanel:
         runtimePanel.status === "fulfilled" ? runtimePanel.value : null,
       manualWorkItems:
@@ -3752,6 +4699,21 @@ function App() {
     });
   }
 
+  function updateManagedConfig(config: ManagedConfig) {
+    setAdminData((previous) =>
+      previous.managedConfig
+        ? {
+            ...previous,
+            managedConfig: { ...previous.managedConfig, config },
+          }
+        : previous,
+    );
+  }
+
+  function updateManagedSecret(name: keyof ManagedSecretPatch, value: string) {
+    setManagedSecretDraft((previous) => ({ ...previous, [name]: value }));
+  }
+
   function adminSizeUnitFor(key: string, valueBytes: number): SizeUnit {
     return adminSizeUnits[key] ?? preferredSizeUnit(valueBytes);
   }
@@ -3825,6 +4787,27 @@ function App() {
           ? { ...previous.runtimePanel, config: updated }
           : previous.runtimePanel,
       }));
+      await refreshAdmin();
+    }
+  }
+
+  async function saveManagedConfig() {
+    const managed = adminData.managedConfig;
+    if (!managed) return;
+    const updated = await run(
+      () =>
+        client.adminUpdateManagedConfig({
+          config: managed.config,
+          secrets: managedSecretDraft,
+        }),
+      t("managedConfigSaved"),
+    );
+    if (updated) {
+      setAdminData((previous) => ({
+        ...previous,
+        managedConfig: updated,
+      }));
+      setManagedSecretDraft({});
       await refreshAdmin();
     }
   }
@@ -4582,8 +5565,8 @@ function App() {
               <div className="metric-grid admin-metric-grid">
                 {Object.entries(adminStats ?? {}).map(([key, value]) => (
                   <div className="metric" key={key}>
-                    <span>{key}</span>
-                    <strong>{String(value)}</strong>
+                    <span>{adminMetricLabel(key, t)}</span>
+                    <strong>{adminMetricValue(key, value)}</strong>
                   </div>
                 ))}
               </div>
@@ -4615,7 +5598,17 @@ function App() {
                   </button>
                 ))}
               </div>
-              <div className="admin-grid">
+              <div className={`admin-grid admin-grid--${adminTab}`}>
+                {adminTab === "configuration" && adminData.managedConfig ? (
+                  <ManagedConfigEditor
+                    secretDraft={managedSecretDraft}
+                    t={t}
+                    view={adminData.managedConfig}
+                    onChange={updateManagedConfig}
+                    onSave={() => void saveManagedConfig()}
+                    onSecretChange={updateManagedSecret}
+                  />
+                ) : null}
                 {adminTab === "guest" || adminTab === "services" ? (
                   <section className="admin-section admin-section--wide">
                     <h3>
@@ -5315,7 +6308,7 @@ function App() {
                   </section>
                 ) : null}
                 {adminTab === "overview" || adminTab === "services" ? (
-                  <section className="admin-section admin-section--compact">
+                  <section className="admin-section admin-section--tiles">
                     <h3>{t("resourcePanel")}</h3>
                     <article className="list-card">
                       <strong>{t("cpu")}</strong>
@@ -5368,21 +6361,33 @@ function App() {
                   </section>
                 ) : null}
                 {adminTab === "overview" || adminTab === "services" ? (
-                  <section className="admin-section admin-section--compact">
+                  <section className="admin-section admin-section--tiles">
                     <h3>{t("providerStatus")}</h3>
                     {Object.entries(
                       adminData.runtimeConfig?.providerStatus ?? {},
                     ).map(([provider, status]) => (
                       <article className="list-card" key={provider}>
                         <div>
-                          <strong>{provider}</strong>
+                          <strong>{providerLabel(provider, t)}</strong>
                           <span>
-                            {status.configured ? t("enabled") : t("disabled")} ·{" "}
-                            {(status.missingEnv ?? []).join(", ") ||
-                              status.provider}
+                            {status.configured
+                              ? t("configurationReady")
+                              : t("configurationIncomplete")}
+                            {status.configured
+                              ? ` · ${providerLabel(status.provider || provider, t)}`
+                              : ` · ${t("missingConfiguration")}: ${(
+                                  status.missingEnv ?? []
+                                )
+                                  .map((field) => providerFieldLabel(field, t))
+                                  .join(", ")}`}
                           </span>
                           {status.lastTestStatus ? (
-                            <span>{status.lastTestStatus}</span>
+                            <span>
+                              {providerTestStatusLabel(
+                                status.lastTestStatus,
+                                t,
+                              )}
+                            </span>
                           ) : null}
                         </div>
                         <button
@@ -5771,7 +6776,7 @@ function App() {
                   </section>
                 ) : null}
                 {adminTab === "overview" ? (
-                  <section className="admin-section">
+                  <section className="admin-section admin-section--tiles">
                     <h3>{t("manualReview")}</h3>
                     {adminData.manualWorkItems.length === 0 ? (
                       <article className="list-card">
@@ -5783,9 +6788,9 @@ function App() {
                         className="list-card"
                         key={`${item.kind}-${item.id}`}
                       >
-                        <strong>{item.kind}</strong>
+                        <strong>{manualWorkKindLabel(item.kind, t)}</strong>
                         <span>
-                          {item.status} · {item.summary}
+                          {adminStatusLabel(item.status, t)} · {item.summary}
                         </span>
                         {item.risk ? <span>{item.risk}</span> : null}
                       </article>
@@ -5793,7 +6798,7 @@ function App() {
                   </section>
                 ) : null}
                 {adminTab === "services" ? (
-                  <section className="admin-section">
+                  <section className="admin-section admin-section--tiles">
                     <h3>{t("alertHistory")}</h3>
                     <div className="form-grid">
                       <input
@@ -5819,8 +6824,8 @@ function App() {
                     ) : null}
                     {adminData.alerts.slice(0, 5).map((alert) => (
                       <article className="list-card" key={alert.id}>
-                        <strong>{alert.status}</strong>
-                        <span>{alert.message}</span>
+                        <strong>{adminStatusLabel(alert.status, t)}</strong>
+                        <span>{runtimeAlertMessage(alert, t)}</span>
                         {alert.lastError ? (
                           <span>{alert.lastError}</span>
                         ) : null}
@@ -5829,7 +6834,7 @@ function App() {
                   </section>
                 ) : null}
                 {adminTab === "overview" ? (
-                  <section className="admin-section admin-section--compact">
+                  <section className="admin-section admin-section--tiles">
                     <h3>{t("users")}</h3>
                     {adminData.users.slice(0, 5).map((item) => (
                       <article className="list-card" key={item.id}>
@@ -5845,44 +6850,52 @@ function App() {
                 {adminTab === "overview" ? (
                   <section className="admin-section">
                     <h3>{t("attachments")}</h3>
-                    {adminData.attachments.slice(0, 5).map((attachment) => (
-                      <article className="list-card" key={attachment.id}>
-                        <div>
-                          <strong>{attachment.fileName}</strong>
-                          <span>
-                            {attachment.scanStatus} · {attachment.status} ·{" "}
-                            {attachment.sha256.slice(0, 12)}
-                          </span>
-                        </div>
-                        <div className="button-row compact">
-                          <button
-                            type="button"
-                            onClick={() => void adminRetryScan(attachment.id)}
-                          >
-                            <RotateCcw size={16} aria-hidden="true" />
-                            {t("retry")}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              void adminFreezeAttachment(
-                                attachment.id,
-                                attachment.status !== "frozen",
-                              )
-                            }
-                          >
-                            {attachment.status === "frozen" ? (
-                              <Undo2 size={16} aria-hidden="true" />
-                            ) : (
-                              <Snowflake size={16} aria-hidden="true" />
-                            )}
-                            {attachment.status === "frozen"
-                              ? t("release")
-                              : t("freeze")}
-                          </button>
-                        </div>
-                      </article>
-                    ))}
+                    {adminData.attachments.slice(0, 5).map((attachment) => {
+                      const scan = attachmentScanDetail(
+                        attachment,
+                        locale,
+                        "owner",
+                      );
+                      return (
+                        <article className="list-card" key={attachment.id}>
+                          <div>
+                            <strong>{attachment.fileName}</strong>
+                            <span>
+                              {scan.label} ·{" "}
+                              {adminStatusLabel(attachment.status, t)} ·{" "}
+                              {attachment.sha256.slice(0, 12)}
+                            </span>
+                          </div>
+                          <div className="button-row compact">
+                            <button
+                              type="button"
+                              onClick={() => void adminRetryScan(attachment.id)}
+                            >
+                              <RotateCcw size={16} aria-hidden="true" />
+                              {t("retry")}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void adminFreezeAttachment(
+                                  attachment.id,
+                                  attachment.status !== "frozen",
+                                )
+                              }
+                            >
+                              {attachment.status === "frozen" ? (
+                                <Undo2 size={16} aria-hidden="true" />
+                              ) : (
+                                <Snowflake size={16} aria-hidden="true" />
+                              )}
+                              {attachment.status === "frozen"
+                                ? t("release")
+                                : t("freeze")}
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
                   </section>
                 ) : null}
                 {adminTab === "overview" ? (
@@ -5919,7 +6932,7 @@ function App() {
                           <div>
                             <strong>{order.planId}</strong>
                             <span>
-                              {order.provider} ·{" "}
+                              {providerLabel(order.provider, t)} ·{" "}
                               {(order.amountCents / 100).toFixed(2)}{" "}
                               {order.currency}
                             </span>
@@ -5997,8 +7010,8 @@ function App() {
                           <div>
                             <strong>{mail.subject}</strong>
                             <span>
-                              {mail.to} · {mail.status} · {mail.attempts}{" "}
-                              {t("attempts")}
+                              {mail.to} · {adminStatusLabel(mail.status, t)} ·{" "}
+                              {mail.attempts} {t("attempts")}
                             </span>
                             {mail.lastError ? (
                               <span>{mail.lastError}</span>
@@ -6013,7 +7026,8 @@ function App() {
                           <div>
                             <strong>{report.target}</strong>
                             <span>
-                              {report.status} · {report.reason}
+                              {adminStatusLabel(report.status, t)} ·{" "}
+                              {report.reason}
                             </span>
                           </div>
                           <div className="button-row compact">
@@ -6050,7 +7064,8 @@ function App() {
                         <div>
                           <strong>{event.eventType}</strong>
                           <span>
-                            {event.provider} · {event.targetId}
+                            {providerLabel(event.provider, t)} ·{" "}
+                            {event.targetId}
                           </span>
                         </div>
                         <button
@@ -6071,7 +7086,7 @@ function App() {
                   <div className="admin-audit-list">
                     {auditLogs.slice(0, 8).map((log) => (
                       <article className="list-card" key={log.id}>
-                        <strong>{log.action}</strong>
+                        <strong>{humanizeIdentifier(log.action)}</strong>
                         <span>
                           {log.target} ·{" "}
                           {new Date(log.createdAt).toLocaleString()}
@@ -6719,7 +7734,11 @@ function GuestWorkbench({
         <span />
         <strong>PasteBox</strong>
       </div>
-      <div className="guest-workbench-tabs" role="tablist" aria-label="PasteBox">
+      <div
+        className="guest-workbench-tabs"
+        role="tablist"
+        aria-label="PasteBox"
+      >
         {modeLabels.map((item, index) => (
           <button
             aria-controls={`guest-panel-${item.mode}`}
@@ -6892,7 +7911,10 @@ function AuthScreen({
   const isRegister = mode === "register";
   const isPasswordReset = passwordResetLinkActive;
   const allowedDomains = registration?.allowedDomains ?? [];
-  const registrationEmail = splitEmailForRegistration(auth.email, allowedDomains);
+  const registrationEmail = splitEmailForRegistration(
+    auth.email,
+    allowedDomains,
+  );
 
   return (
     <main className="auth-screen product-auth-screen">
@@ -7233,7 +8255,10 @@ function PublicShareScreen({
                 <AttachmentDownloadItem
                   attachment={attachment}
                   context="public"
-                  href={sharedAttachmentDownloadPath(access.share.token, attachment.id)}
+                  href={sharedAttachmentDownloadPath(
+                    access.share.token,
+                    attachment.id,
+                  )}
                   icon="download"
                   key={attachment.id}
                   locale={locale}
@@ -7619,7 +8644,10 @@ function ShareBox({
             <AttachmentDownloadItem
               attachment={attachment}
               context="public"
-              href={sharedAttachmentDownloadPath(access.share.token, attachment.id)}
+              href={sharedAttachmentDownloadPath(
+                access.share.token,
+                attachment.id,
+              )}
               icon="download"
               key={attachment.id}
               locale={locale}

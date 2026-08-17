@@ -74,12 +74,12 @@ payloads, private object keys, or user data.
 - [ ] `deploy/production.env` exists only on the server and has mode `600`.
 - [ ] `PASTEBOX_IMAGE` uses the release `sha-*` tag or image digest, never
   `latest`.
-- [ ] `PASTEBOX_PUBLIC_URL` is the HTTPS production URL.
-- [ ] `PASTEBOX_CORS_ALLOWED_ORIGINS` includes only exact production origins.
-- [ ] `PASTEBOX_CSRF_SECRET` and `PASTEBOX_METRICS_TOKEN` are unique production
-  values.
-- [ ] `PASTEBOX_SUPPORT_EMAIL` and `PASTEBOX_ABUSE_EMAIL` route to monitored
-  operator inboxes.
+- [ ] `PASTEBOX_CONFIG_ENCRYPTION_KEY` is a unique, backed-up Base64-encoded
+  32-byte key and `PASTEBOX_METRICS_TOKEN` is a unique production value.
+- [ ] The administrator saved the HTTPS public URL, exact CORS origins, and
+  monitored support/abuse inboxes in **Admin > Application config**.
+- [ ] Provider secret fields show configured status and no plaintext secret was
+  captured in release evidence.
 - [ ] Object-storage credentials and backup-storage credentials are separate
   where the provider supports separate keys.
 - [ ] `pastebox preflight production` passed through the production Compose

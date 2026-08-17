@@ -143,7 +143,7 @@ docker compose --env-file deploy/production.env \
   <command>
 ```
 
-## 配置生产环境变量
+## 配置生产启动参数
 
 创建真实环境文件：
 
@@ -152,61 +152,50 @@ cp deploy/production.env.example deploy/production.env
 chmod 600 deploy/production.env
 ```
 
-编辑 `deploy/production.env`。至少确认这些关键项：
+编辑 `deploy/production.env`。这里只保留应用启动前必须确定的根配置和 Compose
+基础设施参数，至少确认这些关键项：
 
 ```sh
 PASTEBOX_IMAGE=ghcr.io/cvinit/pastebox:sha-<commit>
 PASTEBOX_DOMAIN=pastebox.example.com
-PASTEBOX_PUBLIC_URL=https://pastebox.example.com
-PASTEBOX_CORS_ALLOWED_ORIGINS=https://pastebox.example.com
+PASTEBOX_ADMIN_EMAIL=admin@example.com
 
 PASTEBOX_APP_ENV=production
-PASTEBOX_HTTP_ADDR=:8080
-PASTEBOX_HTTP_READ_TIMEOUT_SECONDS=0
-PASTEBOX_HTTP_WRITE_TIMEOUT_SECONDS=0
-PASTEBOX_LOG_LEVEL=info
-
-PASTEBOX_ADMIN_EMAIL=admin@example.com
-PASTEBOX_SUPPORT_EMAIL=support@example.com
-PASTEBOX_ABUSE_EMAIL=abuse@example.com
-
-PASTEBOX_CSRF_SECRET=<long-random-secret>
+PASTEBOX_CONFIG_ENCRYPTION_KEY=<base64-32-byte-key>
 PASTEBOX_METRICS_TOKEN=<long-random-token>
 
 PASTEBOX_POSTGRES_PASSWORD=<long-random-password>
 PASTEBOX_DATABASE_URL=postgres://pastebox:<same-password>@postgres:5432/pastebox?sslmode=disable
-
 PASTEBOX_REDIS_ADDR=redis:6379
-PASTEBOX_WORKER_ID=pastebox-worker
-PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS=120
-
-PASTEBOX_SCANNER_PROVIDER=clamav
-PASTEBOX_CLAMAV_ADDR=clamav:3310
-
-PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=<long-random-admin-password>
 ```
 
-生成随机密钥：
+生成配置加密主密钥和指标令牌：
 
 ```sh
-openssl rand -base64 48
+openssl rand -base64 32
 openssl rand -hex 32
 ```
 
-### 对象存储
+`PASTEBOX_CONFIG_ENCRYPTION_KEY` 必须单独备份。数据库恢复时必须使用同一把
+密钥，否则后台保存的第三方密钥无法解密。
+
+### 后台应用配置
+
+启动应用并创建管理员后，到 **管理后台 > 应用配置** 填写以下内容：
+
+- 站点名称、公网 URL、支持/滥用邮箱、CORS origin。
+- S3 endpoint、bucket、region、access key、secret key、path style。
+- SMTP、Google/GitHub OAuth、Turnstile、Telegram。
+- ClamAV 地址和超时、Worker 心跳阈值。
+- Stripe、Epusdt 开关、回调密钥和支付参数。
+
+密钥字段只显示“已配置/未配置”，不会回显明文。留空表示保留，清除按钮表示
+删除，填写新值表示替换。密钥使用 AES-256-GCM 加密后存入 PostgreSQL。
+
+#### 对象存储
 
 生产附件不要使用本地 MinIO。使用托管 S3 兼容服务，例如 Cloudflare R2、
 AWS S3、Backblaze B2 S3、Wasabi、MinIO 集群等。
-
-```sh
-PASTEBOX_S3_ENDPOINT=https://<s3-endpoint>
-PASTEBOX_S3_BUCKET=pastebox-prod
-PASTEBOX_S3_REGION=us-east-1
-PASTEBOX_S3_ACCESS_KEY=<object-storage-access-key>
-PASTEBOX_S3_SECRET_KEY=<object-storage-secret-key>
-PASTEBOX_S3_USE_PATH_STYLE=true
-```
 
 如果用 Cloudflare R2，endpoint 通常类似：
 
@@ -214,29 +203,13 @@ PASTEBOX_S3_USE_PATH_STYLE=true
 https://<account-id>.r2.cloudflarestorage.com
 ```
 
-### 邮件 SMTP
+#### 邮件 SMTP
 
 生产必须配置真实 SMTP，不能用 Mailpit：
 
-```sh
-PASTEBOX_MAILER_PROVIDER=smtp
-PASTEBOX_SMTP_HOST=smtp.example.com
-PASTEBOX_SMTP_PORT=587
-PASTEBOX_SMTP_USERNAME=<smtp-user>
-PASTEBOX_SMTP_PASSWORD=<smtp-password>
-PASTEBOX_SMTP_FROM_EMAIL=no-reply@example.com
-PASTEBOX_SMTP_FROM_NAME=PasteBox
-PASTEBOX_SMTP_TLS_MODE=starttls
-```
+常见配置是 587 端口配 `starttls`；服务商要求 465 端口时使用 `tls`。
 
-如果你的服务商要求 465 端口，通常用：
-
-```sh
-PASTEBOX_SMTP_PORT=465
-PASTEBOX_SMTP_TLS_MODE=tls
-```
-
-### OAuth 回调
+#### OAuth 回调
 
 Google OAuth 回调地址：
 
@@ -250,9 +223,9 @@ https://pastebox.example.com/api/v1/auth/google/callback
 https://pastebox.example.com/api/v1/auth/github/callback
 ```
 
-环境变量按生产 OAuth 应用填写，不能用本地开发应用。
+后台配置必须填写生产 OAuth 应用，不能用本地开发应用。
 
-### 支付回调
+#### 支付回调
 
 Stripe webhook：
 
@@ -266,20 +239,8 @@ Epusdt webhook：
 https://pastebox.example.com/api/v1/billing/webhooks/epusdt
 ```
 
-生产首次上线如果启用支付，需要填好：
-
-```sh
-PASTEBOX_STRIPE_ENABLED=true
-PASTEBOX_STRIPE_WEBHOOK_SECRET=whsec_...
-PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE=https://...
-
-PASTEBOX_EPUSDT_ENABLED=true
-PASTEBOX_EPUSDT_PID=<pid>
-PASTEBOX_EPUSDT_SECRET_KEY=<secret>
-PASTEBOX_EPUSDT_CHECKOUT_URL_TEMPLATE=https://...
-PASTEBOX_EPUSDT_ADDRESS=<usdt-address>
-PASTEBOX_EPUSDT_CHAIN=USDT-TRC20
-```
+生产首次上线如果启用支付，需要在后台填好 Stripe webhook/checkout 配置，
+以及 Epusdt 的 PID、签名密钥、checkout URL、收款地址和链。
 
 ### 备份存储
 
@@ -500,17 +461,16 @@ docker compose --env-file deploy/production.env \
   config
 ```
 
-生产 preflight：
+首次启动前先做根配置 preflight：
 
 ```sh
-docker compose --env-file deploy/production.env \
+PASTEBOX_PREFLIGHT_ROOT_ONLY=true docker compose --env-file deploy/production.env \
   -f compose.production.yaml \
   -f compose.nginx-host.yaml \
   --profile maintenance run --rm preflight
 ```
 
-如果 preflight 报 `CHANGE_ME`、`example.com`、HTTP URL、本地 SMTP、本地对象存储、
-弱密码、缺少 OAuth/支付配置等错误，不要绕过，按提示改真实配置。
+如果 preflight 报 `CHANGE_ME`、弱密钥或基础设施配置错误，按提示改真实配置。
 
 ## 首次启动
 
@@ -562,6 +522,21 @@ docker compose --env-file deploy/production.env \
 
 确认 `api`、`worker`、`postgres`、`redis`、`clamav` 都在运行。
 
+创建管理员：
+
+```sh
+docker compose --env-file deploy/production.env \
+  -f compose.production.yaml \
+  -f compose.nginx-host.yaml \
+  run --rm api admin create \
+  --email admin@pastebox.example.com \
+  --password '<long-random-admin-password>'
+```
+
+登录后先完成 **管理后台 > 应用配置**，然后执行不带
+`PASTEBOX_PREFLIGHT_ROOT_ONLY` 的完整 preflight。完整检查通过后再以
+`/readyz` 作为上线条件。
+
 ## 健康检查
 
 宿主机本地：
@@ -592,11 +567,8 @@ curl -fsS https://pastebox.example.com/api/v1/ready
 
 ## 首次登录
 
-用 `PASTEBOX_BOOTSTRAP_ADMIN_EMAIL` 和
-`PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD` 登录。
-
-确认能登录后，建议轮换 bootstrap 密码，或者从 `deploy/production.env` 中移除
-bootstrap 变量，避免以后重启时继续重置管理员密码。
+用前面 `pastebox admin create` 命令创建的账号登录。管理员密码不写入
+`deploy/production.env`，应用重启也不会自动重置密码。
 
 ## Provider smoke test
 
@@ -798,8 +770,8 @@ docker compose --env-file deploy/production.env \
 
 - Cloudflare SSL 模式必须是 Full (strict)，不要 Flexible。
 - Nginx 必须传 `X-Forwarded-Proto https`。
-- `PASTEBOX_PUBLIC_URL` 必须是 `https://pastebox.example.com`。
-- `PASTEBOX_CORS_ALLOWED_ORIGINS` 必须包含完全一致的 origin。
+- 后台公网 URL 必须是 `https://pastebox.example.com`。
+- 后台 CORS origin 必须包含完全一致的 origin。
 
 ### 上传失败或大文件 413
 
@@ -814,7 +786,7 @@ docker compose --env-file deploy/production.env \
 
 检查：
 
-- `PASTEBOX_S3_ENDPOINT` 是否为 HTTPS。
+- 后台 S3 endpoint 是否为 HTTPS。
 - bucket 是否存在。
 - access key 是否有读写权限。
 - 如果是 R2，region/path style 是否符合服务商要求。
@@ -843,7 +815,7 @@ https://pastebox.example.com/api/v1/auth/github/callback
 
 - 回调地址是否是 HTTPS 公网地址。
 - Stripe `Stripe-Signature` 是否到达后端。
-- Epusdt 签名密钥是否与 `PASTEBOX_EPUSDT_SECRET_KEY` 一致。
+- Epusdt 回调签名密钥是否与后台保存值一致。
 - Cloudflare/WAF 是否拦截 webhook。
 
 ### Cloudflare 显示 502/522
@@ -867,7 +839,7 @@ docker compose --env-file deploy/production.env \
 
 - [ ] `PASTEBOX_IMAGE` 是不可变 `sha-*` tag 或 digest。
 - [ ] `deploy/production.env` 权限是 `600`，没有提交到 git。
-- [ ] `PASTEBOX_PUBLIC_URL`、`PASTEBOX_DOMAIN`、CORS、OAuth callback 都是同一个生产域名。
+- [ ] 后台公网 URL、`PASTEBOX_DOMAIN`、CORS、OAuth callback 都是同一个生产域名。
 - [ ] Cloudflare 是 Full (strict)，没有 Flexible。
 - [ ] Nginx 只反代到 `127.0.0.1:18080`，容器端口没有直接暴露公网。
 - [ ] `/readyz` 和 `/api/v1/ready` 返回 production ready。

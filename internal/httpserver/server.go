@@ -160,6 +160,13 @@ func NewWithServiceAndReadiness(cfg config.Config, logger *slog.Logger, service 
 	return server.routes()
 }
 
+func (s *Server) currentConfig() config.Config {
+	if s.app != nil {
+		return s.app.EffectiveConfig()
+	}
+	return s.cfg
+}
+
 func (s *Server) routes() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -249,6 +256,8 @@ func (s *Server) routes() http.Handler {
 			r.Get("/dashboard", s.adminDashboard)
 			r.Get("/runtime-config", s.adminRuntimeConfig)
 			r.Patch("/runtime-config", s.adminUpdateRuntimeConfig)
+			r.Get("/managed-config", s.adminManagedConfig)
+			r.Put("/managed-config", s.adminUpdateManagedConfig)
 			r.Get("/runtime-panel", s.adminRuntimePanel)
 			r.Get("/manual-work-items", s.adminManualWorkItems)
 			r.Patch("/catalog", s.adminUpdateCatalog)
@@ -295,8 +304,8 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) apiHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
-		"app":    s.cfg.AppName,
-		"env":    s.cfg.AppEnv,
+		"app":    s.currentConfig().AppName,
+		"env":    s.currentConfig().AppEnv,
 		"status": "ok",
 	})
 }
@@ -317,7 +326,7 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) validMetricsToken(r *http.Request) bool {
-	expected := strings.TrimSpace(s.cfg.MetricsToken)
+	expected := strings.TrimSpace(s.currentConfig().MetricsToken)
 	if expected == "" {
 		return false
 	}
@@ -342,7 +351,7 @@ func (s *Server) writeReadiness(w http.ResponseWriter, r *http.Request) {
 	if status != "ready" {
 		code = http.StatusServiceUnavailable
 	}
-	writeJSON(w, code, ReadinessReport{App: s.cfg.AppName, Env: s.cfg.AppEnv, Status: status, Components: components})
+	writeJSON(w, code, ReadinessReport{App: s.currentConfig().AppName, Env: s.currentConfig().AppEnv, Status: status, Components: components})
 }
 
 func (s *Server) prometheusMetrics(ctx context.Context) string {
@@ -358,7 +367,7 @@ func (s *Server) prometheusMetrics(ctx context.Context) string {
 
 	writeMetricHelp(&b, "pastebox_info", "PasteBox process information.")
 	writeMetricType(&b, "pastebox_info", "gauge")
-	writeMetric(&b, "pastebox_info", map[string]string{"app": s.cfg.AppName, "env": s.cfg.AppEnv}, 1)
+	writeMetric(&b, "pastebox_info", map[string]string{"app": s.currentConfig().AppName, "env": s.currentConfig().AppEnv}, 1)
 	writeMetricHelp(&b, "pastebox_readiness_ready", "Overall readiness state, 1 when every component is ok or skipped.")
 	writeMetricType(&b, "pastebox_readiness_ready", "gauge")
 	writeMetric(&b, "pastebox_readiness_ready", nil, float64(ready))
@@ -513,8 +522,8 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) supportContacts(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, PublicSupportContacts{
-		SupportEmail: s.cfg.SupportEmail,
-		AbuseEmail:   s.cfg.AbuseEmail,
+		SupportEmail: s.currentConfig().SupportEmail,
+		AbuseEmail:   s.currentConfig().AbuseEmail,
 	})
 }
 
@@ -589,7 +598,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) googleOAuth(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.AppEnv == "production" {
+	if s.currentConfig().AppEnv == "production" {
 		s.handleErr(w, app.E(http.StatusNotFound, "not_found", "use the Google OAuth redirect flow"))
 		return
 	}
@@ -641,8 +650,8 @@ func (s *Server) googleOAuthStart(w http.ResponseWriter, r *http.Request) {
 	s.setGoogleOAuthStateCookie(w, r, cookieValue, 10*time.Minute)
 
 	params := url.Values{}
-	params.Set("client_id", s.cfg.GoogleOAuth.ClientID)
-	params.Set("redirect_uri", s.cfg.GoogleOAuth.RedirectURL)
+	params.Set("client_id", s.currentConfig().GoogleOAuth.ClientID)
+	params.Set("redirect_uri", s.currentConfig().GoogleOAuth.RedirectURL)
 	params.Set("response_type", "code")
 	params.Set("scope", "openid email profile")
 	params.Set("state", state)
@@ -673,12 +682,12 @@ func (s *Server) googleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	s.clearGoogleOAuthStateCookie(w, r)
 
-	idToken, err := exchangeGoogleOAuthCode(r.Context(), s.cfg.GoogleOAuth, code)
+	idToken, err := exchangeGoogleOAuthCode(r.Context(), s.currentConfig().GoogleOAuth, code)
 	if err != nil {
 		s.redirectGoogleOAuthError(w, r, "google_token_exchange_failed")
 		return
 	}
-	identity, err := verifyGoogleIDToken(r.Context(), s.cfg.GoogleOAuth.ClientID, statePayload.Nonce, idToken)
+	identity, err := verifyGoogleIDToken(r.Context(), s.currentConfig().GoogleOAuth.ClientID, statePayload.Nonce, idToken)
 	if err != nil {
 		s.redirectGoogleOAuthError(w, r, "google_identity_failed")
 		return
@@ -710,7 +719,7 @@ func (s *Server) githubOAuthStart(w http.ResponseWriter, r *http.Request) {
 		ReturnTo: returnTo,
 		Language: language,
 		IssuedAt: time.Now().UTC().Unix(),
-	}, s.cfg.GitHubOAuth.ClientSecret)
+	}, s.currentConfig().GitHubOAuth.ClientSecret)
 	if err != nil {
 		s.handleErr(w, err)
 		return
@@ -718,8 +727,8 @@ func (s *Server) githubOAuthStart(w http.ResponseWriter, r *http.Request) {
 	s.setOAuthStateCookie(w, r, githubOAuthStateCookieName, "/api/v1/auth/github", cookieValue, 10*time.Minute)
 
 	params := url.Values{}
-	params.Set("client_id", s.cfg.GitHubOAuth.ClientID)
-	params.Set("redirect_uri", s.cfg.GitHubOAuth.RedirectURL)
+	params.Set("client_id", s.currentConfig().GitHubOAuth.ClientID)
+	params.Set("redirect_uri", s.currentConfig().GitHubOAuth.RedirectURL)
 	params.Set("scope", "read:user user:email")
 	params.Set("state", state)
 	http.Redirect(w, r, githubOAuthAuthorizeURL+"?"+params.Encode(), http.StatusSeeOther)
@@ -740,14 +749,14 @@ func (s *Server) githubOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		s.redirectGitHubOAuthError(w, r, "invalid_github_callback")
 		return
 	}
-	statePayload, err := s.oauthStateFromRequest(r, githubOAuthStateCookieName, s.cfg.GitHubOAuth.ClientSecret)
+	statePayload, err := s.oauthStateFromRequest(r, githubOAuthStateCookieName, s.currentConfig().GitHubOAuth.ClientSecret)
 	if err != nil || subtle.ConstantTimeCompare([]byte(statePayload.State), []byte(state)) != 1 {
 		s.redirectGitHubOAuthError(w, r, "invalid_github_state")
 		return
 	}
 	s.clearOAuthStateCookie(w, r, githubOAuthStateCookieName, "/api/v1/auth/github")
 
-	accessToken, err := exchangeGitHubOAuthCode(r.Context(), s.cfg.GitHubOAuth, code)
+	accessToken, err := exchangeGitHubOAuthCode(r.Context(), s.currentConfig().GitHubOAuth, code)
 	if err != nil {
 		s.redirectGitHubOAuthError(w, r, "github_token_exchange_failed")
 		return
@@ -1384,6 +1393,35 @@ func (s *Server) adminUpdateRuntimeConfig(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, cfg)
 }
 
+func (s *Server) adminManagedConfig(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	cfg, err := s.app.AdminManagedConfig(user.ID)
+	if s.handleErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, cfg)
+}
+
+func (s *Server) adminUpdateManagedConfig(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	var req app.ManagedConfigUpdate
+	if !s.decode(w, r, &req) {
+		return
+	}
+	cfg, err := s.app.AdminUpdateManagedConfig(user.ID, req)
+	if s.handleErr(w, err) {
+		return
+	}
+	s.logger.Info("managed application config updated", "actor_id", user.ID, "public_url", cfg.Config.Site.PublicURL)
+	writeJSON(w, http.StatusOK, cfg)
+}
+
 func (s *Server) adminRuntimePanel(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireUser(w, r)
 	if !ok {
@@ -1896,7 +1934,7 @@ func (s *Server) cors(next http.Handler) http.Handler {
 }
 
 func (s *Server) corsOriginAllowed(origin string) bool {
-	for _, allowed := range s.cfg.CORSAllowedOrigins {
+	for _, allowed := range s.currentConfig().CORSAllowedOrigins {
 		if strings.EqualFold(strings.TrimSpace(allowed), origin) {
 			return true
 		}
@@ -2269,15 +2307,15 @@ type epusdtWebhookPayload struct {
 }
 
 func (s *Server) googleOAuthConfigured() bool {
-	return strings.TrimSpace(s.cfg.GoogleOAuth.ClientID) != "" &&
-		strings.TrimSpace(s.cfg.GoogleOAuth.ClientSecret) != "" &&
-		strings.TrimSpace(s.cfg.GoogleOAuth.RedirectURL) != ""
+	return strings.TrimSpace(s.currentConfig().GoogleOAuth.ClientID) != "" &&
+		strings.TrimSpace(s.currentConfig().GoogleOAuth.ClientSecret) != "" &&
+		strings.TrimSpace(s.currentConfig().GoogleOAuth.RedirectURL) != ""
 }
 
 func (s *Server) githubOAuthConfigured() bool {
-	return strings.TrimSpace(s.cfg.GitHubOAuth.ClientID) != "" &&
-		strings.TrimSpace(s.cfg.GitHubOAuth.ClientSecret) != "" &&
-		strings.TrimSpace(s.cfg.GitHubOAuth.RedirectURL) != ""
+	return strings.TrimSpace(s.currentConfig().GitHubOAuth.ClientID) != "" &&
+		strings.TrimSpace(s.currentConfig().GitHubOAuth.ClientSecret) != "" &&
+		strings.TrimSpace(s.currentConfig().GitHubOAuth.RedirectURL) != ""
 }
 
 func (s *Server) verifiedBillingWebhookInput(provider string, raw []byte, header http.Header) (app.BillingWebhookInput, error) {
@@ -2292,10 +2330,10 @@ func (s *Server) verifiedBillingWebhookInput(provider string, raw []byte, header
 }
 
 func (s *Server) verifiedStripeWebhookInput(raw []byte, signatureHeader string) (app.BillingWebhookInput, error) {
-	if strings.TrimSpace(s.cfg.Stripe.WebhookSecret) == "" {
+	if strings.TrimSpace(s.currentConfig().Stripe.WebhookSecret) == "" {
 		return app.BillingWebhookInput{}, app.E(http.StatusServiceUnavailable, "webhook_not_configured", "Stripe webhook secret is not configured")
 	}
-	if !validStripeSignature(raw, signatureHeader, s.cfg.Stripe.WebhookSecret, time.Now().UTC()) {
+	if !validStripeSignature(raw, signatureHeader, s.currentConfig().Stripe.WebhookSecret, time.Now().UTC()) {
 		return app.BillingWebhookInput{}, app.E(http.StatusBadRequest, "invalid_webhook_signature", "Stripe webhook signature is invalid")
 	}
 	var payload stripeWebhookPayload
@@ -2323,7 +2361,7 @@ func (s *Server) verifiedStripeWebhookInput(raw []byte, signatureHeader string) 
 }
 
 func (s *Server) verifiedEpusdtWebhookInput(raw []byte) (app.BillingWebhookInput, error) {
-	if strings.TrimSpace(s.cfg.Epusdt.SecretKey) == "" {
+	if strings.TrimSpace(s.currentConfig().Epusdt.SecretKey) == "" {
 		return app.BillingWebhookInput{}, app.E(http.StatusServiceUnavailable, "webhook_not_configured", "Epusdt webhook secret is not configured")
 	}
 	var payload epusdtWebhookPayload
@@ -2341,10 +2379,10 @@ func (s *Server) verifiedEpusdtWebhookInput(raw []byte) (app.BillingWebhookInput
 	payload.Amount = payload.Raw["amount"]
 	payload.ActualAmount = payload.Raw["actual_amount"]
 
-	if strings.TrimSpace(s.cfg.Epusdt.PID) != "" && payload.PID != strings.TrimSpace(s.cfg.Epusdt.PID) {
+	if strings.TrimSpace(s.currentConfig().Epusdt.PID) != "" && payload.PID != strings.TrimSpace(s.currentConfig().Epusdt.PID) {
 		return app.BillingWebhookInput{}, app.E(http.StatusBadRequest, "invalid_webhook", "Epusdt merchant id is invalid")
 	}
-	if !validEpusdtSignature(payload.Raw, s.cfg.Epusdt.SecretKey) {
+	if !validEpusdtSignature(payload.Raw, s.currentConfig().Epusdt.SecretKey) {
 		return app.BillingWebhookInput{}, app.E(http.StatusBadRequest, "invalid_webhook_signature", "Epusdt webhook signature is invalid")
 	}
 	return app.BillingWebhookInput{
@@ -2500,7 +2538,7 @@ func randomURLToken(bytesN int) (string, error) {
 }
 
 func (s *Server) signGoogleOAuthState(state googleOAuthState) (string, error) {
-	return s.signOAuthState(state, s.cfg.GoogleOAuth.ClientSecret)
+	return s.signOAuthState(state, s.currentConfig().GoogleOAuth.ClientSecret)
 }
 
 func (s *Server) signOAuthState(state googleOAuthState, secret string) (string, error) {
@@ -2516,7 +2554,7 @@ func (s *Server) signOAuthState(state googleOAuthState, secret string) (string, 
 }
 
 func (s *Server) googleOAuthStateFromRequest(r *http.Request) (googleOAuthState, error) {
-	return s.oauthStateFromRequest(r, googleOAuthStateCookieName, s.cfg.GoogleOAuth.ClientSecret)
+	return s.oauthStateFromRequest(r, googleOAuthStateCookieName, s.currentConfig().GoogleOAuth.ClientSecret)
 }
 
 func (s *Server) oauthStateFromRequest(r *http.Request, cookieName string, secret string) (googleOAuthState, error) {
@@ -2599,7 +2637,7 @@ func (s *Server) newCSRFToken() (string, string, error) {
 }
 
 func (s *Server) signCSRFToken(token string) string {
-	mac := hmac.New(sha256.New, []byte(s.cfg.CSRFSecret))
+	mac := hmac.New(sha256.New, []byte(s.currentConfig().CSRFSecret))
 	_, _ = mac.Write([]byte(token))
 	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	return token + "." + signature
@@ -2683,7 +2721,7 @@ func (s *Server) validShareAccessCookie(r *http.Request, token string, viewerID 
 }
 
 func (s *Server) signShareAccessGrant(token string, payload string) string {
-	mac := hmac.New(sha256.New, []byte(s.cfg.CSRFSecret))
+	mac := hmac.New(sha256.New, []byte(s.currentConfig().CSRFSecret))
 	_, _ = mac.Write([]byte("share-access\n"))
 	_, _ = mac.Write([]byte(token))
 	_, _ = mac.Write([]byte("\n"))
@@ -2997,7 +3035,7 @@ func (s *Server) clearSessionCookie(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) secureSessionCookie(r *http.Request) bool {
-	if s.cfg.AppEnv == "development" {
+	if s.currentConfig().AppEnv == "development" {
 		return false
 	}
 	return requestIsHTTPS(r)

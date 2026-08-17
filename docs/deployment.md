@@ -86,8 +86,10 @@ If another local process already owns port 8080, keep the container port
 unchanged and move only the host binding:
 
 ```sh
-PASTEBOX_IMAGE=pastebox:local PASTEBOX_HTTP_PORT=18080 PASTEBOX_PUBLIC_URL=http://localhost:18080 docker compose -f compose.deploy.yaml up -d
+PASTEBOX_IMAGE=pastebox:local PASTEBOX_HTTP_PORT=18080 docker compose -f compose.deploy.yaml up -d
 ```
+
+Then update the public URL in **Admin > Application config**.
 
 Then open `http://localhost:18080`. The demo Compose file starts local ClamAV
 and Mailpit containers by default, and enables `PASTEBOX_DEV_AUTH_TOKENS=true`
@@ -116,17 +118,16 @@ Mailpit, a migration job, a bucket-initialization job, and a worker:
 
 ```sh
 PASTEBOX_IMAGE=ghcr.io/cvinit/pastebox:sha-<commit>
-PASTEBOX_PUBLIC_URL=http://localhost:8080
-PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=<long-random-password>
 ```
 
 Optional local-only override when port 8080 is busy:
 
 ```sh
 PASTEBOX_HTTP_PORT=18080
-PASTEBOX_PUBLIC_URL=http://localhost:18080
 ```
+
+After changing the port, update the public URL and CORS origin in **Admin >
+Application config**.
 
 Mailpit's browser inbox is exposed on `http://localhost:18025` by default. If
 that host port is busy, override only the host binding:
@@ -143,9 +144,9 @@ docker compose up -d
 docker compose logs -f pastebox
 ```
 
-For HTTPS demos behind your own reverse proxy, set
-`PASTEBOX_PUBLIC_URL=https://pastebox.example.com` and forward
-`X-Forwarded-Proto: https` to the `pastebox` service.
+For HTTPS demos behind your own reverse proxy, set the HTTPS public URL in
+**Admin > Application config** and forward `X-Forwarded-Proto: https` to the
+`pastebox` service.
 
 Check health:
 
@@ -210,18 +211,20 @@ The demo Compose file is single-node. Do not run more than one PasteBox API
 container behind a load balancer from this file; use the production runbook and
 shared production services before horizontal scaling.
 
-## Admin Bootstrap
+## Administrator And Application Config
 
-For demo deployments, the bootstrap admin is created or updated at process
-startup from:
+Create or reset an administrator explicitly:
 
 ```sh
-PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=<long-random-password>
+docker compose run --rm pastebox admin create \
+  --email admin@example.com \
+  --password '<long-random-password>'
 ```
 
-Change the password before exposing the service. The admin account is stored in
-PostgreSQL and survives restarts in the demo stack.
+The account is stored in PostgreSQL and survives restarts. Sign in and use
+**Admin > Application config** to configure the public URL, local MinIO
+(`http://minio:9000`, bucket `pastebox`, access key `pastebox`, secret key
+`pastebox-secret`), Mailpit SMTP, ClamAV, OAuth, and other application settings.
 
 ## Upgrade Flow
 

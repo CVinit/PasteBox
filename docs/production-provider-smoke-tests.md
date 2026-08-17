@@ -26,6 +26,8 @@ This runbook covers the provider evidence required by
 ## Preconditions
 
 - `deploy/production.env` exists only on the server with mode `600`.
+- The administrator saved all required provider settings in **Admin >
+  Application config**.
 - `docker compose --env-file deploy/production.env -f compose.production.yaml
   --profile maintenance run --rm preflight` passed.
 - `docker compose --env-file deploy/production.env -f compose.production.yaml
@@ -138,10 +140,8 @@ created on mismatch.
 
 ## Stripe
 
-1. Ensure `PASTEBOX_STRIPE_ENABLED=true`,
-   `PASTEBOX_STRIPE_WEBHOOK_SECRET=whsec_...`, and
-   `PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE=https://...` are set in
-   `deploy/production.env`.
+1. In **Admin > Application config**, enable Stripe and confirm its webhook
+   secret and production checkout URL are configured.
 2. Create a Stripe order from Billing. Confirm the returned checkout URL uses
    the configured production checkout host and does not contain `/dev/checkout`.
 3. Complete or simulate the provider checkout using the operator-owned Stripe
@@ -161,10 +161,9 @@ and relevant audit/webhook event IDs.
 
 ## Epusdt
 
-1. Ensure `PASTEBOX_EPUSDT_ENABLED=true`, `PASTEBOX_EPUSDT_PID`,
-   `PASTEBOX_EPUSDT_SECRET_KEY`, `PASTEBOX_EPUSDT_CHECKOUT_URL_TEMPLATE`,
-   `PASTEBOX_EPUSDT_ADDRESS`, and `PASTEBOX_EPUSDT_CHAIN` are set in
-   `deploy/production.env`.
+1. In **Admin > Application config**, enable Epusdt and confirm its merchant
+   id, callback secret, production checkout URL, receiving address, and chain
+   are configured.
 2. Create an Epusdt order from Billing. Confirm the returned checkout URL uses
    the configured production checkout host and that the response includes the
    configured receiving address and chain, not development test values.

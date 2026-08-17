@@ -35,10 +35,10 @@ provider-change requests. Operators must record every action in existing audit,
 report, account, order, webhook, or lifecycle records.
 
 The Support page reads its public intake addresses from
-`GET /api/v1/support/contacts`. Production preflight requires
-`PASTEBOX_SUPPORT_EMAIL` and `PASTEBOX_ABUSE_EMAIL` to be explicit production
-email addresses, and the values in `deploy/production.env` must route to
-operator-monitored inboxes before public beta traffic is accepted.
+`GET /api/v1/support/contacts`. Production preflight requires the support and
+abuse email fields in **Admin > Application config** to be explicit production
+addresses that route to operator-monitored inboxes before public beta traffic
+is accepted.
 
 Do not request or store raw secrets, card numbers, private keys, seed phrases,
 or identity documents in PasteBox tickets unless a future verified support
@@ -205,8 +205,8 @@ Phase 8 is complete only when all of these are true:
 
 - Public legal/support/status routes are reachable through the production web
   bundle and through direct deep links.
-- `/support` renders the configured `PASTEBOX_SUPPORT_EMAIL` and
-  `PASTEBOX_ABUSE_EMAIL` intake addresses from `/api/v1/support/contacts`.
+- `/support` renders the configured support and abuse intake addresses from
+  `/api/v1/support/contacts`.
 - Billing and Settings link to refund, support, privacy, deletion, and export
   paths.
 - This runbook covers payment disputes, account deletion, data exports,

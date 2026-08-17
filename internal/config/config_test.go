@@ -1,9 +1,30 @@
 package config
 
 import (
+	"encoding/base64"
 	"log/slog"
 	"testing"
 )
+
+func TestDecodeConfigEncryptionKey(t *testing.T) {
+	raw := []byte("01234567890123456789012345678901")
+	cfg := Config{AppEnv: "production", ConfigEncryptionKey: base64.StdEncoding.EncodeToString(raw)}
+	decoded, err := cfg.DecodeConfigEncryptionKey()
+	if err != nil {
+		t.Fatalf("decode config key: %v", err)
+	}
+	if string(decoded) != string(raw) {
+		t.Fatal("unexpected decoded key")
+	}
+	cfg.ConfigEncryptionKey = "short"
+	if _, err := cfg.DecodeConfigEncryptionKey(); err == nil {
+		t.Fatal("expected invalid production key to fail")
+	}
+	cfg.ConfigEncryptionKey = ""
+	if _, err := cfg.DecodeConfigEncryptionKey(); err == nil {
+		t.Fatal("expected missing production key to fail")
+	}
+}
 
 func TestFromEnvUsesPasteBoxDefaults(t *testing.T) {
 	t.Setenv("PASTEBOX_APP_NAME", "")

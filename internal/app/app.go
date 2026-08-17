@@ -55,6 +55,7 @@ type Service struct {
 	mu sync.Mutex
 	// objectWriteMu keeps object writes and metadata commits atomic without holding mu across network I/O.
 	objectWriteMu sync.Mutex
+	rootConfig    config.Config
 	cfg           config.Config
 	now           func() time.Time
 	catalog       plans.Catalog
@@ -68,42 +69,44 @@ type Service struct {
 	redemptions   RedemptionStore
 	alerts        AlertEventStore
 
-	usersByID             map[string]*User
-	userIDByEmail         map[string]string
-	sessionsByID          map[string]*Session
-	emailVerifies         map[string]*AuthToken
-	passwordResets        map[string]*AuthToken
-	loginFailures         map[string]*LoginFailure
-	oauthIdentities       map[string]*OAuthIdentity
-	pastesByID            map[string]*Paste
-	attachmentsByID       map[string]*Attachment
-	objects               map[string][]byte
-	objectRefs            map[string]int
-	dailyMetrics          DailyMetricStore
-	sharesByID            map[string]*Share
-	shareIDByToken        map[string]string
-	ordersByID            map[string]*Order
-	webhookEventKeys      map[string]string
-	webhookEvents         []*WebhookEvent
-	auditLogs             []*AuditLog
-	reports               []*Report
-	cleanupJobs           []*QueueItem
-	cleanupFailures       []*QueueItem
-	scanJobs              []*QueueItem
-	scanFailures          []*QueueItem
-	failedJobs            []*QueueItem
-	mails                 []*Mail
-	runtimeConfig         RuntimeConfig
-	runtimeConfigChange   func(RuntimeConfig)
-	redemptionBatches     map[string]*RedemptionBatch
-	redemptionCodesByHash map[string]*RedemptionCode
-	redemptionRecords     []*RedemptionRecord
-	alertEvents           []*AlertEvent
-	alertSender           AlertSender
-	turnstileVerifier     TurnstileVerifier
-	turnstileTokenHashes  map[string]time.Time
-	resourceSnapshot      func() RuntimeResourceSnapshot
-	nextID                int64
+	usersByID               map[string]*User
+	userIDByEmail           map[string]string
+	sessionsByID            map[string]*Session
+	emailVerifies           map[string]*AuthToken
+	passwordResets          map[string]*AuthToken
+	loginFailures           map[string]*LoginFailure
+	oauthIdentities         map[string]*OAuthIdentity
+	pastesByID              map[string]*Paste
+	attachmentsByID         map[string]*Attachment
+	objects                 map[string][]byte
+	objectRefs              map[string]int
+	dailyMetrics            DailyMetricStore
+	sharesByID              map[string]*Share
+	shareIDByToken          map[string]string
+	ordersByID              map[string]*Order
+	webhookEventKeys        map[string]string
+	webhookEvents           []*WebhookEvent
+	auditLogs               []*AuditLog
+	reports                 []*Report
+	cleanupJobs             []*QueueItem
+	cleanupFailures         []*QueueItem
+	scanJobs                []*QueueItem
+	scanFailures            []*QueueItem
+	failedJobs              []*QueueItem
+	mails                   []*Mail
+	runtimeConfig           RuntimeConfig
+	managedSecrets          config.ManagedSecrets
+	runtimeConfigChange     func(RuntimeConfig, config.Config)
+	redemptionBatches       map[string]*RedemptionBatch
+	redemptionCodesByHash   map[string]*RedemptionCode
+	redemptionRecords       []*RedemptionRecord
+	alertEvents             []*AlertEvent
+	alertSender             AlertSender
+	turnstileVerifier       TurnstileVerifier
+	turnstileVerifierCustom bool
+	turnstileTokenHashes    map[string]time.Time
+	resourceSnapshot        func() RuntimeResourceSnapshot
+	nextID                  int64
 }
 
 func New(cfg config.Config) *Service {
@@ -131,7 +134,11 @@ func NewWithStorage(ctx context.Context, cfg config.Config, stores Stores) (*Ser
 		catalog = cloneCatalog(loaded)
 	}
 
+	managed, managedSecrets := config.ManagedFromConfig(cfg)
+	initialRuntimeConfig := defaultRuntimeConfig(cfg)
+	initialRuntimeConfig.Managed = managed
 	svc := &Service{
+		rootConfig:            cfg,
 		cfg:                   cfg,
 		now:                   time.Now,
 		catalog:               catalog,
@@ -160,7 +167,8 @@ func NewWithStorage(ctx context.Context, cfg config.Config, stores Stores) (*Ser
 		shareIDByToken:        map[string]string{},
 		ordersByID:            map[string]*Order{},
 		webhookEventKeys:      map[string]string{},
-		runtimeConfig:         defaultRuntimeConfig(cfg),
+		runtimeConfig:         initialRuntimeConfig,
+		managedSecrets:        managedSecrets,
 		redemptionBatches:     map[string]*RedemptionBatch{},
 		redemptionCodesByHash: map[string]*RedemptionCode{},
 		redemptionRecords:     []*RedemptionRecord{},

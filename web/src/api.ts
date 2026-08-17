@@ -281,6 +281,75 @@ export type ProviderStatus = {
   turnstile: ProviderConfigStatus;
   telegram: ProviderConfigStatus;
   s3: ProviderConfigStatus;
+  stripe: ProviderConfigStatus;
+  epusdt: ProviderConfigStatus;
+};
+
+export type ManagedConfig = {
+  version: number;
+  site: {
+    appName: string;
+    publicUrl: string;
+    supportEmail: string;
+    abuseEmail: string;
+    corsAllowedOrigins: string[];
+  };
+  workerHeartbeatMaxAgeSeconds: number;
+  s3: {
+    endpoint: string;
+    bucket: string;
+    region: string;
+    usePathStyle: boolean;
+  };
+  scanner: {
+    provider: string;
+    clamav: { addr: string; timeout: number };
+  };
+  googleOAuth: { clientId: string; redirectUrl: string };
+  githubOAuth: { clientId: string; redirectUrl: string };
+  turnstile: { siteKey: string; verifyUrl: string };
+  telegram: { chatId: string; apiBaseUrl: string };
+  mailerProvider: string;
+  smtp: {
+    host: string;
+    port: number;
+    username: string;
+    fromEmail: string;
+    fromName: string;
+    tlsMode: string;
+  };
+  devAuthTokens: boolean;
+  stripeEnabled: boolean;
+  epusdtEnabled: boolean;
+  stripe: { checkoutUrlTemplate: string };
+  epusdt: {
+    pid: string;
+    checkoutUrlTemplate: string;
+    address: string;
+    chain: string;
+  };
+};
+
+export type ManagedSecretStatus = {
+  s3AccessKey: boolean;
+  s3SecretKey: boolean;
+  googleClientSecret: boolean;
+  githubClientSecret: boolean;
+  turnstileSecretKey: boolean;
+  telegramBotToken: boolean;
+  smtpPassword: boolean;
+  stripeWebhookSecret: boolean;
+  epusdtSecretKey: boolean;
+};
+
+export type ManagedSecretPatch = Partial<
+  Record<keyof ManagedSecretStatus, string>
+>;
+
+export type ManagedConfigView = {
+  config: ManagedConfig;
+  secrets: ManagedSecretStatus;
+  updatedAt: string;
 };
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -676,6 +745,15 @@ export const client = {
     api<{ status: string }>("/me/delete-now", { method: "POST" }),
   adminDashboard: () => api<Record<string, unknown>>("/admin/dashboard"),
   adminRuntimeConfig: () => api<RuntimeConfig>("/admin/runtime-config"),
+  adminManagedConfig: () => api<ManagedConfigView>("/admin/managed-config"),
+  adminUpdateManagedConfig: (body: {
+    config: ManagedConfig;
+    secrets: ManagedSecretPatch;
+  }) =>
+    api<ManagedConfigView>("/admin/managed-config", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
   adminUpdateRuntimeConfig: (body: {
     logLevel?: LogLevel;
     guestUploads?: Partial<GuestUploadConfig>;
@@ -696,9 +774,12 @@ export const client = {
       body: JSON.stringify(body),
     }),
   adminProviderTest: (provider: string) =>
-    api<RuntimeConfig>(`/admin/providers/${encodeURIComponent(provider)}/test`, {
-      method: "POST",
-    }),
+    api<RuntimeConfig>(
+      `/admin/providers/${encodeURIComponent(provider)}/test`,
+      {
+        method: "POST",
+      },
+    ),
   adminRedemptionBatches: () =>
     api<{ batches: RedemptionBatch[] }>("/admin/redemption-batches"),
   adminCreateRedemptionBatch: (body: {
