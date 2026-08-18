@@ -184,6 +184,62 @@ func TestRuntimeControlStoresPersistConfigRedemptionsAndAlerts(t *testing.T) {
 	}
 }
 
+func TestRuntimeConfigAuditFailureRollsBackConfigAndSecrets(t *testing.T) {
+	databaseURL := os.Getenv("PASTEBOX_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set PASTEBOX_TEST_DATABASE_URL to run PostgreSQL runtime config atomicity test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := ApplyMigrations(ctx, databaseURL); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	defer pool.Close()
+	_, _ = pool.Exec(ctx, `DELETE FROM audit_logs WHERE id = 'aud_runtime_atomic_conflict'`)
+	_, _ = pool.Exec(ctx, `DELETE FROM system_configs WHERE id = 'default'`)
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM audit_logs WHERE id = 'aud_runtime_atomic_conflict'`)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM system_configs WHERE id = 'default'`)
+	}()
+
+	cipher, err := configcrypto.New(bytes.Repeat([]byte{0x5a}, 32))
+	if err != nil {
+		t.Fatalf("new config cipher: %v", err)
+	}
+	store := NewRuntimeConfigStore(pool, cipher)
+	now := time.Date(2026, 8, 18, 15, 0, 0, 0, time.UTC)
+	base := app.RuntimeConfig{ID: "default", LogLevel: app.RuntimeLogLevelInfo, UpdatedAt: now}
+	if err := store.SaveRuntimeConfig(ctx, base, config.ManagedSecrets{SMTPPassword: "old-secret"}); err != nil {
+		t.Fatalf("save base runtime config: %v", err)
+	}
+	conflictingAudit := app.AuditLog{
+		ID: "aud_runtime_atomic_conflict", ActorID: "usr_admin", Action: "seed", Target: "default", CreatedAt: now,
+	}
+	if err := NewAuditLogStore(pool).RecordAuditLog(ctx, conflictingAudit); err != nil {
+		t.Fatalf("seed conflicting audit: %v", err)
+	}
+	next := base
+	next.LogLevel = app.RuntimeLogLevelDebug
+	next.UpdatedAt = now.Add(time.Minute)
+	conflictingAudit.Action = "admin.runtime_config_update"
+	if err := store.SaveRuntimeConfigWithAudit(ctx, next, config.ManagedSecrets{SMTPPassword: "new-secret"}, conflictingAudit); err == nil {
+		t.Fatal("expected duplicate audit id to fail atomic save")
+	}
+	loaded, secrets, ok, err := store.RuntimeConfig(ctx)
+	if err != nil {
+		t.Fatalf("load runtime config after rollback: %v", err)
+	}
+	if !ok || loaded.LogLevel != app.RuntimeLogLevelInfo || secrets.SMTPPassword != "old-secret" {
+		t.Fatalf("runtime config transaction did not roll back: ok=%v cfg=%#v secrets=%#v", ok, loaded, secrets)
+	}
+}
+
 func cleanupRuntimeControlStoreRows(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

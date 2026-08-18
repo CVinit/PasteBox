@@ -193,7 +193,28 @@ func (s *Service) RedeemCode(userID string, rawCode string) (UserView, error) {
 	if err != nil {
 		return UserView{}, err
 	}
-	code := s.redemptionCodesByHash[tokenHash(strings.TrimSpace(rawCode))]
+	codeHash := tokenHash(strings.TrimSpace(rawCode))
+	input := RedemptionTransactionInput{
+		UserID:     user.ID,
+		CodeHash:   codeHash,
+		RecordID:   s.newID("red"),
+		AuditID:    s.newID("aud"),
+		RedeemedAt: s.now().UTC(),
+	}
+	if s.transactions != nil {
+		result, err := s.transactions.RedeemCode(context.Background(), input)
+		if err != nil {
+			return UserView{}, err
+		}
+		cachedUser := s.cacheUserLocked(result.User)
+		s.cacheRedemptionCodeLocked(result.Code)
+		s.cacheRedemptionBatchLocked(result.Batch)
+		s.cacheRedemptionRecordLocked(result.Record)
+		s.cacheAuditLogLocked(result.Audit)
+		return s.viewUserLocked(cachedUser)
+	}
+
+	code := s.redemptionCodesByHash[codeHash]
 	if code == nil {
 		return UserView{}, E(http.StatusNotFound, "redemption_code_invalid", "redemption code is invalid")
 	}
@@ -201,46 +222,48 @@ func (s *Service) RedeemCode(userID string, rawCode string) (UserView, error) {
 	if batch == nil {
 		return UserView{}, E(http.StatusNotFound, "redemption_code_invalid", "redemption code is invalid")
 	}
-	if err := s.validateRedemptionLocked(user, batch, code); err != nil {
+	userCount := s.redemptionCountForUserLocked(batch.ID, user.ID)
+	result, err := BuildRedemptionTransaction(input, *user, *batch, *code, userCount)
+	if err != nil {
 		return UserView{}, err
 	}
-	now := s.now().UTC()
-	code.RedeemedBy = user.ID
-	code.RedeemedAt = &now
-	batch.RedeemedCount++
-	batch.UpdatedAt = now
-	record := RedemptionRecord{ID: s.newID("red"), CodeHash: code.CodeHash, BatchID: batch.ID, UserID: user.ID, PlanID: batch.PlanID, CreatedAt: now}
-	user.PlanID = batch.PlanID
-	expires := now.Add(time.Duration(batch.DurationDays) * 24 * time.Hour)
-	if user.PlanExpiresAt != nil && user.PlanExpiresAt.After(now) {
-		expires = user.PlanExpiresAt.Add(time.Duration(batch.DurationDays) * 24 * time.Hour)
-	}
-	user.PlanExpiresAt = &expires
-	user.UpdatedAt = now
 	if s.redemptions != nil {
-		if err := s.redemptions.UpdateRedemptionCode(context.Background(), *code); err != nil {
+		if err := s.redemptions.UpdateRedemptionCode(context.Background(), result.Code); err != nil {
 			return UserView{}, err
 		}
-		if err := s.redemptions.UpdateRedemptionBatch(context.Background(), *batch); err != nil {
+		if err := s.redemptions.UpdateRedemptionBatch(context.Background(), result.Batch); err != nil {
 			return UserView{}, err
 		}
-		if err := s.redemptions.CreateRedemptionRecord(context.Background(), record); err != nil {
+		if err := s.redemptions.CreateRedemptionRecord(context.Background(), result.Record); err != nil {
 			return UserView{}, err
 		}
 	}
-	if err := s.updateUserLocked(user); err != nil {
-		return UserView{}, err
+	if s.auth.Users != nil {
+		if err := s.auth.Users.UpdateUser(context.Background(), result.User); err != nil {
+			return UserView{}, err
+		}
 	}
-	s.cacheRedemptionCodeLocked(*code)
-	s.cacheRedemptionBatchLocked(*batch)
-	s.cacheRedemptionRecordLocked(record)
-	if err := s.auditLocked(user.ID, "billing.redemption_redeemed", batch.ID, map[string]any{
-		"planId":       batch.PlanID,
-		"durationDays": batch.DurationDays,
-	}); err != nil {
-		return UserView{}, err
+	if s.audit != nil {
+		if err := s.audit.RecordAuditLog(context.Background(), result.Audit); err != nil {
+			return UserView{}, err
+		}
 	}
-	return s.viewUserLocked(user)
+	cachedUser := s.cacheUserLocked(result.User)
+	s.cacheRedemptionCodeLocked(result.Code)
+	s.cacheRedemptionBatchLocked(result.Batch)
+	s.cacheRedemptionRecordLocked(result.Record)
+	s.cacheAuditLogLocked(result.Audit)
+	return s.viewUserLocked(cachedUser)
+}
+
+func (s *Service) redemptionCountForUserLocked(batchID string, userID string) int {
+	count := 0
+	for _, record := range s.redemptionRecords {
+		if record != nil && record.BatchID == batchID && record.UserID == userID {
+			count++
+		}
+	}
+	return count
 }
 
 func (s *Service) buildRedemptionBatchLocked(input RedemptionBatchInput) (RedemptionBatch, []RedemptionCode, error) {
@@ -286,41 +309,6 @@ func (s *Service) buildRedemptionBatchLocked(input RedemptionBatchInput) (Redemp
 		codes = append(codes, RedemptionCode{CodeHash: hash, Code: raw, BatchID: batch.ID, CreatedAt: now})
 	}
 	return batch, codes, nil
-}
-
-func (s *Service) validateRedemptionLocked(user *User, batch *RedemptionBatch, code *RedemptionCode) error {
-	now := s.now().UTC()
-	if batch.Disabled {
-		return E(http.StatusForbidden, "redemption_batch_disabled", "redemption batch is disabled")
-	}
-	if batch.ExpiresAt != nil && !batch.ExpiresAt.After(now) {
-		return E(http.StatusGone, "redemption_batch_expired", "redemption batch is expired")
-	}
-	if code.RedeemedAt != nil || code.RedeemedBy != "" {
-		return E(http.StatusConflict, "redemption_code_used", "redemption code has already been used")
-	}
-	if batch.RedeemedCount >= batch.MaxTotalRedemptions {
-		return E(http.StatusConflict, "redemption_batch_limit", "redemption batch redemption limit reached")
-	}
-	if len(batch.AllowedEmails) > 0 && !contains(batch.AllowedEmails, normalizeEmail(user.Email)) {
-		return E(http.StatusForbidden, "redemption_email_not_allowed", "redemption code is not valid for this email")
-	}
-	if len(batch.AllowedDomains) > 0 {
-		domain := emailDomain(user.Email)
-		if !contains(batch.AllowedDomains, domain) {
-			return E(http.StatusForbidden, "redemption_domain_not_allowed", "redemption code is not valid for this email domain")
-		}
-	}
-	userCount := 0
-	for _, record := range s.redemptionRecords {
-		if record != nil && record.BatchID == batch.ID && record.UserID == user.ID {
-			userCount++
-		}
-	}
-	if userCount >= batch.MaxRedemptionsPerUser {
-		return E(http.StatusConflict, "redemption_user_limit", "user redemption limit reached")
-	}
-	return nil
 }
 
 func (s *Service) cacheRedemptionBatchLocked(batch RedemptionBatch) *RedemptionBatch {

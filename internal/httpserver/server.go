@@ -22,6 +22,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strconv"
@@ -44,6 +45,8 @@ const (
 	csrfCookieName             = "pastebox_csrf"
 	shareAccessCookieName      = "pastebox_share_access"
 	csrfHeaderName             = "X-CSRF-Token"
+	guestTokenHeaderName       = "X-PasteBox-Guest-Token"
+	turnstileTokenHeaderName   = "X-PasteBox-Turnstile-Token"
 	shareAccessCookieTTL       = 15 * time.Minute
 	shareAccessBodyLimitBytes  = 64 << 10
 )
@@ -74,6 +77,7 @@ type Server struct {
 	app          *app.Service
 	readiness    ReadinessChecker
 	rateLimiter  *rateLimiter
+	trustedProxy []netip.Prefix
 	metricsMu    sync.Mutex
 	httpRequests map[httpMetricKey]int64
 }
@@ -155,6 +159,7 @@ func NewWithServiceAndReadiness(cfg config.Config, logger *slog.Logger, service 
 		app:          service,
 		readiness:    readiness,
 		rateLimiter:  newRateLimiter(),
+		trustedProxy: trustedProxyPrefixes(cfg.TrustedProxyCIDRs, logger),
 		httpRequests: map[httpMetricKey]int64{},
 	}
 	return server.routes()
@@ -170,7 +175,6 @@ func (s *Server) currentConfig() config.Config {
 func (s *Server) routes() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 	r.Use(s.secureHeaders)
 	r.Use(s.cors)
@@ -556,7 +560,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		Language:              req.Language,
 		EmailVerificationCode: req.EmailVerificationCode,
 		TurnstileToken:        req.TurnstileToken,
-		RemoteIP:              clientIP(r),
+		RemoteIP:              s.clientIP(r),
 	})
 	if s.handleErr(w, err) {
 		return
@@ -1026,7 +1030,7 @@ func (s *Server) createGuestPaste(w http.ResponseWriter, r *http.Request) {
 		Tags:             req.Tags,
 		ExpiresInSeconds: req.ExpiresInSeconds,
 		TurnstileToken:   req.TurnstileToken,
-		RemoteIP:         clientIP(r),
+		RemoteIP:         s.clientIP(r),
 	})
 	if s.handleErr(w, err) {
 		return
@@ -1105,7 +1109,12 @@ func (s *Server) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	upload, _, err := readAttachmentMultipart(r)
+	pasteID := chi.URLParam(r, "pasteID")
+	preflight, err := s.app.PreflightAttachmentUpload(user.ID, pasteID)
+	if s.handleErr(w, err) {
+		return
+	}
+	upload, _, err := readAttachmentMultipart(r, preflight.MaxBytes)
 	if err != nil {
 		if s.handleErr(w, err) {
 			return
@@ -1113,7 +1122,7 @@ func (s *Server) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer upload.Close()
-	attachment, err := s.app.AddPreparedAttachmentWithContext(r.Context(), user.ID, chi.URLParam(r, "pasteID"), upload)
+	attachment, err := s.app.AddPreparedAttachmentWithContext(r.Context(), user.ID, pasteID, upload)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1122,7 +1131,43 @@ func (s *Server) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) uploadGuestAttachment(w http.ResponseWriter, r *http.Request) {
-	upload, fields, err := readAttachmentMultipart(r)
+	pasteID := chi.URLParam(r, "pasteID")
+	headerToken := guestTokenFromRequest(r)
+	headerTurnstileToken := turnstileTokenFromRequest(r)
+	var preflight app.AttachmentUploadPreflight
+	preflightReady := false
+	if headerToken != "" {
+		var err error
+		preflight, err = s.app.PreflightGuestAttachmentUpload(r.Context(), headerToken, pasteID, headerTurnstileToken, s.clientIP(r))
+		if err == nil {
+			preflightReady = true
+		} else if appErr, ok := err.(*app.Error); !ok || appErr.Code != "turnstile_required" || headerTurnstileToken != "" {
+			if s.handleErr(w, err) {
+				return
+			}
+			return
+		}
+	}
+	upload, _, err := readAttachmentMultipartWithPreflight(r, func(fields map[string]string) (int64, error) {
+		if preflightReady {
+			return preflight.MaxBytes, nil
+		}
+		token := firstNonEmpty(headerToken, fields["guestToken"])
+		if token == "" {
+			return 0, app.E(http.StatusBadRequest, "guest_upload_credentials_before_file", "guest token must be sent in X-PasteBox-Guest-Token or a multipart field before the file")
+		}
+		turnstileToken := firstNonEmpty(headerTurnstileToken, fields["turnstileToken"])
+		var preflightErr error
+		preflight, preflightErr = s.app.PreflightGuestAttachmentUpload(r.Context(), token, pasteID, turnstileToken, s.clientIP(r))
+		if appErr, ok := preflightErr.(*app.Error); ok && appErr.Code == "turnstile_required" && turnstileToken == "" {
+			return 0, app.E(http.StatusBadRequest, "guest_upload_credentials_before_file", "Turnstile token must be sent in X-PasteBox-Turnstile-Token or a multipart field before the file")
+		}
+		if preflightErr != nil {
+			return 0, preflightErr
+		}
+		preflightReady = true
+		return preflight.MaxBytes, nil
+	})
 	if err != nil {
 		if s.handleErr(w, err) {
 			return
@@ -1130,14 +1175,7 @@ func (s *Server) uploadGuestAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer upload.Close()
-	attachment, err := s.app.AddPreparedGuestAttachmentWithContext(
-		r.Context(),
-		firstNonEmpty(fields["guestToken"], guestTokenFromRequest(r)),
-		chi.URLParam(r, "pasteID"),
-		upload,
-		fields["turnstileToken"],
-		clientIP(r),
-	)
+	attachment, err := s.app.AddPreflightedGuestAttachmentWithContext(r.Context(), preflight, upload)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1921,7 +1959,7 @@ func (s *Server) cors(next http.Handler) http.Handler {
 			header.Add("Vary", "Origin")
 			header.Set("Access-Control-Allow-Origin", origin)
 			header.Set("Access-Control-Allow-Credentials", "true")
-			header.Set("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token")
+			header.Set("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token, "+guestTokenHeaderName+", "+turnstileTokenHeaderName)
 			header.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 			header.Set("Access-Control-Max-Age", "600")
 			if r.Method == http.MethodOptions {
@@ -1977,7 +2015,7 @@ func (s *Server) rateLimit(next http.Handler) http.Handler {
 			return
 		}
 
-		keys := []string{rule.Category + ":ip:" + clientIP(r)}
+		keys := []string{rule.Category + ":ip:" + s.clientIP(r)}
 		if userID := s.rateLimitUserID(r); userID != "" {
 			keys = append(keys, rule.Category+":user:"+userID)
 		}
@@ -2105,15 +2143,83 @@ func retryAfterSeconds(remaining time.Duration) int {
 	return seconds
 }
 
-func clientIP(r *http.Request) string {
-	remoteAddr := strings.TrimSpace(r.RemoteAddr)
-	if host, _, err := net.SplitHostPort(remoteAddr); err == nil && strings.TrimSpace(host) != "" {
-		return host
+func trustedProxyPrefixes(values []string, logger *slog.Logger) []netip.Prefix {
+	prefixes := make([]netip.Prefix, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			if addr, addrErr := netip.ParseAddr(value); addrErr == nil {
+				addr = addr.Unmap()
+				prefix = netip.PrefixFrom(addr, addr.BitLen())
+			} else {
+				logger.Warn("invalid trusted proxy CIDR ignored", "cidr", value)
+				continue
+			}
+		}
+		prefixes = append(prefixes, prefix.Masked())
 	}
-	if remoteAddr == "" {
-		return "unknown"
+	return prefixes
+}
+
+func (s *Server) clientIP(r *http.Request) string {
+	peer, ok := remoteIP(r.RemoteAddr)
+	if !ok {
+		if strings.TrimSpace(r.RemoteAddr) == "" {
+			return "unknown"
+		}
+		return strings.TrimSpace(r.RemoteAddr)
 	}
-	return remoteAddr
+	if !ipInPrefixes(peer, s.trustedProxy) {
+		return peer.String()
+	}
+
+	forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+	if forwarded == "" {
+		forwarded = strings.TrimSpace(r.Header.Get("X-Real-IP"))
+	}
+	if forwarded == "" {
+		return peer.String()
+	}
+	hops := strings.Split(forwarded, ",")
+	parsed := make([]netip.Addr, 0, len(hops))
+	for _, hop := range hops {
+		addr, err := netip.ParseAddr(strings.TrimSpace(hop))
+		if err != nil {
+			return peer.String()
+		}
+		parsed = append(parsed, addr.Unmap())
+	}
+	for i := len(parsed) - 1; i >= 0; i-- {
+		if !ipInPrefixes(parsed[i], s.trustedProxy) {
+			return parsed[i].String()
+		}
+	}
+	return parsed[0].String()
+}
+
+func remoteIP(remoteAddr string) (netip.Addr, bool) {
+	remoteAddr = strings.TrimSpace(remoteAddr)
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		remoteAddr = host
+	}
+	addr, err := netip.ParseAddr(remoteAddr)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return addr.Unmap(), true
+}
+
+func ipInPrefixes(addr netip.Addr, prefixes []netip.Prefix) bool {
+	for _, prefix := range prefixes {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) csrfProtection(next http.Handler) http.Handler {
@@ -2495,7 +2601,14 @@ func guestTokenFromRequest(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	return strings.TrimSpace(r.Header.Get("X-PasteBox-Guest-Token"))
+	return strings.TrimSpace(r.Header.Get(guestTokenHeaderName))
+}
+
+func turnstileTokenFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.Header.Get(turnstileTokenHeaderName))
 }
 
 func stringFromObject(object map[string]any, key string) string {
@@ -3088,7 +3201,13 @@ func (s *Server) writeDownloadStream(w http.ResponseWriter, download app.Attachm
 	_, _ = io.Copy(w, download.Body)
 }
 
-func readAttachmentMultipart(r *http.Request) (*app.PreparedAttachmentUpload, map[string]string, error) {
+func readAttachmentMultipart(r *http.Request, maxBytes int64) (*app.PreparedAttachmentUpload, map[string]string, error) {
+	return readAttachmentMultipartWithPreflight(r, func(map[string]string) (int64, error) {
+		return maxBytes, nil
+	})
+}
+
+func readAttachmentMultipartWithPreflight(r *http.Request, preflight func(map[string]string) (int64, error)) (*app.PreparedAttachmentUpload, map[string]string, error) {
 	reader, err := r.MultipartReader()
 	if err != nil {
 		return nil, nil, app.E(http.StatusBadRequest, "invalid_multipart", "invalid multipart form")
@@ -3107,7 +3226,12 @@ func readAttachmentMultipart(r *http.Request) (*app.PreparedAttachmentUpload, ma
 			return nil, nil, app.E(http.StatusBadRequest, "invalid_multipart", "invalid multipart form")
 		}
 		if part.FormName() == "file" && upload == nil {
-			upload, err = app.PrepareAttachmentUpload(part.FileName(), part.Header.Get("Content-Type"), part)
+			maxBytes, preflightErr := preflight(fields)
+			if preflightErr != nil {
+				_ = part.Close()
+				return nil, nil, preflightErr
+			}
+			upload, err = app.PrepareAttachmentUploadWithLimit(part.FileName(), part.Header.Get("Content-Type"), part, maxBytes)
 			_ = part.Close()
 			if err != nil {
 				return nil, nil, err

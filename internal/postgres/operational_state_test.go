@@ -321,6 +321,216 @@ func TestOperationalStateStoresRoundTripBillingSupportJobsAndMail(t *testing.T) 
 	}
 }
 
+func TestQueueClaimsAreAtomicRecoverExpiredLeasesAndRejectStaleWorkers(t *testing.T) {
+	databaseURL := os.Getenv("PASTEBOX_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set PASTEBOX_TEST_DATABASE_URL to run PostgreSQL queue claim integration test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := ApplyMigrations(ctx, databaseURL); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	defer pool.Close()
+	cleanup := func(cleanupCtx context.Context) {
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM jobs WHERE id LIKE 'job_queue_claim_test_%'`)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM mails WHERE id LIKE 'mail_queue_claim_test_%'`)
+	}
+	cleanup(ctx)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		cleanup(cleanupCtx)
+	})
+
+	now := time.Date(2000, 1, 1, 12, 0, 0, 0, time.UTC)
+	jobStore := NewJobStore(pool)
+	mailStore := NewMailStore(pool)
+	for i := 0; i < 4; i++ {
+		job := JobRecord{
+			ID:        "job_queue_claim_test_concurrent_" + string(rune('a'+i)),
+			Kind:      "scan",
+			TargetID:  "att-claim-test",
+			Status:    "pending",
+			RunAfter:  now.Add(-3 * time.Hour),
+			CreatedAt: now.Add(time.Duration(i) * time.Second),
+			UpdatedAt: now,
+		}
+		if err := jobStore.CreateJob(ctx, job); err != nil {
+			t.Fatalf("create concurrent claim job: %v", err)
+		}
+		mail := MailRecord{
+			ID:        "mail_queue_claim_test_concurrent_" + string(rune('a'+i)),
+			To:        "queue-claim@example.com",
+			Subject:   "Claim test",
+			Body:      "body",
+			Status:    "queued",
+			RunAfter:  now.Add(-3 * time.Hour),
+			CreatedAt: now.Add(time.Duration(i) * time.Second),
+		}
+		if err := mailStore.CreateMail(ctx, mail); err != nil {
+			t.Fatalf("create concurrent claim mail: %v", err)
+		}
+	}
+
+	type jobClaimResult struct {
+		worker string
+		jobs   []JobRecord
+		err    error
+	}
+	jobStart := make(chan struct{})
+	jobResults := make(chan jobClaimResult, 2)
+	for _, workerID := range []string{"worker-job-a", "worker-job-b"} {
+		go func(worker string) {
+			<-jobStart
+			jobs, claimErr := jobStore.ClaimRunnableJobs(ctx, worker, 2, now, now.Add(24*time.Hour))
+			jobResults <- jobClaimResult{worker: worker, jobs: jobs, err: claimErr}
+		}(workerID)
+	}
+	close(jobStart)
+	claimedJobIDs := map[string]string{}
+	for i := 0; i < 2; i++ {
+		result := <-jobResults
+		if result.err != nil {
+			t.Fatalf("claim concurrent jobs for %s: %v", result.worker, result.err)
+		}
+		if len(result.jobs) != 2 {
+			t.Fatalf("expected %s to claim two jobs, got %#v", result.worker, result.jobs)
+		}
+		for _, job := range result.jobs {
+			if previous := claimedJobIDs[job.ID]; previous != "" {
+				t.Fatalf("job %s was claimed by both %s and %s", job.ID, previous, result.worker)
+			}
+			if job.ClaimedBy != result.worker || job.LeaseExpiresAt == nil || !job.LeaseExpiresAt.Equal(now.Add(24*time.Hour)) {
+				t.Fatalf("unexpected job claim metadata for %s: %#v", result.worker, job)
+			}
+			claimedJobIDs[job.ID] = result.worker
+		}
+	}
+	if len(claimedJobIDs) != 4 {
+		t.Fatalf("expected four distinct claimed jobs, got %#v", claimedJobIDs)
+	}
+
+	type mailClaimResult struct {
+		worker string
+		mails  []MailRecord
+		err    error
+	}
+	mailStart := make(chan struct{})
+	mailResults := make(chan mailClaimResult, 2)
+	for _, workerID := range []string{"worker-mail-a", "worker-mail-b"} {
+		go func(worker string) {
+			<-mailStart
+			mails, claimErr := mailStore.ClaimRunnableMail(ctx, worker, 2, now, now.Add(24*time.Hour))
+			mailResults <- mailClaimResult{worker: worker, mails: mails, err: claimErr}
+		}(workerID)
+	}
+	close(mailStart)
+	claimedMailIDs := map[string]string{}
+	for i := 0; i < 2; i++ {
+		result := <-mailResults
+		if result.err != nil {
+			t.Fatalf("claim concurrent mail for %s: %v", result.worker, result.err)
+		}
+		if len(result.mails) != 2 {
+			t.Fatalf("expected %s to claim two mails, got %#v", result.worker, result.mails)
+		}
+		for _, mail := range result.mails {
+			if previous := claimedMailIDs[mail.ID]; previous != "" {
+				t.Fatalf("mail %s was claimed by both %s and %s", mail.ID, previous, result.worker)
+			}
+			if mail.ClaimedBy != result.worker || mail.LeaseExpiresAt == nil || !mail.LeaseExpiresAt.Equal(now.Add(24*time.Hour)) {
+				t.Fatalf("unexpected mail claim metadata for %s: %#v", result.worker, mail)
+			}
+			claimedMailIDs[mail.ID] = result.worker
+		}
+	}
+	if len(claimedMailIDs) != 4 {
+		t.Fatalf("expected four distinct claimed mails, got %#v", claimedMailIDs)
+	}
+
+	recoveryJob := JobRecord{
+		ID:        "job_queue_claim_test_recovery",
+		Kind:      "cleanup",
+		Status:    "pending",
+		RunAfter:  now.Add(-2 * time.Hour),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := jobStore.CreateJob(ctx, recoveryJob); err != nil {
+		t.Fatalf("create recovery job: %v", err)
+	}
+	oldJobs, err := jobStore.ClaimRunnableJobs(ctx, "worker-reused", 1, now, now.Add(time.Minute))
+	if err != nil || len(oldJobs) != 1 || oldJobs[0].ID != recoveryJob.ID {
+		t.Fatalf("claim recovery job with old worker: jobs=%#v err=%v", oldJobs, err)
+	}
+	reclaimAt := now.Add(2 * time.Minute)
+	newJobs, err := jobStore.ClaimRunnableJobs(ctx, "worker-reused", 1, reclaimAt, reclaimAt.Add(time.Minute))
+	if err != nil || len(newJobs) != 1 || newJobs[0].ID != recoveryJob.ID {
+		t.Fatalf("reclaim expired job lease: jobs=%#v err=%v", newJobs, err)
+	}
+	oldJob := oldJobs[0]
+	oldJob.Status = "completed"
+	oldJob.UpdatedAt = reclaimAt
+	if err := jobStore.UpdateJob(ctx, oldJob); !errors.Is(err, ErrJobClaimLost) {
+		t.Fatalf("expected stale job worker update rejection, got %v", err)
+	}
+	newJob := newJobs[0]
+	newJob.Status = "completed"
+	newJob.Attempts++
+	newJob.UpdatedAt = reclaimAt
+	if err := jobStore.UpdateJob(ctx, newJob); err != nil {
+		t.Fatalf("complete reclaimed job: %v", err)
+	}
+	completedJob, err := jobStore.JobByID(ctx, recoveryJob.ID)
+	if err != nil || completedJob.Status != "completed" || completedJob.ClaimedBy != "" || completedJob.LeaseExpiresAt != nil {
+		t.Fatalf("unexpected completed reclaimed job: job=%#v err=%v", completedJob, err)
+	}
+
+	recoveryMail := MailRecord{
+		ID:        "mail_queue_claim_test_recovery",
+		To:        "queue-claim@example.com",
+		Subject:   "Recovery",
+		Body:      "body",
+		Status:    "queued",
+		RunAfter:  now.Add(-2 * time.Hour),
+		CreatedAt: now,
+	}
+	if err := mailStore.CreateMail(ctx, recoveryMail); err != nil {
+		t.Fatalf("create recovery mail: %v", err)
+	}
+	oldMails, err := mailStore.ClaimRunnableMail(ctx, "worker-reused", 1, now, now.Add(time.Minute))
+	if err != nil || len(oldMails) != 1 || oldMails[0].ID != recoveryMail.ID {
+		t.Fatalf("claim recovery mail with old worker: mails=%#v err=%v", oldMails, err)
+	}
+	newMails, err := mailStore.ClaimRunnableMail(ctx, "worker-reused", 1, reclaimAt, reclaimAt.Add(time.Minute))
+	if err != nil || len(newMails) != 1 || newMails[0].ID != recoveryMail.ID {
+		t.Fatalf("reclaim expired mail lease: mails=%#v err=%v", newMails, err)
+	}
+	oldMail := oldMails[0]
+	oldMail.Status = "sent"
+	oldMail.SentAt = &reclaimAt
+	if err := mailStore.UpdateMail(ctx, oldMail); !errors.Is(err, ErrMailClaimLost) {
+		t.Fatalf("expected stale mail worker update rejection, got %v", err)
+	}
+	newMail := newMails[0]
+	newMail.Status = "sent"
+	newMail.Attempts++
+	newMail.SentAt = &reclaimAt
+	if err := mailStore.UpdateMail(ctx, newMail); err != nil {
+		t.Fatalf("complete reclaimed mail: %v", err)
+	}
+	completedMail, err := mailStore.MailByID(ctx, recoveryMail.ID)
+	if err != nil || completedMail.Status != "sent" || completedMail.ClaimedBy != "" || completedMail.LeaseExpiresAt != nil {
+		t.Fatalf("unexpected completed reclaimed mail: mail=%#v err=%v", completedMail, err)
+	}
+}
+
 func cleanupOperationalStateTestRows(ctx context.Context, t *testing.T, pool *pgxpool.Pool, userID string, orderID string, webhookID string, duplicateWebhookID string, reportID string, jobID string, mailID string, workerID string, idempotencyKey string) {
 	t.Helper()
 	_, _ = pool.Exec(ctx, `DELETE FROM webhook_events WHERE id IN ($1, $2) OR idempotency_key = $3`, webhookID, duplicateWebhookID, idempotencyKey)

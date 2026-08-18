@@ -59,6 +59,7 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	t.Setenv("PASTEBOX_HTTP_WRITE_TIMEOUT_SECONDS", "300")
 	t.Setenv("PASTEBOX_PUBLIC_URL", "https://pastebox.example.com")
 	t.Setenv("PASTEBOX_CORS_ALLOWED_ORIGINS", "https://pastebox.example.com, https://admin.pastebox.example.com, https://pastebox.example.com")
+	t.Setenv("PASTEBOX_TRUSTED_PROXY_CIDRS", "127.0.0.1/32, 172.16.0.0/12,127.0.0.1/32")
 	t.Setenv("PASTEBOX_RATE_LIMIT_ENABLED", "true")
 	t.Setenv("PASTEBOX_RATE_LIMIT_WINDOW_SECONDS", "120")
 	t.Setenv("PASTEBOX_RATE_LIMIT_AUTH", "10")
@@ -136,6 +137,9 @@ func TestFromEnvParsesBooleansAndLogLevel(t *testing.T) {
 	}
 	if len(cfg.CORSAllowedOrigins) != 2 || cfg.CORSAllowedOrigins[0] != "https://pastebox.example.com" || cfg.CORSAllowedOrigins[1] != "https://admin.pastebox.example.com" {
 		t.Fatalf("expected parsed CORS origins from env, got %#v", cfg.CORSAllowedOrigins)
+	}
+	if len(cfg.TrustedProxyCIDRs) != 2 || cfg.TrustedProxyCIDRs[0] != "127.0.0.1/32" || cfg.TrustedProxyCIDRs[1] != "172.16.0.0/12" {
+		t.Fatalf("expected parsed trusted proxy CIDRs from env, got %#v", cfg.TrustedProxyCIDRs)
 	}
 	if !cfg.RateLimit.Enabled || cfg.RateLimit.WindowSeconds != 120 || cfg.RateLimit.AuthLimit != 10 || cfg.RateLimit.WriteLimit != 20 || cfg.RateLimit.UploadLimit != 30 || cfg.RateLimit.DownloadLimit != 40 || cfg.RateLimit.WebhookLimit != 50 {
 		t.Fatalf("expected parsed rate limits from env, got %#v", cfg.RateLimit)

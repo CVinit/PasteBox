@@ -24,6 +24,7 @@ type Config struct {
 	ConfigEncryptionKey     string
 	MetricsToken            string
 	CORSAllowedOrigins      []string
+	TrustedProxyCIDRs       []string
 	RateLimit               RateLimitConfig
 
 	DatabaseURL                  string
@@ -136,6 +137,7 @@ func FromEnv() Config {
 		ConfigEncryptionKey:     envString("PASTEBOX_CONFIG_ENCRYPTION_KEY", ""),
 		MetricsToken:            envString("PASTEBOX_METRICS_TOKEN", ""),
 		CORSAllowedOrigins:      envCSV("PASTEBOX_CORS_ALLOWED_ORIGINS", originFromURL(publicURL)),
+		TrustedProxyCIDRs:       envCSV("PASTEBOX_TRUSTED_PROXY_CIDRS", ""),
 		RateLimit: RateLimitConfig{
 			Enabled:       envBool("PASTEBOX_RATE_LIMIT_ENABLED", true),
 			WindowSeconds: envInt("PASTEBOX_RATE_LIMIT_WINDOW_SECONDS", 60),
@@ -179,12 +181,12 @@ func FromEnv() Config {
 		Turnstile: TurnstileConfig{
 			SiteKey:   envString("PASTEBOX_TURNSTILE_SITE_KEY", ""),
 			SecretKey: envString("PASTEBOX_TURNSTILE_SECRET_KEY", ""),
-			VerifyURL: envString("PASTEBOX_TURNSTILE_VERIFY_URL", "https://challenges.cloudflare.com/turnstile/v0/siteverify"),
+			VerifyURL: envString("PASTEBOX_TURNSTILE_VERIFY_URL", DefaultTurnstileVerifyURL),
 		},
 		Telegram: TelegramConfig{
 			BotToken:   envString("PASTEBOX_TELEGRAM_BOT_TOKEN", ""),
 			ChatID:     envString("PASTEBOX_TELEGRAM_CHAT_ID", ""),
-			APIBaseURL: envString("PASTEBOX_TELEGRAM_API_BASE_URL", "https://api.telegram.org"),
+			APIBaseURL: envString("PASTEBOX_TELEGRAM_API_BASE_URL", DefaultTelegramAPIBaseURL),
 		},
 
 		MailerProvider: envString("PASTEBOX_MAILER_PROVIDER", "log"),

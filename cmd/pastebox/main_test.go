@@ -205,6 +205,7 @@ func TestProductionPreflightRequiresExplicitProductionEnvironment(t *testing.T) 
 		"PASTEBOX_ABUSE_EMAIL",
 		"PASTEBOX_CSRF_SECRET",
 		"PASTEBOX_METRICS_TOKEN",
+		"PASTEBOX_TRUSTED_PROXY_CIDRS",
 		"PASTEBOX_CORS_ALLOWED_ORIGINS",
 		"PASTEBOX_RATE_LIMIT_ENABLED",
 		"PASTEBOX_RATE_LIMIT_WINDOW_SECONDS",
@@ -286,6 +287,23 @@ func TestProductionPreflightPassesWithRequiredEnvironment(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+}
+
+func TestProductionPreflightRejectsUnsafeTrustedProxyCIDRs(t *testing.T) {
+	for _, value := range []string{"invalid", "0.0.0.0/0", "::/0"} {
+		t.Run(value, func(t *testing.T) {
+			setValidProductionEnv(t)
+			t.Setenv("PASTEBOX_TRUSTED_PROXY_CIDRS", value)
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			if code := run([]string{"preflight", "production"}, &stdout, &stderr); code != 1 {
+				t.Fatalf("expected unsafe trusted proxy CIDR to fail, got %d", code)
+			}
+			if !strings.Contains(stderr.String(), "PASTEBOX_TRUSTED_PROXY_CIDRS") {
+				t.Fatalf("expected trusted proxy validation error, got %q", stderr.String())
+			}
+		})
 	}
 }
 
@@ -1185,6 +1203,7 @@ func setValidProductionEnv(t *testing.T) {
 	t.Setenv("PASTEBOX_ABUSE_EMAIL", "abuse@pastebox.app")
 	t.Setenv("PASTEBOX_CSRF_SECRET", "csrf-secret-32-bytes-minimum-prod")
 	t.Setenv("PASTEBOX_METRICS_TOKEN", "metrics-token-32-bytes-minimum-prod")
+	t.Setenv("PASTEBOX_TRUSTED_PROXY_CIDRS", "172.16.0.0/12")
 	t.Setenv("PASTEBOX_CORS_ALLOWED_ORIGINS", "https://pastebox.app")
 	t.Setenv("PASTEBOX_RATE_LIMIT_ENABLED", "true")
 	t.Setenv("PASTEBOX_RATE_LIMIT_WINDOW_SECONDS", "60")

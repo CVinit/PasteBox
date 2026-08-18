@@ -20,6 +20,10 @@ func NewAuditLogStore(pool *pgxpool.Pool) *AuditLogStore {
 }
 
 func (s *AuditLogStore) RecordAuditLog(ctx context.Context, log app.AuditLog) error {
+	return insertAuditLog(ctx, s.pool, log)
+}
+
+func insertAuditLog(ctx context.Context, executor execQuerier, log app.AuditLog) error {
 	createdAt := log.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
@@ -28,7 +32,7 @@ func (s *AuditLogStore) RecordAuditLog(ctx context.Context, log app.AuditLog) er
 	if err != nil {
 		return fmt.Errorf("encode audit metadata: %w", err)
 	}
-	if _, err := s.pool.Exec(ctx, `
+	if _, err := executor.Exec(ctx, `
 INSERT INTO audit_logs (id, actor_id, action, target, metadata, created_at)
 VALUES ($1, $2, $3, $4, $5, $6)
 `, log.ID, log.ActorID, log.Action, log.Target, string(metadata), createdAt); err != nil {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -128,6 +129,12 @@ type RuntimeConfigStore interface {
 	RuntimeConfig(ctx context.Context) (RuntimeConfig, config.ManagedSecrets, bool, error)
 	SaveRuntimeConfig(ctx context.Context, cfg RuntimeConfig, secrets config.ManagedSecrets) error
 }
+
+type RuntimeConfigAuditStore interface {
+	SaveRuntimeConfigWithAudit(ctx context.Context, cfg RuntimeConfig, secrets config.ManagedSecrets, audit AuditLog) error
+}
+
+type RuntimeConfigChangeHook func(RuntimeConfig, config.Config) error
 
 type CatalogWriter interface {
 	SaveCatalog(ctx context.Context, catalog plans.Catalog) error
@@ -305,9 +312,12 @@ type turnstileVerifier struct {
 }
 
 func NewTurnstileVerifier(cfg config.Config) TurnstileVerifier {
+	if cfg.AppEnv == "production" {
+		cfg.Turnstile.VerifyURL = config.DefaultTurnstileVerifyURL
+	}
 	return &turnstileVerifier{
 		cfg:    cfg.Turnstile,
-		client: &http.Client{Timeout: 5 * time.Second},
+		client: newSensitiveHTTPClient(5 * time.Second),
 	}
 }
 
@@ -325,7 +335,7 @@ func (v *turnstileVerifier) Verify(ctx context.Context, token string, remoteIP s
 	}
 	verifyURL := strings.TrimSpace(v.cfg.VerifyURL)
 	if verifyURL == "" {
-		verifyURL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+		verifyURL = config.DefaultTurnstileVerifyURL
 	}
 	payload := map[string]string{"secret": secret, "response": token}
 	if ip := strings.TrimSpace(remoteIP); ip != "" && net.ParseIP(ip) != nil {
@@ -378,7 +388,10 @@ type TelegramSender struct {
 }
 
 func NewTelegramSender(cfg config.Config) AlertSender {
-	return &TelegramSender{cfg: cfg.Telegram, client: &http.Client{Timeout: 10 * time.Second}}
+	if cfg.AppEnv == "production" {
+		cfg.Telegram.APIBaseURL = config.DefaultTelegramAPIBaseURL
+	}
+	return &TelegramSender{cfg: cfg.Telegram, client: newSensitiveHTTPClient(10 * time.Second)}
 }
 
 func (s *TelegramSender) SendAlert(ctx context.Context, message string, silent bool) error {
@@ -389,7 +402,7 @@ func (s *TelegramSender) SendAlert(ctx context.Context, message string, silent b
 	}
 	base := strings.TrimRight(strings.TrimSpace(s.cfg.APIBaseURL), "/")
 	if base == "" {
-		base = "https://api.telegram.org"
+		base = config.DefaultTelegramAPIBaseURL
 	}
 	payload := map[string]any{
 		"chat_id":              chatID,
@@ -414,6 +427,18 @@ func (s *TelegramSender) SendAlert(ctx context.Context, message string, silent b
 		return fmt.Errorf("telegram sendMessage returned HTTP %d", res.StatusCode)
 	}
 	return nil
+}
+
+func newSensitiveHTTPClient(timeout time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 func defaultRuntimeConfig(cfg config.Config) RuntimeConfig {
@@ -754,28 +779,36 @@ func (s *Service) RefreshRuntimeConfig(ctx context.Context) (RuntimeConfig, erro
 	}
 
 	s.mu.Lock()
-	if ok {
-		s.applyLoadedRuntimeConfigLocked(loaded, secrets)
+	defer s.mu.Unlock()
+	if !ok {
+		return cloneRuntimeConfig(s.runtimeConfig), nil
 	}
-	current = cloneRuntimeConfig(s.runtimeConfig)
-	effective := cloneEffectiveConfig(s.cfg)
-	hook := s.runtimeConfigChange
-	s.mu.Unlock()
-	if hook != nil {
-		hook(current, effective)
+	if !loaded.UpdatedAt.IsZero() && loaded.UpdatedAt.Before(s.runtimeConfig.UpdatedAt) {
+		return cloneRuntimeConfig(s.runtimeConfig), nil
 	}
-	return current, nil
+	prepared, effective := s.prepareRuntimeConfigLocked(loaded, secrets)
+	if hook := s.runtimeConfigChange; hook != nil {
+		if err := hook(prepared, effective); err != nil {
+			rollbackErr := hook(cloneRuntimeConfig(s.runtimeConfig), cloneEffectiveConfig(s.cfg))
+			return RuntimeConfig{}, errors.Join(fmt.Errorf("apply refreshed runtime config: %w", err), rollbackErr)
+		}
+	}
+	s.applyPreparedRuntimeConfigLocked(prepared, secrets, effective)
+	return cloneRuntimeConfig(s.runtimeConfig), nil
 }
 
-func (s *Service) SetRuntimeConfigChangeHook(hook func(RuntimeConfig, config.Config)) {
+func (s *Service) SetRuntimeConfigChangeHook(hook RuntimeConfigChangeHook) error {
 	s.mu.Lock()
-	s.runtimeConfigChange = hook
+	defer s.mu.Unlock()
 	cfg := cloneRuntimeConfig(s.runtimeConfig)
 	effective := cloneEffectiveConfig(s.cfg)
-	s.mu.Unlock()
 	if hook != nil {
-		hook(cfg, effective)
+		if err := hook(cfg, effective); err != nil {
+			return fmt.Errorf("apply initial runtime config: %w", err)
+		}
 	}
+	s.runtimeConfigChange = hook
+	return nil
 }
 
 func (s *Service) EffectiveConfig() config.Config {
@@ -785,10 +818,19 @@ func (s *Service) EffectiveConfig() config.Config {
 }
 
 func (s *Service) applyLoadedRuntimeConfigLocked(loaded RuntimeConfig, secrets config.ManagedSecrets) {
+	loaded, effective := s.prepareRuntimeConfigLocked(loaded, secrets)
+	s.applyPreparedRuntimeConfigLocked(loaded, secrets, effective)
+}
+
+func (s *Service) prepareRuntimeConfigLocked(loaded RuntimeConfig, secrets config.ManagedSecrets) (RuntimeConfig, config.Config) {
 	loaded = normalizeRuntimeConfig(loaded, s.rootConfig)
 	effective := config.ApplyManaged(s.rootConfig, loaded.Managed, secrets)
 	loaded.Registration.TurnstileSiteKey = strings.TrimSpace(effective.Turnstile.SiteKey)
 	loaded.ProviderStatus = providerStatusFromConfig(effective, providerTestStatuses(loaded.ProviderStatus))
+	return cloneRuntimeConfig(loaded), cloneEffectiveConfig(effective)
+}
+
+func (s *Service) applyPreparedRuntimeConfigLocked(loaded RuntimeConfig, secrets config.ManagedSecrets, effective config.Config) {
 	s.managedSecrets = secrets
 	s.cfg = effective
 	if !s.turnstileVerifierCustom {
@@ -956,13 +998,15 @@ func (s *Service) AdminManagedConfig(actorID string) (ManagedConfigView, error) 
 
 func (s *Service) AdminUpdateManagedConfig(actorID string, update ManagedConfigUpdate) (ManagedConfigView, error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.requireAdminLocked(actorID); err != nil {
-		s.mu.Unlock()
 		return ManagedConfigView{}, err
 	}
 	managed, err := normalizeManagedConfig(update.Config, s.rootConfig.AppEnv)
 	if err != nil {
-		s.mu.Unlock()
+		return ManagedConfigView{}, err
+	}
+	if err := validateManagedSecretRebinding(s.runtimeConfig.Managed, managed, s.managedSecrets, update.Secrets); err != nil {
 		return ManagedConfigView{}, err
 	}
 	secrets := applyManagedSecretPatch(s.managedSecrets, update.Secrets)
@@ -970,26 +1014,14 @@ func (s *Service) AdminUpdateManagedConfig(actorID string, update ManagedConfigU
 	next.Managed = managed
 	next.Registration.TurnstileSiteKey = managed.Turnstile.SiteKey
 	next.UpdatedAt = s.now().UTC()
-	oldSecrets := s.managedSecrets
-	s.managedSecrets = secrets
-	if err := s.saveRuntimeConfigLocked(next); err != nil {
-		s.managedSecrets = oldSecrets
-		s.mu.Unlock()
+	audit := AuditLog{
+		ID: s.newID("aud"), ActorID: actorID, Action: "admin.managed_config_update", Target: runtimeConfigID,
+		Metadata: managedConfigAuditMetadata(managed, secrets), CreatedAt: next.UpdatedAt,
+	}
+	if err := s.commitRuntimeConfigLocked(next, secrets, audit, true); err != nil {
 		return ManagedConfigView{}, err
 	}
-	if err := s.auditLocked(actorID, "admin.managed_config_update", runtimeConfigID, managedConfigAuditMetadata(managed, secrets)); err != nil {
-		s.mu.Unlock()
-		return ManagedConfigView{}, err
-	}
-	view := s.managedConfigViewLocked()
-	hook := s.runtimeConfigChange
-	runtimeCfg := cloneRuntimeConfig(s.runtimeConfig)
-	effective := cloneEffectiveConfig(s.cfg)
-	s.mu.Unlock()
-	if hook != nil {
-		hook(runtimeCfg, effective)
-	}
-	return view, nil
+	return s.managedConfigViewLocked(), nil
 }
 
 func (s *Service) managedConfigViewLocked() ManagedConfigView {
@@ -1027,6 +1059,32 @@ func applyManagedSecretPatch(current config.ManagedSecrets, patch ManagedSecretP
 	apply(&current.StripeWebhookSecret, patch.StripeWebhookSecret)
 	apply(&current.EpusdtSecretKey, patch.EpusdtSecretKey)
 	return current
+}
+
+func validateManagedSecretRebinding(current, next config.ManagedConfig, secrets config.ManagedSecrets, patch ManagedSecretPatch) error {
+	if normalizedEndpoint(current.S3.Endpoint) != normalizedEndpoint(next.S3.Endpoint) &&
+		(strings.TrimSpace(secrets.S3AccessKey) != "" || strings.TrimSpace(secrets.S3SecretKey) != "") &&
+		(patch.S3AccessKey == nil || patch.S3SecretKey == nil) {
+		return E(http.StatusBadRequest, "secret_reentry_required", "S3 access key and secret key must be submitted again when the endpoint changes")
+	}
+	if (strings.TrimSpace(current.SMTP.Host) != strings.TrimSpace(next.SMTP.Host) || current.SMTP.Port != next.SMTP.Port ||
+		strings.ToLower(strings.TrimSpace(current.SMTP.TLSMode)) != strings.ToLower(strings.TrimSpace(next.SMTP.TLSMode))) &&
+		strings.TrimSpace(secrets.SMTPPassword) != "" && patch.SMTPPassword == nil {
+		return E(http.StatusBadRequest, "secret_reentry_required", "SMTP password must be submitted again when the host, port, or TLS mode changes")
+	}
+	if normalizedEndpoint(current.Turnstile.VerifyURL) != normalizedEndpoint(next.Turnstile.VerifyURL) &&
+		strings.TrimSpace(secrets.TurnstileSecretKey) != "" && patch.TurnstileSecretKey == nil {
+		return E(http.StatusBadRequest, "secret_reentry_required", "Turnstile secret key must be submitted again when the verification URL changes")
+	}
+	if normalizedEndpoint(current.Telegram.APIBaseURL) != normalizedEndpoint(next.Telegram.APIBaseURL) &&
+		strings.TrimSpace(secrets.TelegramBotToken) != "" && patch.TelegramBotToken == nil {
+		return E(http.StatusBadRequest, "secret_reentry_required", "Telegram bot token must be submitted again when the API URL changes")
+	}
+	return nil
+}
+
+func normalizedEndpoint(value string) string {
+	return strings.TrimRight(strings.TrimSpace(value), "/")
 }
 
 func normalizeManagedConfig(managed config.ManagedConfig, appEnv string) (config.ManagedConfig, error) {
@@ -1073,6 +1131,10 @@ func normalizeManagedConfig(managed config.ManagedConfig, appEnv string) (config
 		return config.ManagedConfig{}, E(http.StatusBadRequest, "invalid_mailer_config", "mailer provider must be log or smtp")
 	}
 	managed.SMTP.TLSMode = strings.ToLower(strings.TrimSpace(managed.SMTP.TLSMode))
+	managed.SMTP.Host = strings.TrimSpace(managed.SMTP.Host)
+	managed.SMTP.Username = strings.TrimSpace(managed.SMTP.Username)
+	managed.SMTP.FromEmail = strings.TrimSpace(managed.SMTP.FromEmail)
+	managed.SMTP.FromName = strings.TrimSpace(managed.SMTP.FromName)
 	if managed.SMTP.TLSMode != "none" && managed.SMTP.TLSMode != "starttls" && managed.SMTP.TLSMode != "tls" {
 		return config.ManagedConfig{}, E(http.StatusBadRequest, "invalid_mailer_config", "SMTP TLS mode must be none, starttls, or tls")
 	}
@@ -1081,6 +1143,24 @@ func normalizeManagedConfig(managed config.ManagedConfig, appEnv string) (config
 	}
 	if _, err := mail.ParseAddress(managed.SMTP.FromEmail); err != nil {
 		return config.ManagedConfig{}, E(http.StatusBadRequest, "invalid_mailer_config", "SMTP from email is invalid")
+	}
+	managed.GoogleOAuth.RedirectURL = strings.TrimSpace(managed.GoogleOAuth.RedirectURL)
+	managed.GitHubOAuth.RedirectURL = strings.TrimSpace(managed.GitHubOAuth.RedirectURL)
+	managed.Turnstile.VerifyURL = strings.TrimRight(strings.TrimSpace(managed.Turnstile.VerifyURL), "/")
+	managed.Telegram.APIBaseURL = strings.TrimRight(strings.TrimSpace(managed.Telegram.APIBaseURL), "/")
+	if appEnv == "production" {
+		if managed.Turnstile.VerifyURL == "" {
+			managed.Turnstile.VerifyURL = config.DefaultTurnstileVerifyURL
+		}
+		if managed.Turnstile.VerifyURL != config.DefaultTurnstileVerifyURL {
+			return config.ManagedConfig{}, E(http.StatusBadRequest, "invalid_provider_url", "production Turnstile verification URL must use the official Cloudflare endpoint")
+		}
+		if managed.Telegram.APIBaseURL == "" {
+			managed.Telegram.APIBaseURL = config.DefaultTelegramAPIBaseURL
+		}
+		if managed.Telegram.APIBaseURL != config.DefaultTelegramAPIBaseURL {
+			return config.ManagedConfig{}, E(http.StatusBadRequest, "invalid_provider_url", "production Telegram API URL must use the official endpoint")
+		}
 	}
 	for _, candidate := range []string{managed.GoogleOAuth.RedirectURL, managed.GitHubOAuth.RedirectURL, managed.Turnstile.VerifyURL, managed.Telegram.APIBaseURL} {
 		if strings.TrimSpace(candidate) != "" {
@@ -1099,6 +1179,12 @@ func validateManagedHTTPURL(raw string, requireHTTPS bool) error {
 	}
 	if requireHTTPS && parsed.Scheme != "https" {
 		return fmt.Errorf("production URL must use HTTPS")
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("URL must not contain embedded credentials")
+	}
+	if parsed.Fragment != "" {
+		return fmt.Errorf("URL must not contain a fragment")
 	}
 	return nil
 }
@@ -1136,26 +1222,19 @@ func managedConfigAuditMetadata(managed config.ManagedConfig, secrets config.Man
 
 func (s *Service) AdminUpdateRuntimeConfig(actorID string, patch RuntimeConfigPatch) (RuntimeConfig, error) {
 	s.mu.Lock()
-	updated, hook, err := s.adminUpdateRuntimeConfigLocked(actorID, patch)
-	s.mu.Unlock()
-	if err != nil {
-		return RuntimeConfig{}, err
-	}
-	if hook != nil {
-		hook(updated, s.EffectiveConfig())
-	}
-	return updated, nil
+	defer s.mu.Unlock()
+	return s.adminUpdateRuntimeConfigLocked(actorID, patch)
 }
 
-func (s *Service) adminUpdateRuntimeConfigLocked(actorID string, patch RuntimeConfigPatch) (RuntimeConfig, func(RuntimeConfig, config.Config), error) {
+func (s *Service) adminUpdateRuntimeConfigLocked(actorID string, patch RuntimeConfigPatch) (RuntimeConfig, error) {
 	if err := s.requireAdminLocked(actorID); err != nil {
-		return RuntimeConfig{}, nil, err
+		return RuntimeConfig{}, err
 	}
 	next := cloneRuntimeConfig(s.runtimeConfig)
 	if patch.LogLevel != nil {
 		level, ok := NormalizeRuntimeLogLevel(*patch.LogLevel)
 		if !ok {
-			return RuntimeConfig{}, nil, E(http.StatusBadRequest, "invalid_log_level", "log level must be debug, info, warn, or error")
+			return RuntimeConfig{}, E(http.StatusBadRequest, "invalid_log_level", "log level must be debug, info, warn, or error")
 		}
 		next.LogLevel = level
 	}
@@ -1174,13 +1253,14 @@ func (s *Service) adminUpdateRuntimeConfigLocked(actorID string, patch RuntimeCo
 	next.ProviderStatus = providerStatusFromConfig(s.cfg, providerTestStatuses(next.ProviderStatus))
 	next.UpdatedAt = s.now().UTC()
 	next = normalizeRuntimeConfig(next, s.rootConfig)
-	if err := s.saveRuntimeConfigLocked(next); err != nil {
-		return RuntimeConfig{}, nil, err
+	audit := AuditLog{
+		ID: s.newID("aud"), ActorID: actorID, Action: "admin.runtime_config_update", Target: runtimeConfigID,
+		Metadata: runtimeConfigAuditMetadata(next), CreatedAt: next.UpdatedAt,
 	}
-	if err := s.auditLocked(actorID, "admin.runtime_config_update", runtimeConfigID, runtimeConfigAuditMetadata(next)); err != nil {
-		return RuntimeConfig{}, nil, err
+	if err := s.commitRuntimeConfigLocked(next, s.managedSecrets, audit, true); err != nil {
+		return RuntimeConfig{}, err
 	}
-	return cloneRuntimeConfig(s.runtimeConfig), s.runtimeConfigChange, nil
+	return cloneRuntimeConfig(s.runtimeConfig), nil
 }
 
 func applyGuestUploadConfigPatch(cfg GuestUploadConfig, patch GuestUploadConfigPatch) GuestUploadConfig {
@@ -1330,14 +1410,46 @@ func runtimeConfigAuditMetadata(cfg RuntimeConfig) map[string]any {
 	}
 }
 
-func (s *Service) saveRuntimeConfigLocked(cfg RuntimeConfig) error {
-	cfg = normalizeRuntimeConfig(cfg, s.rootConfig)
-	if s.runtime != nil {
-		if err := s.runtime.SaveRuntimeConfig(context.Background(), cfg, s.managedSecrets); err != nil {
-			return err
+func (s *Service) commitRuntimeConfigLocked(cfg RuntimeConfig, secrets config.ManagedSecrets, audit AuditLog, applyHook bool) error {
+	prepared, effective := s.prepareRuntimeConfigLocked(cfg, secrets)
+	if s.runtime != nil && s.audit != nil {
+		if _, ok := s.runtime.(RuntimeConfigAuditStore); !ok {
+			return fmt.Errorf("runtime config store does not support atomic audit persistence")
 		}
 	}
-	s.applyLoadedRuntimeConfigLocked(cfg, s.managedSecrets)
+
+	oldRuntime := cloneRuntimeConfig(s.runtimeConfig)
+	oldEffective := cloneEffectiveConfig(s.cfg)
+	hook := s.runtimeConfigChange
+	hookApplied := false
+	if applyHook && hook != nil {
+		if err := hook(prepared, effective); err != nil {
+			rollbackErr := hook(oldRuntime, oldEffective)
+			return errors.Join(fmt.Errorf("apply runtime config: %w", err), rollbackErr)
+		}
+		hookApplied = true
+	}
+
+	ctx := context.Background()
+	var err error
+	switch {
+	case s.runtime != nil && s.audit != nil:
+		err = s.runtime.(RuntimeConfigAuditStore).SaveRuntimeConfigWithAudit(ctx, prepared, secrets, audit)
+	case s.runtime != nil:
+		err = s.runtime.SaveRuntimeConfig(ctx, prepared, secrets)
+	case s.audit != nil:
+		err = s.audit.RecordAuditLog(ctx, audit)
+	}
+	if err != nil {
+		if hookApplied {
+			rollbackErr := hook(oldRuntime, oldEffective)
+			return errors.Join(err, rollbackErr)
+		}
+		return err
+	}
+
+	s.applyPreparedRuntimeConfigLocked(prepared, secrets, effective)
+	s.cacheAuditLogLocked(audit)
 	return nil
 }
 
@@ -1470,10 +1582,11 @@ func (s *Service) AdminProviderTest(actorID string, provider string) (RuntimeCon
 	}
 	next.ProviderStatus = providerStatusFromConfig(s.cfg, map[string]string{provider: status})
 	next.UpdatedAt = s.now().UTC()
-	if err := s.saveRuntimeConfigLocked(next); err != nil {
-		return RuntimeConfig{}, err
+	audit := AuditLog{
+		ID: s.newID("aud"), ActorID: actorID, Action: "admin.provider_test", Target: provider,
+		Metadata: map[string]any{"status": status}, CreatedAt: next.UpdatedAt,
 	}
-	if err := s.auditLocked(actorID, "admin.provider_test", provider, map[string]any{"status": status}); err != nil {
+	if err := s.commitRuntimeConfigLocked(next, s.managedSecrets, audit, false); err != nil {
 		return RuntimeConfig{}, err
 	}
 	return cloneRuntimeConfig(s.runtimeConfig), nil
@@ -1627,12 +1740,7 @@ func (s *Service) CreateGuestPaste(input GuestCreatePasteInput) (string, PasteVi
 }
 
 func (s *Service) AddGuestAttachment(token string, pasteID string, fileName string, contentType string, content []byte, turnstileToken string, remoteIP string) (AttachmentView, error) {
-	upload, err := PrepareAttachmentUpload(fileName, contentType, bytes.NewReader(content))
-	if err != nil {
-		return AttachmentView{}, err
-	}
-	defer upload.Close()
-	return s.AddPreparedGuestAttachment(token, pasteID, upload, turnstileToken, remoteIP)
+	return s.AddGuestAttachmentStream(token, pasteID, fileName, contentType, bytes.NewReader(content), turnstileToken, remoteIP)
 }
 
 func (s *Service) CreateGuestShare(token string, pasteID string, input ShareInput) (ShareView, error) {

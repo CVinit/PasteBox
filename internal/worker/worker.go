@@ -19,12 +19,12 @@ type Service interface {
 }
 
 type JobStore interface {
-	ListRunnableJobs(ctx context.Context, limit int, now time.Time) ([]postgres.JobRecord, error)
+	ClaimRunnableJobs(ctx context.Context, workerID string, limit int, now time.Time, leaseExpiresAt time.Time) ([]postgres.JobRecord, error)
 	UpdateJob(ctx context.Context, job postgres.JobRecord) error
 }
 
 type MailStore interface {
-	ListRunnableMail(ctx context.Context, limit int, now time.Time) ([]postgres.MailRecord, error)
+	ClaimRunnableMail(ctx context.Context, workerID string, limit int, now time.Time, leaseExpiresAt time.Time) ([]postgres.MailRecord, error)
 	UpdateMail(ctx context.Context, mail postgres.MailRecord) error
 }
 
@@ -37,14 +37,15 @@ type HeartbeatStore interface {
 }
 
 type Config struct {
-	BatchSize    int
-	MaxAttempts  int
-	PollInterval time.Duration
-	Now          func() time.Time
-	Logger       *slog.Logger
-	Scanner      app.Scanner
-	WorkerID     string
-	Heartbeats   HeartbeatStore
+	BatchSize     int
+	MaxAttempts   int
+	PollInterval  time.Duration
+	LeaseDuration time.Duration
+	Now           func() time.Time
+	Logger        *slog.Logger
+	Scanner       app.Scanner
+	WorkerID      string
+	Heartbeats    HeartbeatStore
 }
 
 type Summary struct {
@@ -79,6 +80,9 @@ func NewRunnerWithMail(jobs JobStore, mails MailStore, mailSender MailSender, se
 	}
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = 30 * time.Second
+	}
+	if cfg.LeaseDuration <= 0 {
+		cfg.LeaseDuration = 15 * time.Minute
 	}
 	if cfg.Now == nil {
 		cfg.Now = func() time.Time { return time.Now().UTC() }
@@ -124,9 +128,10 @@ func (r *Runner) RunOnce(ctx context.Context) (Summary, error) {
 	if err := r.recordHeartbeat(ctx, now); err != nil {
 		return Summary{}, err
 	}
-	jobs, err := r.jobs.ListRunnableJobs(ctx, r.cfg.BatchSize, now)
+	workerID := r.workerID()
+	jobs, err := r.jobs.ClaimRunnableJobs(ctx, workerID, r.cfg.BatchSize, now, now.Add(r.cfg.LeaseDuration))
 	if err != nil {
-		return Summary{}, fmt.Errorf("list runnable jobs: %w", err)
+		return Summary{}, fmt.Errorf("claim runnable jobs: %w", err)
 	}
 	r.cfg.Logger.Debug("worker jobs polled", "count", len(jobs), "batch_size", r.cfg.BatchSize)
 
@@ -159,9 +164,10 @@ func (r *Runner) RunOnce(ctx context.Context) (Summary, error) {
 		}
 		return summary, nil
 	}
-	mails, err := r.mails.ListRunnableMail(ctx, r.cfg.BatchSize, now)
+	mailClaimedAt := r.cfg.Now().UTC()
+	mails, err := r.mails.ClaimRunnableMail(ctx, workerID, r.cfg.BatchSize, mailClaimedAt, mailClaimedAt.Add(r.cfg.LeaseDuration))
 	if err != nil {
-		return summary, fmt.Errorf("list runnable mail: %w", err)
+		return summary, fmt.Errorf("claim runnable mail: %w", err)
 	}
 	r.cfg.Logger.Debug("worker mail polled", "count", len(mails), "batch_size", r.cfg.BatchSize)
 	summary.MailSeen = len(mails)
@@ -197,14 +203,19 @@ func (r *Runner) recordHeartbeat(ctx context.Context, now time.Time) error {
 	if r.cfg.Heartbeats == nil {
 		return nil
 	}
-	workerID := strings.TrimSpace(r.cfg.WorkerID)
-	if workerID == "" {
-		workerID = "worker"
-	}
+	workerID := r.workerID()
 	if err := r.cfg.Heartbeats.RecordWorkerHeartbeat(ctx, workerID, now.UTC()); err != nil {
 		return fmt.Errorf("record worker heartbeat: %w", err)
 	}
 	return nil
+}
+
+func (r *Runner) workerID() string {
+	workerID := strings.TrimSpace(r.cfg.WorkerID)
+	if workerID == "" {
+		return "worker"
+	}
+	return workerID
 }
 
 func (r *Runner) handleJob(ctx context.Context, job postgres.JobRecord) error {

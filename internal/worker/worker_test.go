@@ -350,8 +350,13 @@ type fakeJobStore struct {
 	updated  []postgres.JobRecord
 }
 
-func (s *fakeJobStore) ListRunnableJobs(_ context.Context, _ int, _ time.Time) ([]postgres.JobRecord, error) {
-	return append([]postgres.JobRecord(nil), s.runnable...), nil
+func (s *fakeJobStore) ClaimRunnableJobs(_ context.Context, workerID string, _ int, _ time.Time, leaseExpiresAt time.Time) ([]postgres.JobRecord, error) {
+	claimed := append([]postgres.JobRecord(nil), s.runnable...)
+	for i := range claimed {
+		claimed[i].ClaimedBy = workerID
+		claimed[i].LeaseExpiresAt = &leaseExpiresAt
+	}
+	return claimed, nil
 }
 
 func (s *fakeJobStore) UpdateJob(_ context.Context, job postgres.JobRecord) error {
@@ -364,8 +369,13 @@ type fakeMailStore struct {
 	updated  []postgres.MailRecord
 }
 
-func (s *fakeMailStore) ListRunnableMail(_ context.Context, _ int, _ time.Time) ([]postgres.MailRecord, error) {
-	return append([]postgres.MailRecord(nil), s.runnable...), nil
+func (s *fakeMailStore) ClaimRunnableMail(_ context.Context, workerID string, _ int, _ time.Time, leaseExpiresAt time.Time) ([]postgres.MailRecord, error) {
+	claimed := append([]postgres.MailRecord(nil), s.runnable...)
+	for i := range claimed {
+		claimed[i].ClaimedBy = workerID
+		claimed[i].LeaseExpiresAt = &leaseExpiresAt
+	}
+	return claimed, nil
 }
 
 func (s *fakeMailStore) UpdateMail(_ context.Context, mail postgres.MailRecord) error {

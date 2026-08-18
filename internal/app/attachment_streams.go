@@ -32,6 +32,13 @@ type PreparedAttachmentUpload struct {
 	path string
 }
 
+type AttachmentUploadPreflight struct {
+	MaxBytes int64
+
+	guestToken string
+	pasteID    string
+}
+
 type AttachmentDownload struct {
 	Attachment AttachmentView
 	Body       io.ReadCloser
@@ -45,8 +52,18 @@ type preparedObjectStorage struct {
 }
 
 func PrepareAttachmentUpload(fileName string, contentType string, body io.Reader) (*PreparedAttachmentUpload, error) {
+	return PrepareAttachmentUploadWithLimit(fileName, contentType, body, maxAttachmentUploadBytes)
+}
+
+func PrepareAttachmentUploadWithLimit(fileName string, contentType string, body io.Reader, maxBytes int64) (*PreparedAttachmentUpload, error) {
 	if body == nil {
 		return nil, E(http.StatusBadRequest, "missing_file", "file is required")
+	}
+	if maxBytes < 0 {
+		maxBytes = 0
+	}
+	if maxBytes > maxAttachmentUploadBytes {
+		maxBytes = maxAttachmentUploadBytes
 	}
 	tmp, err := os.CreateTemp("", "pastebox-upload-*")
 	if err != nil {
@@ -68,7 +85,7 @@ func PrepareAttachmentUpload(fileName string, contentType string, body io.Reader
 
 	hash := sha256.New()
 	prefix := &prefixBuffer{limit: 512}
-	size, err := copyAttachmentUpload(tmp, body, hash, prefix, maxAttachmentUploadBytes)
+	size, err := copyAttachmentUpload(tmp, body, hash, prefix, maxBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -80,6 +97,55 @@ func PrepareAttachmentUpload(fileName string, contentType string, body io.Reader
 		return nil, fmt.Errorf("rewind upload temp file: %w", err)
 	}
 	return upload, nil
+}
+
+func (s *Service) PreflightAttachmentUpload(userID string, pasteID string) (AttachmentUploadPreflight, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	paste, err := s.ownerPasteLocked(userID, pasteID)
+	if err != nil {
+		return AttachmentUploadPreflight{}, err
+	}
+	user := s.usersByID[userID]
+	plan, _ := s.planForUserLocked(user)
+	maxBytes, err := s.attachmentUploadLimitLocked(user, paste, plan)
+	if err != nil {
+		return AttachmentUploadPreflight{}, err
+	}
+	return AttachmentUploadPreflight{MaxBytes: maxBytes, pasteID: pasteID}, nil
+}
+
+func (s *Service) PreflightGuestAttachmentUpload(ctx context.Context, token string, pasteID string, turnstileToken string, remoteIP string) (AttachmentUploadPreflight, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cfg := s.runtimeConfig.GuestUploads
+	if !cfg.Enabled {
+		return AttachmentUploadPreflight{}, E(http.StatusForbidden, "guest_uploads_disabled", "guest uploads are disabled")
+	}
+	if cfg.RequireTurnstile {
+		if err := s.verifyTurnstileLocked(ctx, turnstileToken, remoteIP); err != nil {
+			return AttachmentUploadPreflight{}, err
+		}
+	}
+	token = strings.TrimSpace(token)
+	user, err := s.guestUserForTokenLocked(token)
+	if err != nil {
+		return AttachmentUploadPreflight{}, err
+	}
+	paste, err := s.pasteByIDLocked(pasteID)
+	if err != nil || paste.UserID != user.ID {
+		return AttachmentUploadPreflight{}, E(http.StatusNotFound, "paste_not_found", "paste not found")
+	}
+	maxBytes, err := s.attachmentUploadLimitLocked(user, paste, guestPlan(cfg))
+	if err != nil {
+		return AttachmentUploadPreflight{}, err
+	}
+	return AttachmentUploadPreflight{MaxBytes: maxBytes, guestToken: token, pasteID: pasteID}, nil
 }
 
 func (u *PreparedAttachmentUpload) Close() error {
@@ -112,7 +178,11 @@ func (u *PreparedAttachmentUpload) reader() (io.Reader, error) {
 }
 
 func (s *Service) AddAttachmentStream(userID string, pasteID string, fileName string, contentType string, body io.Reader) (AttachmentView, error) {
-	upload, err := PrepareAttachmentUpload(fileName, contentType, body)
+	preflight, err := s.PreflightAttachmentUpload(userID, pasteID)
+	if err != nil {
+		return AttachmentView{}, err
+	}
+	upload, err := PrepareAttachmentUploadWithLimit(fileName, contentType, body, preflight.MaxBytes)
 	if err != nil {
 		return AttachmentView{}, err
 	}
@@ -142,12 +212,16 @@ func (s *Service) AddPreparedAttachmentWithContext(ctx context.Context, userID s
 }
 
 func (s *Service) AddGuestAttachmentStream(token string, pasteID string, fileName string, contentType string, body io.Reader, turnstileToken string, remoteIP string) (AttachmentView, error) {
-	upload, err := PrepareAttachmentUpload(fileName, contentType, body)
+	preflight, err := s.PreflightGuestAttachmentUpload(context.Background(), token, pasteID, turnstileToken, remoteIP)
+	if err != nil {
+		return AttachmentView{}, err
+	}
+	upload, err := PrepareAttachmentUploadWithLimit(fileName, contentType, body, preflight.MaxBytes)
 	if err != nil {
 		return AttachmentView{}, err
 	}
 	defer upload.Close()
-	return s.AddPreparedGuestAttachment(token, pasteID, upload, turnstileToken, remoteIP)
+	return s.AddPreflightedGuestAttachmentWithContext(context.Background(), preflight, upload)
 }
 
 func (s *Service) AddPreparedGuestAttachment(token string, pasteID string, upload *PreparedAttachmentUpload, turnstileToken string, remoteIP string) (AttachmentView, error) {
@@ -158,7 +232,7 @@ func (s *Service) AddPreparedGuestAttachmentWithContext(ctx context.Context, tok
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	objectKey, err := s.preflightPreparedGuestAttachment(ctx, token, pasteID, upload, turnstileToken, remoteIP)
+	objectKey, err := s.preflightPreparedGuestAttachment(ctx, token, pasteID, upload, turnstileToken, remoteIP, true)
 	if err != nil {
 		return AttachmentView{}, err
 	}
@@ -169,6 +243,26 @@ func (s *Service) AddPreparedGuestAttachmentWithContext(ctx context.Context, tok
 		return AttachmentView{}, err
 	}
 	return s.finalizePreparedGuestAttachment(token, pasteID, upload, stored)
+}
+
+func (s *Service) AddPreflightedGuestAttachmentWithContext(ctx context.Context, preflight AttachmentUploadPreflight, upload *PreparedAttachmentUpload) (AttachmentView, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if preflight.guestToken == "" || preflight.pasteID == "" {
+		return AttachmentView{}, E(http.StatusBadRequest, "invalid_upload_preflight", "guest attachment upload preflight is invalid")
+	}
+	objectKey, err := s.preflightPreparedGuestAttachment(ctx, preflight.guestToken, preflight.pasteID, upload, "", "", false)
+	if err != nil {
+		return AttachmentView{}, err
+	}
+	s.objectWriteMu.Lock()
+	defer s.objectWriteMu.Unlock()
+	stored, err := s.storePreparedObject(ctx, objectKey, upload)
+	if err != nil {
+		return AttachmentView{}, err
+	}
+	return s.finalizePreparedGuestAttachment(preflight.guestToken, preflight.pasteID, upload, stored)
 }
 
 func (s *Service) preflightPreparedAttachment(userID string, pasteID string, upload *PreparedAttachmentUpload) (string, error) {
@@ -187,7 +281,7 @@ func (s *Service) preflightPreparedAttachment(userID string, pasteID string, upl
 	return preparedAttachmentObjectKey(user.ID, upload), nil
 }
 
-func (s *Service) preflightPreparedGuestAttachment(ctx context.Context, token string, pasteID string, upload *PreparedAttachmentUpload, turnstileToken string, remoteIP string) (string, error) {
+func (s *Service) preflightPreparedGuestAttachment(ctx context.Context, token string, pasteID string, upload *PreparedAttachmentUpload, turnstileToken string, remoteIP string, verifyTurnstile bool) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -195,7 +289,7 @@ func (s *Service) preflightPreparedGuestAttachment(ctx context.Context, token st
 	if !cfg.Enabled {
 		return "", E(http.StatusForbidden, "guest_uploads_disabled", "guest uploads are disabled")
 	}
-	if cfg.RequireTurnstile {
+	if verifyTurnstile && cfg.RequireTurnstile {
 		if err := s.verifyTurnstileLocked(ctx, turnstileToken, remoteIP); err != nil {
 			return "", err
 		}
@@ -213,6 +307,31 @@ func (s *Service) preflightPreparedGuestAttachment(ctx context.Context, token st
 		return "", err
 	}
 	return preparedAttachmentObjectKey(user.ID, upload), nil
+}
+
+func (s *Service) attachmentUploadLimitLocked(user *User, paste *Paste, plan plans.Plan) (int64, error) {
+	if err := s.validatePreparedAttachmentLocked(user, paste, plan, &PreparedAttachmentUpload{}); err != nil {
+		return 0, err
+	}
+	quota, err := s.quotaLocked(user.ID, plan)
+	if err != nil {
+		return 0, err
+	}
+	maxBytes := maxAttachmentUploadBytes
+	for _, available := range []int64{
+		plan.SingleFileBytes,
+		plan.SinglePasteBytes - s.pasteSizeLocked(paste),
+		plan.ActiveStorageBytes - quota.ActiveStorageBytes,
+		plan.DailyUploadBytes - quota.DailyUploadBytes,
+	} {
+		if available < maxBytes {
+			maxBytes = available
+		}
+	}
+	if maxBytes < 0 {
+		maxBytes = 0
+	}
+	return maxBytes, nil
 }
 
 func (s *Service) finalizePreparedAttachment(userID string, pasteID string, upload *PreparedAttachmentUpload, stored preparedObjectStorage) (AttachmentView, error) {
@@ -494,7 +613,11 @@ func copyAttachmentUpload(dst *os.File, src io.Reader, hash io.Writer, prefix *p
 	buf := make([]byte, 128*1024)
 	var total int64
 	for {
-		n, readErr := src.Read(buf)
+		readBuf := buf
+		if remaining := limit - total; remaining >= 0 && int64(len(readBuf)) > remaining+1 {
+			readBuf = readBuf[:remaining+1]
+		}
+		n, readErr := src.Read(readBuf)
 		if n > 0 {
 			if total+int64(n) > limit {
 				return total, E(http.StatusRequestEntityTooLarge, "file_too_large", "file exceeds maximum upload limit")

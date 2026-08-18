@@ -683,11 +683,14 @@ export const client = {
   ) => {
     const form = new FormData();
     form.append("file", file);
-    form.append("guestToken", guestToken);
-    if (turnstileToken) form.append("turnstileToken", turnstileToken);
+    const headers = new Headers({ "X-PasteBox-Guest-Token": guestToken });
+    if (turnstileToken) {
+      headers.set("X-PasteBox-Turnstile-Token", turnstileToken);
+    }
     return api<Attachment>(`/guest/pastes/${pasteId}/attachments`, {
       method: "POST",
       body: form,
+      headers,
     });
   },
   createGuestShare: (

@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -1271,6 +1272,46 @@ func TestPasteUpdateCannotBypassSinglePasteQuota(t *testing.T) {
 	}
 }
 
+func TestAttachmentUploadPreflightUsesCurrentAvailableQuota(t *testing.T) {
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	plan := &svc.catalog.Plans[0]
+	plan.SingleFileBytes = 10
+	plan.SinglePasteBytes = 20
+	plan.ActiveStorageBytes = 12
+	plan.DailyUploadBytes = 9
+	user := registerTestUser(t, svc, "upload-preflight@example.com")
+	paste := createTestPaste(t, svc, user.User.ID, PasteInput{Text: "1234", ExpiresInSeconds: 3600})
+
+	preflight, err := svc.PreflightAttachmentUpload(user.User.ID, paste.ID)
+	if err != nil {
+		t.Fatalf("preflight attachment upload: %v", err)
+	}
+	if preflight.MaxBytes != 5 {
+		t.Fatalf("expected daily quota to cap this upload at 5 bytes, got %d", preflight.MaxBytes)
+	}
+}
+
+func TestPrepareAttachmentUploadStopsAtRequestLimitWithoutSpoolingRemainder(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("TMPDIR", tempDir)
+	reader := &countingReader{reader: strings.NewReader(strings.Repeat("x", 1024))}
+
+	if _, err := PrepareAttachmentUploadWithLimit("too-large.bin", "application/octet-stream", reader, 5); !hasAppCode(err, "file_too_large") {
+		t.Fatalf("expected request-specific file size rejection, got %v", err)
+	}
+	if reader.bytesRead != 6 {
+		t.Fatalf("expected upload reader to stop after limit plus one byte, read %d", reader.bytesRead)
+	}
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("read upload temp directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("failed upload left temp files behind: %#v", entries)
+	}
+}
+
 func TestAttachmentDedupeReusesSameUserObjectUntilLastReferenceDeleted(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	svc := newTestService(t, &now)
@@ -1955,9 +1996,12 @@ func TestRuntimeConfigLogLevelPatchAndHook(t *testing.T) {
 	svc := newTestService(t, &now)
 	admin := seedAdminTestUser(t, svc, "log-level-admin@example.com")
 	observed := []string{}
-	svc.SetRuntimeConfigChangeHook(func(cfg RuntimeConfig, _ config.Config) {
+	if err := svc.SetRuntimeConfigChangeHook(func(cfg RuntimeConfig, _ config.Config) error {
 		observed = append(observed, cfg.LogLevel)
-	})
+		return nil
+	}); err != nil {
+		t.Fatalf("set runtime config hook: %v", err)
+	}
 	if len(observed) != 1 || observed[0] != RuntimeLogLevelInfo {
 		t.Fatalf("expected initial info log level hook, got %#v", observed)
 	}
@@ -1974,6 +2018,176 @@ func TestRuntimeConfigLogLevelPatchAndHook(t *testing.T) {
 	}
 	if _, err := svc.AdminUpdateRuntimeConfig(admin.ID, RuntimeConfigPatch{LogLevel: ptr("trace")}); !hasAppCode(err, "invalid_log_level") {
 		t.Fatalf("expected invalid_log_level, got %v", err)
+	}
+}
+
+func TestRuntimeConfigFailuresKeepPersistedAndEffectiveStateAligned(t *testing.T) {
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	root := config.FromEnv()
+	base := defaultRuntimeConfig(root)
+	auditStore := newMemoryAuditLogStore()
+	store := &memoryRuntimeConfigStore{cfg: base, secrets: config.ManagedSecrets{}, ok: true, auditStore: auditStore}
+	svc := newTestServiceWithStorage(t, &now, Stores{RuntimeConfigs: store, AuditLogs: auditStore})
+	admin := seedAdminTestUser(t, svc, "runtime-atomic-admin@example.com")
+
+	failApply := false
+	observed := []string{}
+	if err := svc.SetRuntimeConfigChangeHook(func(cfg RuntimeConfig, _ config.Config) error {
+		observed = append(observed, cfg.LogLevel)
+		if failApply && cfg.LogLevel == RuntimeLogLevelDebug {
+			return errors.New("runtime apply failed")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("set runtime config hook: %v", err)
+	}
+
+	failApply = true
+	if _, err := svc.AdminUpdateRuntimeConfig(admin.ID, RuntimeConfigPatch{LogLevel: ptr(RuntimeLogLevelDebug)}); err == nil {
+		t.Fatal("expected runtime apply failure")
+	}
+	assertRuntimeLogLevelState(t, svc, store, RuntimeLogLevelInfo)
+	if countAuditAction(auditStore.logs, "admin.runtime_config_update") != 0 {
+		t.Fatalf("runtime apply failure persisted audit: %#v", auditStore.logs)
+	}
+
+	failApply = false
+	store.atomicErr = errors.New("audit insert failed")
+	if _, err := svc.AdminUpdateRuntimeConfig(admin.ID, RuntimeConfigPatch{LogLevel: ptr(RuntimeLogLevelDebug)}); err == nil {
+		t.Fatal("expected atomic persistence failure")
+	}
+	assertRuntimeLogLevelState(t, svc, store, RuntimeLogLevelInfo)
+	if countAuditAction(auditStore.logs, "admin.runtime_config_update") != 0 {
+		t.Fatalf("atomic persistence failure wrote audit: %#v", auditStore.logs)
+	}
+
+	store.atomicErr = nil
+	external := store.cfg
+	external.LogLevel = RuntimeLogLevelDebug
+	external.UpdatedAt = now.Add(time.Minute)
+	store.cfg = external
+	failApply = true
+	if _, err := svc.RefreshRuntimeConfig(context.Background()); err == nil {
+		t.Fatal("expected refresh apply failure")
+	}
+	if got, _ := svc.AdminRuntimeConfig(admin.ID); got.LogLevel != RuntimeLogLevelInfo {
+		t.Fatalf("failed refresh changed effective runtime config: %#v", got)
+	}
+	failApply = false
+	refreshed, err := svc.RefreshRuntimeConfig(context.Background())
+	if err != nil {
+		t.Fatalf("refresh runtime config after recovery: %v", err)
+	}
+	if refreshed.LogLevel != RuntimeLogLevelDebug {
+		t.Fatalf("expected recovered refresh to apply debug, got %#v", refreshed)
+	}
+	if len(observed) < 6 {
+		t.Fatalf("expected apply and rollback hook calls, got %#v", observed)
+	}
+}
+
+func TestRefreshRuntimeConfigIgnoresOlderSnapshot(t *testing.T) {
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	root := config.FromEnv()
+	base := defaultRuntimeConfig(root)
+	base.UpdatedAt = now
+	store := &memoryRuntimeConfigStore{cfg: base, ok: true}
+	svc := newTestServiceWithStorage(t, &now, Stores{RuntimeConfigs: store})
+	admin := seedAdminTestUser(t, svc, "runtime-stale-refresh-admin@example.com")
+
+	now = now.Add(time.Minute)
+	updated, err := svc.AdminUpdateRuntimeConfig(admin.ID, RuntimeConfigPatch{LogLevel: ptr(RuntimeLogLevelDebug)})
+	if err != nil {
+		t.Fatalf("update runtime config: %v", err)
+	}
+	if updated.LogLevel != RuntimeLogLevelDebug {
+		t.Fatalf("expected debug runtime config, got %#v", updated)
+	}
+
+	store.cfg = base
+	refreshed, err := svc.RefreshRuntimeConfig(context.Background())
+	if err != nil {
+		t.Fatalf("refresh older runtime config snapshot: %v", err)
+	}
+	current, err := svc.AdminRuntimeConfig(admin.ID)
+	if err != nil {
+		t.Fatalf("read runtime config after stale refresh: %v", err)
+	}
+	if refreshed.LogLevel != RuntimeLogLevelDebug || current.LogLevel != RuntimeLogLevelDebug {
+		t.Fatalf("older snapshot replaced current runtime config: refreshed=%#v current=%#v", refreshed, current)
+	}
+}
+
+func TestBusinessTransactionFailuresDoNotPublishCaches(t *testing.T) {
+	now := time.Date(2026, 8, 18, 13, 0, 0, 0, time.UTC)
+	transactions := &failingBusinessTransactionStore{
+		redeemErr:  errors.New("redemption transaction failed"),
+		billingErr: errors.New("billing transaction failed"),
+	}
+	svc := newTestServiceWithStorage(t, &now, Stores{BusinessTransactions: transactions})
+	admin := seedAdminTestUser(t, svc, "transaction-admin@example.com")
+	owner := registerTestUser(t, svc, "transaction-owner@example.com")
+	order, err := svc.CreateOrder(owner.User.ID, "stripe", "plus", "monthly")
+	if err != nil {
+		t.Fatalf("create order: %v", err)
+	}
+
+	if _, err := svc.MarkOrderPaid(admin.ID, order.ID, "tx-fail", "SUP-500 injected transaction failure"); err == nil {
+		t.Fatal("expected billing transaction failure")
+	}
+	orders, err := svc.ListOrders(owner.User.ID)
+	if err != nil {
+		t.Fatalf("list orders: %v", err)
+	}
+	if len(orders) != 1 || orders[0].Status != "pending" {
+		t.Fatalf("billing failure polluted order cache: %#v", orders)
+	}
+	user, err := svc.UserForSession(owner.SessionID)
+	if err != nil {
+		t.Fatalf("load user after billing failure: %v", err)
+	}
+	if user.PlanID != "free" || user.PlanExpiresAt != nil {
+		t.Fatalf("billing failure polluted user cache: %#v", user)
+	}
+	if containsAuditTargetAction(auditValues(svc.auditLogs), order.ID, "billing.order_paid") {
+		t.Fatalf("billing failure polluted audit cache: %#v", svc.auditLogs)
+	}
+	for _, mail := range svc.mails {
+		if mail != nil && mail.Subject == "PasteBox payment received" {
+			t.Fatalf("billing failure polluted mail cache: %#v", svc.mails)
+		}
+	}
+
+	if _, err := svc.RedeemCode(owner.User.ID, "PB-TRANSACTION-FAIL"); err == nil {
+		t.Fatal("expected redemption transaction failure")
+	}
+	if len(svc.redemptionRecords) != 0 {
+		t.Fatalf("redemption failure polluted record cache: %#v", svc.redemptionRecords)
+	}
+	user, err = svc.UserForSession(owner.SessionID)
+	if err != nil {
+		t.Fatalf("load user after redemption failure: %v", err)
+	}
+	if user.PlanID != "free" {
+		t.Fatalf("redemption failure polluted user cache: %#v", user)
+	}
+}
+
+func TestBuildBillingTransactionNormalizesStatusBeforeEventDefaults(t *testing.T) {
+	now := time.Date(2026, 8, 18, 14, 0, 0, 0, time.UTC)
+	order := &Order{ID: "ord-status-normalize", UserID: "usr-status-normalize", Provider: "stripe", PlanID: "plus", Period: "monthly", Status: "pending"}
+	user := &User{ID: order.UserID, Email: "status-normalize@example.com", PlanID: "free"}
+	result, err := BuildBillingTransaction(BillingTransactionInput{
+		OrderID: order.ID, DesiredStatus: " PAID ", EventID: "evt-status-normalize", IdempotencyKey: "key-status-normalize", OccurredAt: now,
+	}, order, user)
+	if err != nil {
+		t.Fatalf("build billing transaction: %v", err)
+	}
+	if result.Event == nil || result.Event.EventType != "payment.succeeded" {
+		t.Fatalf("expected normalized paid event type, got %#v", result.Event)
+	}
+	if result.Order == nil || result.Order.Status != "paid" {
+		t.Fatalf("expected normalized paid order status, got %#v", result.Order)
 	}
 }
 
@@ -2029,9 +2243,27 @@ func TestManagedConfigSecretsAreWriteOnlyAndApplyAtRuntime(t *testing.T) {
 	if !kept.Secrets.SMTPPassword || svc.EffectiveConfig().SMTP.Password != secret {
 		t.Fatal("omitted secret patch must retain the existing secret")
 	}
+	kept.Config.SMTP.Host = "smtp.changed.test"
+	if _, err := svc.AdminUpdateManagedConfig(admin.ID, ManagedConfigUpdate{Config: kept.Config}); !hasAppCode(err, "secret_reentry_required") {
+		t.Fatalf("expected SMTP target change to require password re-entry, got %v", err)
+	}
+	if effective := svc.EffectiveConfig(); effective.SMTP.Host == "smtp.changed.test" || effective.SMTP.Password != secret {
+		t.Fatalf("rejected SMTP target change must retain the old effective config, got %#v", effective.SMTP)
+	}
+	reboundSecret := "smtp-rebound-secret"
+	rebound, err := svc.AdminUpdateManagedConfig(admin.ID, ManagedConfigUpdate{
+		Config:  kept.Config,
+		Secrets: ManagedSecretPatch{SMTPPassword: &reboundSecret},
+	})
+	if err != nil {
+		t.Fatalf("change SMTP target with password re-entry: %v", err)
+	}
+	if effective := svc.EffectiveConfig(); effective.SMTP.Host != "smtp.changed.test" || effective.SMTP.Password != reboundSecret {
+		t.Fatalf("expected rebound SMTP config to apply, got %#v", effective.SMTP)
+	}
 	empty := ""
 	cleared, err := svc.AdminUpdateManagedConfig(admin.ID, ManagedConfigUpdate{
-		Config:  kept.Config,
+		Config:  rebound.Config,
 		Secrets: ManagedSecretPatch{SMTPPassword: &empty},
 	})
 	if err != nil {
@@ -2039,6 +2271,86 @@ func TestManagedConfigSecretsAreWriteOnlyAndApplyAtRuntime(t *testing.T) {
 	}
 	if cleared.Secrets.SMTPPassword || svc.EffectiveConfig().SMTP.Password != "" {
 		t.Fatal("empty secret patch must clear the existing secret")
+	}
+}
+
+func TestManagedConfigRequiresS3CredentialsWhenEndpointChanges(t *testing.T) {
+	now := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	admin := seedAdminTestUser(t, svc, "managed-s3-admin@example.com")
+	view, err := svc.AdminManagedConfig(admin.ID)
+	if err != nil {
+		t.Fatalf("managed config: %v", err)
+	}
+	accessKey := "old-access"
+	secretKey := "old-secret"
+	view, err = svc.AdminUpdateManagedConfig(admin.ID, ManagedConfigUpdate{
+		Config: view.Config,
+		Secrets: ManagedSecretPatch{
+			S3AccessKey: &accessKey,
+			S3SecretKey: &secretKey,
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed managed S3 credentials: %v", err)
+	}
+	oldEndpoint := svc.EffectiveConfig().S3.Endpoint
+	view.Config.S3.Endpoint = "https://storage.changed.test"
+	if _, err := svc.AdminUpdateManagedConfig(admin.ID, ManagedConfigUpdate{Config: view.Config}); !hasAppCode(err, "secret_reentry_required") {
+		t.Fatalf("expected S3 endpoint change to require both credentials, got %v", err)
+	}
+	newAccessKey := "new-access"
+	if _, err := svc.AdminUpdateManagedConfig(admin.ID, ManagedConfigUpdate{
+		Config:  view.Config,
+		Secrets: ManagedSecretPatch{S3AccessKey: &newAccessKey},
+	}); !hasAppCode(err, "secret_reentry_required") {
+		t.Fatalf("expected partial S3 credential patch to be rejected, got %v", err)
+	}
+	if effective := svc.EffectiveConfig(); effective.S3.Endpoint != oldEndpoint || effective.S3.AccessKey != accessKey || effective.S3.SecretKey != secretKey {
+		t.Fatalf("rejected S3 target changes must retain the old config, got %#v", effective.S3)
+	}
+	newSecretKey := "new-secret"
+	if _, err := svc.AdminUpdateManagedConfig(admin.ID, ManagedConfigUpdate{
+		Config: view.Config,
+		Secrets: ManagedSecretPatch{
+			S3AccessKey: &newAccessKey,
+			S3SecretKey: &newSecretKey,
+		},
+	}); err != nil {
+		t.Fatalf("change S3 endpoint with both credentials: %v", err)
+	}
+	if effective := svc.EffectiveConfig(); effective.S3.Endpoint != view.Config.S3.Endpoint || effective.S3.AccessKey != newAccessKey || effective.S3.SecretKey != newSecretKey {
+		t.Fatalf("expected rebound S3 config to apply, got %#v", effective.S3)
+	}
+}
+
+func TestProductionManagedConfigPinsSensitiveProviderTargets(t *testing.T) {
+	root := config.FromEnv()
+	root.PublicURL = "https://pastebox.test"
+	root.SupportEmail = "support@pastebox.test"
+	root.AbuseEmail = "abuse@pastebox.test"
+	root.CORSAllowedOrigins = []string{root.PublicURL}
+	root.S3.Endpoint = "https://storage.pastebox.test"
+	root.GoogleOAuth.RedirectURL = root.PublicURL + "/api/v1/auth/google/callback"
+	root.GitHubOAuth.RedirectURL = root.PublicURL + "/api/v1/auth/github/callback"
+	managed, _ := config.ManagedFromConfig(root)
+
+	managed.Turnstile.VerifyURL = "https://collector.test/turnstile"
+	if _, err := normalizeManagedConfig(managed, "production"); !hasAppCode(err, "invalid_provider_url") {
+		t.Fatalf("expected custom production Turnstile URL rejection, got %v", err)
+	}
+	managed.Turnstile.VerifyURL = config.DefaultTurnstileVerifyURL
+	managed.Telegram.APIBaseURL = "https://collector.test/telegram"
+	if _, err := normalizeManagedConfig(managed, "production"); !hasAppCode(err, "invalid_provider_url") {
+		t.Fatalf("expected custom production Telegram URL rejection, got %v", err)
+	}
+	managed.Telegram.APIBaseURL = ""
+	normalized, err := normalizeManagedConfig(managed, "production")
+	if err != nil {
+		t.Fatalf("normalize production managed config defaults: %v", err)
+	}
+	if normalized.Turnstile.VerifyURL != config.DefaultTurnstileVerifyURL || normalized.Telegram.APIBaseURL != config.DefaultTelegramAPIBaseURL {
+		t.Fatalf("expected official provider endpoints, got turnstile=%q telegram=%q", normalized.Turnstile.VerifyURL, normalized.Telegram.APIBaseURL)
 	}
 }
 
@@ -2066,10 +2378,12 @@ func TestLegacyRuntimeConfigImportsEnvironmentManagedValuesOnce(t *testing.T) {
 }
 
 type memoryRuntimeConfigStore struct {
-	cfg     RuntimeConfig
-	secrets config.ManagedSecrets
-	ok      bool
-	saves   int
+	cfg        RuntimeConfig
+	secrets    config.ManagedSecrets
+	ok         bool
+	saves      int
+	atomicErr  error
+	auditStore *memoryAuditLogStore
 }
 
 func (s *memoryRuntimeConfigStore) RuntimeConfig(context.Context) (RuntimeConfig, config.ManagedSecrets, bool, error) {
@@ -2082,6 +2396,33 @@ func (s *memoryRuntimeConfigStore) SaveRuntimeConfig(_ context.Context, cfg Runt
 	s.ok = true
 	s.saves++
 	return nil
+}
+
+func (s *memoryRuntimeConfigStore) SaveRuntimeConfigWithAudit(_ context.Context, cfg RuntimeConfig, secrets config.ManagedSecrets, audit AuditLog) error {
+	if s.atomicErr != nil {
+		return s.atomicErr
+	}
+	s.cfg = cfg
+	s.secrets = secrets
+	s.ok = true
+	s.saves++
+	if s.auditStore != nil {
+		s.auditStore.logs = append(s.auditStore.logs, audit)
+	}
+	return nil
+}
+
+type failingBusinessTransactionStore struct {
+	redeemErr  error
+	billingErr error
+}
+
+func (s *failingBusinessTransactionStore) RedeemCode(context.Context, RedemptionTransactionInput) (RedemptionTransactionResult, error) {
+	return RedemptionTransactionResult{}, s.redeemErr
+}
+
+func (s *failingBusinessTransactionStore) ApplyBilling(context.Context, BillingTransactionInput) (BillingTransactionResult, error) {
+	return BillingTransactionResult{}, s.billingErr
 }
 
 func TestTurnstileVerifierSiteverifyResponses(t *testing.T) {
@@ -2133,6 +2474,47 @@ func TestTurnstileVerifierSiteverifyResponses(t *testing.T) {
 	}
 	if err := timeoutVerifier.Verify(context.Background(), "token-timeout", ""); !hasAppCode(err, "turnstile_timeout") {
 		t.Fatalf("expected turnstile_timeout, got %v", err)
+	}
+}
+
+func TestSensitiveProviderHTTPClientDisablesProxyAndRedirects(t *testing.T) {
+	client := newSensitiveHTTPClient(time.Second)
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport.Proxy != nil {
+		t.Fatalf("sensitive provider client must disable environment proxies, transport=%T", client.Transport)
+	}
+
+	redirected := 0
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		redirected++
+	}))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+
+	cfg := config.FromEnv()
+	cfg.Turnstile.SecretKey = "redirect-secret"
+	cfg.Turnstile.VerifyURL = source.URL
+	if err := NewTurnstileVerifier(cfg).Verify(context.Background(), "token", ""); !hasAppCode(err, "turnstile_failed") {
+		t.Fatalf("expected redirect response to be rejected, got %v", err)
+	}
+	if redirected != 0 {
+		t.Fatalf("sensitive provider client followed redirect %d time(s)", redirected)
+	}
+
+	cfg.AppEnv = "production"
+	cfg.Turnstile.VerifyURL = source.URL
+	verifier := NewTurnstileVerifier(cfg).(*turnstileVerifier)
+	if verifier.cfg.VerifyURL != config.DefaultTurnstileVerifyURL {
+		t.Fatalf("production verifier target was not pinned: %q", verifier.cfg.VerifyURL)
+	}
+	cfg.Telegram.APIBaseURL = source.URL
+	sender := NewTelegramSender(cfg).(*TelegramSender)
+	if sender.cfg.APIBaseURL != config.DefaultTelegramAPIBaseURL {
+		t.Fatalf("production Telegram target was not pinned: %q", sender.cfg.APIBaseURL)
 	}
 }
 
@@ -2321,6 +2703,17 @@ type fakeTurnstileVerifier struct {
 	calls  int
 	tokens []string
 	err    error
+}
+
+type countingReader struct {
+	reader    io.Reader
+	bytesRead int
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.bytesRead += n
+	return n, err
 }
 
 func (v *fakeTurnstileVerifier) Verify(_ context.Context, token string, _ string) error {
@@ -3275,6 +3668,36 @@ func containsAuditTargetAction(logs []AuditLog, target string, action string) bo
 		}
 	}
 	return false
+}
+
+func countAuditAction(logs []AuditLog, action string) int {
+	count := 0
+	for _, log := range logs {
+		if log.Action == action {
+			count++
+		}
+	}
+	return count
+}
+
+func auditValues(logs []*AuditLog) []AuditLog {
+	out := make([]AuditLog, 0, len(logs))
+	for _, log := range logs {
+		if log != nil {
+			out = append(out, *log)
+		}
+	}
+	return out
+}
+
+func assertRuntimeLogLevelState(t *testing.T, svc *Service, store *memoryRuntimeConfigStore, want string) {
+	t.Helper()
+	svc.mu.Lock()
+	effective := svc.runtimeConfig.LogLevel
+	svc.mu.Unlock()
+	if effective != want || store.cfg.LogLevel != want {
+		t.Fatalf("runtime state split: effective=%q persisted=%q want=%q", effective, store.cfg.LogLevel, want)
+	}
 }
 
 func hasUserEmail(users []UserView, email string) bool {

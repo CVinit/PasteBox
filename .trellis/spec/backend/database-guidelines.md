@@ -150,6 +150,88 @@ pastebox migrate up
 - Do not treat a daily-metric repository error as zero usage. Quota checks must
   fail closed so a database outage cannot bypass upload/download limits.
 
+## Scenario: Cross-Entity Business Transactions
+
+### 1. Scope / Trigger
+
+- Trigger: Any change that mutates a redemption, paid order, user plan,
+  webhook event, audit log, or payment mail in the same business operation.
+
+### 2. Signatures
+
+- App boundary: `app.BusinessTransactionStore`
+- Redemption: `RedeemCode(ctx, app.RedemptionTransactionInput)`
+- Billing: `ApplyBilling(ctx, app.BillingTransactionInput)`
+- Production implementation: `postgres.NewBusinessTransactionStore(pool)`
+- Runtime config boundary:
+  `RuntimeConfigAuditStore.SaveRuntimeConfigWithAudit(ctx, cfg, secrets, audit)`
+
+### 3. Contracts
+
+- Redemption transactions lock the code, batch, and user rows, validate the
+  limits against locked values, then commit code redemption, batch count,
+  redemption record, user plan, and audit together.
+- Billing success commits the user plan, order status, audit, idempotent
+  webhook event, and payment mail queue row together. The event idempotency key
+  is serialized with a PostgreSQL transaction advisory lock.
+- A committed transaction result is the only point at which the service may
+  publish the changed rows to its in-memory caches.
+- Runtime config plus its audit record must use
+  `SaveRuntimeConfigWithAudit` when both durable stores are configured.
+
+### 4. Validation & Error Matrix
+
+- Missing or already redeemed code -> `redemption_code_invalid` or
+  `redemption_code_used`; no rows are committed.
+- Redemption batch/user limit or allow-list failure -> the corresponding
+  `redemption_*` error; no code, count, plan, record, or audit change.
+- Duplicate billing idempotency key -> return the existing event/order without
+  reapplying the plan or enqueueing a second mail.
+- Any order, audit, webhook, or mail write failure -> roll back every write in
+  the business transaction.
+- Runtime hook failure or atomic config/audit persistence failure -> keep the
+  previous effective and persisted config; report the failure to the caller.
+
+### 5. Good/Base/Bad Cases
+
+- Good: Two concurrent redemption calls for one code produce one success and
+  one `redemption_code_used` result.
+- Base: In-memory tests may use the service fallback, but production wiring
+  must provide `BusinessTransactionStore`.
+- Bad: Calling `UpdateUser`, `UpdateOrder`, `RecordAuditLog`, and `QueueMail`
+  independently for a payment success in production.
+
+### 6. Tests Required
+
+- PostgreSQL integration test for concurrent same-code redemption and locked
+  batch/user counters.
+- PostgreSQL integration test that injects a mail or audit write failure and
+  asserts order, user, webhook, audit, and mail rows are unchanged.
+- App tests assert transaction errors do not change long-lived caches.
+- Runtime config tests assert hook failure, audit failure, and refresh retry
+  behavior.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+updateUser(ctx, user)
+updateOrder(ctx, order)
+recordAudit(ctx, audit)
+queueMail(ctx, mail)
+```
+
+#### Correct
+
+```go
+result, err := transactions.ApplyBilling(ctx, input)
+if err != nil {
+	return err
+}
+publishBillingResultToCache(result)
+```
+
 ## Scenario: Daily Metrics Repository Boundary
 
 ### 1. Scope / Trigger

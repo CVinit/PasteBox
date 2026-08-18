@@ -1,6 +1,10 @@
 package config
 
-const ManagedConfigVersion = 1
+const (
+	ManagedConfigVersion      = 1
+	DefaultTurnstileVerifyURL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+	DefaultTelegramAPIBaseURL = "https://api.telegram.org"
+)
 
 type ManagedConfig struct {
 	Version                      int                    `json:"version"`

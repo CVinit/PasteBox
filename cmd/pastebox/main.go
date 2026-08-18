@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/mail"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
@@ -76,12 +77,16 @@ func runAPI(stdout io.Writer) int {
 		return 1
 	}
 	defer pool.Close()
-	service.SetRuntimeConfigChangeHook(func(runtimeCfg app.RuntimeConfig, effective config.Config) {
+	if err := service.SetRuntimeConfigChangeHook(func(runtimeCfg app.RuntimeConfig, effective config.Config) error {
 		applyRuntimeLogLevel(runtimeCfg.LogLevel, logLevel, logger)
 		if err := objects.Update(effective.S3); err != nil {
-			logger.Warn("object storage config update ignored", "error", err)
+			return fmt.Errorf("update object storage config: %w", err)
 		}
-	})
+		return nil
+	}); err != nil {
+		logger.Error("runtime config hook setup failed", "error", err)
+		return 1
+	}
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -332,12 +337,13 @@ func newProductionService(ctx context.Context, cfg config.Config) (*app.Service,
 			Queues:        postgres.NewJobStore(pool),
 			Mails:         postgres.NewMailStore(pool),
 		},
-		DailyMetrics:   postgres.NewDailyMetricStore(pool),
-		Catalog:        postgres.NewCatalogStore(pool),
-		AuditLogs:      postgres.NewAuditLogStore(pool),
-		RuntimeConfigs: postgres.NewRuntimeConfigStore(pool, cipher),
-		Redemptions:    postgres.NewRedemptionStore(pool),
-		AlertEvents:    postgres.NewAlertEventStore(pool),
+		DailyMetrics:         postgres.NewDailyMetricStore(pool),
+		Catalog:              postgres.NewCatalogStore(pool),
+		AuditLogs:            postgres.NewAuditLogStore(pool),
+		RuntimeConfigs:       postgres.NewRuntimeConfigStore(pool, cipher),
+		Redemptions:          postgres.NewRedemptionStore(pool),
+		BusinessTransactions: postgres.NewBusinessTransactionStore(pool),
+		AlertEvents:          postgres.NewAlertEventStore(pool),
 	})
 	if err != nil {
 		pool.Close()
@@ -507,6 +513,7 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		"PASTEBOX_APP_ENV",
 		"PASTEBOX_CONFIG_ENCRYPTION_KEY",
 		"PASTEBOX_METRICS_TOKEN",
+		"PASTEBOX_TRUSTED_PROXY_CIDRS",
 		"PASTEBOX_DOMAIN",
 		"PASTEBOX_ADMIN_EMAIL",
 		"PASTEBOX_POSTGRES_PASSWORD",
@@ -591,6 +598,7 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		func() error { return validateProductionDomainConfig(effective.PublicURL) },
 		func() error { return validatePublicContactEmails(effective) },
 		func() error { return validateCORSOrigins(effective) },
+		func() error { return validateTrustedProxyCIDRs(effective.TrustedProxyCIDRs) },
 		func() error { return validateRateLimitConfig(effective) },
 		func() error { return validateWorkerHeartbeatConfig(effective) },
 		func() error {
@@ -629,6 +637,7 @@ func validateLegacyManagedProductionConfig(cfg config.Config) error {
 		func() error { return validatePublicContactEmails(cfg) },
 		func() error { return validateBootstrapAdminConfig(cfg) },
 		func() error { return validateCORSOrigins(cfg) },
+		func() error { return validateTrustedProxyCIDRs(cfg.TrustedProxyCIDRs) },
 		func() error { return validateRateLimitConfig(cfg) },
 		func() error { return validateLegacyWorkerHeartbeatConfig(cfg) },
 		func() error { return validateGoogleOAuthRedirectURL(cfg.GoogleOAuth.RedirectURL, cfg.PublicURL) },
@@ -641,6 +650,22 @@ func validateLegacyManagedProductionConfig(cfg config.Config) error {
 	for _, check := range checks {
 		if err := check(); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func validateTrustedProxyCIDRs(values []string) error {
+	if len(values) == 0 {
+		return fmt.Errorf("PASTEBOX_TRUSTED_PROXY_CIDRS must include the production reverse proxy network")
+	}
+	for _, value := range values {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("PASTEBOX_TRUSTED_PROXY_CIDRS contains invalid CIDR %q", value)
+		}
+		if prefix.Bits() == 0 {
+			return fmt.Errorf("PASTEBOX_TRUSTED_PROXY_CIDRS must not trust every address")
 		}
 	}
 	return nil
@@ -1123,18 +1148,23 @@ func runWorker(args []string, stdout io.Writer, stderr io.Writer) int {
 	defer pool.Close()
 	mailSender := mailer.NewDynamicSender(logger)
 	scan := scanner.NewDynamic()
-	service.SetRuntimeConfigChangeHook(func(runtimeCfg app.RuntimeConfig, effective config.Config) {
+	if err := service.SetRuntimeConfigChangeHook(func(runtimeCfg app.RuntimeConfig, effective config.Config) error {
 		applyRuntimeLogLevel(runtimeCfg.LogLevel, logLevel, logger)
+		var updateErrors []error
 		if err := mailSender.Update(effective); err != nil {
-			logger.Warn("mailer config update ignored", "error", err)
+			updateErrors = append(updateErrors, fmt.Errorf("update mailer config: %w", err))
 		}
 		if err := scan.Update(effective.Scanner); err != nil {
-			logger.Warn("scanner config update ignored", "error", err)
+			updateErrors = append(updateErrors, fmt.Errorf("update scanner config: %w", err))
 		}
 		if err := objects.Update(effective.S3); err != nil {
-			logger.Warn("object storage config update ignored", "error", err)
+			updateErrors = append(updateErrors, fmt.Errorf("update object storage config: %w", err))
 		}
-	})
+		return errors.Join(updateErrors...)
+	}); err != nil {
+		logger.Error("worker runtime config hook setup failed", "error", err)
+		return 1
+	}
 
 	runner := worker.NewRunnerWithMail(postgres.NewJobStore(pool), postgres.NewMailStore(pool), mailSender, service, worker.Config{
 		BatchSize:    *batchSize,

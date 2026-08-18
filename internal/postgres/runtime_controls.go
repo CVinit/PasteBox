@@ -50,6 +50,34 @@ WHERE id = $1
 }
 
 func (s *RuntimeConfigStore) SaveRuntimeConfig(ctx context.Context, cfg app.RuntimeConfig, secrets config.ManagedSecrets) error {
+	return s.saveRuntimeConfigTransaction(ctx, cfg, secrets, nil)
+}
+
+func (s *RuntimeConfigStore) SaveRuntimeConfigWithAudit(ctx context.Context, cfg app.RuntimeConfig, secrets config.ManagedSecrets, audit app.AuditLog) error {
+	return s.saveRuntimeConfigTransaction(ctx, cfg, secrets, &audit)
+}
+
+func (s *RuntimeConfigStore) saveRuntimeConfigTransaction(ctx context.Context, cfg app.RuntimeConfig, secrets config.ManagedSecrets, audit *app.AuditLog) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin runtime config save: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := s.saveRuntimeConfig(ctx, tx, cfg, secrets); err != nil {
+		return err
+	}
+	if audit != nil {
+		if err := insertAuditLog(ctx, tx, *audit); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit runtime config: %w", err)
+	}
+	return nil
+}
+
+func (s *RuntimeConfigStore) saveRuntimeConfig(ctx context.Context, executor execQuerier, cfg app.RuntimeConfig, secrets config.ManagedSecrets) error {
 	if s.cipher == nil {
 		return fmt.Errorf("save runtime config: config cipher is not initialized")
 	}
@@ -61,12 +89,7 @@ func (s *RuntimeConfigStore) SaveRuntimeConfig(ctx context.Context, cfg app.Runt
 	if updatedAt.IsZero() {
 		updatedAt = time.Now().UTC()
 	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin runtime config save: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `
+	if _, err := executor.Exec(ctx, `
 INSERT INTO system_configs (id, config, created_at, updated_at)
 VALUES ($1, $2, $3, $3)
 ON CONFLICT (id) DO UPDATE SET
@@ -75,7 +98,7 @@ ON CONFLICT (id) DO UPDATE SET
 `, "default", string(raw), updatedAt); err != nil {
 		return fmt.Errorf("save runtime config: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM system_config_secrets WHERE config_id = $1`, "default"); err != nil {
+	if _, err := executor.Exec(ctx, `DELETE FROM system_config_secrets WHERE config_id = $1`, "default"); err != nil {
 		return fmt.Errorf("clear runtime config secrets: %w", err)
 	}
 	for name, plaintext := range managedSecretValues(secrets) {
@@ -86,15 +109,12 @@ ON CONFLICT (id) DO UPDATE SET
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `
+		if _, err := executor.Exec(ctx, `
 INSERT INTO system_config_secrets (config_id, name, version, nonce, ciphertext, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6)
 `, "default", name, encrypted.Version, encrypted.Nonce, encrypted.Ciphertext, updatedAt); err != nil {
 			return fmt.Errorf("save runtime config secret %q: %w", name, err)
 		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit runtime config: %w", err)
 	}
 	return nil
 }
@@ -203,6 +223,10 @@ VALUES ($1, $2, $3, $4, $5)
 }
 
 func (s *RedemptionStore) UpdateRedemptionBatch(ctx context.Context, batch app.RedemptionBatch) error {
+	return updateRedemptionBatchRecord(ctx, s.pool, batch)
+}
+
+func updateRedemptionBatchRecord(ctx context.Context, executor execQuerier, batch app.RedemptionBatch) error {
 	allowedEmails, err := json.Marshal(nonNilStrings(batch.AllowedEmails))
 	if err != nil {
 		return fmt.Errorf("encode allowed emails: %w", err)
@@ -211,7 +235,7 @@ func (s *RedemptionStore) UpdateRedemptionBatch(ctx context.Context, batch app.R
 	if err != nil {
 		return fmt.Errorf("encode allowed domains: %w", err)
 	}
-	tag, err := s.pool.Exec(ctx, `
+	tag, err := executor.Exec(ctx, `
 UPDATE redemption_batches
 SET
 	plan_id = $2,
@@ -239,7 +263,15 @@ WHERE id = $1
 }
 
 func (s *RedemptionStore) UpdateRedemptionCode(ctx context.Context, code app.RedemptionCode) error {
-	tag, err := s.pool.Exec(ctx, `
+	return updateRedemptionCodeRecord(ctx, s.pool, code, false)
+}
+
+func updateRedemptionCodeRecord(ctx context.Context, executor execQuerier, code app.RedemptionCode, requireUnused bool) error {
+	unusedClause := ""
+	if requireUnused {
+		unusedClause = " AND redeemed_by IS NULL AND redeemed_at IS NULL"
+	}
+	tag, err := executor.Exec(ctx, `
 UPDATE redemption_codes
 SET
 	batch_id = $2,
@@ -247,18 +279,25 @@ SET
 	redeemed_at = $4,
 	created_at = $5
 WHERE code_hash = $1
-`, code.CodeHash, code.BatchID, nullableString(code.RedeemedBy), code.RedeemedAt, code.CreatedAt)
+`+unusedClause, code.CodeHash, code.BatchID, nullableString(code.RedeemedBy), code.RedeemedAt, code.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("update redemption code: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
+		if requireUnused {
+			return app.E(409, "redemption_code_used", "redemption code has already been used")
+		}
 		return app.ErrStoreNotFound
 	}
 	return nil
 }
 
 func (s *RedemptionStore) CreateRedemptionRecord(ctx context.Context, record app.RedemptionRecord) error {
-	if _, err := s.pool.Exec(ctx, `
+	return insertRedemptionRecord(ctx, s.pool, record)
+}
+
+func insertRedemptionRecord(ctx context.Context, executor execQuerier, record app.RedemptionRecord) error {
+	if _, err := executor.Exec(ctx, `
 INSERT INTO redemption_records (id, code_hash, batch_id, user_id, plan_id, created_at)
 VALUES ($1, $2, $3, $4, $5, $6)
 `, record.ID, record.CodeHash, record.BatchID, record.UserID, record.PlanID, record.CreatedAt); err != nil {

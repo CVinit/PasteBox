@@ -144,7 +144,11 @@ ORDER BY created_at DESC, id DESC
 }
 
 func (s *UserStore) UpdateUser(ctx context.Context, user app.User) error {
-	tag, err := s.pool.Exec(ctx, `
+	return updateUserRecord(ctx, s.pool, user)
+}
+
+func updateUserRecord(ctx context.Context, executor execQuerier, user app.User) error {
+	tag, err := executor.Exec(ctx, `
 UPDATE users
 SET
 	email = $2,

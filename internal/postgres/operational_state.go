@@ -21,33 +21,39 @@ var (
 	ErrWebhookEventExists      = errors.Join(errors.New("postgres webhook event exists"), app.ErrStoreConflict)
 	ErrReportNotFound          = errors.Join(errors.New("postgres report not found"), app.ErrStoreNotFound)
 	ErrJobNotFound             = errors.Join(errors.New("postgres job not found"), app.ErrStoreNotFound)
+	ErrJobClaimLost            = errors.Join(errors.New("postgres job claim lost"), app.ErrStoreConflict)
 	ErrMailNotFound            = errors.Join(errors.New("postgres mail not found"), app.ErrStoreNotFound)
+	ErrMailClaimLost           = errors.Join(errors.New("postgres mail claim lost"), app.ErrStoreConflict)
 	ErrWorkerHeartbeatNotFound = errors.Join(errors.New("postgres worker heartbeat not found"), app.ErrStoreNotFound)
 )
 
 type JobRecord struct {
-	ID        string
-	Kind      string
-	TargetID  string
-	Status    string
-	Attempts  int
-	LastError string
-	RunAfter  time.Time
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID             string
+	Kind           string
+	TargetID       string
+	Status         string
+	Attempts       int
+	LastError      string
+	RunAfter       time.Time
+	ClaimedBy      string
+	LeaseExpiresAt *time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 type MailRecord struct {
-	ID        string
-	To        string
-	Subject   string
-	Body      string
-	Status    string
-	Attempts  int
-	LastError string
-	RunAfter  time.Time
-	CreatedAt time.Time
-	SentAt    *time.Time
+	ID             string
+	To             string
+	Subject        string
+	Body           string
+	Status         string
+	Attempts       int
+	LastError      string
+	RunAfter       time.Time
+	ClaimedBy      string
+	LeaseExpiresAt *time.Time
+	CreatedAt      time.Time
+	SentAt         *time.Time
 }
 
 type WorkerHeartbeat struct {
@@ -145,7 +151,11 @@ ORDER BY created_at DESC, id DESC
 }
 
 func (s *OrderStore) UpdateOrder(ctx context.Context, order app.Order) error {
-	tag, err := s.pool.Exec(ctx, `
+	return updateOrderRecord(ctx, s.pool, order)
+}
+
+func updateOrderRecord(ctx context.Context, executor execQuerier, order app.Order) error {
+	tag, err := executor.Exec(ctx, `
 UPDATE orders
 SET
 	provider = $2,
@@ -180,11 +190,15 @@ func NewWebhookEventStore(pool *pgxpool.Pool) *WebhookEventStore {
 }
 
 func (s *WebhookEventStore) CreateWebhookEvent(ctx context.Context, event app.WebhookEvent) error {
+	return insertWebhookEvent(ctx, s.pool, event)
+}
+
+func insertWebhookEvent(ctx context.Context, executor execQuerier, event app.WebhookEvent) error {
 	metadata, err := json.Marshal(normalizeMetadata(event.Metadata))
 	if err != nil {
 		return fmt.Errorf("encode webhook metadata: %w", err)
 	}
-	if _, err := s.pool.Exec(ctx, `
+	if _, err := executor.Exec(ctx, `
 INSERT INTO webhook_events (
 	id,
 	provider,
@@ -355,9 +369,9 @@ func NewJobStore(pool *pgxpool.Pool) *JobStore {
 
 func (s *JobStore) CreateJob(ctx context.Context, job JobRecord) error {
 	if _, err := s.pool.Exec(ctx, `
-INSERT INTO jobs (id, kind, target_id, status, attempts, last_error, run_after, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-`, job.ID, job.Kind, job.TargetID, job.Status, job.Attempts, job.LastError, job.RunAfter, job.CreatedAt, job.UpdatedAt); err != nil {
+INSERT INTO jobs (id, kind, target_id, status, attempts, last_error, run_after, claimed_by, lease_expires_at, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+`, job.ID, job.Kind, job.TargetID, job.Status, job.Attempts, job.LastError, job.RunAfter, strings.TrimSpace(job.ClaimedBy), job.LeaseExpiresAt, job.CreatedAt, job.UpdatedAt); err != nil {
 		return fmt.Errorf("create job: %w", err)
 	}
 	return nil
@@ -373,7 +387,7 @@ func (s *JobStore) CreateQueueItem(ctx context.Context, item app.QueueItem) erro
 
 func (s *JobStore) JobByID(ctx context.Context, id string) (JobRecord, error) {
 	job, err := scanJob(s.pool.QueryRow(ctx, `
-SELECT id, kind, target_id, status, attempts, last_error, run_after, created_at, updated_at
+SELECT id, kind, target_id, status, attempts, last_error, run_after, claimed_by, lease_expires_at, created_at, updated_at
 FROM jobs
 WHERE id = $1
 `, id))
@@ -391,9 +405,11 @@ func (s *JobStore) ListRunnableJobs(ctx context.Context, limit int, now time.Tim
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `
-SELECT id, kind, target_id, status, attempts, last_error, run_after, created_at, updated_at
+SELECT id, kind, target_id, status, attempts, last_error, run_after, claimed_by, lease_expires_at, created_at, updated_at
 FROM jobs
-WHERE status = 'pending' AND run_after <= $1
+WHERE status = 'pending'
+  AND run_after <= $1
+  AND (claimed_by = '' OR lease_expires_at IS NULL OR lease_expires_at <= $1)
 ORDER BY run_after ASC, created_at ASC, id ASC
 LIMIT $2
 `, now, limit)
@@ -415,9 +431,58 @@ LIMIT $2
 	return jobs, nil
 }
 
+func (s *JobStore) ClaimRunnableJobs(ctx context.Context, workerID string, limit int, now time.Time, leaseExpiresAt time.Time) ([]JobRecord, error) {
+	workerID = strings.TrimSpace(workerID)
+	if workerID == "" {
+		return nil, fmt.Errorf("claim runnable jobs: worker id is required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if !leaseExpiresAt.After(now) {
+		return nil, fmt.Errorf("claim runnable jobs: lease expiration must be after claim time")
+	}
+	rows, err := s.pool.Query(ctx, `
+WITH candidates AS (
+	SELECT id
+	FROM jobs
+	WHERE status = 'pending'
+	  AND run_after <= $1
+	  AND (claimed_by = '' OR lease_expires_at IS NULL OR lease_expires_at <= $1)
+	ORDER BY run_after ASC, created_at ASC, id ASC
+	LIMIT $2
+	FOR UPDATE SKIP LOCKED
+)
+UPDATE jobs AS job
+SET claimed_by = $3,
+	lease_expires_at = $4,
+	updated_at = $1
+FROM candidates
+WHERE job.id = candidates.id
+RETURNING job.id, job.kind, job.target_id, job.status, job.attempts, job.last_error,
+	job.run_after, job.claimed_by, job.lease_expires_at, job.created_at, job.updated_at
+`, now, limit, workerID, leaseExpiresAt)
+	if err != nil {
+		return nil, fmt.Errorf("claim runnable jobs: %w", err)
+	}
+	defer rows.Close()
+	jobs := []JobRecord{}
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read claimed jobs: %w", err)
+	}
+	return jobs, nil
+}
+
 func (s *JobStore) ListQueueItemsByKind(ctx context.Context, kind string) ([]app.QueueItem, error) {
 	rows, err := s.pool.Query(ctx, `
-SELECT id, kind, target_id, status, attempts, last_error, run_after, created_at, updated_at
+SELECT id, kind, target_id, status, attempts, last_error, run_after, claimed_by, lease_expires_at, created_at, updated_at
 FROM jobs
 WHERE kind = $1
 ORDER BY updated_at DESC, created_at DESC, id DESC
@@ -445,7 +510,7 @@ func (s *JobStore) ListQueueItemsByStatus(ctx context.Context, status string, li
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `
-SELECT id, kind, target_id, status, attempts, last_error, run_after, created_at, updated_at
+SELECT id, kind, target_id, status, attempts, last_error, run_after, claimed_by, lease_expires_at, created_at, updated_at
 FROM jobs
 WHERE status = $1
 ORDER BY updated_at DESC, created_at DESC, id DESC
@@ -487,14 +552,18 @@ SET
 	attempts = $3,
 	last_error = $4,
 	run_after = $5,
-	updated_at = $6
+	updated_at = $6,
+	claimed_by = '',
+	lease_expires_at = NULL
 WHERE id = $1
-`, job.ID, job.Status, job.Attempts, job.LastError, job.RunAfter, job.UpdatedAt)
+  AND claimed_by = $7
+  AND lease_expires_at IS NOT DISTINCT FROM $8
+`, job.ID, job.Status, job.Attempts, job.LastError, job.RunAfter, job.UpdatedAt, strings.TrimSpace(job.ClaimedBy), job.LeaseExpiresAt)
 	if err != nil {
 		return fmt.Errorf("update job: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrJobNotFound
+		return ErrJobClaimLost
 	}
 	return nil
 }
@@ -508,11 +577,15 @@ func NewMailStore(pool *pgxpool.Pool) *MailStore {
 }
 
 func (s *MailStore) CreateMail(ctx context.Context, mail MailRecord) error {
+	return insertMailRecord(ctx, s.pool, mail)
+}
+
+func insertMailRecord(ctx context.Context, executor execQuerier, mail MailRecord) error {
 	mail = mailRecordWithDefaults(mail)
-	if _, err := s.pool.Exec(ctx, `
-INSERT INTO mails (id, recipient, subject, body, status, attempts, last_error, run_after, created_at, sent_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-`, mail.ID, mail.To, mail.Subject, mail.Body, mail.Status, mail.Attempts, mail.LastError, mail.RunAfter, mail.CreatedAt, mail.SentAt); err != nil {
+	if _, err := executor.Exec(ctx, `
+INSERT INTO mails (id, recipient, subject, body, status, attempts, last_error, run_after, claimed_by, lease_expires_at, created_at, sent_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+`, mail.ID, mail.To, mail.Subject, mail.Body, mail.Status, mail.Attempts, mail.LastError, mail.RunAfter, strings.TrimSpace(mail.ClaimedBy), mail.LeaseExpiresAt, mail.CreatedAt, mail.SentAt); err != nil {
 		return fmt.Errorf("create mail: %w", err)
 	}
 	return nil
@@ -531,7 +604,7 @@ func (s *MailStore) QueueMail(ctx context.Context, mail app.Mail) error {
 
 func (s *MailStore) MailByID(ctx context.Context, id string) (MailRecord, error) {
 	mail, err := scanMail(s.pool.QueryRow(ctx, `
-SELECT id, recipient, subject, body, status, attempts, last_error, run_after, created_at, sent_at
+SELECT id, recipient, subject, body, status, attempts, last_error, run_after, claimed_by, lease_expires_at, created_at, sent_at
 FROM mails
 WHERE id = $1
 `, id))
@@ -549,7 +622,7 @@ func (s *MailStore) ListQueuedMail(ctx context.Context, limit int) ([]MailRecord
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `
-SELECT id, recipient, subject, body, status, attempts, last_error, run_after, created_at, sent_at
+SELECT id, recipient, subject, body, status, attempts, last_error, run_after, claimed_by, lease_expires_at, created_at, sent_at
 FROM mails
 WHERE status = 'queued'
 ORDER BY created_at ASC, id ASC
@@ -594,7 +667,7 @@ func (s *MailStore) listMailByStatus(ctx context.Context, status string, limit i
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `
-SELECT id, recipient, subject, body, status, attempts, last_error, run_after, created_at, sent_at
+SELECT id, recipient, subject, body, status, attempts, last_error, run_after, claimed_by, lease_expires_at, created_at, sent_at
 FROM mails
 WHERE status = $2
 ORDER BY run_after ASC, created_at ASC, id ASC
@@ -623,9 +696,11 @@ func (s *MailStore) ListRunnableMail(ctx context.Context, limit int, now time.Ti
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `
-SELECT id, recipient, subject, body, status, attempts, last_error, run_after, created_at, sent_at
+SELECT id, recipient, subject, body, status, attempts, last_error, run_after, claimed_by, lease_expires_at, created_at, sent_at
 FROM mails
-WHERE status = 'queued' AND run_after <= $2
+WHERE status = 'queued'
+  AND run_after <= $2
+  AND (claimed_by = '' OR lease_expires_at IS NULL OR lease_expires_at <= $2)
 ORDER BY run_after ASC, created_at ASC, id ASC
 LIMIT $1
 `, limit, now)
@@ -643,6 +718,54 @@ LIMIT $1
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read runnable mail: %w", err)
+	}
+	return mails, nil
+}
+
+func (s *MailStore) ClaimRunnableMail(ctx context.Context, workerID string, limit int, now time.Time, leaseExpiresAt time.Time) ([]MailRecord, error) {
+	workerID = strings.TrimSpace(workerID)
+	if workerID == "" {
+		return nil, fmt.Errorf("claim runnable mail: worker id is required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if !leaseExpiresAt.After(now) {
+		return nil, fmt.Errorf("claim runnable mail: lease expiration must be after claim time")
+	}
+	rows, err := s.pool.Query(ctx, `
+WITH candidates AS (
+	SELECT id
+	FROM mails
+	WHERE status = 'queued'
+	  AND run_after <= $1
+	  AND (claimed_by = '' OR lease_expires_at IS NULL OR lease_expires_at <= $1)
+	ORDER BY run_after ASC, created_at ASC, id ASC
+	LIMIT $2
+	FOR UPDATE SKIP LOCKED
+)
+UPDATE mails AS mail
+SET claimed_by = $3,
+	lease_expires_at = $4
+FROM candidates
+WHERE mail.id = candidates.id
+RETURNING mail.id, mail.recipient, mail.subject, mail.body, mail.status, mail.attempts, mail.last_error,
+	mail.run_after, mail.claimed_by, mail.lease_expires_at, mail.created_at, mail.sent_at
+`, now, limit, workerID, leaseExpiresAt)
+	if err != nil {
+		return nil, fmt.Errorf("claim runnable mail: %w", err)
+	}
+	defer rows.Close()
+	mails := []MailRecord{}
+	for rows.Next() {
+		mail, err := scanMail(rows)
+		if err != nil {
+			return nil, err
+		}
+		mails = append(mails, mail)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read claimed mail: %w", err)
 	}
 	return mails, nil
 }
@@ -668,14 +791,18 @@ SET
 	attempts = $3,
 	last_error = $4,
 	run_after = $5,
-	sent_at = $6
+	sent_at = $6,
+	claimed_by = '',
+	lease_expires_at = NULL
 WHERE id = $1
-`, mail.ID, mail.Status, mail.Attempts, mail.LastError, mail.RunAfter, mail.SentAt)
+  AND claimed_by = $7
+  AND lease_expires_at IS NOT DISTINCT FROM $8
+`, mail.ID, mail.Status, mail.Attempts, mail.LastError, mail.RunAfter, mail.SentAt, strings.TrimSpace(mail.ClaimedBy), mail.LeaseExpiresAt)
 	if err != nil {
 		return fmt.Errorf("update mail: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrMailNotFound
+		return ErrMailClaimLost
 	}
 	return nil
 }
@@ -806,18 +933,22 @@ func scanReport(row rowScanner) (app.Report, error) {
 
 func scanJob(row rowScanner) (JobRecord, error) {
 	var job JobRecord
-	if err := row.Scan(&job.ID, &job.Kind, &job.TargetID, &job.Status, &job.Attempts, &job.LastError, &job.RunAfter, &job.CreatedAt, &job.UpdatedAt); err != nil {
+	var leaseExpiresAt pgtype.Timestamptz
+	if err := row.Scan(&job.ID, &job.Kind, &job.TargetID, &job.Status, &job.Attempts, &job.LastError, &job.RunAfter, &job.ClaimedBy, &leaseExpiresAt, &job.CreatedAt, &job.UpdatedAt); err != nil {
 		return JobRecord{}, fmt.Errorf("scan job: %w", err)
 	}
+	job.LeaseExpiresAt = optionalTime(leaseExpiresAt)
 	return job, nil
 }
 
 func scanMail(row rowScanner) (MailRecord, error) {
 	var mail MailRecord
 	var sentAt pgtype.Timestamptz
-	if err := row.Scan(&mail.ID, &mail.To, &mail.Subject, &mail.Body, &mail.Status, &mail.Attempts, &mail.LastError, &mail.RunAfter, &mail.CreatedAt, &sentAt); err != nil {
+	var leaseExpiresAt pgtype.Timestamptz
+	if err := row.Scan(&mail.ID, &mail.To, &mail.Subject, &mail.Body, &mail.Status, &mail.Attempts, &mail.LastError, &mail.RunAfter, &mail.ClaimedBy, &leaseExpiresAt, &mail.CreatedAt, &sentAt); err != nil {
 		return MailRecord{}, fmt.Errorf("scan mail: %w", err)
 	}
+	mail.LeaseExpiresAt = optionalTime(leaseExpiresAt)
 	mail.SentAt = optionalTime(sentAt)
 	return mail, nil
 }

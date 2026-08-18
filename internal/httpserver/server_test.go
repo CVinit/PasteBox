@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/big"
 	"mime/multipart"
@@ -308,6 +309,84 @@ func TestCORSAllowlistControlsCredentialedAPIOrigins(t *testing.T) {
 	if got := preflight.Header().Get("Access-Control-Allow-Origin"); got != "https://admin.pastebox.example.com" {
 		t.Fatalf("expected preflight origin to be reflected, got %q", got)
 	}
+	for _, headerName := range []string{guestTokenHeaderName, turnstileTokenHeaderName} {
+		if got := preflight.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(got, headerName) {
+			t.Fatalf("expected CORS preflight to allow %s, got %q", headerName, got)
+		}
+	}
+}
+
+func TestGuestAttachmentUploadPreflightsBeforeFileContent(t *testing.T) {
+	cfg := config.FromEnv()
+	cfg.BootstrapAdminEmail = ""
+	cfg.BootstrapAdminPassword = ""
+	service := app.New(cfg)
+	token, paste, err := service.CreateGuestPaste(app.GuestCreatePasteInput{Title: "guest", Text: "hello", ExpiresInSeconds: 600})
+	if err != nil {
+		t.Fatalf("create guest paste: %v", err)
+	}
+	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), service)
+	client := newHTTPTestClient(t, handler)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "header-token.txt")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+	if _, err := part.Write([]byte("attachment")); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/guest/pastes/"+paste.ID+"/attachments", bytes.NewReader(body.Bytes()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set(guestTokenHeaderName, token)
+	created := client.do(req)
+	assertStatus(t, created, http.StatusCreated)
+
+	countedBody := &httpCountingReader{reader: strings.NewReader("this body must stay unread")}
+	invalidReq := httptest.NewRequest(http.MethodPost, "/api/v1/guest/pastes/missing/attachments", countedBody)
+	invalidReq.Header.Set("Content-Type", "multipart/form-data; boundary=pastebox")
+	invalidReq.Header.Set(guestTokenHeaderName, "invalid-token")
+	rejected := client.do(invalidReq)
+	assertStatus(t, rejected, http.StatusNotFound)
+	if countedBody.bytesRead != 0 {
+		t.Fatalf("invalid guest credentials read %d request-body bytes before rejection", countedBody.bytesRead)
+	}
+}
+
+func TestGuestAttachmentUploadExplainsLateMultipartCredentials(t *testing.T) {
+	cfg := config.FromEnv()
+	service := app.New(cfg)
+	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), service)
+	client := newHTTPTestClient(t, handler)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "legacy.txt")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+	if _, err := part.Write([]byte("legacy file body")); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+	if err := writer.WriteField("guestToken", "late-token"); err != nil {
+		t.Fatalf("write late guest token: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/guest/pastes/missing/attachments", bytes.NewReader(body.Bytes()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	res := client.do(req)
+	assertStatus(t, res, http.StatusBadRequest)
+	var payload map[string]string
+	decodeResponse(t, res, &payload)
+	if payload["error"] != "guest_upload_credentials_before_file" {
+		t.Fatalf("expected explicit legacy credential ordering error, got %#v", payload)
+	}
 }
 
 func TestRateLimitAppliesEndpointSpecificBuckets(t *testing.T) {
@@ -403,6 +482,63 @@ func TestRateLimitAppliesEndpointSpecificBuckets(t *testing.T) {
 			assertRateLimited(t, secondRes)
 		})
 	}
+}
+
+func TestClientIPTrustsForwardedChainOnlyFromConfiguredProxy(t *testing.T) {
+	cfg := rateLimitTestConfig()
+	cfg.TrustedProxyCIDRs = []string{"172.16.0.0/12", "10.0.0.0/8"}
+	server := &Server{trustedProxy: trustedProxyPrefixes(cfg.TrustedProxyCIDRs, slog.Default())}
+
+	tests := []struct {
+		name       string
+		remoteAddr string
+		forwarded  string
+		realIP     string
+		want       string
+	}{
+		{name: "direct ignores spoofed header", remoteAddr: "203.0.113.10:1234", forwarded: "198.51.100.20", want: "203.0.113.10"},
+		{name: "single trusted proxy", remoteAddr: "172.18.0.2:4321", forwarded: "198.51.100.20", want: "198.51.100.20"},
+		{name: "trusted proxy chain", remoteAddr: "172.18.0.2:4321", forwarded: "198.51.100.20, 10.0.0.8", want: "198.51.100.20"},
+		{name: "trusted real ip fallback", remoteAddr: "172.18.0.2:4321", realIP: "198.51.100.21", want: "198.51.100.21"},
+		{name: "invalid forwarded chain fails closed", remoteAddr: "172.18.0.2:4321", forwarded: "198.51.100.20, invalid", want: "172.18.0.2"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.RemoteAddr = tt.remoteAddr
+			req.Header.Set("X-Forwarded-For", tt.forwarded)
+			req.Header.Set("X-Real-IP", tt.realIP)
+			if got := server.clientIP(req); got != tt.want {
+				t.Fatalf("client IP = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRateLimitSeparatesClientsBehindTrustedProxy(t *testing.T) {
+	cfg := rateLimitTestConfig()
+	cfg.TrustedProxyCIDRs = []string{"172.16.0.0/12"}
+	cfg.RateLimit.AuthLimit = 1
+	handler := New(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)))
+
+	request := func(client string) *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"email":"nobody@example.com","password":"wrong"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Forwarded-For", client)
+		req.RemoteAddr = "172.18.0.2:1234"
+		return req
+	}
+
+	for _, client := range []string{"198.51.100.10", "198.51.100.11"} {
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, request(client))
+		if res.Code == http.StatusTooManyRequests {
+			t.Fatalf("first request for %s must not share another client's bucket", client)
+		}
+	}
+	blocked := httptest.NewRecorder()
+	handler.ServeHTTP(blocked, request("198.51.100.10"))
+	assertRateLimited(t, blocked)
 }
 
 func TestRateLimitCanBeDisabledForLocalDevelopment(t *testing.T) {
@@ -1673,6 +1809,17 @@ func (s *fakeHTTPAlertSender) SendAlert(_ context.Context, _ string, _ bool) err
 
 type staticHTTPScanner struct {
 	result app.ScanResult
+}
+
+type httpCountingReader struct {
+	reader    io.Reader
+	bytesRead int
+}
+
+func (r *httpCountingReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.bytesRead += n
+	return n, err
 }
 
 func (s staticHTTPScanner) Scan(_ context.Context, _ string, _ string, _ []byte) (app.ScanResult, error) {

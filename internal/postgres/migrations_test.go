@@ -179,3 +179,32 @@ func TestLoadMigrationsIncludesPlanTagLimits(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadMigrationsIncludesQueueLeases(t *testing.T) {
+	migrations, err := LoadMigrations()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	var migration Migration
+	for _, item := range migrations {
+		if item.Version == 9 {
+			migration = item
+			break
+		}
+	}
+	if migration.Name != "queue_leases" || migration.Filename != "000009_queue_leases.sql" {
+		t.Fatalf("expected queue lease migration, got %#v", migration)
+	}
+	for _, expected := range []string{
+		"ALTER TABLE jobs",
+		"ALTER TABLE mails",
+		"claimed_by text NOT NULL",
+		"lease_expires_at timestamptz",
+		"jobs_runnable_lease_idx",
+		"mails_runnable_lease_idx",
+	} {
+		if !strings.Contains(migration.SQL, expected) {
+			t.Fatalf("expected queue lease migration to contain %q", expected)
+		}
+	}
+}

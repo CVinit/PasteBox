@@ -67,6 +67,7 @@ type Service struct {
 	audit         AuditLogStore
 	runtime       RuntimeConfigStore
 	redemptions   RedemptionStore
+	transactions  BusinessTransactionStore
 	alerts        AlertEventStore
 
 	usersByID               map[string]*User
@@ -96,7 +97,7 @@ type Service struct {
 	mails                   []*Mail
 	runtimeConfig           RuntimeConfig
 	managedSecrets          config.ManagedSecrets
-	runtimeConfigChange     func(RuntimeConfig, config.Config)
+	runtimeConfigChange     RuntimeConfigChangeHook
 	redemptionBatches       map[string]*RedemptionBatch
 	redemptionCodesByHash   map[string]*RedemptionCode
 	redemptionRecords       []*RedemptionRecord
@@ -150,6 +151,7 @@ func NewWithStorage(ctx context.Context, cfg config.Config, stores Stores) (*Ser
 		audit:                 stores.AuditLogs,
 		runtime:               stores.RuntimeConfigs,
 		redemptions:           stores.Redemptions,
+		transactions:          stores.BusinessTransactions,
 		alerts:                stores.AlertEvents,
 		usersByID:             map[string]*User{},
 		userIDByEmail:         map[string]string{},
@@ -214,16 +216,17 @@ func NewWithDailyMetricStore(cfg config.Config, dailyMetrics DailyMetricStore) *
 }
 
 type Stores struct {
-	Auth           AuthStores
-	Content        ContentStores
-	Objects        ObjectStore
-	Operational    OperationalStores
-	DailyMetrics   DailyMetricStore
-	Catalog        CatalogStore
-	AuditLogs      AuditLogStore
-	RuntimeConfigs RuntimeConfigStore
-	Redemptions    RedemptionStore
-	AlertEvents    AlertEventStore
+	Auth                 AuthStores
+	Content              ContentStores
+	Objects              ObjectStore
+	Operational          OperationalStores
+	DailyMetrics         DailyMetricStore
+	Catalog              CatalogStore
+	AuditLogs            AuditLogStore
+	RuntimeConfigs       RuntimeConfigStore
+	Redemptions          RedemptionStore
+	BusinessTransactions BusinessTransactionStore
+	AlertEvents          AlertEventStore
 }
 
 type CatalogStore interface {
@@ -1334,12 +1337,7 @@ func (s *Service) ExtendPaste(userID string, id string, expiresInSeconds int64) 
 }
 
 func (s *Service) AddAttachment(userID string, pasteID string, fileName string, contentType string, content []byte) (AttachmentView, error) {
-	upload, err := PrepareAttachmentUpload(fileName, contentType, bytes.NewReader(content))
-	if err != nil {
-		return AttachmentView{}, err
-	}
-	defer upload.Close()
-	return s.AddPreparedAttachment(userID, pasteID, upload)
+	return s.AddAttachmentStream(userID, pasteID, fileName, contentType, bytes.NewReader(content))
 }
 
 func (s *Service) DownloadAttachment(userID string, attachmentID string) (AttachmentView, []byte, error) {
@@ -1762,105 +1760,66 @@ func (s *Service) ProcessBillingWebhook(input BillingWebhookInput) (WebhookEvent
 		}
 		return event, &order, nil
 	case "payment.failed", "invoice.payment_failed", "epusdt.payment.failed":
-		if err := s.applyOrderLifecycleStatusLocked(orderID, "failed", false); err != nil {
-			return WebhookEvent{}, nil, err
-		}
-		event, err := s.recordWebhookEventLocked(provider, eventType, orderID, idempotencyKey, metadata)
+		result, err := s.applyBillingTransactionLocked(BillingTransactionInput{
+			ActorID: "webhook:" + provider, OrderID: orderID, DesiredStatus: "failed", EventID: s.newID("wh"),
+			EventProvider: provider, EventType: eventType, IdempotencyKey: idempotencyKey, Metadata: metadata,
+			AuditID: s.newID("aud"), OccurredAt: s.now().UTC(),
+		})
 		if err != nil {
 			return WebhookEvent{}, nil, err
 		}
-		order, _ := s.orderByIDLocked(orderID)
-		return event, order, nil
+		return billingResultEvent(result), result.Order, nil
 	case "subscription.deleted", "subscription.canceled", "customer.subscription.deleted", "epusdt.payment.canceled":
-		if err := s.applyOrderLifecycleStatusLocked(orderID, "canceled", true); err != nil {
-			return WebhookEvent{}, nil, err
-		}
-		event, err := s.recordWebhookEventLocked(provider, eventType, orderID, idempotencyKey, metadata)
+		result, err := s.applyBillingTransactionLocked(BillingTransactionInput{
+			ActorID: "webhook:" + provider, OrderID: orderID, DesiredStatus: "canceled", RevokePlan: true,
+			EventID: s.newID("wh"), EventProvider: provider, EventType: eventType, IdempotencyKey: idempotencyKey,
+			Metadata: metadata, AuditID: s.newID("aud"), OccurredAt: s.now().UTC(),
+		})
 		if err != nil {
 			return WebhookEvent{}, nil, err
 		}
-		order, _ := s.orderByIDLocked(orderID)
-		return event, order, nil
+		return billingResultEvent(result), result.Order, nil
 	case "refund.created", "charge.refunded":
-		if err := s.applyOrderLifecycleStatusLocked(orderID, "refunded", true); err != nil {
-			return WebhookEvent{}, nil, err
-		}
-		event, err := s.recordWebhookEventLocked(provider, eventType, orderID, idempotencyKey, metadata)
+		result, err := s.applyBillingTransactionLocked(BillingTransactionInput{
+			ActorID: "webhook:" + provider, OrderID: orderID, DesiredStatus: "refunded", RevokePlan: true,
+			EventID: s.newID("wh"), EventProvider: provider, EventType: eventType, IdempotencyKey: idempotencyKey,
+			Metadata: metadata, AuditID: s.newID("aud"), OccurredAt: s.now().UTC(),
+		})
 		if err != nil {
 			return WebhookEvent{}, nil, err
 		}
-		order, _ := s.orderByIDLocked(orderID)
-		return event, order, nil
+		return billingResultEvent(result), result.Order, nil
 	case "payment.expired", "checkout.session.expired", "epusdt.payment.expired":
-		if err := s.applyOrderLifecycleStatusLocked(orderID, "expired", false); err != nil {
-			return WebhookEvent{}, nil, err
-		}
-		event, err := s.recordWebhookEventLocked(provider, eventType, orderID, idempotencyKey, metadata)
+		result, err := s.applyBillingTransactionLocked(BillingTransactionInput{
+			ActorID: "webhook:" + provider, OrderID: orderID, DesiredStatus: "expired", EventID: s.newID("wh"),
+			EventProvider: provider, EventType: eventType, IdempotencyKey: idempotencyKey, Metadata: metadata,
+			AuditID: s.newID("aud"), OccurredAt: s.now().UTC(),
+		})
 		if err != nil {
 			return WebhookEvent{}, nil, err
 		}
-		order, _ := s.orderByIDLocked(orderID)
-		return event, order, nil
+		return billingResultEvent(result), result.Order, nil
 	default:
-		event, err := s.recordWebhookEventLocked(provider, eventType, orderID, idempotencyKey, metadata)
+		result, err := s.applyBillingTransactionLocked(BillingTransactionInput{
+			ActorID: "webhook:" + provider, OrderID: orderID, EventID: s.newID("wh"), EventProvider: provider,
+			EventType: eventType, IdempotencyKey: idempotencyKey, Metadata: metadata, OccurredAt: s.now().UTC(),
+		})
 		if err != nil {
 			return WebhookEvent{}, nil, err
 		}
-		order, _ := s.orderByIDLocked(orderID)
-		return event, order, nil
+		return billingResultEvent(result), result.Order, nil
 	}
-}
-
-func (s *Service) applyOrderLifecycleStatusLocked(orderID string, status string, revokePlan bool) error {
-	if strings.TrimSpace(orderID) == "" {
-		return nil
-	}
-	order, err := s.orderByIDLocked(orderID)
-	if err != nil {
-		if isAppStatus(err, http.StatusNotFound) {
-			return nil
-		}
-		return err
-	}
-	return s.applyLoadedOrderLifecycleStatusLocked("webhook:"+order.Provider, order, status, revokePlan, nil)
 }
 
 func (s *Service) applyLoadedOrderLifecycleStatusLocked(actorID string, order *Order, status string, revokePlan bool, metadata map[string]any) error {
 	if order == nil {
 		return nil
 	}
-	if order.Status == status {
-		return nil
-	}
-	previousStatus := order.Status
-	if previousStatus == "paid" && !revokePlan {
-		return nil
-	}
-	planRevoked := false
-	if revokePlan && previousStatus == "paid" {
-		user, err := s.userByIDLocked(order.UserID)
-		if err != nil {
-			return err
-		}
-		if user.PlanID == order.PlanID {
-			user.PlanID = "free"
-			user.PlanExpiresAt = nil
-			if err := s.updateUserLocked(user); err != nil {
-				return err
-			}
-			planRevoked = true
-		}
-	}
-	order.Status = status
-	if err := s.updateOrderLocked(order); err != nil {
-		return err
-	}
-	auditMetadata := cloneMetadata(metadata)
-	auditMetadata["planId"] = order.PlanID
-	auditMetadata["provider"] = order.Provider
-	auditMetadata["previousStatus"] = previousStatus
-	auditMetadata["planRevoked"] = planRevoked
-	return s.auditLocked(actorID, "billing.order_"+status, order.ID, auditMetadata)
+	_, err := s.applyBillingTransactionLocked(BillingTransactionInput{
+		ActorID: actorID, OrderID: order.ID, DesiredStatus: status, RevokePlan: revokePlan,
+		Metadata: metadata, AuditID: s.newID("aud"), OccurredAt: s.now().UTC(),
+	})
+	return err
 }
 
 func (s *Service) ReplayWebhookEvent(actorID string, eventID string) (WebhookEvent, error) {
@@ -1911,63 +1870,120 @@ func (s *Service) ReplayWebhookEvent(actorID string, eventID string) (WebhookEve
 }
 
 func (s *Service) markOrderPaidLocked(actorID string, orderID string, txID string, eventKey string, metadata map[string]any) (Order, error) {
-	order, err := s.orderByIDLocked(orderID)
+	input := BillingTransactionInput{
+		ActorID: actorID, OrderID: orderID, TxID: strings.TrimSpace(txID), DesiredStatus: "paid",
+		Metadata: metadata, AuditID: s.newID("aud"), MailID: s.newID("mail"), OccurredAt: s.now().UTC(),
+	}
+	if strings.TrimSpace(eventKey) != "" {
+		input.EventID = s.newID("wh")
+		input.EventType = "payment.succeeded"
+		input.IdempotencyKey = strings.TrimSpace(eventKey)
+	}
+	result, err := s.applyBillingTransactionLocked(input)
 	if err != nil {
 		return Order{}, err
 	}
-	if order.Status == "paid" {
-		if eventKey != "" {
-			metadata = cloneMetadata(metadata)
-			if order.TxID != "" {
-				metadata["txId"] = order.TxID
-			}
-			if _, err := s.recordWebhookEventLocked(order.Provider, "payment.succeeded", order.ID, eventKey, metadata); err != nil {
-				return Order{}, err
-			}
+	if result.Order == nil {
+		return Order{}, E(http.StatusNotFound, "order_not_found", "order not found")
+	}
+	return *result.Order, nil
+}
+
+func (s *Service) applyBillingTransactionLocked(input BillingTransactionInput) (BillingTransactionResult, error) {
+	if s.transactions != nil {
+		result, err := s.transactions.ApplyBilling(context.Background(), input)
+		if err != nil {
+			return BillingTransactionResult{}, err
 		}
-		return *order, nil
+		s.cacheBillingTransactionResultLocked(result)
+		return result, nil
 	}
-	now := s.now().UTC()
-	order.Status = "paid"
-	order.TxID = strings.TrimSpace(txID)
-	order.PaidAt = &now
-	user, err := s.userByIDLocked(order.UserID)
+
+	var order *Order
+	if strings.TrimSpace(input.OrderID) != "" {
+		loaded, err := s.orderByIDLocked(input.OrderID)
+		if err != nil {
+			if input.DesiredStatus == "paid" || !isAppStatus(err, http.StatusNotFound) {
+				return BillingTransactionResult{}, err
+			}
+		} else {
+			cloned := *loaded
+			order = &cloned
+		}
+	}
+	var user *User
+	if order != nil && (input.DesiredStatus == "paid" || input.RevokePlan) {
+		loaded, err := s.userByIDLocked(order.UserID)
+		if err != nil {
+			return BillingTransactionResult{}, err
+		}
+		cloned := *loaded
+		user = &cloned
+	}
+	result, err := BuildBillingTransaction(input, order, user)
 	if err != nil {
-		return Order{}, err
+		return BillingTransactionResult{}, err
 	}
-	user.PlanID = order.PlanID
-	days := 30
-	if order.Period == "yearly" {
-		days = 365
+	if result.User != nil && s.auth.Users != nil {
+		if err := s.auth.Users.UpdateUser(context.Background(), *result.User); err != nil {
+			return BillingTransactionResult{}, err
+		}
 	}
-	expires := now.Add(time.Duration(days) * 24 * time.Hour)
-	user.PlanExpiresAt = &expires
-	if err := s.updateUserLocked(user); err != nil {
-		return Order{}, err
+	if result.Audit != nil && result.Order != nil && s.ops.Orders != nil {
+		if err := s.ops.Orders.UpdateOrder(context.Background(), *result.Order); err != nil {
+			return BillingTransactionResult{}, err
+		}
 	}
-	if err := s.updateOrderLocked(order); err != nil {
-		return Order{}, err
+	if result.Audit != nil && s.audit != nil {
+		if err := s.audit.RecordAuditLog(context.Background(), *result.Audit); err != nil {
+			return BillingTransactionResult{}, err
+		}
 	}
-	auditMetadata := cloneMetadata(metadata)
-	auditMetadata["planId"] = order.PlanID
-	auditMetadata["provider"] = order.Provider
-	if order.TxID != "" {
-		auditMetadata["txId"] = order.TxID
+	if result.Event != nil && s.ops.WebhookEvents != nil {
+		if err := s.ops.WebhookEvents.CreateWebhookEvent(context.Background(), *result.Event); err != nil {
+			if !errors.Is(err, ErrStoreConflict) {
+				return BillingTransactionResult{}, err
+			}
+			loaded, loadErr := s.ops.WebhookEvents.WebhookEventByIdempotencyKey(context.Background(), result.Event.IdempotencyKey)
+			if loadErr != nil {
+				return BillingTransactionResult{}, loadErr
+			}
+			result.Event = &loaded
+			result.ExistingEvent = true
+		}
 	}
-	if err := s.auditLocked(actorID, "billing.order_paid", order.ID, auditMetadata); err != nil {
-		return Order{}, err
+	if result.Mail != nil && s.ops.Mails != nil {
+		if err := s.ops.Mails.QueueMail(context.Background(), *result.Mail); err != nil {
+			return BillingTransactionResult{}, err
+		}
 	}
-	metadata = cloneMetadata(metadata)
-	if order.TxID != "" {
-		metadata["txId"] = order.TxID
+	s.cacheBillingTransactionResultLocked(result)
+	return result, nil
+}
+
+func (s *Service) cacheBillingTransactionResultLocked(result BillingTransactionResult) {
+	if result.User != nil {
+		s.cacheUserLocked(*result.User)
 	}
-	if _, err := s.recordWebhookEventLocked(order.Provider, "payment.succeeded", order.ID, eventKey, metadata); err != nil {
-		return Order{}, err
+	if result.Order != nil {
+		s.cacheOrderLocked(*result.Order)
 	}
-	if err := s.mail(user.Email, "PasteBox payment received", "Your membership is active."); err != nil {
-		return Order{}, err
+	if result.Event != nil {
+		s.cacheWebhookEventLocked(*result.Event)
 	}
-	return *order, nil
+	if result.Audit != nil {
+		s.cacheAuditLogLocked(*result.Audit)
+	}
+	if result.Mail != nil {
+		s.cacheMailLocked(*result.Mail)
+	}
+}
+
+func billingResultEvent(result BillingTransactionResult) WebhookEvent {
+	if result.Event == nil {
+		return WebhookEvent{}
+	}
+	return *result.Event
 }
 
 func (s *Service) ListOrders(userID string) ([]Order, error) {
@@ -4344,8 +4360,20 @@ func (s *Service) auditLocked(actorID string, action string, target string, meta
 			return err
 		}
 	}
-	s.auditLogs = append(s.auditLogs, log)
+	s.cacheAuditLogLocked(*log)
 	return nil
+}
+
+func (s *Service) cacheAuditLogLocked(log AuditLog) *AuditLog {
+	cached := cloneAuditLog(log)
+	for i, existing := range s.auditLogs {
+		if existing != nil && existing.ID == cached.ID {
+			s.auditLogs[i] = &cached
+			return &cached
+		}
+	}
+	s.auditLogs = append(s.auditLogs, &cached)
+	return &cached
 }
 
 func (s *Service) recordWebhookEventLocked(provider string, eventType string, targetID string, idempotencyKey string, metadata map[string]any) (WebhookEvent, error) {
