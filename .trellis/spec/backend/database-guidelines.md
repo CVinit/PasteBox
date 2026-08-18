@@ -1169,6 +1169,83 @@ for _, paste := range s.pastesByID {
 }
 ```
 
+## Scenario: Runtime Config Ordering And Quota Transactions
+
+### 1. Scope / Trigger
+
+- Trigger: Any change to runtime config refresh/persistence, Paste text
+  mutations, daily upload metrics, or share download counters.
+
+### 2. Signatures
+
+- Refresh: `Service.RefreshRuntimeConfig(ctx context.Context)`
+- Admin update: `Service.AdminUpdateRuntimeConfig` and
+  `Service.AdminUpdateManagedConfig`
+- Quota transaction: `app.PasteDailyMetricTransactionStore`
+- PostgreSQL implementation: `postgres.BusinessTransactionStore`
+
+### 3. Contracts
+
+- Runtime config `UpdatedAt` must be strictly newer than the currently active
+  snapshot before an admin mutation is persisted. A clock rollback must not
+  make a valid update look stale to another process.
+- PostgreSQL Paste creation/update with positive text bytes must commit the
+  Paste row and the UTC `daily_metrics` row in one transaction.
+- Non-transactional test stores must roll back a Paste update when metric
+  persistence fails. Share download counters and daily metrics must likewise
+  be restored when a later write fails.
+- Download object-store I/O must use the request context and must not run while
+  the service-wide mutex is held.
+
+### 4. Validation & Error Matrix
+
+- New runtime timestamp is not newer than active timestamp -> advance it by at
+  least one nanosecond before persistence.
+- ClamAV is selected without an address -> `400 invalid_scanner_config`.
+- SMTP is selected without a host -> `400 invalid_mailer_config`.
+- Paste or metric transaction fails -> return the storage error and do not
+  update the in-memory cache.
+- Download object open is canceled -> return the object-store error and leave
+  counters unchanged.
+
+### 5. Good/Base/Bad Cases
+
+- Good: A worker with a slightly skewed clock still applies an admin runtime
+  update because the persisted timestamp is monotonic.
+- Good: A failed daily metric write rolls back the Paste update and its cache.
+- Base: A successful shared download updates share count, attachment count,
+  and daily metric together from the service perspective.
+- Bad: Record quota first, then perform a Paste/database write that can fail.
+- Bad: Hold `s.mu` while waiting for S3 or another remote service.
+
+### 6. Tests Required
+
+- Runtime refresh regression with a fixed test clock earlier than the
+  constructor's real clock.
+- Provider validation tests for missing ClamAV and SMTP settings.
+- PostgreSQL transaction tests for Paste plus daily metric commit/rollback.
+- App tests for metric failure rollback on Paste updates and shared downloads.
+- Context cancellation/non-blocking tests for owner and shared downloads.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+next.UpdatedAt = s.now().UTC()
+if err := s.recordDailyUploadLocked(userID, bytes); err != nil {
+    return err
+}
+return s.createPasteLocked(paste)
+```
+
+#### Correct
+
+```go
+next.UpdatedAt = s.nextRuntimeConfigUpdatedAtLocked()
+return tx.CreatePasteWithDailyMetric(ctx, paste, now, bytes)
+```
+
 ## Scenario: Admin Runtime Control Persistence
 
 ### 1. Scope / Trigger

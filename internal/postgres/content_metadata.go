@@ -33,11 +33,15 @@ func NewPasteStore(pool *pgxpool.Pool) *PasteStore {
 }
 
 func (s *PasteStore) CreatePaste(ctx context.Context, paste app.Paste) error {
+	return createPasteRecord(ctx, s.pool, paste)
+}
+
+func createPasteRecord(ctx context.Context, executor execQuerier, paste app.Paste) error {
 	tags, err := json.Marshal(nonNilStrings(paste.Tags))
 	if err != nil {
 		return fmt.Errorf("encode paste tags: %w", err)
 	}
-	if _, err := s.pool.Exec(ctx, `
+	if _, err := executor.Exec(ctx, `
 INSERT INTO pastes (
 	id,
 	user_id,
@@ -96,11 +100,15 @@ ORDER BY created_at DESC, id DESC
 }
 
 func (s *PasteStore) UpdatePaste(ctx context.Context, paste app.Paste) error {
+	return updatePasteRecord(ctx, s.pool, paste)
+}
+
+func updatePasteRecord(ctx context.Context, executor execQuerier, paste app.Paste) error {
 	tags, err := json.Marshal(nonNilStrings(paste.Tags))
 	if err != nil {
 		return fmt.Errorf("encode paste tags: %w", err)
 	}
-	tag, err := s.pool.Exec(ctx, `
+	tag, err := executor.Exec(ctx, `
 UPDATE pastes
 SET
 	title = $2,

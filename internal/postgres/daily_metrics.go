@@ -35,10 +35,14 @@ WHERE user_id = $1 AND metric_kind = $2 AND metric_day = $3
 }
 
 func (s *DailyMetricStore) RecordDailyMetric(ctx context.Context, userID string, kind string, day time.Time, bytes int64) error {
+	return recordDailyMetric(ctx, s.pool, userID, kind, day, bytes)
+}
+
+func recordDailyMetric(ctx context.Context, executor execQuerier, userID string, kind string, day time.Time, bytes int64) error {
 	if bytes <= 0 {
 		return nil
 	}
-	if _, err := s.pool.Exec(ctx, `
+	if _, err := executor.Exec(ctx, `
 INSERT INTO daily_metrics (user_id, metric_kind, metric_day, bytes)
 VALUES ($1, $2, $3, $4)
 ON CONFLICT (user_id, metric_kind, metric_day)

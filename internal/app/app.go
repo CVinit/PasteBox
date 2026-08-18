@@ -1143,6 +1143,13 @@ func (s *Service) CreatePaste(userID string, input PasteInput) (PasteView, error
 		UpdatedAt:  now,
 	}
 	if textBytes := int64(len([]byte(paste.Text))); textBytes > 0 {
+		if tx, ok := s.transactions.(PasteDailyMetricTransactionStore); ok {
+			if err := tx.CreatePasteWithDailyMetric(context.Background(), *paste, now, textBytes); err != nil {
+				return PasteView{}, err
+			}
+			s.cachePasteLocked(*paste)
+			return s.viewPasteLocked(paste), nil
+		}
 		if err := s.recordDailyUploadLocked(user.ID, textBytes); err != nil {
 			return PasteView{}, err
 		}
@@ -1211,6 +1218,8 @@ func (s *Service) UpdatePaste(userID string, id string, patch PastePatch) (Paste
 	if !s.isPasteVisibleLocked(paste) {
 		return PasteView{}, E(http.StatusGone, "paste_expired", "paste is expired or deleted")
 	}
+	originalPaste := *paste
+	originalPaste.Tags = append([]string(nil), paste.Tags...)
 	user := s.usersByID[userID]
 	plan, _ := s.planForUserLocked(user)
 	nextText := paste.Text
@@ -1222,6 +1231,7 @@ func (s *Service) UpdatePaste(userID string, id string, patch PastePatch) (Paste
 	}
 	currentTextBytes := int64(len([]byte(paste.Text)))
 	nextTextBytes := int64(len([]byte(nextText)))
+	textDelta := nextTextBytes - currentTextBytes
 	attachmentsBytes := s.pasteSizeLocked(paste) - currentTextBytes
 	if attachmentsBytes+nextTextBytes > plan.SinglePasteBytes {
 		return PasteView{}, E(http.StatusRequestEntityTooLarge, "paste_too_large", "paste exceeds plan total size")
@@ -1234,7 +1244,7 @@ func (s *Service) UpdatePaste(userID string, id string, patch PastePatch) (Paste
 	if nextStorageBytes > plan.ActiveStorageBytes {
 		return PasteView{}, E(http.StatusForbidden, "storage_limit", "active storage exceeds plan limit")
 	}
-	if textDelta := nextTextBytes - currentTextBytes; textDelta > 0 && quota.DailyUploadBytes+textDelta > plan.DailyUploadBytes {
+	if textDelta > 0 && quota.DailyUploadBytes+textDelta > plan.DailyUploadBytes {
 		return PasteView{}, E(http.StatusForbidden, "daily_upload_limit", "daily upload traffic exceeds plan limit")
 	}
 	var nextTags []string
@@ -1244,9 +1254,31 @@ func (s *Service) UpdatePaste(userID string, id string, patch PastePatch) (Paste
 			return PasteView{}, err
 		}
 	}
-	if textDelta := nextTextBytes - currentTextBytes; textDelta > 0 {
-		if err := s.recordDailyUploadLocked(user.ID, textDelta); err != nil {
-			return PasteView{}, err
+	if textDelta > 0 {
+		if tx, ok := s.transactions.(PasteDailyMetricTransactionStore); ok {
+			nextPaste := *paste
+			nextPaste.Tags = append([]string(nil), paste.Tags...)
+			if patch.Title != nil {
+				nextPaste.Title = strings.TrimSpace(*patch.Title)
+			}
+			if patch.Text != nil {
+				nextPaste.Text = *patch.Text
+			}
+			if patch.HasTags {
+				nextPaste.Tags = nextTags
+			}
+			if patch.Pinned != nil {
+				nextPaste.Pinned = *patch.Pinned
+			}
+			if patch.Favorite != nil {
+				nextPaste.Favorite = *patch.Favorite
+			}
+			nextPaste.UpdatedAt = s.now().UTC()
+			if err := tx.UpdatePasteWithDailyMetric(context.Background(), nextPaste, nextPaste.UpdatedAt, textDelta); err != nil {
+				return PasteView{}, err
+			}
+			s.cachePasteLocked(nextPaste)
+			return s.viewPasteLocked(&nextPaste), nil
 		}
 	}
 	if patch.Title != nil {
@@ -1267,6 +1299,12 @@ func (s *Service) UpdatePaste(userID string, id string, patch PastePatch) (Paste
 	paste.UpdatedAt = s.now().UTC()
 	if err := s.updatePasteLocked(paste); err != nil {
 		return PasteView{}, err
+	}
+	if textDelta > 0 {
+		if err := s.recordDailyUploadLocked(user.ID, textDelta); err != nil {
+			rollbackErr := s.updatePasteLocked(&originalPaste)
+			return PasteView{}, errors.Join(err, rollbackErr)
+		}
 	}
 	return s.viewPasteLocked(paste), nil
 }
@@ -1492,20 +1530,31 @@ func (s *Service) DownloadSharedAttachment(token string, password string, attach
 	if err != nil {
 		return AttachmentView{}, nil, E(http.StatusGone, "attachment_unavailable", "attachment content is unavailable")
 	}
-	now := s.now().UTC()
-	if err := s.recordDailyShareDownloadLocked(share.UserID, attachment.Size); err != nil {
-		return AttachmentView{}, nil, err
-	}
-	share.DownloadCount++
-	share.LastDownloadedAt = &now
-	attachment.DownloadN++
-	if err := s.updateShareLocked(share); err != nil {
-		return AttachmentView{}, nil, err
-	}
-	if err := s.updateAttachmentLocked(attachment); err != nil {
+	if err := s.commitSharedDownloadLocked(share, attachment, s.now().UTC()); err != nil {
 		return AttachmentView{}, nil, err
 	}
 	return viewAttachment(attachment), content, nil
+}
+
+func (s *Service) commitSharedDownloadLocked(share *Share, attachment *Attachment, now time.Time) error {
+	originalShare := *share
+	originalAttachment := *attachment
+	share.DownloadCount++
+	share.LastDownloadedAt = &now
+	if err := s.updateShareLocked(share); err != nil {
+		return err
+	}
+	attachment.DownloadN++
+	if err := s.updateAttachmentLocked(attachment); err != nil {
+		rollbackErr := s.updateShareLocked(&originalShare)
+		return errors.Join(err, rollbackErr)
+	}
+	if err := s.recordDailyShareDownloadLocked(share.UserID, attachment.Size); err != nil {
+		rollbackAttachmentErr := s.updateAttachmentLocked(&originalAttachment)
+		rollbackShareErr := s.updateShareLocked(&originalShare)
+		return errors.Join(err, rollbackAttachmentErr, rollbackShareErr)
+	}
+	return nil
 }
 
 func (s *Service) Quota(userID string) (QuotaView, error) {
@@ -2207,12 +2256,18 @@ func (s *Service) AdminResolveReport(actorID string, reportID string, status str
 	if status != "open" && status != "resolved" && status != "dismissed" {
 		return Report{}, E(http.StatusBadRequest, "invalid_report_status", "report status must be open, resolved, or dismissed")
 	}
+	originalReport, err := s.reportByIDLocked(reportID)
+	if err != nil {
+		return Report{}, err
+	}
+	originalStatus := originalReport.Status
 	report, err := s.updateReportStatusLocked(reportID, status)
 	if err != nil {
 		return Report{}, err
 	}
 	if err := s.auditLocked(actorID, "admin.report_status", report.ID, map[string]any{"status": status}); err != nil {
-		return Report{}, err
+		_, rollbackErr := s.updateReportStatusLocked(reportID, originalStatus)
+		return Report{}, errors.Join(err, rollbackErr)
 	}
 	return *report, nil
 }
@@ -2326,6 +2381,8 @@ func (s *Service) AdminSetUserPlan(actorID string, userID string, planID string,
 	if _, ok := plans.Find(s.catalog, planID); !ok {
 		return UserView{}, E(http.StatusBadRequest, "invalid_plan", "plan does not exist")
 	}
+	originalUser := *user
+	originalUser.PlanExpiresAt = cloneTimePtr(user.PlanExpiresAt)
 	reason = strings.TrimSpace(reason)
 	ticketID = strings.TrimSpace(ticketID)
 	if reason == "" && ticketID == "" {
@@ -2352,7 +2409,8 @@ func (s *Service) AdminSetUserPlan(actorID string, userID string, planID string,
 		metadata["ticketId"] = ticketID
 	}
 	if err := s.auditLocked(actorID, "admin.user_plan_set", userID, metadata); err != nil {
-		return UserView{}, err
+		rollbackErr := s.updateUserLocked(&originalUser)
+		return UserView{}, errors.Join(err, rollbackErr)
 	}
 	return s.viewUserLocked(user)
 }
@@ -2367,13 +2425,16 @@ func (s *Service) AdminFreezeUser(actorID string, userID string, frozen bool) (U
 	if err != nil {
 		return UserView{}, err
 	}
+	originalUser := *user
+	originalUser.PlanExpiresAt = cloneTimePtr(user.PlanExpiresAt)
 	user.Frozen = frozen
 	user.UpdatedAt = s.now().UTC()
 	if err := s.updateUserLocked(user); err != nil {
 		return UserView{}, err
 	}
 	if err := s.auditLocked(actorID, "admin.user_freeze", userID, map[string]any{"frozen": frozen}); err != nil {
-		return UserView{}, err
+		rollbackErr := s.updateUserLocked(&originalUser)
+		return UserView{}, errors.Join(err, rollbackErr)
 	}
 	return s.viewUserLocked(user)
 }
@@ -2468,13 +2529,16 @@ func (s *Service) AdminTakedownPaste(actorID string, pasteID string) error {
 	if err != nil {
 		return err
 	}
+	originalPaste := *paste
+	originalPaste.AttachmentIDs = append([]string(nil), paste.AttachmentIDs...)
 	paste.Status = "taken_down"
 	paste.UpdatedAt = s.now().UTC()
 	if err := s.updatePasteLocked(paste); err != nil {
 		return err
 	}
 	if err := s.auditLocked(actorID, "admin.paste_takedown", pasteID, nil); err != nil {
-		return err
+		rollbackErr := s.updatePasteLocked(&originalPaste)
+		return errors.Join(err, rollbackErr)
 	}
 	return nil
 }
@@ -2488,6 +2552,13 @@ func (s *Service) AdminFreezeAttachment(actorID string, attachmentID string, fro
 	attachment, err := s.attachmentByIDLocked(attachmentID)
 	if err != nil {
 		return AttachmentView{}, err
+	}
+	originalAttachment := *attachment
+	var originalPaste *Paste
+	if paste := s.pastesByID[attachment.PasteID]; paste != nil {
+		copyPaste := *paste
+		copyPaste.AttachmentIDs = append([]string(nil), paste.AttachmentIDs...)
+		originalPaste = &copyPaste
 	}
 	if frozen {
 		attachment.Status = "frozen"
@@ -2509,7 +2580,12 @@ func (s *Service) AdminFreezeAttachment(actorID string, attachmentID string, fro
 		}
 	}
 	if err := s.auditLocked(actorID, "admin.attachment_freeze", attachmentID, map[string]any{"frozen": frozen}); err != nil {
-		return AttachmentView{}, err
+		rollbackAttachmentErr := s.updateAttachmentLocked(&originalAttachment)
+		var rollbackPasteErr error
+		if originalPaste != nil {
+			rollbackPasteErr = s.updatePasteLocked(originalPaste)
+		}
+		return AttachmentView{}, errors.Join(err, rollbackAttachmentErr, rollbackPasteErr)
 	}
 	return viewAttachment(attachment), nil
 }
@@ -2650,13 +2726,15 @@ func (s *Service) AdminRevokeShare(actorID string, shareID string) (ShareView, e
 	if err != nil {
 		return ShareView{}, err
 	}
+	originalShare := *share
 	now := s.now().UTC()
 	share.RevokedAt = &now
 	if err := s.updateShareLocked(share); err != nil {
 		return ShareView{}, err
 	}
 	if err := s.auditLocked(actorID, "admin.share_revoke", shareID, nil); err != nil {
-		return ShareView{}, err
+		rollbackErr := s.updateShareLocked(&originalShare)
+		return ShareView{}, errors.Join(err, rollbackErr)
 	}
 	return s.viewShareLocked(share), nil
 }
@@ -4119,6 +4197,14 @@ func (s *Service) planForUserLocked(user *User) (plans.Plan, error) {
 		plan, _ = plans.Find(s.catalog, "free")
 	}
 	return plan, nil
+}
+
+func cloneTimePtr(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func cloneCatalog(catalog plans.Catalog) plans.Catalog {

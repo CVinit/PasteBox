@@ -22,6 +22,36 @@ func NewBusinessTransactionStore(pool *pgxpool.Pool) *BusinessTransactionStore {
 	return &BusinessTransactionStore{pool: pool}
 }
 
+func (s *BusinessTransactionStore) CreatePasteWithDailyMetric(ctx context.Context, paste app.Paste, day time.Time, bytes int64) error {
+	return s.withPasteDailyMetricTransaction(ctx, paste, day, bytes, false)
+}
+
+func (s *BusinessTransactionStore) UpdatePasteWithDailyMetric(ctx context.Context, paste app.Paste, day time.Time, bytes int64) error {
+	return s.withPasteDailyMetricTransaction(ctx, paste, day, bytes, true)
+}
+
+func (s *BusinessTransactionStore) withPasteDailyMetricTransaction(ctx context.Context, paste app.Paste, day time.Time, bytes int64, update bool) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin paste quota transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if update {
+		if err := updatePasteRecord(ctx, tx, paste); err != nil {
+			return err
+		}
+	} else if err := createPasteRecord(ctx, tx, paste); err != nil {
+		return err
+	}
+	if err := recordDailyMetric(ctx, tx, paste.UserID, "upload", day, bytes); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit paste quota transaction: %w", err)
+	}
+	return nil
+}
+
 func (s *BusinessTransactionStore) RedeemCode(ctx context.Context, input app.RedemptionTransactionInput) (app.RedemptionTransactionResult, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {

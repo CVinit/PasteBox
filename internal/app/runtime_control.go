@@ -787,6 +787,9 @@ func (s *Service) RefreshRuntimeConfig(ctx context.Context) (RuntimeConfig, erro
 		return cloneRuntimeConfig(s.runtimeConfig), nil
 	}
 	prepared, effective := s.prepareRuntimeConfigLocked(loaded, secrets)
+	if err := validateManagedConfigActivation(prepared.Managed, secrets, s.rootConfig.AppEnv); err != nil {
+		return RuntimeConfig{}, err
+	}
 	if hook := s.runtimeConfigChange; hook != nil {
 		if err := hook(prepared, effective); err != nil {
 			rollbackErr := hook(cloneRuntimeConfig(s.runtimeConfig), cloneEffectiveConfig(s.cfg))
@@ -1010,10 +1013,13 @@ func (s *Service) AdminUpdateManagedConfig(actorID string, update ManagedConfigU
 		return ManagedConfigView{}, err
 	}
 	secrets := applyManagedSecretPatch(s.managedSecrets, update.Secrets)
+	if err := validateManagedConfigActivation(managed, secrets, s.rootConfig.AppEnv); err != nil {
+		return ManagedConfigView{}, err
+	}
 	next := cloneRuntimeConfig(s.runtimeConfig)
 	next.Managed = managed
 	next.Registration.TurnstileSiteKey = managed.Turnstile.SiteKey
-	next.UpdatedAt = s.now().UTC()
+	next.UpdatedAt = s.nextRuntimeConfigUpdatedAtLocked()
 	audit := AuditLog{
 		ID: s.newID("aud"), ActorID: actorID, Action: "admin.managed_config_update", Target: runtimeConfigID,
 		Metadata: managedConfigAuditMetadata(managed, secrets), CreatedAt: next.UpdatedAt,
@@ -1085,6 +1091,65 @@ func validateManagedSecretRebinding(current, next config.ManagedConfig, secrets 
 
 func normalizedEndpoint(value string) string {
 	return strings.TrimRight(strings.TrimSpace(value), "/")
+}
+
+func (s *Service) nextRuntimeConfigUpdatedAtLocked() time.Time {
+	next := s.now().UTC()
+	if !next.After(s.runtimeConfig.UpdatedAt) {
+		return s.runtimeConfig.UpdatedAt.Add(time.Nanosecond)
+	}
+	return next
+}
+
+func validateManagedConfigActivation(managed config.ManagedConfig, secrets config.ManagedSecrets, appEnv string) error {
+	scannerProvider := strings.ToLower(strings.TrimSpace(managed.Scanner.Provider))
+	if scannerProvider == "clamav" && strings.TrimSpace(managed.Scanner.ClamAV.Addr) == "" {
+		return E(http.StatusBadRequest, "invalid_scanner_config", "ClamAV address is required when scanner provider is clamav")
+	}
+
+	mailerProvider := strings.ToLower(strings.TrimSpace(managed.MailerProvider))
+	if mailerProvider == "smtp" && strings.TrimSpace(managed.SMTP.Host) == "" {
+		return E(http.StatusBadRequest, "invalid_mailer_config", "SMTP host is required when mailer provider is smtp")
+	}
+
+	if appEnv != "production" {
+		return nil
+	}
+	if mailerProvider != "smtp" {
+		return E(http.StatusBadRequest, "invalid_mailer_config", "production mailer provider must be smtp")
+	}
+	if scannerProvider != "clamav" {
+		return E(http.StatusBadRequest, "invalid_scanner_config", "production scanner provider must be clamav")
+	}
+	if strings.EqualFold(strings.TrimSpace(managed.SMTP.TLSMode), "none") {
+		return E(http.StatusBadRequest, "invalid_mailer_config", "production SMTP must use TLS or STARTTLS")
+	}
+	if strings.TrimSpace(secrets.SMTPPassword) == "" {
+		return E(http.StatusBadRequest, "invalid_mailer_config", "production SMTP password is required")
+	}
+	if strings.TrimSpace(managed.S3.Endpoint) != "" {
+		if err := validateManagedProductionEndpoint(managed.S3.Endpoint); err != nil {
+			return E(http.StatusBadRequest, "invalid_s3_config", err.Error())
+		}
+	}
+	return nil
+}
+
+func validateManagedProductionEndpoint(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return fmt.Errorf("production object storage endpoint must use an HTTPS URL")
+	}
+	host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(parsed.Hostname())), ".")
+	if isLocalHost(host) || net.ParseIP(host) != nil {
+		return fmt.Errorf("production object storage endpoint must not target localhost or an IP address")
+	}
+	for _, suffix := range []string{"example.com", "example.net", "example.org", "example.edu", "invalid", "test", "localhost"} {
+		if host == suffix || strings.HasSuffix(host, "."+suffix) {
+			return fmt.Errorf("production object storage endpoint must use a real service hostname")
+		}
+	}
+	return nil
 }
 
 func normalizeManagedConfig(managed config.ManagedConfig, appEnv string) (config.ManagedConfig, error) {
@@ -1251,7 +1316,7 @@ func (s *Service) adminUpdateRuntimeConfigLocked(actorID string, patch RuntimeCo
 		next.Alerts = applyAlertConfigPatch(next.Alerts, *patch.Alerts)
 	}
 	next.ProviderStatus = providerStatusFromConfig(s.cfg, providerTestStatuses(next.ProviderStatus))
-	next.UpdatedAt = s.now().UTC()
+	next.UpdatedAt = s.nextRuntimeConfigUpdatedAtLocked()
 	next = normalizeRuntimeConfig(next, s.rootConfig)
 	audit := AuditLog{
 		ID: s.newID("aud"), ActorID: actorID, Action: "admin.runtime_config_update", Target: runtimeConfigID,
@@ -1463,6 +1528,7 @@ func (s *Service) AdminUpdateCatalog(actorID string, update AdminPlanUpdate) (pl
 	if err != nil {
 		return plans.Catalog{}, err
 	}
+	originalCatalog := cloneCatalog(s.catalog)
 	if writer, ok := s.catalogWriter(); ok {
 		if err := writer.SaveCatalog(context.Background(), catalog); err != nil {
 			return plans.Catalog{}, err
@@ -1470,7 +1536,12 @@ func (s *Service) AdminUpdateCatalog(actorID string, update AdminPlanUpdate) (pl
 	}
 	s.catalog = cloneCatalog(catalog)
 	if err := s.auditLocked(actorID, "admin.catalog_update", "plans", map[string]any{"plans": len(catalog.Plans), "prices": len(catalog.Prices)}); err != nil {
-		return plans.Catalog{}, err
+		var rollbackErr error
+		if writer, ok := s.catalogWriter(); ok {
+			rollbackErr = writer.SaveCatalog(context.Background(), originalCatalog)
+		}
+		s.catalog = originalCatalog
+		return plans.Catalog{}, errors.Join(err, rollbackErr)
 	}
 	return cloneCatalog(s.catalog), nil
 }
@@ -1581,7 +1652,7 @@ func (s *Service) AdminProviderTest(actorID string, provider string) (RuntimeCon
 		return RuntimeConfig{}, E(http.StatusBadRequest, "invalid_provider", "provider is not supported")
 	}
 	next.ProviderStatus = providerStatusFromConfig(s.cfg, map[string]string{provider: status})
-	next.UpdatedAt = s.now().UTC()
+	next.UpdatedAt = s.nextRuntimeConfigUpdatedAtLocked()
 	audit := AuditLog{
 		ID: s.newID("aud"), ActorID: actorID, Action: "admin.provider_test", Target: provider,
 		Metadata: map[string]any{"status": status}, CreatedAt: next.UpdatedAt,
@@ -1729,6 +1800,13 @@ func (s *Service) CreateGuestPaste(input GuestCreatePasteInput) (string, PasteVi
 		UpdatedAt:  now,
 	}
 	if textBytes := int64(len([]byte(paste.Text))); textBytes > 0 {
+		if tx, ok := s.transactions.(PasteDailyMetricTransactionStore); ok {
+			if err := tx.CreatePasteWithDailyMetric(context.Background(), *paste, now, textBytes); err != nil {
+				return "", PasteView{}, err
+			}
+			s.cachePasteLocked(*paste)
+			return token, s.viewPasteLocked(paste), nil
+		}
 		if err := s.recordDailyUploadLocked(user.ID, textBytes); err != nil {
 			return "", PasteView{}, err
 		}

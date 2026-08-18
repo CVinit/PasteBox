@@ -14,6 +14,11 @@ type BusinessTransactionStore interface {
 	ApplyBilling(ctx context.Context, input BillingTransactionInput) (BillingTransactionResult, error)
 }
 
+type PasteDailyMetricTransactionStore interface {
+	CreatePasteWithDailyMetric(ctx context.Context, paste Paste, day time.Time, bytes int64) error
+	UpdatePasteWithDailyMetric(ctx context.Context, paste Paste, day time.Time, bytes int64) error
+}
+
 type RedemptionTransactionInput struct {
 	UserID     string
 	CodeHash   string

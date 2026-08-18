@@ -380,23 +380,43 @@ func (s *Service) finalizePreparedGuestAttachment(token string, pasteID string, 
 }
 
 func (s *Service) OpenAttachment(userID string, attachmentID string) (AttachmentDownload, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	return s.OpenAttachmentWithContext(context.Background(), userID, attachmentID)
+}
 
+func (s *Service) OpenAttachmentWithContext(ctx context.Context, userID string, attachmentID string) (AttachmentDownload, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.mu.Lock()
 	attachment, err := s.attachmentByIDLocked(attachmentID)
 	if err != nil || attachment.UserID != userID {
+		s.mu.Unlock()
 		return AttachmentDownload{}, E(http.StatusNotFound, "attachment_not_found", "attachment not found")
 	}
 	paste, err := s.pasteByIDLocked(attachment.PasteID)
 	if err != nil || !s.isPasteVisibleLocked(paste) || attachment.Status != "active" {
+		s.mu.Unlock()
 		return AttachmentDownload{}, E(http.StatusGone, "attachment_unavailable", "attachment is unavailable")
 	}
 	if attachment.ScanStatus == "malicious" {
+		s.mu.Unlock()
 		return AttachmentDownload{}, E(http.StatusForbidden, "malicious_file", "file is blocked")
 	}
-	object, err := s.objectStreamLocked(attachment)
+	snapshot := *attachment
+	s.mu.Unlock()
+
+	object, err := s.objectStream(ctx, &snapshot)
 	if err != nil {
 		return AttachmentDownload{}, E(http.StatusGone, "attachment_unavailable", "attachment content is unavailable")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	attachment, err = s.attachmentByIDLocked(attachmentID)
+	paste, pasteErr := s.pasteByIDLocked(snapshot.PasteID)
+	if err != nil || pasteErr != nil || !s.isPasteVisibleLocked(paste) || attachment.UserID != userID || attachment.Status != "active" || attachment.ScanStatus == "malicious" || attachment.ObjectKey != snapshot.ObjectKey {
+		_ = object.Body.Close()
+		return AttachmentDownload{}, E(http.StatusGone, "attachment_unavailable", "attachment is unavailable")
 	}
 	attachment.DownloadN++
 	if err := s.updateAttachmentLocked(attachment); err != nil {
@@ -407,54 +427,78 @@ func (s *Service) OpenAttachment(userID string, attachmentID string) (Attachment
 }
 
 func (s *Service) OpenSharedAttachment(token string, password string, attachmentID string, viewerUserID string) (AttachmentDownload, error) {
-	return s.openSharedAttachment(token, password, attachmentID, viewerUserID, false)
+	return s.openSharedAttachment(context.Background(), token, password, attachmentID, viewerUserID, false)
 }
 
 func (s *Service) OpenSharedAttachmentWithAccessGrant(token string, attachmentID string, viewerUserID string) (AttachmentDownload, error) {
-	return s.openSharedAttachment(token, "", attachmentID, viewerUserID, true)
+	return s.OpenSharedAttachmentWithAccessGrantContext(context.Background(), token, attachmentID, viewerUserID)
 }
 
-func (s *Service) openSharedAttachment(token string, password string, attachmentID string, viewerUserID string, passwordVerified bool) (AttachmentDownload, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Service) OpenSharedAttachmentWithAccessGrantContext(ctx context.Context, token string, attachmentID string, viewerUserID string) (AttachmentDownload, error) {
+	return s.openSharedAttachment(ctx, token, "", attachmentID, viewerUserID, true)
+}
 
+func (s *Service) openSharedAttachment(ctx context.Context, token string, password string, attachmentID string, viewerUserID string, passwordVerified bool) (AttachmentDownload, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.mu.Lock()
 	share, paste, err := s.validShareAccessLocked(token, password, viewerUserID, true, passwordVerified)
 	if err != nil {
+		s.mu.Unlock()
 		return AttachmentDownload{}, err
 	}
 	attachment, err := s.attachmentByIDLocked(attachmentID)
 	if err != nil || attachment.PasteID != paste.ID || attachment.Status != "active" {
+		s.mu.Unlock()
 		return AttachmentDownload{}, E(http.StatusNotFound, "attachment_not_found", "attachment not found")
 	}
 	if attachment.ScanStatus != "clean" {
+		s.mu.Unlock()
 		return AttachmentDownload{}, E(http.StatusForbidden, "scan_not_clean", "public downloads require clean scan status")
 	}
 	owner := s.usersByID[share.UserID]
 	plan, _ := s.planForUserLocked(owner)
 	downloadBytes, err := s.dailyMetricLocked(share.UserID, "share_download")
 	if err != nil {
+		s.mu.Unlock()
 		return AttachmentDownload{}, err
 	}
 	if downloadBytes+attachment.Size > plan.DailyShareDownloadBytes {
+		s.mu.Unlock()
 		return AttachmentDownload{}, E(http.StatusForbidden, "daily_download_limit", "daily share download traffic exceeds plan limit")
 	}
-	object, err := s.objectStreamLocked(attachment)
+	snapshot := *attachment
+	s.mu.Unlock()
+
+	object, err := s.objectStream(ctx, &snapshot)
 	if err != nil {
 		return AttachmentDownload{}, E(http.StatusGone, "attachment_unavailable", "attachment content is unavailable")
 	}
-	now := s.now().UTC()
-	if err := s.recordDailyShareDownloadLocked(share.UserID, attachment.Size); err != nil {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	share, paste, err = s.validShareAccessLocked(token, password, viewerUserID, true, passwordVerified)
+	if err != nil {
 		_ = object.Body.Close()
 		return AttachmentDownload{}, err
 	}
-	share.DownloadCount++
-	share.LastDownloadedAt = &now
-	attachment.DownloadN++
-	if err := s.updateShareLocked(share); err != nil {
+	attachment, err = s.attachmentByIDLocked(attachmentID)
+	if err != nil || attachment.PasteID != paste.ID || attachment.Status != "active" || attachment.ScanStatus != "clean" || attachment.ObjectKey != snapshot.ObjectKey {
 		_ = object.Body.Close()
-		return AttachmentDownload{}, err
+		return AttachmentDownload{}, E(http.StatusGone, "attachment_unavailable", "attachment content is unavailable")
 	}
-	if err := s.updateAttachmentLocked(attachment); err != nil {
+	owner = s.usersByID[share.UserID]
+	plan, _ = s.planForUserLocked(owner)
+	downloadBytes, err = s.dailyMetricLocked(share.UserID, "share_download")
+	if err != nil || downloadBytes+attachment.Size > plan.DailyShareDownloadBytes {
+		_ = object.Body.Close()
+		if err != nil {
+			return AttachmentDownload{}, err
+		}
+		return AttachmentDownload{}, E(http.StatusForbidden, "daily_download_limit", "daily share download traffic exceeds plan limit")
+	}
+	if err := s.commitSharedDownloadLocked(share, attachment, s.now().UTC()); err != nil {
 		_ = object.Body.Close()
 		return AttachmentDownload{}, err
 	}
@@ -591,17 +635,22 @@ func (s *Service) rollbackPreparedObjectLocked(stored preparedObjectStorage) {
 	s.rollbackUnreferencedStoredObjectLocked(stored.objectKey, previousRefs)
 }
 
-func (s *Service) objectStreamLocked(attachment *Attachment) (ObjectStream, error) {
+func (s *Service) objectStream(ctx context.Context, attachment *Attachment) (ObjectStream, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if s.objectStore != nil {
 		if streaming, ok := s.objectStore.(StreamingObjectStore); ok {
-			return streaming.OpenObject(context.Background(), attachment.ObjectKey)
+			return streaming.OpenObject(ctx, attachment.ObjectKey)
 		}
-		content, err := s.objectStore.GetObject(context.Background(), attachment.ObjectKey)
+		content, err := s.objectStore.GetObject(ctx, attachment.ObjectKey)
 		if err != nil {
 			return ObjectStream{}, err
 		}
 		return ObjectStream{Body: io.NopCloser(bytes.NewReader(content)), Size: int64(len(content)), ContentType: attachment.ContentType}, nil
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	content, ok := s.objects[attachment.ObjectKey]
 	if !ok {
 		return ObjectStream{}, ErrObjectNotFound

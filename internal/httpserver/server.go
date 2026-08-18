@@ -1216,7 +1216,7 @@ func (s *Server) downloadAttachment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	download, err := s.app.OpenAttachment(user.ID, chi.URLParam(r, "attachmentID"))
+	download, err := s.app.OpenAttachmentWithContext(r.Context(), user.ID, chi.URLParam(r, "attachmentID"))
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1304,7 +1304,7 @@ func (s *Server) downloadSharedAttachment(w http.ResponseWriter, r *http.Request
 		_ = s.handleErr(w, app.E(http.StatusUnauthorized, "share_access_required", "open this share before downloading attachments"))
 		return
 	}
-	download, err := s.app.OpenSharedAttachmentWithAccessGrant(token, chi.URLParam(r, "attachmentID"), viewerID)
+	download, err := s.app.OpenSharedAttachmentWithAccessGrantContext(r.Context(), token, chi.URLParam(r, "attachmentID"), viewerID)
 	if s.handleErr(w, err) {
 		return
 	}

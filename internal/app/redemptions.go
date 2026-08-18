@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -169,6 +170,7 @@ func (s *Service) AdminUpdateRedemptionBatch(actorID string, batchID string, dis
 	if batch == nil {
 		return RedemptionBatchView{}, E(http.StatusNotFound, "redemption_batch_not_found", "redemption batch not found")
 	}
+	originalBatch := cloneRedemptionBatch(*batch)
 	batch.Disabled = disabled
 	if strings.TrimSpace(note) != "" {
 		batch.Note = strings.TrimSpace(note)
@@ -181,7 +183,12 @@ func (s *Service) AdminUpdateRedemptionBatch(actorID string, batchID string, dis
 	}
 	s.cacheRedemptionBatchLocked(*batch)
 	if err := s.auditLocked(actorID, "admin.redemption_batch_update", batch.ID, map[string]any{"disabled": disabled}); err != nil {
-		return RedemptionBatchView{}, err
+		var rollbackErr error
+		if s.redemptions != nil {
+			rollbackErr = s.redemptions.UpdateRedemptionBatch(context.Background(), originalBatch)
+		}
+		s.cacheRedemptionBatchLocked(originalBatch)
+		return RedemptionBatchView{}, errors.Join(err, rollbackErr)
 	}
 	return RedemptionBatchView{RedemptionBatch: cloneRedemptionBatch(*batch)}, nil
 }

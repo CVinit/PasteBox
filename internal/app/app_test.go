@@ -193,6 +193,26 @@ func TestTextCreateCountsAgainstDailyUploadQuota(t *testing.T) {
 	}
 }
 
+func TestPasteDailyMetricTransactionsOwnTextMutations(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	transactions := &failingBusinessTransactionStore{}
+	svc := newTestServiceWithStorage(t, &now, Stores{
+		BusinessTransactions: transactions,
+		DailyMetrics:         failingDailyMetricStore{writeErr: errors.New("standalone metric store must not be used")},
+	})
+	owner := registerTestUser(t, svc, "paste-metric-transaction@example.com")
+	paste := createTestPaste(t, svc, owner.User.ID, PasteInput{Text: "base", ExpiresInSeconds: 3600})
+	if transactions.pasteCreates != 1 {
+		t.Fatalf("expected transactional paste create, got %d", transactions.pasteCreates)
+	}
+	if _, err := svc.UpdatePaste(owner.User.ID, paste.ID, PastePatch{Text: ptr("expanded")}); err != nil {
+		t.Fatalf("transactional paste update: %v", err)
+	}
+	if transactions.pasteUpdates != 1 {
+		t.Fatalf("expected transactional paste update, got %d", transactions.pasteUpdates)
+	}
+}
+
 func TestDailyMetricReadFailureBlocksQuotaMutations(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	storeErr := errors.New("daily metric read failed")
@@ -746,6 +766,54 @@ func TestPreparedAttachmentUploadDoesNotHoldServiceLockDuringObjectWrite(t *test
 		}
 	case <-time.After(time.Second):
 		t.Fatal("blocked upload did not finish")
+	}
+}
+
+func TestAttachmentDownloadDoesNotHoldServiceLockDuringObjectRead(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	objectStore := newMemoryObjectStore()
+	svc := newTestServiceWithStorage(t, &now, Stores{Objects: objectStore, DailyMetrics: newMemoryDailyMetricStore()})
+	owner := registerTestUser(t, svc, "nonblocking-download@example.com")
+	paste := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "download", Text: "base", ExpiresInSeconds: 3600})
+	attachment := addTestAttachment(t, svc, owner.User.ID, paste.ID, "slow.txt", []byte("slow object"))
+
+	blockingStore := newBlockingReadObjectStore([]byte("slow object"))
+	svc.objectStore = blockingStore
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	downloadErr := make(chan error, 1)
+	go func() {
+		_, err := svc.OpenAttachmentWithContext(ctx, owner.User.ID, attachment.ID)
+		downloadErr <- err
+	}()
+	select {
+	case <-blockingStore.started:
+	case <-time.After(time.Second):
+		t.Fatal("object store read did not start")
+	}
+
+	quotaErr := make(chan error, 1)
+	go func() {
+		_, err := svc.Quota(owner.User.ID)
+		quotaErr <- err
+	}()
+	select {
+	case err := <-quotaErr:
+		if err != nil {
+			t.Fatalf("quota while object read is blocked: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("service lock was held while object store read was blocked")
+	}
+
+	cancel()
+	select {
+	case err := <-downloadErr:
+		if !hasAppStatus(err, http.StatusGone) {
+			t.Fatalf("expected canceled object read to return 410, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled object read did not return")
 	}
 }
 
@@ -2025,6 +2093,7 @@ func TestRuntimeConfigFailuresKeepPersistedAndEffectiveStateAligned(t *testing.T
 	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 	root := config.FromEnv()
 	base := defaultRuntimeConfig(root)
+	base.UpdatedAt = now.Add(-time.Minute)
 	auditStore := newMemoryAuditLogStore()
 	store := &memoryRuntimeConfigStore{cfg: base, secrets: config.ManagedSecrets{}, ok: true, auditStore: auditStore}
 	svc := newTestServiceWithStorage(t, &now, Stores{RuntimeConfigs: store, AuditLogs: auditStore})
@@ -2354,6 +2423,49 @@ func TestProductionManagedConfigPinsSensitiveProviderTargets(t *testing.T) {
 	}
 }
 
+func TestManagedConfigRejectsProviderSettingsTheWorkerCannotApply(t *testing.T) {
+	now := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	admin := seedAdminTestUser(t, svc, "managed-provider-admin@example.com")
+	view, err := svc.AdminManagedConfig(admin.ID)
+	if err != nil {
+		t.Fatalf("managed config: %v", err)
+	}
+	view.Config.Scanner.Provider = "clamav"
+	view.Config.Scanner.ClamAV.Addr = ""
+	if _, err := svc.AdminUpdateManagedConfig(admin.ID, ManagedConfigUpdate{Config: view.Config}); !hasAppCode(err, "invalid_scanner_config") {
+		t.Fatalf("expected missing ClamAV address rejection, got %v", err)
+	}
+	view.Config.Scanner.Provider = "heuristic"
+	view.Config.SMTP.Host = ""
+	view.Config.MailerProvider = "smtp"
+	if _, err := svc.AdminUpdateManagedConfig(admin.ID, ManagedConfigUpdate{Config: view.Config}); !hasAppCode(err, "invalid_mailer_config") {
+		t.Fatalf("expected missing SMTP host rejection, got %v", err)
+	}
+}
+
+func TestAdminUserMutationRollsBackWhenAuditWriteFails(t *testing.T) {
+	now := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
+	authStores := newMemoryAuthStores()
+	auditStore := newMemoryAuditLogStore()
+	svc := newTestServiceWithStorage(t, &now, Stores{Auth: authStores.authStores(), AuditLogs: auditStore})
+	admin := seedAdminTestUser(t, svc, "audit-rollback-admin@example.com")
+	owner := registerTestUser(t, svc, "audit-rollback-owner@example.com")
+	auditErr := errors.New("audit unavailable")
+	auditStore.err = auditErr
+
+	if _, err := svc.AdminSetUserPlan(admin.ID, owner.User.ID, "plus", nil, "support", ""); !errors.Is(err, auditErr) {
+		t.Fatalf("expected audit failure, got %v", err)
+	}
+	stored, err := authStores.UserByID(context.Background(), owner.User.ID)
+	if err != nil {
+		t.Fatalf("load rolled back user: %v", err)
+	}
+	if stored.PlanID != owner.User.PlanID || stored.PlanExpiresAt != nil {
+		t.Fatalf("audit failure must roll back user plan, got %#v", stored)
+	}
+}
+
 func TestLegacyRuntimeConfigImportsEnvironmentManagedValuesOnce(t *testing.T) {
 	root := config.FromEnv()
 	root.SMTP.Password = "legacy-smtp-secret"
@@ -2413,8 +2525,10 @@ func (s *memoryRuntimeConfigStore) SaveRuntimeConfigWithAudit(_ context.Context,
 }
 
 type failingBusinessTransactionStore struct {
-	redeemErr  error
-	billingErr error
+	redeemErr    error
+	billingErr   error
+	pasteCreates int
+	pasteUpdates int
 }
 
 func (s *failingBusinessTransactionStore) RedeemCode(context.Context, RedemptionTransactionInput) (RedemptionTransactionResult, error) {
@@ -2423,6 +2537,16 @@ func (s *failingBusinessTransactionStore) RedeemCode(context.Context, Redemption
 
 func (s *failingBusinessTransactionStore) ApplyBilling(context.Context, BillingTransactionInput) (BillingTransactionResult, error) {
 	return BillingTransactionResult{}, s.billingErr
+}
+
+func (s *failingBusinessTransactionStore) CreatePasteWithDailyMetric(_ context.Context, _ Paste, _ time.Time, _ int64) error {
+	s.pasteCreates++
+	return nil
+}
+
+func (s *failingBusinessTransactionStore) UpdatePasteWithDailyMetric(_ context.Context, _ Paste, _ time.Time, _ int64) error {
+	s.pasteUpdates++
+	return nil
 }
 
 func TestTurnstileVerifierSiteverifyResponses(t *testing.T) {
@@ -2773,6 +2897,7 @@ func (s memoryCatalogStore) Catalog(_ context.Context) (plans.Catalog, error) {
 
 type memoryAuditLogStore struct {
 	logs []AuditLog
+	err  error
 }
 
 func newMemoryAuditLogStore() *memoryAuditLogStore {
@@ -2780,6 +2905,9 @@ func newMemoryAuditLogStore() *memoryAuditLogStore {
 }
 
 func (s *memoryAuditLogStore) RecordAuditLog(_ context.Context, log AuditLog) error {
+	if s.err != nil {
+		return s.err
+	}
 	s.logs = append(s.logs, log)
 	return nil
 }
@@ -3097,6 +3225,46 @@ type blockingStreamingObjectStore struct {
 	release     chan struct{}
 	startedOnce sync.Once
 	releaseOnce sync.Once
+}
+
+type blockingReadObjectStore struct {
+	content []byte
+	started chan struct{}
+}
+
+func newBlockingReadObjectStore(content []byte) *blockingReadObjectStore {
+	return &blockingReadObjectStore{content: append([]byte(nil), content...), started: make(chan struct{})}
+}
+
+func (s *blockingReadObjectStore) PutObject(context.Context, string, []byte, string) error {
+	return nil
+}
+
+func (s *blockingReadObjectStore) PutObjectStream(context.Context, string, io.Reader, int64, string) error {
+	return nil
+}
+
+func (s *blockingReadObjectStore) GetObject(ctx context.Context, _ string) ([]byte, error) {
+	object, err := s.OpenObject(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	defer object.Body.Close()
+	return io.ReadAll(object.Body)
+}
+
+func (s *blockingReadObjectStore) OpenObject(ctx context.Context, _ string) (ObjectStream, error) {
+	select {
+	case <-s.started:
+	default:
+		close(s.started)
+	}
+	<-ctx.Done()
+	return ObjectStream{}, ctx.Err()
+}
+
+func (s *blockingReadObjectStore) DeleteObject(context.Context, string) error {
+	return nil
 }
 
 func newBlockingStreamingObjectStore() *blockingStreamingObjectStore {
