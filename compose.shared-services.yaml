@@ -1,0 +1,81 @@
+name: ${SHARED_COMPOSE_PROJECT_NAME:-shared-infra}
+
+services:
+  postgres:
+    image: ${SHARED_POSTGRES_IMAGE:-postgres:17-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${SHARED_POSTGRES_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD: ${SHARED_POSTGRES_PASSWORD:?set SHARED_POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres
+    ports:
+      - "${SHARED_POSTGRES_HOST_PORT:-127.0.0.1:5432}:5432"
+    volumes:
+      - shared-postgres:/var/lib/postgresql/data
+      - shared-backups:/backups
+      - ./deploy/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=replica"
+      - "-c"
+      - "archive_mode=on"
+      - "-c"
+      - "archive_timeout=${SHARED_POSTGRES_WAL_ARCHIVE_TIMEOUT_SECONDS:-900}"
+      - "-c"
+      - "archive_command=mkdir -p /backups/wal && test ! -f /backups/wal/%f && cp %p /backups/wal/%f || test -f /backups/wal/%f"
+      - "-c"
+      - "hba_file=/etc/postgresql/pg_hba.conf"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      shared-services:
+        aliases:
+          - shared-postgres
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  redis:
+    image: ${SHARED_REDIS_IMAGE:-redis:7-alpine}
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    ports:
+      - "${SHARED_REDIS_HOST_PORT:-127.0.0.1:6379}:6379"
+    volumes:
+      - shared-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      shared-services:
+        aliases:
+          - shared-redis
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+networks:
+  shared-services:
+    name: pastebox-shared-services
+    ipam:
+      config:
+        - subnet: ${SHARED_NETWORK_SUBNET:-172.30.0.0/24}
+
+volumes:
+  shared-postgres:
+    name: ${SHARED_POSTGRES_VOLUME:-shared-postgres-data}
+  shared-redis:
+    name: ${SHARED_REDIS_VOLUME:-shared-redis-data}
+  shared-backups:
+    external: true
+    name: ${SHARED_BACKUP_VOLUME:-shared-postgres-backups}

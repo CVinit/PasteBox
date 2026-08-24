@@ -5,6 +5,8 @@
 .env.*
 !.env.example
 deploy/production.env
+deploy/shared-services.env
+compose.nginx-host.yaml
 
 # Go
 /bin/

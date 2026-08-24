@@ -13,33 +13,124 @@
 
 PasteBox 域名走 Cloudflare CDN，宿主机 Nginx 反代 PasteBox 容器。s3-orchestrator 也用 Docker 部署，但建议对象存储域名不要走 Cloudflare CDN，而是 DNS only 直连源站 Nginx，再由 Nginx 反代到 s3-orchestrator 容器。
 
-本文不是配置片段集合，而是从零开始的操作手册。建议第一次部署时按章节顺序执行，不要先启动 PasteBox 再回头补对象存储。
+本文先给出可以直接照抄的快速部署，再把 R2、S3Orchestrator、备份和排错细节
+放在后面。默认把 PostgreSQL、Redis 作为共享基础服务独立运行，PasteBox 停止、
+升级或删除时不会影响它们，其他程序也可以在同一容器中使用自己的数据库。
+
+## 快速部署
+
+已经准备好域名、R2 和 S3Orchestrator 时，PasteBox 只需要下面几步。
+
+### 1. 准备环境文件
+
+```sh
+git clone https://github.com/CVinit/PasteBox.git /opt/pastebox
+cd /opt/pastebox
+cp deploy/production.shared.env.example deploy/production.env
+cp deploy/shared-services.env.example deploy/shared-services.env
+cp compose.nginx-host.example.yaml compose.nginx-host.yaml
+chmod 600 deploy/production.env deploy/shared-services.env
+```
+
+只需要编辑：
+
+- `deploy/production.env`：PasteBox 镜像、域名、数据库连接、加密主密钥和备份参数。
+- `deploy/shared-services.env`：共享 PostgreSQL 超级管理员密码、宿主机监听地址和数据卷名称。
+
+SMTP、OAuth、S3、扫描器、支付、限流等应用配置不写 `.env`，首次启动后在管理员
+后台填写。
+
+### 2. 一条命令初始化共享服务
+
+```sh
+./deploy/pastebox-deploy.sh init
+```
+
+它会启动独立的 PostgreSQL、Redis，并自动创建仅供 PasteBox 使用的数据库和账号。
+共享容器属于 `shared-infra` Compose project，不跟随 PasteBox 停止。
+
+### 3. 一条命令启动 PasteBox
+
+把 `compose.nginx-host.yaml` 中的三处 `s3o.example.com` 换成真实对象存储域名。
+脚本会自动加载这个文件：
+
+```sh
+./deploy/pastebox-deploy.sh preflight-root
+./deploy/pastebox-deploy.sh up
+```
+
+创建管理员：
+
+```sh
+./deploy/pastebox-deploy.sh admin admin@your-domain.com '<strong-password>'
+```
+
+登录后台保存应用配置后，执行：
+
+```sh
+./deploy/pastebox-deploy.sh preflight
+./deploy/pastebox-deploy.sh status
+```
+
+日常只需要记住：
+
+```sh
+./deploy/pastebox-deploy.sh status
+./deploy/pastebox-deploy.sh logs
+./deploy/pastebox-deploy.sh upgrade
+./deploy/pastebox-deploy.sh down
+```
+
+`down` 只停止 PasteBox；共享 PostgreSQL、Redis 继续运行。确实要停止共享服务时才
+执行 `./deploy/pastebox-deploy.sh infra-down`。这个命令也保留数据卷；只有明确执行
+`infra-reset --confirm-delete-all-data` 才会删除共享数据，日常运维不要使用它。
+
+### 4. 复用 PostgreSQL 和 Redis
+
+其他程序接入共享基础服务时：
+
+1. 为它创建独立 PostgreSQL 数据库和账号，不要共用 `pastebox` 数据库或账号。
+2. 把它的容器加入外部网络 `pastebox-shared-services`。
+3. PostgreSQL 主机使用 `shared-postgres:5432`，Redis 使用 `shared-redis:6379`。
+4. Redis 当前只做可用性检查，不承载 PasteBox 核心数据；其他程序应使用不同的
+   Redis DB 编号或 key 前缀，避免键名冲突。
+
+共享服务默认只发布到宿主机 `127.0.0.1:5432` 和 `127.0.0.1:6379`，便于宿主机
+程序复用，同时不会暴露到公网。跨服务器复用应使用专用内网、TLS 和防火墙，不要
+把这两个端口直接开放到 Internet。
+
+需要原来的一体化模式时仍然支持：把 `deploy/production.env` 中的数据库主机改回
+`postgres`、Redis 主机改回 `redis`，然后在命令前加
+`PASTEBOX_DEPLOY_MODE=integrated`。下文以推荐的共享模式为准。
 
 ## 最终会部署出什么
 
-同一台宿主机上运行两个彼此独立的 Docker Compose project：
+同一台宿主机上运行三个彼此独立的 Docker Compose project：
 
 ```text
 /opt/s3-orchestrator
   ├── compose.yaml
   ├── .env
   ├── config.yaml
-  ├── data/
-  └── source/                 # 固定到 v0.62.28 的上游源码
+  └── data/
 
 /opt/pastebox
+  ├── compose.shared-services.yaml
   ├── compose.production.yaml
+  ├── compose.external-services.yaml
   ├── compose.nginx-host.yaml
+  ├── deploy/shared-services.env
   ├── deploy/production.env
   └── deploy/...              # 数据库、备份和监控辅助文件
 ```
 
-两个 Compose project 不合并，原因是：
+三个 Compose project 的职责是：
 
 - s3-orchestrator 可以独立升级、重启、备份和回滚。
-- PasteBox 使用 GitHub Actions 已构建的 GHCR 镜像，不需要在服务器构建应用。
-- 两边的环境变量和密钥不会混在同一个文件里。
-- PasteBox 的 `compose.production.yaml` 不需要为了第三方服务而改动。
+- `shared-infra` 独立托管可复用的 PostgreSQL、Redis 和持久化卷。
+- PasteBox project 只管理 `api`、`worker`、ClamAV 等应用容器。
+- s3-orchestrator 和 PasteBox 都使用 GitHub 已构建的 GHCR 镜像，不需要在服务器构建应用。
+- 三边的环境变量和密钥不会混在同一个文件里。
 
 宿主机只对外开放 `80`、`443` 和受限的 SSH 端口。容器端口只绑定回环地址：
 
@@ -47,7 +138,9 @@ PasteBox 域名走 Cloudflare CDN，宿主机 Nginx 反代 PasteBox 容器。s3-
 | --- | ---: | --- | --- |
 | PasteBox API | `8080` | `127.0.0.1:18080` | `https://pastebox.example.com` |
 | s3-orchestrator | `9000` | `127.0.0.1:19000` | `https://s3o.example.com` |
-| PostgreSQL、Redis、ClamAV | 各自默认端口 | 不发布到宿主机 | 无 |
+| PostgreSQL | `5432` | `127.0.0.1:5432` | 无 |
+| Redis | `6379` | `127.0.0.1:6379` | 无 |
+| ClamAV | `3310` | 不发布到宿主机 | 无 |
 
 ### 请求链路
 
@@ -95,7 +188,7 @@ Secret Key: 你生成的虚拟 bucket secret key
 4. 独立部署并验证 s3-orchestrator。
 5. 配置 DNS、证书和宿主机 Nginx。
 6. 从 GHCR 拉取固定版本的 PasteBox 镜像。
-7. 配置并启动 PasteBox 依赖、迁移、API 和 worker。
+7. 初始化共享 PostgreSQL/Redis，再用短命令完成迁移并启动 PasteBox。
 8. 依次完成 S3 API、readiness 和浏览器业务验收。
 
 ## 域名规划
@@ -166,7 +259,7 @@ sudo ss -lntp
 
 - `80` 和 `443` 可以由 Nginx 使用。
 - `18080` 和 `19000` 没有被其他程序占用。
-- PostgreSQL、Redis、ClamAV 不需要暴露公网。
+- PostgreSQL、Redis 只绑定 `127.0.0.1`，ClamAV 不发布端口；三者都不能暴露公网。
 
 ### 创建两个部署目录
 
@@ -574,37 +667,17 @@ mkdir -p data
   config.yaml
   .env
   data/
-  source/
 ```
 
-### 2. 拉取固定版本源码
+### 2. 选择固定版本镜像
 
-本文核对的上游正式版本是 `v0.62.28`。固定 tag 拉取：
-
-```sh
-cd /opt/s3-orchestrator
-git clone \
-  --branch v0.62.28 \
-  --depth 1 \
-  https://github.com/afreidah/s3-orchestrator.git \
-  source
-```
-
-检查实际版本：
-
-```sh
-git -C /opt/s3-orchestrator/source describe --tags --exact-match
-git -C /opt/s3-orchestrator/source rev-parse HEAD
-```
-
-预期分别得到：
+本文核对的上游正式版本是 `v0.62.28`，对应的 GitHub Container Registry 镜像是：
 
 ```text
-v0.62.28
-cd9a7eacc143ed0f9cd03bc38f5d65c28c8cdbaa
+ghcr.io/afreidah/s3-orchestrator:v0.62.28
 ```
 
-如果 tag 对应的 commit 不一致，先检查仓库 URL 和供应链状态，不要继续构建。
+这个镜像由上游 GitHub 发布流程构建，支持 Linux amd64 和 arm64。生产环境使用明确的版本 tag 或 digest，不要使用会移动的 `latest`。镜像地址稍后统一写入 `.env`，升级和回滚时只需要修改这一处。
 
 ### 3. 准备 SQLite 数据目录
 
@@ -714,6 +787,9 @@ telemetry:
 创建 `/opt/s3-orchestrator/.env`：
 
 ```sh
+S3O_IMAGE=ghcr.io/afreidah/s3-orchestrator:v0.62.28
+S3O_HOST_HTTP_PORT=19000
+
 BACKEND1_NAME=r2-a
 BACKEND1_ENDPOINT=https://<account_id_1>.r2.cloudflarestorage.com
 BACKEND1_REGION=auto
@@ -737,8 +813,6 @@ BACKEND3_SECRET_KEY=<r2-secret-c>
 
 BUCKET_ACCESS_KEY=<pastebox-virtual-access-key>
 BUCKET_SECRET_KEY=<pastebox-virtual-secret-key>
-
-S3O_HOST_HTTP_PORT=19000
 ```
 
 设置权限：
@@ -776,11 +850,7 @@ name: s3-orchestrator
 
 services:
   s3-orchestrator:
-    build:
-      context: ./source
-      args:
-        VERSION: v0.62.28
-    image: local/s3-orchestrator:v0.62.28
+    image: ${S3O_IMAGE:?set S3O_IMAGE to a pinned GHCR tag or digest}
     restart: unless-stopped
     init: true
     command: ["-config", "/etc/s3-orchestrator/config.yaml"]
@@ -816,20 +886,24 @@ docker compose config --quiet
 
 预期没有输出且退出码为 0。
 
-构建固定版本镜像：
+从 GHCR 拉取固定版本镜像：
 
 ```sh
-docker compose build --pull s3-orchestrator
+docker compose pull s3-orchestrator
 ```
 
 检查镜像：
 
 ```sh
-docker image inspect local/s3-orchestrator:v0.62.28 \
-  --format '{{json .Config.Labels}}'
+docker compose config --images
 ```
 
-输出中应包含版本 `v0.62.28` 和上游源码地址。
+预期输出 `ghcr.io/afreidah/s3-orchestrator:v0.62.28`。如需严格锁定同一份镜像，可执行下面的命令记录拉取后的 digest，并把 `.env` 中的 `S3O_IMAGE` 改成输出值：
+
+```sh
+docker image inspect ghcr.io/afreidah/s3-orchestrator:v0.62.28 \
+  --format '{{index .RepoDigests 0}}'
+```
 
 使用容器内置命令校验 `config.yaml`：
 
@@ -991,139 +1065,44 @@ PASTEBOX_IMAGE=ghcr.io/cvinit/pastebox@sha256:<digest>
 
 ```sh
 cd /opt/pastebox
-cp deploy/production.env.example deploy/production.env
-chmod 600 deploy/production.env
+cp deploy/production.shared.env.example deploy/production.env
+cp deploy/shared-services.env.example deploy/shared-services.env
+chmod 600 deploy/production.env deploy/shared-services.env
 ```
 
-先填写基础运行项：
+`deploy/production.env` 只保存应用启动前必须存在、长期不变的根配置，以及
+PostgreSQL 备份参数。站点、对象存储、邮件、OAuth、扫描器、通知、支付、游客
+额度、注册安全、接口限流、日志级别和运行告警都不再写入这里。
+
+`deploy/shared-services.env` 只属于共享基础服务，至少替换
+`SHARED_POSTGRES_PASSWORD`。默认端口写成 `127.0.0.1:5432` 和
+`127.0.0.1:6379`，宿主机上的其他程序可访问，公网不能访问。固定卷名让多个
+Compose project 都能找到同一份数据；执行 PasteBox 的 `down` 不会删除这些卷。
+如果宿主机已有服务占用端口，把它们改成例如 `127.0.0.1:55432` 和
+`127.0.0.1:56379`；容器内地址仍然保持 `shared-postgres:5432` 和
+`shared-redis:6379`。
+
+共享模式按当前 `deploy/production.shared.env.example` 填写：
 
 ```sh
 PASTEBOX_IMAGE=ghcr.io/cvinit/pastebox:sha-<commit>
 PASTEBOX_DOMAIN=pastebox.example.com
-PASTEBOX_PUBLIC_URL=https://pastebox.example.com
-PASTEBOX_CORS_ALLOWED_ORIGINS=https://pastebox.example.com
+PASTEBOX_ADMIN_EMAIL=admin@example.com
 
 PASTEBOX_APP_ENV=production
-PASTEBOX_HTTP_ADDR=:8080
-PASTEBOX_HTTP_READ_TIMEOUT_SECONDS=0
-PASTEBOX_HTTP_WRITE_TIMEOUT_SECONDS=0
-PASTEBOX_LOG_LEVEL=info
-
-PASTEBOX_ADMIN_EMAIL=admin@example.com
-PASTEBOX_SUPPORT_EMAIL=support@example.com
-PASTEBOX_ABUSE_EMAIL=abuse@example.com
-```
-
-生成应用密钥：
-
-```sh
-openssl rand -base64 48
-openssl rand -hex 32
-```
-
-分别填入：
-
-```sh
-PASTEBOX_CSRF_SECRET=<long-random-secret>
+PASTEBOX_CONFIG_ENCRYPTION_KEY=<base64-32-byte-key>
 PASTEBOX_METRICS_TOKEN=<long-random-token>
-```
+PASTEBOX_TRUSTED_PROXY_CIDRS=172.16.0.0/12
 
-数据库、Redis 和病毒扫描：
-
-```sh
-PASTEBOX_POSTGRES_DB=pastebox
-PASTEBOX_POSTGRES_USER=pastebox
 PASTEBOX_POSTGRES_PASSWORD=<long-random-postgres-password>
-PASTEBOX_DATABASE_URL=postgres://pastebox:<same-password>@postgres:5432/pastebox?sslmode=disable
+PASTEBOX_DATABASE_URL=postgres://pastebox@shared-postgres:5432/pastebox?sslmode=disable
+PASTEBOX_REDIS_ADDR=shared-redis:6379
 
-PASTEBOX_REDIS_ADDR=redis:6379
-PASTEBOX_WORKER_ID=pastebox-worker
-PASTEBOX_WORKER_HEARTBEAT_MAX_AGE_SECONDS=120
-
-PASTEBOX_SCANNER_PROVIDER=clamav
-PASTEBOX_CLAMAV_ADDR=clamav:3310
-PASTEBOX_CLAMAV_TIMEOUT_SECONDS=30
-```
-
-`PASTEBOX_POSTGRES_PASSWORD` 和 `PASTEBOX_DATABASE_URL` 中的密码必须完全一致。如果密码含有 `@`、`:`、`/`、`?` 等 URL 特殊字符，需要先做 URL 编码；为减少首次部署错误，可以使用足够长的十六进制随机值。
-
-生产 preflight 还会检查 SMTP、OAuth、支付、管理员和备份变量。根据实际启用的供应商填写 `deploy/production.env`，不要删除模板中的其他变量，也不要用本地 Mailpit、MinIO 或占位地址绕过检查。
-
-### 6. 填写其他生产集成
-
-邮件必须使用真实 SMTP：
-
-```sh
-PASTEBOX_MAILER_PROVIDER=smtp
-PASTEBOX_SMTP_HOST=smtp.example-provider.com
-PASTEBOX_SMTP_PORT=587
-PASTEBOX_SMTP_USERNAME=<smtp-user>
-PASTEBOX_SMTP_PASSWORD=<smtp-password>
-PASTEBOX_SMTP_FROM_EMAIL=no-reply@your-domain.com
-PASTEBOX_SMTP_FROM_NAME=PasteBox
-PASTEBOX_SMTP_TLS_MODE=starttls
-```
-
-如果供应商要求 465 端口，通常改为：
-
-```sh
-PASTEBOX_SMTP_PORT=465
-PASTEBOX_SMTP_TLS_MODE=tls
-```
-
-Google OAuth：
-
-```sh
-PASTEBOX_GOOGLE_OAUTH_CLIENT_ID=<google-client-id>
-PASTEBOX_GOOGLE_OAUTH_CLIENT_SECRET=<google-client-secret>
-PASTEBOX_GOOGLE_OAUTH_REDIRECT_URL=https://pastebox.example.com/api/v1/auth/google/callback
-```
-
-Google Cloud Console 中登记的 redirect URI 必须和这里逐字一致，包括 `https`、域名和路径。
-
-Stripe：
-
-```sh
-PASTEBOX_STRIPE_ENABLED=true
-PASTEBOX_STRIPE_WEBHOOK_SECRET=whsec_<stripe-webhook-secret>
-PASTEBOX_STRIPE_CHECKOUT_URL_TEMPLATE=https://<stripe-checkout-host>/checkout?order_id={order_id}&plan_id={plan_id}&period={period}&amount_cents={amount_cents}&currency={currency}&success_url={success_url}&cancel_url={cancel_url}
-```
-
-Stripe webhook 地址：
-
-```text
-https://pastebox.example.com/api/v1/billing/webhooks/stripe
-```
-
-Epusdt：
-
-```sh
-PASTEBOX_EPUSDT_ENABLED=true
-PASTEBOX_EPUSDT_PID=<epusdt-pid>
-PASTEBOX_EPUSDT_SECRET_KEY=<epusdt-secret>
-PASTEBOX_EPUSDT_CHECKOUT_URL_TEMPLATE=https://<epusdt-host>/pay?order_id={order_id}&amount_cents={amount_cents}&currency={currency}
-PASTEBOX_EPUSDT_ADDRESS=<usdt-receive-address>
-PASTEBOX_EPUSDT_CHAIN=USDT-TRC20
-```
-
-Epusdt webhook 地址：
-
-```text
-https://pastebox.example.com/api/v1/billing/webhooks/epusdt
-```
-
-首次启动的管理员账号：
-
-```sh
-PASTEBOX_BOOTSTRAP_ADMIN_EMAIL=admin@your-domain.com
-PASTEBOX_BOOTSTRAP_ADMIN_PASSWORD=<long-random-admin-password>
-```
-
-不要复用数据库、邮箱或 GitHub token 作为管理员密码。
-
-PostgreSQL 异地备份使用独立的 S3 凭据，不复用附件存储或 S3Orchestrator 凭据：
-
-```sh
+PASTEBOX_BACKUP_RETENTION_DAYS=30
+PASTEBOX_WAL_ARCHIVE_TIMEOUT_SECONDS=900
+PASTEBOX_WAL_ARCHIVE_MAX_AGE_SECONDS=900
+PASTEBOX_WAL_ARCHIVE_WAIT_SECONDS=60
+PASTEBOX_PITR_RECOVERY_WAIT_SECONDS=300
 PASTEBOX_RESTIC_REPOSITORY=s3:https://<backup-storage-endpoint>/pastebox-backups
 PASTEBOX_RESTIC_PASSWORD=<long-random-restic-password>
 PASTEBOX_BACKUP_S3_ACCESS_KEY=<backup-access-key>
@@ -1131,48 +1110,132 @@ PASTEBOX_BACKUP_S3_SECRET_KEY=<backup-secret-key>
 PASTEBOX_BACKUP_S3_REGION=us-east-1
 ```
 
-这部分仅给出环境变量关系。每个外部供应商都应先按照 `docs/production-provider-smoke-tests.md` 做真实 smoke，生产 preflight 不能证明外部账户、回调或邮件一定可用。
-
-### 7. 配置 PasteBox 对接 S3Orchestrator
-
-编辑 `/opt/pastebox/deploy/production.env`，对象存储相关项改成：
+生成配置加密主密钥和指标令牌：
 
 ```sh
-PASTEBOX_HOST_HTTP_PORT=18080
-
-S3O_DOMAIN=s3o.example.com
-
-PASTEBOX_S3_ENDPOINT=https://s3o.example.com
-PASTEBOX_S3_BUCKET=pastebox-files
-PASTEBOX_S3_REGION=us-east-1
-PASTEBOX_S3_ACCESS_KEY=<pastebox-virtual-access-key>
-PASTEBOX_S3_SECRET_KEY=<pastebox-virtual-secret-key>
-PASTEBOX_S3_USE_PATH_STYLE=true
+openssl rand -base64 32
+openssl rand -hex 32
 ```
+
+第一条填入 `PASTEBOX_CONFIG_ENCRYPTION_KEY`，第二条填入
+`PASTEBOX_METRICS_TOKEN`。配置加密主密钥用于加解密 PostgreSQL 中的后台密钥，
+必须与数据库分开备份；恢复数据库时必须使用同一把主密钥。当前 CSRF 密钥由
+这把主密钥派生，不需要再设置 `PASTEBOX_CSRF_SECRET`。
+
+`PASTEBOX_TRUSTED_PROXY_CIDRS` 只信任直接连接 API 的反向代理网络。本文由宿主机
+Nginx 通过 Docker bridge 访问 API，所以沿用模板的 `172.16.0.0/12`。如果你使用
+自定义 Docker 网段，应根据 `docker network inspect` 的结果缩小范围，绝不能设置
+为 `0.0.0.0/0` 或 `::/0`。
+
+共享模式下密码只写在 `PASTEBOX_POSTGRES_PASSWORD`，Compose 通过标准
+`PGPASSWORD` 注入给应用容器；`PASTEBOX_DATABASE_URL` 不再重复写密码。因此随机
+密码可以安全包含 URL 特殊字符，但仍建议使用足够长的十六进制随机值，减少复制
+和 shell 转义错误。
+
+这里有两种不同的数据库密码：
+
+- `SHARED_POSTGRES_PASSWORD` 是共享 PostgreSQL 超级管理员密码，只用于维护基础服务。
+- `PASTEBOX_POSTGRES_PASSWORD` 是权限更小的 PasteBox 专用账号密码。
+
+不要让 PasteBox 使用超级管理员账号。部署脚本会根据 `PASTEBOX_DATABASE_URL`
+自动创建 `pastebox` 账号和同名数据库；以后接入其他程序时，也应为每个程序分别
+创建数据库和账号。
+
+附件对象存储和 PostgreSQL 异地备份必须使用不同凭据。上面的
+`PASTEBOX_BACKUP_S3_*` 只供 restic 备份使用，不能填写 S3Orchestrator 虚拟
+bucket 凭据。
+
+### 6. 准备管理员后台配置
+
+后文完成首次启动并创建管理员后，登录 **管理后台 > 应用配置**，填写：
+
+- 站点名称、公网 URL、支持邮箱、滥用邮箱和 CORS origins。
+- S3 endpoint、bucket、region、path style、access key 和 secret key。
+- SMTP、Google/GitHub OAuth、Turnstile 和 Telegram。
+- ClamAV 地址与超时、Worker 心跳阈值。
+- Stripe、Epusdt 开关、回调密钥和支付参数。
+
+其他运行配置按页面分别检查并保存：
+
+- **游客限制**：游客上传开关、验证码要求、保留时间和各项容量/次数限制。
+- **安全/限流**：注册邮箱验证、Turnstile、允许邮箱后缀和各接口限流。
+- **服务配置**：运行日志级别、Telegram 告警开关、阈值和冷却时间。
+- **套餐/价格**：正式套餐、价格和用户容量限制。
+
+生产站点建议值：
+
+| 后台字段 | 本文示例值 |
+| --- | --- |
+| 公网 URL | `https://pastebox.example.com` |
+| CORS origins | `https://pastebox.example.com` |
+| ClamAV 地址 | `clamav:3310` |
+| ClamAV 超时 | `30` 秒 |
+| Worker 心跳阈值 | `120` 秒 |
+
+邮件必须使用真实 SMTP。常见配置是 587 端口配 `starttls`；服务商要求 465
+端口时使用 `tls`。生产环境不要使用 Mailpit，也不要选择明文 SMTP。
+
+Google OAuth 回调地址：
+
+```text
+https://pastebox.example.com/api/v1/auth/google/callback
+```
+
+Google Cloud Console 中登记的 redirect URI 必须和这里逐字一致，包括 `https`、域名和路径。
+
+GitHub OAuth 回调地址：
+
+```text
+https://pastebox.example.com/api/v1/auth/github/callback
+```
+
+支付回调地址：
+
+```text
+https://pastebox.example.com/api/v1/billing/webhooks/stripe
+https://pastebox.example.com/api/v1/billing/webhooks/epusdt
+```
+
+后台密钥输入框不会回显明文：留空表示保留现有值，填写新值表示替换，清除
+按钮表示删除。密钥使用 `PASTEBOX_CONFIG_ENCRYPTION_KEY` 加密后写入
+PostgreSQL。S3 endpoint 或 SMTP 主机、端口、TLS 模式变化时，后台会要求同时
+重新提交对应密钥，避免旧密钥被发送到新目标。
+
+每个外部供应商都应按 `docs/production-provider-smoke-tests.md` 做真实 smoke。
+完整 production preflight 只能验证配置结构与安全约束，不能证明外部账户、回调
+或邮件一定可用。
+
+### 7. 在管理员后台对接 S3Orchestrator
+
+登录管理员后台后，在 **应用配置 > 对象存储** 填写：
+
+| 后台字段 | 值 |
+| --- | --- |
+| endpoint | `https://s3o.example.com` |
+| bucket | `pastebox-files` |
+| region | `us-east-1` |
+| path style | 开启 |
+| access key | `/opt/s3-orchestrator/.env` 的 `BUCKET_ACCESS_KEY` |
+| secret key | `/opt/s3-orchestrator/.env` 的 `BUCKET_SECRET_KEY` |
 
 注意：
 
-- `PASTEBOX_S3_BUCKET` 是 s3-orchestrator 的虚拟 bucket 名，不是 R2 bucket 名。
-- `PASTEBOX_S3_ACCESS_KEY` 和 `PASTEBOX_S3_SECRET_KEY` 是 s3-orchestrator 的虚拟 bucket 凭据，不是 R2 后端凭据。
-- 生产 preflight 会拒绝 HTTP、本地地址和占位符，所以 `PASTEBOX_S3_ENDPOINT` 必须是类似 `https://s3o.example.com` 的真实 HTTPS 域名。
+- bucket 是 s3-orchestrator 的虚拟 bucket 名，不是 R2 bucket 名。
+- access key 和 secret key 是 s3-orchestrator 的虚拟 bucket 凭据，不是 R2 后端凭据。
+- 完整 production preflight 会拒绝 HTTP、本地地址和占位符，所以 endpoint 必须是类似 `https://s3o.example.com` 的真实 HTTPS 域名。
 - 备份用的 `PASTEBOX_BACKUP_S3_ACCESS_KEY`、`PASTEBOX_BACKUP_S3_SECRET_KEY` 不能复用这里的对象存储凭据。
-
-对应关系再确认一次：
-
-| PasteBox 变量 | 值来自哪里 |
-| --- | --- |
-| `PASTEBOX_S3_ENDPOINT` | 宿主机 Nginx 提供的 S3Orchestrator HTTPS 域名 |
-| `PASTEBOX_S3_BUCKET` | `config.yaml` 的 `buckets[].name` |
-| `PASTEBOX_S3_ACCESS_KEY` | `/opt/s3-orchestrator/.env` 的 `BUCKET_ACCESS_KEY` |
-| `PASTEBOX_S3_SECRET_KEY` | `/opt/s3-orchestrator/.env` 的 `BUCKET_SECRET_KEY` |
-| `PASTEBOX_S3_REGION` | 固定 `us-east-1` |
-| `PASTEBOX_S3_USE_PATH_STYLE` | 固定 `true` |
 
 R2 backend 的 region 是 `auto`，PasteBox 访问虚拟 S3 endpoint 的 region 是 `us-east-1`。这是两段不同的 S3 连接，不要强行改成相同值。
 
 ### 8. 创建 PasteBox 的 Nginx Compose override
 
-创建 `/opt/pastebox/compose.nginx-host.yaml`：
+从模板创建 `/opt/pastebox/compose.nginx-host.yaml`：
+
+```sh
+cp compose.nginx-host.example.yaml compose.nginx-host.yaml
+```
+
+模板内容是：
 
 ```yaml
 services:
@@ -1180,34 +1243,39 @@ services:
     ports:
       - "127.0.0.1:${PASTEBOX_HOST_HTTP_PORT:-18080}:8080"
     extra_hosts:
-      - "${S3O_DOMAIN:?set S3O_DOMAIN}:host-gateway"
+      - "s3o.example.com:host-gateway"
 
   worker:
     extra_hosts:
-      - "${S3O_DOMAIN:?set S3O_DOMAIN}:host-gateway"
+      - "s3o.example.com:host-gateway"
 
   preflight:
     extra_hosts:
-      - "${S3O_DOMAIN:?set S3O_DOMAIN}:host-gateway"
+      - "s3o.example.com:host-gateway"
 ```
+
+把三处 `s3o.example.com` 一起替换成真实的 S3Orchestrator 域名。这里直接写域名，
+不再为固定部署关系增加 `S3O_DOMAIN` 环境变量；API 端口未覆盖时沿用默认的
+`18080`。
 
 这个 override 做两件事：
 
 1. 只把 PasteBox API 发布到宿主机 `127.0.0.1:18080`。
 2. 让需要访问对象存储的容器把 `s3o.example.com` 解析到宿主机 Docker gateway。
 
-两个 Compose project 彼此独立，因此这里没有跨 project 的 `depends_on`。启动顺序由后文命令保证。
+S3Orchestrator、共享基础服务和 PasteBox 是三个独立 project，因此这里没有跨
+project 的 `depends_on`。`compose.external-services.yaml` 会把 PasteBox 接入外部
+网络 `pastebox-shared-services`，启动顺序由部署脚本保证。
 
-后续所有 PasteBox 生产命令都使用：
+后续日常命令统一使用：
 
 ```sh
-docker compose --env-file deploy/production.env \
-  -f compose.production.yaml \
-  -f compose.nginx-host.yaml \
-  <command>
+./deploy/pastebox-deploy.sh <command>
 ```
 
-不要运行不带 service 名称的 `docker compose up -d`，因为 `compose.production.yaml` 默认还包含 `caddy`。本文由宿主机 Nginx 占用 `80` 和 `443`，只显式启动 `postgres`、`redis`、`clamav`、`api` 和 `worker`。
+脚本内部自动组合环境文件和多个 Compose 文件，不需要反复输入长参数。本文由
+宿主机 Nginx 占用 `80` 和 `443`，脚本只启动 `clamav`、`api` 和 `worker`；共享
+PostgreSQL、Redis 由 `shared-infra` project 管理。
 
 ### 9. 检查 PasteBox 配置
 
@@ -1223,13 +1291,14 @@ grep -nE 'CHANGE_ME|example\.com|<[^>]+>' deploy/production.env
 渲染 Compose：
 
 ```sh
-docker compose --env-file deploy/production.env \
-  -f compose.production.yaml \
-  -f compose.nginx-host.yaml \
-  config --quiet
+./deploy/pastebox-deploy.sh compose config --quiet
 ```
 
 如果提示缺少 `PASTEBOX_IMAGE`、数据库密码或备份变量，回到 `deploy/production.env` 补齐，不要把必填校验从 Compose 中删除。
+
+此时只检查启动根配置。管理员后台配置尚未写入 PostgreSQL，完整 production
+preflight 会报 `managed application config is missing`，这是首次启动过程中的预期
+状态。保存后台应用配置后再运行完整 preflight。
 
 ## 配置 Nginx
 
@@ -1250,6 +1319,10 @@ sudo systemctl reload nginx
 ```
 
 Cloudflare IP 段可能变化，建议定期刷新。
+
+这里由 Nginx 校验 Cloudflare 来源并把客户端地址写入 `X-Forwarded-For`，PasteBox
+只需通过 `PASTEBOX_TRUSTED_PROXY_CIDRS` 信任直接连接 API 的 Docker bridge。
+不要把 Cloudflare IP 段或全网 CIDR 直接填进该变量。
 
 ### PasteBox 和 s3-orchestrator 站点
 
@@ -1474,7 +1547,8 @@ sudo ss -lntp | grep -E ':(80|443|18080|19000)\b'
 
 ## 启动顺序
 
-下面的顺序用于第一次上线，也适合故障恢复时逐层定位。不要一次性把所有容器拉起来。
+快速部署按本节执行即可；脚本会自动组合环境文件、共享网络和 Compose override。
+长命令只保留在脚本内部。
 
 ### 1. 确认 S3Orchestrator 已就绪
 
@@ -1503,109 +1577,97 @@ curl -fsS https://s3o.example.com/health/ready
 
 如果宿主机 HTTP 健康检查成功、HTTPS 域名失败，问题在 DNS、证书、Nginx 或防火墙，不在 R2。
 
-### 3. 拉取 PasteBox 镜像
+### 3. 初始化共享 PostgreSQL 和 Redis
 
 执行目录：`/opt/pastebox`。
 
 ```sh
 cd /opt/pastebox
-docker compose --env-file deploy/production.env \
-  -f compose.production.yaml \
-  -f compose.nginx-host.yaml \
-  --profile maintenance \
-  pull api worker preflight migrate
+./deploy/pastebox-deploy.sh init
 ```
 
-检查实际镜像：
+脚本会启动 `shared-infra` project 中的 PostgreSQL 和 Redis，等待数据库就绪，
+然后创建独立的 `pastebox` 账号和数据库。检查状态：
 
 ```sh
-docker compose --env-file deploy/production.env \
-  -f compose.production.yaml \
-  -f compose.nginx-host.yaml \
-  images
+./deploy/pastebox-deploy.sh infra-status
 ```
 
-### 4. 启动 PasteBox 基础依赖
+这个步骤可重复执行。它不会删除其他程序的数据库，也不会重新创建数据卷。
 
-先启动 PostgreSQL、Redis 和 ClamAV：
+### 4. 运行根配置 preflight
+
+管理员后台配置此时还不存在，首次启动只能运行根配置检查：
 
 ```sh
-docker compose --env-file deploy/production.env \
-  -f compose.production.yaml \
-  -f compose.nginx-host.yaml \
-  up -d postgres redis clamav
+./deploy/pastebox-deploy.sh preflight-root
+```
+
+预期输出 `production preflight passed (startup roots only)`。它会检查固定镜像、
+生产域名、管理员邮箱、配置加密主密钥、指标令牌、可信代理、数据库、Redis、
+备份和 WAL 参数。不要通过改成 development 或删除变量来绕过。
+
+### 5. 拉取、迁移并启动 PasteBox
+
+一条命令完成镜像拉取、数据库迁移，并启动 ClamAV、API 和 worker：
+
+```sh
+./deploy/pastebox-deploy.sh up
 ```
 
 查看状态：
 
 ```sh
-docker compose --env-file deploy/production.env \
-  -f compose.production.yaml \
-  -f compose.nginx-host.yaml \
-  ps
+./deploy/pastebox-deploy.sh status
 ```
 
-等待 PostgreSQL 和 Redis 变为 `healthy`。ClamAV 首次下载病毒库可能需要几分钟，可以查看：
+ClamAV 首次下载病毒库可能需要几分钟，可以查看：
 
 ```sh
-docker compose --env-file deploy/production.env \
-  -f compose.production.yaml \
-  -f compose.nginx-host.yaml \
-  logs --tail=200 clamav
+./deploy/pastebox-deploy.sh logs clamav
 ```
 
-### 5. 运行生产 preflight
+运行中的 PasteBox service 应包含 `api`、`worker`、`clamav`，共享服务状态中应包含
+`postgres`、`redis`。脚本不会启动 `caddy`。
+
+这时 `/healthz` 可以成功，但后台配置未保存前不要把 `/readyz` 当成已通过。
+
+### 6. 创建首个管理员
+
+管理员密码不再写入 `.env`。用一次性命令创建账号：
 
 ```sh
-docker compose --env-file deploy/production.env \
-  -f compose.production.yaml \
-  -f compose.nginx-host.yaml \
-  --profile maintenance run --rm preflight
+./deploy/pastebox-deploy.sh admin \
+  admin@pastebox.example.com \
+  '<long-random-admin-password>'
 ```
 
-preflight 必须通过。它会检查生产域名、HTTPS 对象存储、密钥、数据库、SMTP、OAuth、支付和其他生产约束。不要通过改成 development 或删除变量来绕过。
+该命令也会重置已存在管理员的密码。不要复用数据库、邮箱或 GitHub token，
+并尽量避免把真实密码留在 shell history 中。
 
-如果 preflight 的对象存储检查失败，先运行后文“从 PasteBox 容器检查 S3 域名”的命令。
+### 7. 保存管理员后台应用配置
 
-### 6. 执行数据库迁移
+打开 `https://pastebox.example.com`，使用刚创建的管理员登录，进入
+**管理后台 > 应用配置**。按前文填写站点、对象存储、SMTP、OAuth、Turnstile、
+Telegram、扫描器、Worker 心跳和支付配置并保存。再按实际运营策略检查并保存
+**游客限制**、**安全/限流**、**服务配置** 和 **套餐/价格**。
+
+对象存储必须填写 `https://s3o.example.com`、`pastebox-files`、`us-east-1`，开启
+path style，并使用 S3Orchestrator 虚拟 bucket 的两项凭据。保存成功后，等待约
+10 秒让 API 和 worker 刷新运行时配置。
+
+### 8. 运行完整 production preflight
+
+不要再设置 `PASTEBOX_PREFLIGHT_ROOT_ONLY`：
 
 ```sh
-docker compose --env-file deploy/production.env \
-  -f compose.production.yaml \
-  -f compose.nginx-host.yaml \
-  --profile maintenance run --rm migrate
+./deploy/pastebox-deploy.sh preflight
+./deploy/pastebox-deploy.sh status
 ```
 
-迁移命令必须以 0 退出。失败时不要启动 API，先备份数据库并处理迁移错误。
-
-### 7. 启动 PasteBox API 和 worker
-
-```sh
-docker compose --env-file deploy/production.env \
-  -f compose.production.yaml \
-  -f compose.nginx-host.yaml \
-  up -d api worker
-```
-
-等待 API healthcheck：
-
-```sh
-docker compose --env-file deploy/production.env \
-  -f compose.production.yaml \
-  -f compose.nginx-host.yaml \
-  ps
-```
-
-运行中的 service 应包含 `api`、`worker`、`postgres`、`redis`、`clamav`，不应包含 `caddy`。
-
-如果看到 `caddy`，停止它：
-
-```sh
-docker compose --env-file deploy/production.env \
-  -f compose.production.yaml \
-  -f compose.nginx-host.yaml \
-  stop caddy
-```
+完整 preflight 从 PostgreSQL 读取加密后的应用配置和运行配置，检查公网 URL、
+联系邮箱、CORS、限流、Worker 心跳、OAuth、TLS SMTP、S3、ClamAV 和支付配置。
+通过后再以 `/readyz` 和真实业务 smoke 作为上线条件。
 
 ## 验证 S3Orchestrator S3 API
 
@@ -1724,10 +1786,7 @@ docker compose logs -f --tail=200 s3-orchestrator
 
 ```sh
 cd /opt/pastebox
-docker compose --env-file deploy/production.env \
-  -f compose.production.yaml \
-  -f compose.nginx-host.yaml \
-  logs -f --tail=200 api worker
+./deploy/pastebox-deploy.sh logs
 ```
 
 查看 Nginx 日志：
@@ -1750,11 +1809,19 @@ sudo tail -f /var/log/nginx/access.log /var/log/nginx/error.log
 
 ## 常见问题
 
+### preflight 报 managed application config is missing
+
+说明当前只准备好了 `.env` 根配置，管理员后台应用配置还没有保存。先完成迁移、
+创建管理员并在 **管理后台 > 应用配置** 保存全部生产配置，然后重新运行不带
+`PASTEBOX_PREFLIGHT_ROOT_ONLY` 的完整 preflight。首次启动前的根配置检查仍应
+显式设置 `PASTEBOX_PREFLIGHT_ROOT_ONLY=true`。
+
 ### PasteBox preflight 报对象存储 endpoint 不合法
 
 检查：
 
-- `PASTEBOX_S3_ENDPOINT` 必须是 `https://s3o.example.com` 这种真实 HTTPS 域名。
+- **管理后台 > 应用配置 > 对象存储** 的 endpoint 必须是
+  `https://s3o.example.com` 这种真实 HTTPS 域名。
 - 不要写 `http://s3-orchestrator:9000`。
 - 不要写 `http://127.0.0.1:19000`。
 - 不要留 `CHANGE_ME` 或 `example.com`。
@@ -1763,22 +1830,19 @@ sudo tail -f /var/log/nginx/access.log /var/log/nginx/error.log
 
 检查：
 
-- `PASTEBOX_S3_BUCKET` 是否等于 s3-orchestrator 的虚拟 bucket：`pastebox-files`。
-- `PASTEBOX_S3_ACCESS_KEY` / `PASTEBOX_S3_SECRET_KEY` 是否等于虚拟 bucket 凭据。
-- `PASTEBOX_S3_USE_PATH_STYLE=true`。
+- 后台 bucket 是否等于 s3-orchestrator 的虚拟 bucket：`pastebox-files`。
+- 后台 access key / secret key 是否等于虚拟 bucket 凭据。
+- 后台 path style 是否已开启。
 - `s3o.example.com` 在 PasteBox 容器内是否解析到宿主机 gateway。
 - Nginx 是否把 `Host` 原样传给 s3-orchestrator。
 
 容器内可快速检查解析和访问：
 
 ```sh
-docker compose --env-file deploy/production.env \
-  -f compose.production.yaml \
-  -f compose.nginx-host.yaml \
-  run --rm \
+./deploy/pastebox-deploy.sh compose run --rm \
   --entrypoint /bin/sh \
   preflight \
-  -c 'grep "$S3O_DOMAIN" /etc/hosts && wget -S -O- "https://$S3O_DOMAIN/health/ready"'
+  -c 'grep "s3o.example.com" /etc/hosts && wget -S -O- "https://s3o.example.com/health/ready"'
 ```
 
 `/etc/hosts` 中应出现 `s3o.example.com` 到 host gateway 的映射，`wget` 应完成 TLS 校验并返回 ready 响应。
@@ -1788,7 +1852,7 @@ docker compose --env-file deploy/production.env \
 常见原因：
 
 - Nginx 没有传 `Host $host`。
-- `PASTEBOX_S3_USE_PATH_STYLE` 没有设成 `true`。
+- 管理员后台对象存储的 path style 没有开启。
 - 访问路径被 Nginx 改写了。
 - 客户端和服务器时间差太大。
 - 用了 R2 后端凭据去访问 s3-orchestrator 虚拟 bucket。
@@ -1888,48 +1952,33 @@ sudo sqlite3 \
 
 ### PasteBox 数据库和异地备份
 
-PasteBox 的 PostgreSQL、WAL、Redis 持久化和 off-host restic 备份由 `compose.production.yaml` 中的 maintenance services 管理。S3Orchestrator 的 SQLite 备份不会包含 PasteBox 用户、paste、订单和附件元数据。
+共享 PostgreSQL 的数据、WAL 和 Redis 持久化位于固定命名卷中。PasteBox 的
+maintenance services 通过外部网络访问共享 PostgreSQL，并继续负责逻辑备份、
+WAL 检查和 off-host restic 备份。S3Orchestrator 的 SQLite 备份不会包含
+PasteBox 用户、paste、订单和附件元数据。
 
 至少执行并监控仓库已有的：
 
 ```sh
 cd /opt/pastebox
 
-docker compose --env-file deploy/production.env \
-  -f compose.production.yaml \
-  -f compose.nginx-host.yaml \
-  --profile maintenance run --rm postgres-backup
+./deploy/pastebox-deploy.sh compose --profile maintenance run --rm postgres-backup
 
-docker compose --env-file deploy/production.env \
-  -f compose.production.yaml \
-  -f compose.nginx-host.yaml \
-  --profile maintenance run --rm postgres-basebackup
+./deploy/pastebox-deploy.sh compose --profile maintenance run --rm postgres-basebackup
 
-docker compose --env-file deploy/production.env \
-  -f compose.production.yaml \
-  -f compose.nginx-host.yaml \
-  --profile maintenance run --rm postgres-wal-check
+./deploy/pastebox-deploy.sh compose --profile maintenance run --rm postgres-wal-check
 
-docker compose --env-file deploy/production.env \
-  -f compose.production.yaml \
-  -f compose.nginx-host.yaml \
-  --profile maintenance run --rm backup-push
+./deploy/pastebox-deploy.sh compose --profile maintenance run --rm backup-push
 ```
 
 备份成功不等于可以恢复。至少再完成两种隔离演练：
 
 ```sh
 # 把最新逻辑备份恢复到临时数据库，校验 schema_migrations 后自动删除
-docker compose --env-file deploy/production.env \
-  -f compose.production.yaml \
-  -f compose.nginx-host.yaml \
-  --profile maintenance run --rm postgres-restore-drill
+./deploy/pastebox-deploy.sh compose --profile maintenance run --rm postgres-restore-drill
 
 # 用最新 base backup 和 WAL 在容器内临时目录完成 PITR 演练
-docker compose --env-file deploy/production.env \
-  -f compose.production.yaml \
-  -f compose.nginx-host.yaml \
-  --profile maintenance run --rm postgres-pitr-drill
+./deploy/pastebox-deploy.sh compose --profile maintenance run --rm postgres-pitr-drill
 ```
 
 两条命令都必须以 0 退出。逻辑恢复演练不会覆盖正式数据库；PITR 演练默认使用容器内临时目录，也不会改动正式 PostgreSQL 数据卷。失败时先查看对应命令的完整输出，不要把未验证的备份当成可恢复备份。
@@ -1988,18 +2037,16 @@ S3Orchestrator 的一个虚拟 bucket 可以临时配置多组凭据。低停机
 2. 在 `config.yaml` 的 `pastebox-files.credentials` 中保留旧凭据并新增一组新凭据。
 3. 在 `.env` 增加 `BUCKET_ACCESS_KEY_NEW` 和 `BUCKET_SECRET_KEY_NEW`。
 4. 校验配置并重建 S3Orchestrator。
-5. 把 PasteBox `PASTEBOX_S3_ACCESS_KEY`、`PASTEBOX_S3_SECRET_KEY` 改为新值。
-6. 重建 API 和 worker：
+5. 在 PasteBox **管理后台 > 应用配置 > 对象存储** 同时填写新的 access key 和
+   secret key，然后保存。
+6. 等待约 10 秒让 API 和 worker 刷新配置，再运行完整 preflight：
 
    ```sh
    cd /opt/pastebox
-   docker compose --env-file deploy/production.env \
-     -f compose.production.yaml \
-     -f compose.nginx-host.yaml \
-     up -d --force-recreate api worker
+   ./deploy/pastebox-deploy.sh preflight
    ```
 
-7. 确认 readiness 和附件业务正常。
+7. 确认 readiness 和附件上传、下载、删除正常。
 8. 从 S3Orchestrator 配置中删除旧凭据，再次校验并重建。
 
 轮换期间的配置形态：
@@ -2022,36 +2069,33 @@ buckets:
 
 1. 阅读上游 changelog 和版本迁移说明。
 2. 做一致性备份并确认 SQLite 完整性。
-3. 拉取目标 tag：
+3. 把 `/opt/s3-orchestrator/.env` 中的 `S3O_IMAGE` 改为新版本 tag 或 digest：
+
+   ```sh
+   S3O_IMAGE=ghcr.io/afreidah/s3-orchestrator:<new-version-tag>
+   ```
+
+4. 拉取 GitHub 已构建的镜像并验证配置：
 
    ```sh
    cd /opt/s3-orchestrator
-   git -C source fetch --depth 1 origin tag <new-version-tag>
-   git -C source checkout <new-version-tag>
-   git -C source rev-parse HEAD
-   ```
-
-4. 修改 `compose.yaml` 中的 `VERSION` 和 `image` tag。
-5. 先构建新镜像并验证配置：
-
-   ```sh
-   docker compose build --pull s3-orchestrator
+   docker compose pull s3-orchestrator
    docker compose run --rm \
      s3-orchestrator \
      validate -config /etc/s3-orchestrator/config.yaml
    ```
 
-6. 重建并检查：
+5. 重建并检查：
 
    ```sh
-   docker compose up -d s3-orchestrator
+   docker compose up -d --force-recreate s3-orchestrator
    docker compose ps
    curl -fsS https://s3o.example.com/health/ready
    ```
 
-7. 重新跑虚拟 bucket S3 smoke 和 PasteBox readiness。
+6. 重新跑虚拟 bucket S3 smoke 和 PasteBox readiness。
 
-回滚时把 `source`、`VERSION` 和 `image` 恢复到旧 tag，再从升级前备份恢复兼容的 SQLite 数据。上游如果做了不可逆数据库迁移，仅回退镜像可能不安全，必须以对应版本迁移说明为准。
+回滚时把 `.env` 中的 `S3O_IMAGE` 恢复为旧 tag 或 digest，执行 `docker compose pull s3-orchestrator` 和 `docker compose up -d --force-recreate s3-orchestrator`。如新版本改动了 SQLite 数据格式，还要从升级前备份恢复与旧镜像兼容的数据。上游如果做了不可逆数据库迁移，仅回退镜像可能不安全，必须以对应版本迁移说明为准。
 
 ### 升级 PasteBox GHCR 镜像
 
@@ -2059,31 +2103,14 @@ buckets:
 2. 记录当前 `PASTEBOX_IMAGE`，并完成 PostgreSQL、WAL 和异地备份。
 3. 让 `/opt/pastebox` 切换到与新镜像匹配的 release commit。
 4. 把 `deploy/production.env` 的 `PASTEBOX_IMAGE` 改为新 `sha-*` tag 或 digest。
-5. 拉取、preflight、迁移、重建：
+5. 一条命令拉取镜像、执行迁移并滚动更新，再检查完整后台配置：
 
    ```sh
    cd /opt/pastebox
-
-   docker compose --env-file deploy/production.env \
-     -f compose.production.yaml \
-     -f compose.nginx-host.yaml \
-     --profile maintenance \
-     pull api worker preflight migrate
-
-   docker compose --env-file deploy/production.env \
-     -f compose.production.yaml \
-     -f compose.nginx-host.yaml \
-     --profile maintenance run --rm preflight
-
-   docker compose --env-file deploy/production.env \
-     -f compose.production.yaml \
-     -f compose.nginx-host.yaml \
-     --profile maintenance run --rm migrate
-
-   docker compose --env-file deploy/production.env \
-     -f compose.production.yaml \
-     -f compose.nginx-host.yaml \
-     up -d --force-recreate api worker
+   ./deploy/pastebox-deploy.sh preflight-root
+   ./deploy/pastebox-deploy.sh upgrade
+   ./deploy/pastebox-deploy.sh preflight
+   ./deploy/pastebox-deploy.sh status
    ```
 
 6. 验证 health、ready、登录、上传、下载、分享和删除。
@@ -2099,19 +2126,24 @@ buckets:
 - [ ] `certbot renew --dry-run` 通过。
 - [ ] Nginx `pastebox.example.com` 反代到 `127.0.0.1:18080`。
 - [ ] Nginx `s3o.example.com` 反代到 `127.0.0.1:19000`。
-- [ ] 宿主机没有公开 `18080`、`19000`、PostgreSQL、Redis、ClamAV 端口。
+- [ ] `18080`、`19000`、PostgreSQL 和 Redis 只监听 `127.0.0.1`，ClamAV 未发布端口。
 - [ ] `/opt/s3-orchestrator/.env` 权限是 `600`，没有提交到 Git。
 - [ ] 每个 R2 token 只有对应 bucket 的 Object Read & Write 权限。
 - [ ] 所有 R2 backend 都通过 AWS CLI 直连测试。
 - [ ] R2 backend 凭据和 PasteBox 虚拟 bucket 凭据不是同一组。
-- [ ] S3Orchestrator 使用固定 `v0.62.28` 镜像，不使用 `latest`。
+- [ ] `S3O_IMAGE` 使用 `ghcr.io/afreidah/s3-orchestrator` 的固定版本 tag 或 digest，不使用 `latest`。
 - [ ] PasteBox 使用固定 `sha-*` tag 或 digest，不使用 `latest`。
-- [ ] `PASTEBOX_S3_ENDPOINT=https://s3o.example.com`。
-- [ ] `PASTEBOX_S3_BUCKET=pastebox-files`。
-- [ ] `PASTEBOX_S3_REGION=us-east-1`。
-- [ ] `PASTEBOX_S3_USE_PATH_STYLE=true`。
+- [ ] `deploy/production.env` 只包含当前模板中的启动根配置和备份配置。
+- [ ] `deploy/shared-services.env` 权限是 `600`，共享 PostgreSQL 与 PasteBox 使用不同密码。
+- [ ] 共享 PostgreSQL 中每个程序使用独立数据库和账号。
+- [ ] `PASTEBOX_CONFIG_ENCRYPTION_KEY` 已与 PostgreSQL 分开安全备份。
+- [ ] `PASTEBOX_TRUSTED_PROXY_CIDRS` 只覆盖实际 Docker bridge，不是全网 CIDR。
+- [ ] 管理员已创建，并已在 **管理后台 > 应用配置** 保存完整生产配置。
+- [ ] 后台对象存储 endpoint 是 `https://s3o.example.com`。
+- [ ] 后台对象存储 bucket 是 `pastebox-files`，region 是 `us-east-1`。
+- [ ] 后台对象存储 path style 已开启，凭据来自 S3Orchestrator 虚拟 bucket。
 - [ ] PasteBox 容器内 `s3o.example.com` 映射到 host gateway。
-- [ ] `preflight` 和 `migrate` 通过。
+- [ ] 根配置 preflight、`migrate` 和完整 preflight 均通过。
 - [ ] `/readyz` 和 `/api/v1/ready` 通过。
 - [ ] AWS CLI 对 S3Orchestrator 的 head/put/get/delete 通过。
 - [ ] PasteBox UI 上传、下载、分享下载、删除通过。

@@ -35,6 +35,9 @@ require_file() {
 }
 
 require_file "$env_file"
+require_file deploy/shared-services.env.example
+require_file deploy/production.shared.env.example
+require_file compose.nginx-host.example.yaml
 
 prometheus_image=$(env_value PASTEBOX_PROMETHEUS_IMAGE prom/prometheus:v2.55.1)
 caddy_image=$(env_value PASTEBOX_CADDY_IMAGE caddy:2.10-alpine)
@@ -46,11 +49,41 @@ section "Compose config"
 run docker compose --env-file "$env_file" -f compose.production.yaml config >/dev/null
 run docker compose --env-file "$env_file" -f compose.production.yaml --profile monitoring config >/dev/null
 run docker compose --env-file "$env_file" -f compose.production.yaml --profile maintenance config >/dev/null
+run docker compose --env-file deploy/shared-services.env.example -f compose.shared-services.yaml config >/dev/null
+run env PASTEBOX_ENV_FILE=./deploy/production.shared.env.example docker compose \
+	--env-file deploy/shared-services.env.example \
+	--env-file deploy/production.shared.env.example \
+	-f compose.production.yaml \
+	-f compose.external-services.yaml \
+	--profile maintenance \
+	config >/dev/null
+run env PASTEBOX_ENV_FILE=./deploy/production.shared.env.example docker compose \
+	--env-file deploy/shared-services.env.example \
+	--env-file deploy/production.shared.env.example \
+	-f compose.production.yaml \
+	-f compose.external-services.yaml \
+	-f compose.nginx-host.example.yaml \
+	config >/dev/null
+shared_services=$(PASTEBOX_ENV_FILE=./deploy/production.shared.env.example docker compose \
+	--env-file deploy/shared-services.env.example \
+	--env-file deploy/production.shared.env.example \
+	-f compose.production.yaml \
+	-f compose.external-services.yaml \
+	--profile maintenance \
+	config --services)
+printf '%s\n' "$shared_services" | grep -qx api
+printf '%s\n' "$shared_services" | grep -qx worker
+printf '%s\n' "$shared_services" | grep -qx migrate
+if printf '%s\n' "$shared_services" | grep -Eq '^(postgres|redis|backup-volume-init)$'; then
+	printf 'shared production config unexpectedly includes integrated infrastructure\n' >&2
+	exit 1
+fi
 
 section "Maintenance script syntax"
 run sh -n \
 	scripts/check-production-preflight.sh \
 	scripts/check-postgres-integration.sh \
+	deploy/pastebox-deploy.sh \
 	deploy/monitoring/textfile-metrics.sh \
 	deploy/backup/postgres-backup.sh \
 	deploy/backup/postgres-basebackup.sh \

@@ -1,0 +1,14 @@
+services:
+  api:
+    ports:
+      - "127.0.0.1:${PASTEBOX_HOST_HTTP_PORT:-18080}:8080"
+    extra_hosts:
+      - "s3o.example.com:host-gateway"
+
+  worker:
+    extra_hosts:
+      - "s3o.example.com:host-gateway"
+
+  preflight:
+    extra_hosts:
+      - "s3o.example.com:host-gateway"

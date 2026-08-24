@@ -1,0 +1,107 @@
+services:
+  api:
+    depends_on:
+      postgres: !reset null
+      redis: !reset null
+    networks:
+      - default
+      - shared-services
+    environment:
+      PGPASSWORD: ${PASTEBOX_POSTGRES_PASSWORD:?set PASTEBOX_POSTGRES_PASSWORD}
+
+  worker:
+    depends_on:
+      postgres: !reset null
+      redis: !reset null
+    networks:
+      - default
+      - shared-services
+    environment:
+      PGPASSWORD: ${PASTEBOX_POSTGRES_PASSWORD:?set PASTEBOX_POSTGRES_PASSWORD}
+
+  migrate:
+    depends_on:
+      postgres: !reset null
+    networks:
+      - default
+      - shared-services
+    environment:
+      PGPASSWORD: ${PASTEBOX_POSTGRES_PASSWORD:?set PASTEBOX_POSTGRES_PASSWORD}
+
+  preflight:
+    networks:
+      - default
+      - shared-services
+    environment:
+      PGPASSWORD: ${PASTEBOX_POSTGRES_PASSWORD:?set PASTEBOX_POSTGRES_PASSWORD}
+
+  postgres-backup:
+    depends_on:
+      postgres: !reset null
+    environment:
+      PGHOST: shared-postgres
+      PGUSER: ${SHARED_POSTGRES_SUPERUSER:-postgres}
+      PGPASSWORD: ${SHARED_POSTGRES_PASSWORD:?set SHARED_POSTGRES_PASSWORD}
+    networks:
+      - default
+      - shared-services
+
+  postgres-basebackup:
+    depends_on:
+      postgres: !reset null
+    environment:
+      PGHOST: shared-postgres
+      PGUSER: ${SHARED_POSTGRES_SUPERUSER:-postgres}
+      PGPASSWORD: ${SHARED_POSTGRES_PASSWORD:?set SHARED_POSTGRES_PASSWORD}
+    networks:
+      - default
+      - shared-services
+
+  postgres-wal-check:
+    depends_on:
+      postgres: !reset null
+    environment:
+      PGHOST: shared-postgres
+      PGUSER: ${SHARED_POSTGRES_SUPERUSER:-postgres}
+      PGPASSWORD: ${SHARED_POSTGRES_PASSWORD:?set SHARED_POSTGRES_PASSWORD}
+    networks:
+      - default
+      - shared-services
+
+  postgres-restore-drill:
+    depends_on:
+      postgres: !reset null
+    environment:
+      PGHOST: shared-postgres
+      PGUSER: ${SHARED_POSTGRES_SUPERUSER:-postgres}
+      PGPASSWORD: ${SHARED_POSTGRES_PASSWORD:?set SHARED_POSTGRES_PASSWORD}
+    networks:
+      - default
+      - shared-services
+
+  postgres-pitr-drill:
+    environment:
+      PGUSER: ${SHARED_POSTGRES_SUPERUSER:-postgres}
+      PGPASSWORD: ${SHARED_POSTGRES_PASSWORD:?set SHARED_POSTGRES_PASSWORD}
+
+  postgres:
+    profiles: ["integrated-infra"]
+    depends_on:
+      backup-volume-init:
+        condition: service_completed_successfully
+
+  redis:
+    profiles: ["integrated-infra"]
+
+  backup-volume-init:
+    profiles: ["integrated-infra"]
+
+networks:
+  shared-services:
+    external: true
+    name: pastebox-shared-services
+
+volumes:
+  pastebox-backups:
+    external: true
+    name: ${SHARED_BACKUP_VOLUME:-shared-postgres-backups}
