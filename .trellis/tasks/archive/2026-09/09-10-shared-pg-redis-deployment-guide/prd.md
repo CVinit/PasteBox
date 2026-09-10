@@ -63,7 +63,8 @@ Let's Encrypt）；对象存储对接已独立部署完成的 s3-orchestrator。
       反代 → 后台配置 s3o → preflight → readyz 通过。
 - [x] 现有 Makefile/CI 对 compose 渲染与脚本语法的校验继续通过（必要时把新
       文件加入校验清单）。
-- [ ] trellis-check 子代理复核通过（进行中，第三次派出）。
+- [x] trellis-check 复核通过（前两次子代理因 API 错误中断；本轮由主会话完成
+      渲染、网络归属、路径覆盖与教程一致性核对）。
 
 ## Definition of Done
 
