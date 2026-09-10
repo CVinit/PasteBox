@@ -37,6 +37,9 @@ require_file() {
 require_file "$env_file"
 require_file deploy/shared-services.env.example
 require_file deploy/production.shared.env.example
+require_file deploy/shared-postgres.env.example
+require_file deploy/shared-redis.env.example
+require_file deploy/production.split.env.example
 require_file compose.nginx-host.example.yaml
 
 prometheus_image=$(env_value PASTEBOX_PROMETHEUS_IMAGE prom/prometheus:v2.55.1)
@@ -76,6 +79,40 @@ printf '%s\n' "$shared_services" | grep -qx worker
 printf '%s\n' "$shared_services" | grep -qx migrate
 if printf '%s\n' "$shared_services" | grep -Eq '^(postgres|redis|backup-volume-init)$'; then
 	printf 'shared production config unexpectedly includes integrated infrastructure\n' >&2
+	exit 1
+fi
+
+run docker compose --env-file deploy/shared-postgres.env.example -f compose.shared-postgres.yaml config >/dev/null
+run docker compose --env-file deploy/shared-redis.env.example -f compose.shared-redis.yaml config >/dev/null
+run env PASTEBOX_ENV_FILE=./deploy/production.split.env.example docker compose \
+	--env-file deploy/shared-postgres.env.example \
+	--env-file deploy/shared-redis.env.example \
+	--env-file deploy/production.split.env.example \
+	-f compose.production.yaml \
+	-f compose.external-split-services.yaml \
+	--profile maintenance \
+	config >/dev/null
+run env PASTEBOX_ENV_FILE=./deploy/production.split.env.example docker compose \
+	--env-file deploy/shared-postgres.env.example \
+	--env-file deploy/shared-redis.env.example \
+	--env-file deploy/production.split.env.example \
+	-f compose.production.yaml \
+	-f compose.external-split-services.yaml \
+	-f compose.nginx-host.example.yaml \
+	config >/dev/null
+split_services=$(PASTEBOX_ENV_FILE=./deploy/production.split.env.example docker compose \
+	--env-file deploy/shared-postgres.env.example \
+	--env-file deploy/shared-redis.env.example \
+	--env-file deploy/production.split.env.example \
+	-f compose.production.yaml \
+	-f compose.external-split-services.yaml \
+	--profile maintenance \
+	config --services)
+printf '%s\n' "$split_services" | grep -qx api
+printf '%s\n' "$split_services" | grep -qx worker
+printf '%s\n' "$split_services" | grep -qx migrate
+if printf '%s\n' "$split_services" | grep -Eq '^(postgres|redis|backup-volume-init)$'; then
+	printf 'split production config unexpectedly includes integrated infrastructure\n' >&2
 	exit 1
 fi
 

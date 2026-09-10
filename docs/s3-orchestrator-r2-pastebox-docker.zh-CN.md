@@ -16,6 +16,10 @@ PasteBox 域名走 Cloudflare CDN，宿主机 Nginx 反代 PasteBox 容器。s3-
 本文先给出可以直接照抄的快速部署，再把 R2、S3Orchestrator、备份和排错细节
 放在后面。默认把 PostgreSQL、Redis 作为共享基础服务独立运行，PasteBox 停止、
 升级或删除时不会影响它们，其他程序也可以在同一容器中使用自己的数据库。
+该形态把 PostgreSQL 和 Redis 放在同一个 `shared-infra` Compose project 里；
+如果你需要两者各自独立成 project、PasteBox 分别接入两个共享容器网络（宿主机
+Nginx + certbot，无 Cloudflare），改用
+[共享 PostgreSQL/Redis 独立部署教程](shared-pg-redis-deployment.zh-CN.md)。
 
 ## 快速部署
 

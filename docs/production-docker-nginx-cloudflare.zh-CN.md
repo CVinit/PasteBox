@@ -5,6 +5,11 @@ Nginx 负责反代和 TLS 终止，Cloudflare 负责 DNS、CDN、WAF 和边缘 H
 
 示例域名统一写成 `pastebox.example.com`，部署时替换成你的真实域名。
 
+如果你需要 PostgreSQL 和 Redis 各自独立成 Compose project 供多项目复用
+（PasteBox 分别接入两个共享网络，宿主机 Nginx + certbot、无 Cloudflare），
+请改用
+[共享 PostgreSQL/Redis 独立部署教程](shared-pg-redis-deployment.zh-CN.md)。
+
 ## 部署结构
 
 推荐结构：

@@ -1,0 +1,2 @@
+{"file": ".trellis/tasks/09-10-shared-pg-redis-deployment-guide/prd.md", "reason": "验收标准与 Out of Scope 边界，检查实现是否越界或遗漏"}
+{"file": "docs/s3-orchestrator-r2-pastebox-docker.zh-CN.md", "reason": "检查新教程与现有 s3o 教程的互链与一致性（命令、域名示例、网络名不冲突）"}

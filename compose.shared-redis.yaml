@@ -1,0 +1,36 @@
+name: shared-redis
+
+services:
+  redis:
+    image: ${SHARED_REDIS_IMAGE:-redis:7-alpine}
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    ports:
+      - "${SHARED_REDIS_HOST_PORT:-127.0.0.1:6379}:6379"
+    volumes:
+      - shared-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      shared-redis:
+        aliases:
+          - shared-redis
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+networks:
+  shared-redis:
+    name: ${SHARED_REDIS_NETWORK:-shared-redis-net}
+    ipam:
+      config:
+        - subnet: ${SHARED_REDIS_NETWORK_SUBNET:-172.31.0.0/24}
+
+volumes:
+  shared-redis:
+    name: ${SHARED_REDIS_VOLUME:-shared-redis-data}

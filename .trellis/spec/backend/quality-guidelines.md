@@ -45,6 +45,12 @@ user-level Go cache permissions.
   repositories, and payment checkout templates.
 - HTTP request logs and Prometheus route labels must use sanitized route
   patterns, not raw URL paths.
+- Production deploy modes are `shared`, `shared-split`, and `integrated`. New
+  shared-infra layouts must keep the other two modes working, keep service
+  aliases `shared-postgres`/`shared-redis`, keep the DSN password out of
+  `PASTEBOX_DATABASE_URL`, and extend `scripts/check-production-readiness.sh`
+  compose rendering. See directory-structure scenario
+  **Shared-Split PostgreSQL/Redis Deploy Mode**.
 
 ## Scenario: Sanitized HTTP Observability Paths
 

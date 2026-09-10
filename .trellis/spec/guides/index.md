@@ -47,6 +47,16 @@ These guides help you **ask the right questions before coding**.
 
 → Read [Code Reuse Thinking Guide](./code-reuse-thinking-guide.md)
 
+### When to Think About Production Deploy Modes
+
+- [ ] Changing Compose files, `deploy/pastebox-deploy.sh`, or production env examples
+- [ ] Adding a shared-infra layout (combined vs split PostgreSQL/Redis)
+- [ ] Copying templates out of the repo (`/opt/shared-*`) so default relative paths break
+- [ ] Rendering `compose.production.yaml` in CI without a real `deploy/production.env`
+
+→ Read backend [Directory Structure](../backend/directory-structure.md) scenario
+  **Shared-Split PostgreSQL/Redis Deploy Mode**.
+
 ---
 
 ## Pre-Modification Rule (CRITICAL)

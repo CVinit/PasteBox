@@ -1,0 +1,3 @@
+{"file": ".trellis/tasks/09-10-shared-pg-redis-deployment-guide/prd.md", "reason": "本次任务的完整需求、决策（ADR）与验收标准；实现必须严格按此范围"}
+{"file": "docs/s3-orchestrator-r2-pastebox-docker.zh-CN.md", "reason": "现有 shared 模式教程，新教程需与其风格/结构对齐并在布局上衔接（s3o 对接、extra_hosts、备份章节写法参考）"}
+{"file": "docs/production-docker-nginx-cloudflare.zh-CN.md", "reason": "现有生产教程的宿主机 Nginx 配置、健康检查、preflight、FAQ 写法参考；新教程互链对象"}

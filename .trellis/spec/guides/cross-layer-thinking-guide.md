@@ -85,6 +85,39 @@ After implementation:
 
 ---
 
+## Production Deploy Mode Boundary
+
+PasteBox has three production infra layouts. Changing one file is not enough.
+
+| Mode | Compose projects | PasteBox override | Default env |
+|------|------------------|-------------------|-------------|
+| `shared` | one `shared-infra` | `compose.external-services.yaml` | `deploy/shared-services.env` |
+| `shared-split` | `shared-postgres` + `shared-redis` | `compose.external-split-services.yaml` | four path overrides |
+| `integrated` | PasteBox-owned postgres/redis | none | `deploy/production.env` |
+
+### Checklist: After Changing Shared Infra
+
+- [ ] Keep `shared` and `integrated` working; do not reuse split-only filenames
+- [ ] Service aliases stay `shared-postgres` / `shared-redis` even when networks split
+- [ ] DSN host is the alias, never `127.0.0.1`; password stays in `PASTEBOX_POSTGRES_PASSWORD`
+- [ ] If templates are copied to `/opt/shared-*`, document
+  `PASTEBOX_SHARED_*_COMPOSE_FILE` / `PASTEBOX_SHARED_*_ENV_FILE` and require
+  sourcing them (including cron)
+- [ ] Independent PG compose binds `./pg_hba.conf`; combined shared-infra binds
+  `./deploy/postgres/pg_hba.conf`
+- [ ] Readiness script renders the new combo with `PASTEBOX_ENV_FILE` pointing at
+  an example file that exists
+- [ ] Connectivity probes use TCP (`nc -zv`), not HTTP, against 5432/6379
+
+**Real-world example**: Split-mode tutorials copied compose files to
+`/opt/shared-postgres/compose.yaml`, but `pastebox-deploy.sh` still looked for
+`compose.shared-postgres.yaml` in the PasteBox repo root. Fix: path override env
+vars plus `/opt/pastebox/.env.shared-split`. Rendering `compose.production.yaml`
+without `PASTEBOX_ENV_FILE` failed because `deploy/production.env` is not
+committed.
+
+---
+
 ## Cross-Platform Template Consistency
 
 In Trellis, command templates (e.g., `record-session.md`) exist in **multiple platforms** with identical or near-identical content. This is a cross-layer boundary.

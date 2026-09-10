@@ -396,3 +396,136 @@ sh scripts/check-production-preflight.sh
 make production-readiness
 # release verification proves the preflight command accepts a complete env set.
 ```
+
+## Scenario: Shared-Split PostgreSQL/Redis Deploy Mode
+
+### 1. Scope / Trigger
+
+- Trigger: Any change to production Compose templates, `deploy/pastebox-deploy.sh`,
+  shared-infra env examples, production readiness compose rendering, or the
+  shared PostgreSQL/Redis deployment tutorial.
+
+### 2. Signatures
+
+- Deploy modes: `PASTEBOX_DEPLOY_MODE=shared|shared-split|integrated`
+  (default `shared`).
+- Wrapper: `./deploy/pastebox-deploy.sh <init|up|upgrade|status|logs|down|preflight-root|preflight|admin|infra-status|infra-down|infra-reset|compose>`
+- Split Compose templates:
+  `compose.shared-postgres.yaml`, `compose.shared-redis.yaml`,
+  `compose.external-split-services.yaml`
+- Split env templates:
+  `deploy/shared-postgres.env.example`, `deploy/shared-redis.env.example`,
+  `deploy/production.split.env.example`
+- Combined shared-infra (legacy, keep compatible):
+  `compose.shared-services.yaml`, `compose.external-services.yaml`,
+  `deploy/shared-services.env.example`, `deploy/production.shared.env.example`
+- Tutorial: `docs/shared-pg-redis-deployment.zh-CN.md`
+- Readiness gate: `scripts/check-production-readiness.sh`
+
+### 3. Contracts
+
+- `shared-split` runs PostgreSQL and Redis as two independent Compose projects
+  (`name: shared-postgres` / `name: shared-redis`) with two Docker networks
+  (`shared-postgres-net` subnet `172.30.0.0/24`, `shared-redis-net` subnet
+  `172.31.0.0/24`). Service aliases remain `shared-postgres` and `shared-redis`.
+- PasteBox DSN stays hostname-only and password-free:
+  `postgres://pastebox@shared-postgres:5432/pastebox?sslmode=disable` plus
+  `PASTEBOX_POSTGRES_PASSWORD`. Redis is `shared-redis:6379`.
+- `compose.external-split-services.yaml` joins api/worker/migrate/preflight to
+  both external networks, moves builtin postgres/redis/backup-volume-init to the
+  `integrated-infra` profile, and sets backup job `PGHOST=shared-postgres`.
+- Split-mode path overrides (required when templates live outside the repo root,
+  as in `/opt/shared-postgres` and `/opt/shared-redis`):
+  - `PASTEBOX_SHARED_POSTGRES_COMPOSE_FILE` (default `compose.shared-postgres.yaml`)
+  - `PASTEBOX_SHARED_POSTGRES_ENV_FILE` (default `deploy/shared-postgres.env`)
+  - `PASTEBOX_SHARED_REDIS_COMPOSE_FILE` (default `compose.shared-redis.yaml`)
+  - `PASTEBOX_SHARED_REDIS_ENV_FILE` (default `deploy/shared-redis.env`)
+- Tutorial stores those exports in `/opt/pastebox/.env.shared-split`. Every
+  `pastebox-deploy.sh` invocation, including cron, must source that file first.
+- Independent-directory PostgreSQL compose binds `./pg_hba.conf` (copied next to
+  that project's `compose.yaml`). Combined shared-infra still binds
+  `./deploy/postgres/pg_hba.conf`.
+- Host nginx still binds api to `127.0.0.1:18080`. Object storage continues to
+  use `extra_hosts: "<s3o-domain>:host-gateway"`.
+- `shared` (one project, one network) and `integrated` (PasteBox-owned
+  postgres/redis) must keep working. Do not replace those files with split-only
+  templates.
+- `scripts/check-production-readiness.sh` must render both split templates and
+  the production + split + nginx-host combo, assert api/worker/migrate exist, and
+  fail if postgres/redis/backup-volume-init appear without `integrated-infra`.
+- Rendering `compose.production.yaml` requires `PASTEBOX_ENV_FILE` pointing at a
+  file that exists (example files in CI). The Compose `env_file` default
+  `deploy/production.env` is not committed.
+
+### 4. Validation & Error Matrix
+
+- `PASTEBOX_DEPLOY_MODE` is not `shared|shared-split|integrated` -> script dies.
+- `shared-split` missing any of the four compose/env files -> `缺少文件`.
+- `PASTEBOX_DATABASE_URL` is not `postgres://pastebox@shared-postgres:5432/pastebox*`
+  in shared or shared-split init -> script dies.
+- `PASTEBOX_POSTGRES_PASSWORD` empty or contains a single quote -> script dies.
+- Shared PostgreSQL not ready within 120s -> `共享 PostgreSQL 在 120 秒内未就绪`.
+- Split compose render includes postgres/redis/backup-volume-init without
+  `integrated-infra` -> readiness script exits 1.
+- `docker compose -f compose.production.yaml config` without
+  `PASTEBOX_ENV_FILE` when `deploy/production.env` is absent -> compose fails
+  looking up the default env_file.
+- Shell that forgot `. /opt/pastebox/.env.shared-split` -> deploy script stays in
+  default `shared` mode and loads `compose.external-services.yaml` instead of
+  the two-network override.
+
+### 5. Good/Base/Bad Cases
+
+- Good: Copy templates to `/opt/shared-postgres` and `/opt/shared-redis`, source
+  `.env.shared-split`, run `init` then `up`; api joins both networks and reaches
+  aliases `shared-postgres:5432` / `shared-redis:6379`.
+- Base: Existing `shared` combined-infra and `integrated` modes still init/up
+  without the new env vars.
+- Bad: Putting the password in `PASTEBOX_DATABASE_URL`, pointing the DSN at
+  `127.0.0.1` or service name `postgres`, or probing PostgreSQL 5432 with HTTP
+  `wget`.
+
+### 6. Tests Required
+
+- `sh -n deploy/pastebox-deploy.sh`
+- `docker compose --env-file deploy/shared-postgres.env.example -f compose.shared-postgres.yaml config`
+- `docker compose --env-file deploy/shared-redis.env.example -f compose.shared-redis.yaml config`
+- `PASTEBOX_ENV_FILE=./deploy/production.split.env.example docker compose --env-file deploy/shared-postgres.env.example --env-file deploy/shared-redis.env.example --env-file deploy/production.split.env.example -f compose.production.yaml -f compose.external-split-services.yaml --profile maintenance config --services` must list api/worker/migrate and must not list postgres/redis/backup-volume-init.
+- Same combo plus `-f compose.nginx-host.example.yaml` must render.
+- Combined shared-infra combo (`compose.external-services.yaml` +
+  `deploy/production.shared.env.example`) must still render.
+- Tutorial commands must match the env var names and file paths above.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```sh
+PASTEBOX_DATABASE_URL=postgres://pastebox:secret@127.0.0.1:5432/pastebox?sslmode=disable
+./deploy/pastebox-deploy.sh up
+# password in the URL, host is loopback, default mode never joins split networks
+```
+
+#### Correct
+
+```sh
+. /opt/pastebox/.env.shared-split
+# PASTEBOX_DEPLOY_MODE=shared-split and the four path overrides
+# PASTEBOX_DATABASE_URL=postgres://pastebox@shared-postgres:5432/pastebox?sslmode=disable
+# PASTEBOX_POSTGRES_PASSWORD is injected separately
+./deploy/pastebox-deploy.sh up
+```
+
+#### Wrong
+
+```sh
+docker exec "$api" wget -qO- http://shared-postgres:5432
+# HTTP probe against a PostgreSQL port
+```
+
+#### Correct
+
+```sh
+docker exec "$api" nc -zv shared-postgres 5432
+docker exec "$api" nc -zv shared-redis 6379
+```

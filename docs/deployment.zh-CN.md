@@ -5,6 +5,9 @@
 如果你准备把本项目部署到公网，并使用宿主机 Nginx 反代、Cloudflare CDN/WAF
 接入，请直接使用
 [Docker + Nginx + Cloudflare 生产部署教程](production-docker-nginx-cloudflare.zh-CN.md)。
+如果你需要 PostgreSQL 和 Redis 各自独立成 Compose project 供多项目复用
+（PasteBox 分别接入两个共享网络），请使用
+[共享 PostgreSQL/Redis 独立部署教程](shared-pg-redis-deployment.zh-CN.md)。
 本文下面的 `compose.deploy.yaml` 路径主要用于演示、内部评审和低风险试用。
 
 ## 当前可用边界
