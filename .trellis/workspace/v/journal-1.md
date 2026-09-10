@@ -470,3 +470,36 @@ Documented mobile clipboard synchronization constraints, recommended Android and
 ### Next Steps
 
 - None - task complete
+
+
+## Session 14: Continue shared-pg-redis deployment guide check
+
+**Date**: 2026-09-11
+**Task**: Continue shared-pg-redis deployment guide check
+**Branch**: `main`
+
+### Summary
+
+Resume after e6a2a884 API failures. Verified split compose rendering, path overrides, tutorial consistency; archived task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3c052c4` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
