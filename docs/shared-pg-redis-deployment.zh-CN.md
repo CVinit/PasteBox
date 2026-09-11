@@ -1,38 +1,37 @@
-# PasteBox 共享 PostgreSQL/Redis 独立部署教程（宿主机 Nginx + s3-orchestrator）
+# PasteBox + PostgreSQL + Redis 部署教程（宿主机 Nginx + s3-orchestrator）
 
 本教程面向一台全新服务器，手把手部署以下架构：
 
 - **PostgreSQL 和 Redis 各自独立部署**为单独的 Docker Compose project，供本机
-  其他项目复用，生命周期与 PasteBox 完全解耦。
-- **PasteBox 分别接入两个共享容器网络**实现数据库和缓存的内部互通；ClamAV 等
-  不属于公共业务的容器仍随 PasteBox 项目一起启动。
+  其他项目复用，生命周期与 PasteBox 完全解耦；两者都由管理员手动启动和停止。
+- **PasteBox 接入 PostgreSQL 和 Redis 的容器网络**实现数据库和缓存的内部互通；
+  ClamAV 等不属于公共业务的容器随 PasteBox 项目一起启动。
 - 边缘层是**宿主机 Nginx 反向代理**，证书用 certbot（Let's Encrypt）签发，
   不依赖 Cloudflare。
 - 对象存储对接**已独立部署完成的 s3-orchestrator**（下文简称 s3o）；如果你
   还没部署 s3o，先看
   [s3-orchestrator 聚合 R2 对接 PasteBox 教程](s3-orchestrator-r2-pastebox-docker.zh-CN.md)。
 
-如果你要的是单 project 的共享模式（PG + Redis 同一个 Compose project），或
-PasteBox 自带数据库的一体化模式，见
+如果你要让 PasteBox 同时管理 PostgreSQL、Redis 和其他依赖的一体化模式，见
 [Docker + Nginx + Cloudflare 生产部署教程](production-docker-nginx-cloudflare.zh-CN.md)。
 
 ## 最终会部署出什么
 
-同一台宿主机上运行四个彼此独立的 Docker Compose project：
+同一台宿主机上运行四个 Docker Compose project：
 
 ```text
-/opt/shared-postgres/     # 共享 PostgreSQL（shared-postgres project）
+/opt/postgresql/          # PostgreSQL（postgresql project）
   ├── compose.yaml
   ├── .env
   └── pg_hba.conf
 
-/opt/shared-redis/        # 共享 Redis（shared-redis project）
+/opt/redis/               # Redis（redis project）
   ├── compose.yaml
   └── .env
 
 /opt/pastebox/            # PasteBox 应用（pastebox project）
   ├── compose.production.yaml
-  ├── compose.external-split-services.yaml
+  ├── compose.external-split-services.yaml  # 仓库现有的外部服务覆盖文件
   ├── compose.nginx-host.yaml
   └── deploy/...
 
@@ -41,29 +40,29 @@ PasteBox 自带数据库的一体化模式，见
 
 职责边界：
 
-- `shared-postgres` 和 `shared-redis` 独立升级、重启、备份，互不影响；任何一个
-  停止不会牵连另一个。
-- PasteBox project 只管理 `api`、`worker`、`clamav` 等应用容器。
+- `postgresql` 和 `redis` 独立升级、重启、备份，互不影响；任何一个停止不会牵连
+  另一个。
+- `pastebox` project 只管理 `api`、`worker`、`clamav` 等应用容器。
 - 宿主机只对外开放 `80`、`443` 和 SSH 端口。
 
 容器与网络布局：
 
 | 服务 | 所属 project | 容器端口 | 宿主机监听 | 加入的网络 |
 | --- | --- | ---: | --- | --- |
-| PostgreSQL | shared-postgres | 5432 | `127.0.0.1:5432` | `shared-postgres-net` |
-| Redis | shared-redis | 6379 | `127.0.0.1:6379` | `shared-redis-net` |
+| PostgreSQL | postgresql | 5432 | `127.0.0.1:5432` | `shared-postgres-net` |
+| Redis | redis | 6379 | `127.0.0.1:6379` | `shared-redis-net` |
 | PasteBox api/worker | pastebox | 8080 | `127.0.0.1:18080` | 项目默认网 + 上面两个 |
 | ClamAV | pastebox | 3310 | 不发布 | 项目默认网 |
 | s3-orchestrator | s3-orchestrator | 9000 | `127.0.0.1:19000` | s3o 自己的网络 |
 
-PasteBox 容器在共享网络里通过服务别名访问数据库：
+PasteBox 容器通过 PostgreSQL 和 Redis 网络里的服务别名访问数据库：
 
 ```text
 PASTEBOX_DATABASE_URL = postgres://pastebox@shared-postgres:5432/pastebox?sslmode=disable
 PASTEBOX_REDIS_ADDR   = shared-redis:6379
 ```
 
-两个共享网络只存在于 Docker 内部，不发布到公网；宿主机程序如需直连，用
+PostgreSQL 和 Redis 网络只存在于 Docker 内部，不发布到公网；宿主机程序如需直连，用
 `127.0.0.1:5432` / `127.0.0.1:6379`。
 
 ### 请求链路
@@ -134,8 +133,8 @@ sudo ss -ltnp | grep -E ':5432|:6379|:18080' || echo "ports free"
 创建目录：
 
 ```sh
-sudo mkdir -p /opt/shared-postgres /opt/shared-redis /opt/pastebox
-sudo chown -R "$USER" /opt/shared-postgres /opt/shared-redis /opt/pastebox
+sudo mkdir -p /opt/postgresql /opt/redis /opt/pastebox
+sudo chown -R "$USER" /opt/postgresql /opt/redis /opt/pastebox
 ```
 
 ## 第 2 步：取得仓库模板文件
@@ -156,37 +155,37 @@ cp compose.production.yaml compose.external-split-services.yaml /opt/pastebox/
 cp -r deploy /opt/pastebox/
 ```
 
-共享 PostgreSQL 模板复制到 `/opt/shared-postgres`：
+PostgreSQL 模板复制到 `/opt/postgresql`：
 
 ```sh
-cp compose.shared-postgres.yaml /opt/shared-postgres/compose.yaml
-cp deploy/shared-postgres.env.example /opt/shared-postgres/.env
-cp deploy/postgres/pg_hba.conf /opt/shared-postgres/pg_hba.conf
+cp compose.shared-postgres.yaml /opt/postgresql/compose.yaml
+cp deploy/shared-postgres.env.example /opt/postgresql/.env
+cp deploy/postgres/pg_hba.conf /opt/postgresql/pg_hba.conf
 ```
 
-共享 Redis 模板复制到 `/opt/shared-redis`：
+Redis 模板复制到 `/opt/redis`：
 
 ```sh
-cp compose.shared-redis.yaml /opt/shared-redis/compose.yaml
-cp deploy/shared-redis.env.example /opt/shared-redis/.env
+cp compose.shared-redis.yaml /opt/redis/compose.yaml
+cp deploy/shared-redis.env.example /opt/redis/.env
 ```
 
 最终三个目录的文件：
 
 ```text
-/opt/shared-postgres: compose.yaml  .env  pg_hba.conf
-/opt/shared-redis:    compose.yaml  .env
+/opt/postgresql:      compose.yaml  .env  pg_hba.conf
+/opt/redis:           compose.yaml  .env
 /opt/pastebox:        compose.production.yaml
                       compose.external-split-services.yaml
                       deploy/（含 pastebox-deploy.sh、备份脚本等）
 ```
 
-## 第 3 步：部署共享 PostgreSQL
+## 第 3 步：手动启动 PostgreSQL
 
-编辑 `/opt/shared-postgres/.env`：
+编辑 `/opt/postgresql/.env`：
 
 ```sh
-cd /opt/shared-postgres
+cd /opt/postgresql
 chmod 600 .env
 ```
 
@@ -211,39 +210,43 @@ SHARED_POSTGRES_PASSWORD=<上面生成的密码>
 - `SHARED_BACKUP_VOLUME=shared-postgres-backups`：备份卷名，WAL 归档和 base
   backup 都写这里。
 
-创建备份卷并启动：
+手动创建备份卷并启动 `postgresql` project：
 
 ```sh
 docker volume create shared-postgres-backups
-docker compose up -d
-docker compose ps
+docker compose -p postgresql --env-file .env -f compose.yaml up -d postgres
+docker compose -p postgresql --env-file .env -f compose.yaml ps
 ```
 
 预期 `postgres` 状态为 `Up (healthy)`：
 
 ```text
-NAME                IMAGE               STATUS            PORTS
-shared-postgres-1   postgres:17-alpine  Up 30 seconds     127.0.0.1:5432->5432/tcp
+NAME                 IMAGE               STATUS            PORTS
+postgresql-postgres-1 postgres:17-alpine Up 30 seconds     127.0.0.1:5432->5432/tcp
 ```
 
 验证网络和数据库：
 
 ```sh
 docker network ls | grep shared-postgres-net
-docker compose exec postgres pg_isready -U postgres -d postgres
+docker compose -p postgresql --env-file .env -f compose.yaml exec postgres \
+  pg_isready -U postgres -d postgres
 ```
 
 预期输出 `accepting connections`。
 
 模板默认开启了 WAL 归档（`wal_level=replica`、`archive_mode=on`），归档写入
-`shared-postgres-backups` 卷，为后面的 PITR 备份做准备。
+`shared-postgres-backups` 卷，为后面的 PITR 备份做准备。这里使用的是仓库现有的
+`SHARED_*` 配置名和网络名，目录及 Compose project 名称仍统一使用 `postgresql`。
+同理，Compose 模板内部服务名仍是 `postgres` 和 `redis`，所以启动命令保留这两个
+服务参数。
 
-## 第 4 步：部署共享 Redis
+## 第 4 步：手动启动 Redis
 
-编辑 `/opt/shared-redis/.env` 并收紧权限：
+编辑 `/opt/redis/.env` 并收紧权限：
 
 ```sh
-cd /opt/shared-redis
+cd /opt/redis
 chmod 600 .env
 ```
 
@@ -253,13 +256,13 @@ chmod 600 .env
 - `SHARED_REDIS_NETWORK=shared-redis-net`：Docker 网络名。
 - `SHARED_REDIS_VOLUME=shared-redis-data`：数据卷名。
 
-启动并验证：
+手动启动 `redis` project 并验证：
 
 ```sh
-docker compose up -d
-docker compose ps
+docker compose -p redis --env-file .env -f compose.yaml up -d redis
+docker compose -p redis --env-file .env -f compose.yaml ps
 docker network ls | grep shared-redis-net
-docker compose exec redis redis-cli ping
+docker compose -p redis --env-file .env -f compose.yaml exec redis redis-cli ping
 ```
 
 预期 `redis` 为 `Up (healthy)`，`redis-cli ping` 返回 `PONG`。
@@ -273,7 +276,7 @@ PasteBox 只把它用于可用性检查，不承载核心业务数据。
 
 ```sh
 cd /opt/pastebox
-cp deploy/production.split.env.example deploy/production.env
+cp deploy/production.shared.env.example deploy/production.env
 chmod 600 deploy/production.env
 ```
 
@@ -306,7 +309,7 @@ PASTEBOX_BACKUP_S3_SECRET_KEY=<backup-secret-key>
 
 要点：
 
-- `PASTEBOX_DATABASE_URL` 的主机名必须是 `shared-postgres`（共享网络里的服务
+- `PASTEBOX_DATABASE_URL` 的主机名必须是 `shared-postgres`（PostgreSQL 网络里的服务
   别名），不是 `127.0.0.1`。URL 里不写密码，部署脚本通过
   `PASTEBOX_POSTGRES_PASSWORD` 注入。
 - `PASTEBOX_CONFIG_ENCRYPTION_KEY` 必须单独备份：后台保存的第三方密钥用它做
@@ -314,28 +317,31 @@ PASTEBOX_BACKUP_S3_SECRET_KEY=<backup-secret-key>
 - 备份用 S3 凭据（`PASTEBOX_BACKUP_S3_*`）必须与 s3o 虚拟 bucket 凭据分开，
   不要复用。
 
-部署脚本默认在仓库根目录找共享 compose 文件。本教程把共享服务独立放到
-`/opt/shared-postgres` 和 `/opt/shared-redis`，必须把路径覆盖写进
-`/opt/pastebox/.env.shared-split`：
+部署脚本需要知道 PostgreSQL 和 Redis 的 Compose 文件位置。把路径写进
+`/opt/pastebox/pastebox.env`：
 
 ```sh
-cat > /opt/pastebox/.env.shared-split <<'EOF'
+cat > /opt/pastebox/pastebox.env <<'EOF'
+# 这是部署脚本的兼容配置，不改变 postgresql/redis/pastebox 的命名。
 export PASTEBOX_DEPLOY_MODE=shared-split
-export PASTEBOX_SHARED_POSTGRES_COMPOSE_FILE=/opt/shared-postgres/compose.yaml
-export PASTEBOX_SHARED_POSTGRES_ENV_FILE=/opt/shared-postgres/.env
-export PASTEBOX_SHARED_REDIS_COMPOSE_FILE=/opt/shared-redis/compose.yaml
-export PASTEBOX_SHARED_REDIS_ENV_FILE=/opt/shared-redis/.env
+export PASTEBOX_SHARED_POSTGRES_COMPOSE_FILE=/opt/postgresql/compose.yaml
+export PASTEBOX_SHARED_POSTGRES_ENV_FILE=/opt/postgresql/.env
+export PASTEBOX_SHARED_REDIS_COMPOSE_FILE=/opt/redis/compose.yaml
+export PASTEBOX_SHARED_REDIS_ENV_FILE=/opt/redis/.env
 EOF
-chmod 600 /opt/pastebox/.env.shared-split
+chmod 600 /opt/pastebox/pastebox.env
 ```
 
-之后每次操作 PasteBox 前先加载：
+使用部署脚本前先加载：
 
 ```sh
-. /opt/pastebox/.env.shared-split
+. /opt/pastebox/pastebox.env
 ```
 
-也可以写进 `~/.profile`。cron 任务同样需要 `source` 这个文件。
+cron 任务同样需要先加载这个文件。直接执行 Compose 命令时不需要加载它。
+
+下面命令中的 `shared`/`split` 只出现在仓库现有的文件名、环境变量和网络别名中；
+本教程的部署名称统一按 `postgresql`、`redis`、`pastebox` 处理。
 
 再创建 Nginx 覆盖文件 `/opt/pastebox/compose.nginx-host.yaml`（把
 `s3o.example.com` 换成真实对象存储域名）：
@@ -357,46 +363,110 @@ services:
       - "s3o.example.com:host-gateway"
 ```
 
-## 第 6 步：初始化共享数据库并启动 PasteBox
+## 第 6 步：初始化 PasteBox 数据库并启动 PasteBox
 
-部署脚本检测到共享 PostgreSQL 后，会用超级管理员创建仅供 PasteBox 使用的
-`pastebox` role 和 `pastebox` 数据库。加载独立目录覆盖后执行：
+先用 PostgreSQL 容器里的超级管理员创建仅供 PasteBox 使用的 `pastebox` role
+和 `pastebox` 数据库。下面的命令不会启动或停止 PostgreSQL、Redis：
+
+```sh
+set -a
+. /opt/postgresql/.env
+. /opt/pastebox/deploy/production.env
+set +a
+
+docker compose -p postgresql --env-file /opt/postgresql/.env \
+  -f /opt/postgresql/compose.yaml exec -T postgres \
+  psql -v ON_ERROR_STOP=1 -U "${SHARED_POSTGRES_SUPERUSER:-postgres}" -d postgres \
+  -v app_password="$PASTEBOX_POSTGRES_PASSWORD" <<'SQL'
+SELECT format('CREATE ROLE pastebox LOGIN PASSWORD %L', :'app_password')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pastebox') \gexec
+SELECT format('ALTER ROLE pastebox LOGIN PASSWORD %L', :'app_password') \gexec
+SELECT 'CREATE DATABASE pastebox OWNER pastebox'
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'pastebox') \gexec
+ALTER DATABASE pastebox OWNER TO pastebox;
+REVOKE ALL ON DATABASE pastebox FROM PUBLIC;
+GRANT CONNECT, TEMPORARY ON DATABASE pastebox TO pastebox;
+SQL
+```
+
+PasteBox 容器有两种启动方式，二选一。
+
+### 方式 A：直接执行 Compose 命令
+
+先检查最终配置，再拉取镜像、执行迁移并启动 PasteBox：
 
 ```sh
 cd /opt/pastebox
-. /opt/pastebox/.env.shared-split
-./deploy/pastebox-deploy.sh init
+
+docker compose -p pastebox \
+  --env-file deploy/production.env \
+  --env-file /opt/postgresql/.env \
+  --env-file /opt/redis/.env \
+  -f compose.production.yaml \
+  -f compose.external-split-services.yaml \
+  -f compose.nginx-host.yaml config --quiet
+
+PASTEBOX_PREFLIGHT_ROOT_ONLY=true docker compose -p pastebox \
+  --env-file deploy/production.env \
+  --env-file /opt/postgresql/.env \
+  --env-file /opt/redis/.env \
+  -f compose.production.yaml \
+  -f compose.external-split-services.yaml \
+  -f compose.nginx-host.yaml \
+  --profile maintenance run --rm preflight
+
+docker compose -p pastebox \
+  --env-file deploy/production.env \
+  --env-file /opt/postgresql/.env \
+  --env-file /opt/redis/.env \
+  -f compose.production.yaml \
+  -f compose.external-split-services.yaml \
+  -f compose.nginx-host.yaml \
+  pull api worker preflight migrate
+
+docker compose -p pastebox \
+  --env-file deploy/production.env \
+  --env-file /opt/postgresql/.env \
+  --env-file /opt/redis/.env \
+  -f compose.production.yaml \
+  -f compose.external-split-services.yaml \
+  -f compose.nginx-host.yaml \
+  --profile maintenance run --rm migrate
+
+docker compose -p pastebox \
+  --env-file deploy/production.env \
+  --env-file /opt/postgresql/.env \
+  --env-file /opt/redis/.env \
+  -f compose.production.yaml \
+  -f compose.external-split-services.yaml \
+  -f compose.nginx-host.yaml \
+  up -d clamav api worker
 ```
 
-预期输出：
+### 方式 B：执行 PasteBox 部署脚本
 
-```text
-共享 PostgreSQL、Redis 和 PasteBox 独立数据库已就绪。
-```
-
-运行根配置预检：
+部署脚本的 `up` 只拉取、迁移并启动 PasteBox 容器；PostgreSQL 和 Redis 仍由
+前面的手动命令管理：
 
 ```sh
+cd /opt/pastebox
+. /opt/pastebox/pastebox.env
 ./deploy/pastebox-deploy.sh preflight-root
-```
-
-预期输出 `production preflight passed (startup roots only)`。
-
-一条命令完成拉取镜像、数据库迁移并启动 ClamAV、API 和 worker：
-
-```sh
 ./deploy/pastebox-deploy.sh up
 ./deploy/pastebox-deploy.sh status
 ```
 
-预期运行的 PasteBox 服务包含 `api`、`worker`、`clamav`。ClamAV 首次下载病毒库
-可能需要几分钟：
+预检通过后，预期运行的 PasteBox 服务包含 `api`、`worker`、`clamav`。不要在这套
+手动基础设施方案中执行 `./deploy/pastebox-deploy.sh init`，因为该命令会尝试管理
+PostgreSQL 和 Redis。
+
+ClamAV 首次下载病毒库可能需要几分钟：
 
 ```sh
 ./deploy/pastebox-deploy.sh logs clamav
 ```
 
-后续命令都假设已经执行过 `. /opt/pastebox/.env.shared-split`。新开一个
+后续使用部署脚本的命令都假设已经执行过 `. /opt/pastebox/pastebox.env`。新开一个
 shell 时再加载一次即可。
 
 ## 第 7 步：宿主机 Nginx + certbot 证书
@@ -541,7 +611,7 @@ s3o 的 Nginx 站点沿用你已部署的配置即可（`127.0.0.1:19000` 上游
 
 ```sh
 cd /opt/pastebox
-. /opt/pastebox/.env.shared-split
+. /opt/pastebox/pastebox.env
 ./deploy/pastebox-deploy.sh admin \
   admin@pastebox.example.com \
   '<long-random-admin-password>'
@@ -559,7 +629,7 @@ cd /opt/pastebox
 保存后等约 10 秒让 API 和 worker 刷新运行时配置，再运行完整预检：
 
 ```sh
-. /opt/pastebox/.env.shared-split
+. /opt/pastebox/pastebox.env
 ./deploy/pastebox-deploy.sh preflight
 ./deploy/pastebox-deploy.sh status
 ```
@@ -577,10 +647,10 @@ s3o 日志里看到 `PutObject`，可进一步确认对象存储链路。
 
 ## 第 9 步：备份
 
-PasteBox 的备份体系基于 maintenance profile 容器，全部通过部署脚本调用
-（split 模式下它们自动连接 `shared-postgres-net` 里的 `shared-postgres`，读写
-`shared-postgres-backups` 卷）。以下命令都在 `/opt/pastebox` 下执行，并已
-`. /opt/pastebox/.env.shared-split`。
+PasteBox 的备份体系基于 maintenance profile 容器，全部通过部署脚本调用。
+备份容器连接 `shared-postgres-net` 里的 PostgreSQL 服务别名
+`shared-postgres`，读写 `shared-postgres-backups` 卷。以下命令都在
+`/opt/pastebox` 下执行，并已加载 `/opt/pastebox/pastebox.env`。
 
 逻辑备份（pg_dump 自定义格式，保留 `PASTEBOX_BACKUP_RETENTION_DAYS` 天）：
 
@@ -637,49 +707,53 @@ docker run --rm \
 备份排期建议（cron 示例，`crontab -e`）：
 
 ```cron
-0 3 * * * . /opt/pastebox/.env.shared-split && cd /opt/pastebox && ./deploy/pastebox-deploy.sh compose --profile maintenance run --rm postgres-backup
-30 3 * * 0 . /opt/pastebox/.env.shared-split && cd /opt/pastebox && ./deploy/pastebox-deploy.sh compose --profile maintenance run --rm postgres-basebackup
-0 4 * * * . /opt/pastebox/.env.shared-split && cd /opt/pastebox && ./deploy/pastebox-deploy.sh compose --profile maintenance run --rm backup-push
+0 3 * * * . /opt/pastebox/pastebox.env && cd /opt/pastebox && ./deploy/pastebox-deploy.sh compose --profile maintenance run --rm postgres-backup
+30 3 * * 0 . /opt/pastebox/pastebox.env && cd /opt/pastebox && ./deploy/pastebox-deploy.sh compose --profile maintenance run --rm postgres-basebackup
+0 4 * * * . /opt/pastebox/pastebox.env && cd /opt/pastebox && ./deploy/pastebox-deploy.sh compose --profile maintenance run --rm backup-push
 ```
 
-注意：共享 PostgreSQL 停止时备份容器无法运行；先 `infra-status` 确认数据库
-健康再排期。异地备份仓库与附件对象存储必须使用不同凭据。
+注意：PostgreSQL 停止时备份容器无法运行；先用第 3 步的
+`docker compose ... ps` 确认数据库健康再排期。异地备份仓库与附件对象存储必须使用不同凭据。
 
 ## 第 10 步：日常运维
 
-所有命令在 `/opt/pastebox` 下执行（已 `. /opt/pastebox/.env.shared-split`）：
+PasteBox 命令在 `/opt/pastebox` 下执行（已加载 `/opt/pastebox/pastebox.env`）：
 
 ```sh
 ./deploy/pastebox-deploy.sh status         # PasteBox 容器状态
 ./deploy/pastebox-deploy.sh logs           # 跟随 api/worker 日志
 ./deploy/pastebox-deploy.sh logs clamav    # 指定服务日志
-./deploy/pastebox-deploy.sh down           # 停止 PasteBox（共享 PG/Redis 不受影响）
-./deploy/pastebox-deploy.sh infra-status   # 查看两个共享 project 状态
-./deploy/pastebox-deploy.sh infra-down     # 停止共享 PG 和 Redis（影响所有接入项目）
+./deploy/pastebox-deploy.sh down           # 停止 PasteBox（PostgreSQL/Redis 不受影响）
 ./deploy/pastebox-deploy.sh upgrade        # 拉新镜像、迁移并滚动更新
 ```
 
-单独管理共享服务（独立升级 PostgreSQL 或 Redis 时）：
+PostgreSQL 和 Redis 始终单独手动管理：
 
 ```sh
-cd /opt/shared-postgres
-docker compose pull && docker compose up -d   # 升级 PostgreSQL
+cd /opt/postgresql
+docker compose -p postgresql --env-file .env -f compose.yaml ps
+docker compose -p postgresql --env-file .env -f compose.yaml pull
+docker compose -p postgresql --env-file .env -f compose.yaml up -d postgres
+docker compose -p postgresql --env-file .env -f compose.yaml stop postgres  # 停止，不删除数据卷
 
-cd /opt/shared-redis
-docker compose pull && docker compose up -d   # 升级 Redis
+cd /opt/redis
+docker compose -p redis --env-file .env -f compose.yaml ps
+docker compose -p redis --env-file .env -f compose.yaml pull
+docker compose -p redis --env-file .env -f compose.yaml up -d redis
+docker compose -p redis --env-file .env -f compose.yaml stop redis          # 停止，不删除数据卷
 ```
 
-升级共享服务前先完成一次备份；PostgreSQL 大版本升级（17 -> 18）不能只换镜像
+升级 PostgreSQL 或 Redis 前先完成一次备份；PostgreSQL 大版本升级（17 -> 18）不能只换镜像
 tag，需要 `pg_upgrade` 或逻辑导出导入，另行规划。
 
-`infra-reset --confirm-delete-all-data` 会删除共享数据库和 Redis 数据卷，仅供
-开发环境重来，生产环境不要执行。
+不要随意执行 `docker compose down -v`，它会删除 PostgreSQL 或 Redis 数据卷；生产
+环境如需重建，先完成备份、恢复演练和变更审批。
 
-### 其他项目复用共享服务
+### 其他项目接入 PostgreSQL/Redis
 
 其他 Docker 项目接入时：
 
-1. PostgreSQL：为其创建独立的数据库和账号（参考第 6 步脚本创建 `pastebox`
+1. PostgreSQL：为其创建独立的数据库和账号（参考第 6 步命令创建 `pastebox`
    的方式），把项目容器加入外部网络 `shared-postgres-net`，主机写
    `shared-postgres:5432`。
 2. Redis：加入外部网络 `shared-redis-net`，主机写 `shared-redis:6379`；与
@@ -700,10 +774,12 @@ networks:
 
 ## 常见问题
 
-### `init` 报错 `共享 PostgreSQL 在 120 秒内未就绪`
+### PostgreSQL 容器未就绪
 
 ```sh
-cd /opt/shared-postgres && docker compose ps && docker compose logs postgres
+cd /opt/postgresql
+docker compose -p postgresql --env-file .env -f compose.yaml ps
+docker compose -p postgresql --env-file .env -f compose.yaml logs postgres
 ```
 
 常见原因：`.env` 里 `SHARED_POSTGRES_PASSWORD` 为空、数据卷残留旧集群初始化
@@ -711,10 +787,10 @@ cd /opt/shared-postgres && docker compose ps && docker compose logs postgres
 
 ### `up` 或 `migrate` 连不上数据库
 
-确认三个条件：共享 PG 已 `Up (healthy)`；`deploy/production.env` 的
+确认三个条件：PostgreSQL 已 `Up (healthy)`；`deploy/production.env` 的
 `PASTEBOX_DATABASE_URL` 主机是 `shared-postgres`（不是 `postgres` 或
-`127.0.0.1`）；当前 shell 已加载 `. /opt/pastebox/.env.shared-split`（否则
-不会加载 `compose.external-split-services.yaml`，容器不会加入共享网络）。
+`127.0.0.1`）；当前 shell 已加载 `. /opt/pastebox/pastebox.env`（否则
+不会加载 `compose.external-split-services.yaml`，容器不会加入 PostgreSQL/Redis 网络）。
 
 验证容器网络连通性（busybox `nc` 探测 TCP 端口，容器名以 `docker ps` 实际
 输出为准）：
@@ -745,19 +821,19 @@ style；在宿主机用 AWS CLI 对 `https://s3o.example.com` 做 head-bucket �
 
 ### `readyz` 里 database/redis 不通过
 
-`infra-status` 确认两个共享 project 健康；分别用第 3、4 步的
+分别用第 3、4 步的 PostgreSQL/Redis Compose 命令和
 `pg_isready`/`redis-cli ping` 验证。Redis 只用于可用性检查，database 不通才是
 业务故障。
 
 ### 备份容器启动即退出
 
-备份类容器依赖共享 PG 健康，且读取 `shared-postgres-backups` 外部卷；先跑
-`infra-status`，再确认卷存在：`docker volume ls | grep shared-postgres-backups`。
+备份类容器依赖 PostgreSQL 健康，且读取 `shared-postgres-backups` 外部卷；先确认
+PostgreSQL project 正常，再确认卷存在：`docker volume ls | grep shared-postgres-backups`。
 
 ## 与本架构相关的其他文档
 
 - [s3-orchestrator 聚合 R2 对接 PasteBox 教程](s3-orchestrator-r2-pastebox-docker.zh-CN.md)
   — s3o 部署、R2 凭据、虚拟 bucket 管理。
 - [Docker + Nginx + Cloudflare 生产部署教程](production-docker-nginx-cloudflare.zh-CN.md)
-  — 单 project 共享模式和一体化模式。
+  — PasteBox 自带 PostgreSQL/Redis 的一体化模式。
 - [PasteBox 中文部署文档](deployment.zh-CN.md) — 演示栈说明与镜像发布流程。
