@@ -503,3 +503,36 @@ Resume after e6a2a884 API failures. Verified split compose rendering, path overr
 ### Next Steps
 
 - None - task complete
+
+
+## Session 15: 简化 PostgreSQL Redis PasteBox 部署文档
+
+**Date**: 2026-09-11
+**Task**: 简化 PostgreSQL Redis PasteBox 部署文档
+**Branch**: `main`
+
+### Summary
+
+更新 docs/shared-pg-redis-deployment.zh-CN.md：统一使用 postgresql/redis/pastebox 命名；PostgreSQL 和 Redis 改为手动 Compose 管理；PasteBox 增加直接 Compose 与部署脚本两种启动方式。已通过三套 Compose config 渲染、脚本语法、git diff check 和文档一致性检查。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4e4cf34` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
