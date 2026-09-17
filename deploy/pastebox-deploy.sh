@@ -5,12 +5,12 @@ repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo_root"
 
 env_file=${PASTEBOX_ENV_FILE:-deploy/production.env}
-infra_env_file=${PASTEBOX_SHARED_ENV_FILE:-deploy/shared-services.env}
-mode=${PASTEBOX_DEPLOY_MODE:-shared}
-split_pg_compose_file=${PASTEBOX_SHARED_POSTGRES_COMPOSE_FILE:-compose.shared-postgres.yaml}
-split_pg_env_file=${PASTEBOX_SHARED_POSTGRES_ENV_FILE:-deploy/shared-postgres.env}
-split_redis_compose_file=${PASTEBOX_SHARED_REDIS_COMPOSE_FILE:-compose.shared-redis.yaml}
-split_redis_env_file=${PASTEBOX_SHARED_REDIS_ENV_FILE:-deploy/shared-redis.env}
+infra_env_file=${PASTEBOX_INFRA_ENV_FILE:-deploy/infra.env}
+mode=${PASTEBOX_DEPLOY_MODE:-combined}
+split_pg_compose_file=${PASTEBOX_POSTGRESQL_COMPOSE_FILE:-compose.postgresql.yaml}
+split_pg_env_file=${PASTEBOX_POSTGRESQL_ENV_FILE:-deploy/postgresql.env}
+split_redis_compose_file=${PASTEBOX_REDIS_COMPOSE_FILE:-compose.redis.yaml}
+split_redis_env_file=${PASTEBOX_REDIS_ENV_FILE:-deploy/redis.env}
 host_override=${PASTEBOX_COMPOSE_OVERRIDE:-}
 if [ -z "$host_override" ] && [ -f compose.nginx-host.yaml ]; then
 	host_override=compose.nginx-host.yaml
@@ -21,36 +21,36 @@ usage() {
 用法: ./deploy/pastebox-deploy.sh <命令> [参数]
 
 命令:
-  init                 首次初始化；共享模式会启动 PostgreSQL/Redis 并创建 PasteBox 数据库
+  init                 首次初始化；combined/split 模式会启动 PostgreSQL/Redis 并创建 PasteBox 数据库
   up                   拉取镜像、迁移并启动 PasteBox
   status               查看容器状态
   logs [service...]    查看日志，默认 api 和 worker
   upgrade              拉取新镜像、迁移并滚动更新 PasteBox
-  down                 停止 PasteBox；共享 PostgreSQL/Redis 保持运行
+  down                 停止 PasteBox；combined/split 模式的 PostgreSQL/Redis 保持运行
   preflight-root       运行首次启动根配置检查
   preflight            运行完整生产配置检查
   admin EMAIL PASSWORD 创建或重置管理员
-  infra-status         查看共享 PostgreSQL/Redis
-  infra-down           停止共享 PostgreSQL/Redis
+  infra-status         查看外部 PostgreSQL/Redis
+  infra-down           停止外部 PostgreSQL/Redis
   infra-reset --confirm-delete-all-data
-                       停止并删除全部共享数据卷（危险）
+                       停止并删除全部外部数据卷（危险）
   compose <args...>    透传到最终 Compose 配置
 
 环境变量:
-  PASTEBOX_DEPLOY_MODE=shared|shared-split|integrated   默认 shared
+  PASTEBOX_DEPLOY_MODE=combined|split|integrated 默认 combined
   PASTEBOX_ENV_FILE=<path>                 默认 deploy/production.env
-  PASTEBOX_SHARED_ENV_FILE=<path>          shared 模式默认 deploy/shared-services.env
-  PASTEBOX_SHARED_POSTGRES_COMPOSE_FILE=<path> shared-split 模式默认 compose.shared-postgres.yaml
-  PASTEBOX_SHARED_POSTGRES_ENV_FILE=<path>    shared-split 模式默认 deploy/shared-postgres.env
-  PASTEBOX_SHARED_REDIS_COMPOSE_FILE=<path>   shared-split 模式默认 compose.shared-redis.yaml
-  PASTEBOX_SHARED_REDIS_ENV_FILE=<path>       shared-split 模式默认 deploy/shared-redis.env
+  PASTEBOX_INFRA_ENV_FILE=<path>          combined 模式默认 deploy/infra.env
+  PASTEBOX_POSTGRESQL_COMPOSE_FILE=<path> split 模式默认 compose.postgresql.yaml
+  PASTEBOX_POSTGRESQL_ENV_FILE=<path>    split 模式默认 deploy/postgresql.env
+  PASTEBOX_REDIS_COMPOSE_FILE=<path>   split 模式默认 compose.redis.yaml
+  PASTEBOX_REDIS_ENV_FILE=<path>       split 模式默认 deploy/redis.env
   PASTEBOX_COMPOSE_OVERRIDE=<path>         可选，例如 compose.nginx-host.yaml
 
-共享服务独立目录部署时（推荐），例如：
-  PASTEBOX_SHARED_POSTGRES_COMPOSE_FILE=/opt/shared-postgres/compose.yaml \
-  PASTEBOX_SHARED_POSTGRES_ENV_FILE=/opt/shared-postgres/.env \
-  PASTEBOX_SHARED_REDIS_COMPOSE_FILE=/opt/shared-redis/compose.yaml \
-  PASTEBOX_SHARED_REDIS_ENV_FILE=/opt/shared-redis/.env
+PostgreSQL 和 Redis 独立目录部署时（split 模式），例如：
+  PASTEBOX_POSTGRESQL_COMPOSE_FILE=/opt/postgresql/compose.yaml \
+  PASTEBOX_POSTGRESQL_ENV_FILE=/opt/postgresql/.env \
+  PASTEBOX_REDIS_COMPOSE_FILE=/opt/redis/compose.yaml \
+  PASTEBOX_REDIS_ENV_FILE=/opt/redis/.env
 可以把这些变量写入一个文件后 source，或放到 cron/服务管理器的环境里。
 EOF
 }
@@ -75,7 +75,7 @@ compose() {
 }
 
 infra_compose() {
-	docker compose --env-file "$infra_env_file" -f compose.shared-services.yaml "$@"
+	docker compose --env-file "$infra_env_file" -f compose.infra.yaml "$@"
 }
 
 split_pg_compose() {
@@ -88,9 +88,9 @@ split_redis_compose() {
 
 build_compose_args() {
 	set -- --env-file "$env_file" -f compose.production.yaml
-	if [ "$mode" = "shared" ]; then
+	if [ "$mode" = "combined" ]; then
 		set -- "$@" --env-file "$infra_env_file" -f compose.external-services.yaml
-	elif [ "$mode" = "shared-split" ]; then
+	elif [ "$mode" = "split" ]; then
 		set -- "$@" --env-file "$split_pg_env_file" --env-file "$split_redis_env_file" -f compose.external-split-services.yaml
 	fi
 	if [ -n "$host_override" ]; then
@@ -105,8 +105,8 @@ app_compose() {
 	compose $COMPOSE_ARGS "$@"
 }
 
-wait_for_shared_postgres() {
-	superuser=$(env_value "$infra_env_file" SHARED_POSTGRES_SUPERUSER)
+wait_for_combined_postgresql() {
+	superuser=$(env_value "$infra_env_file" POSTGRESQL_SUPERUSER)
 	[ -n "$superuser" ] || superuser=postgres
 	i=0
 	while [ "$i" -lt 60 ]; do
@@ -116,11 +116,11 @@ wait_for_shared_postgres() {
 		i=$((i + 1))
 		sleep 2
 	done
-	die "共享 PostgreSQL 在 120 秒内未就绪"
+	die "combined 模式的 PostgreSQL 在 120 秒内未就绪"
 }
 
-wait_for_split_postgres() {
-	superuser=$(env_value "$split_pg_env_file" SHARED_POSTGRES_SUPERUSER)
+wait_for_split_postgresql() {
+	superuser=$(env_value "$split_pg_env_file" POSTGRESQL_SUPERUSER)
 	[ -n "$superuser" ] || superuser=postgres
 	i=0
 	while [ "$i" -lt 60 ]; do
@@ -130,25 +130,25 @@ wait_for_split_postgres() {
 		i=$((i + 1))
 		sleep 2
 	done
-	die "共享 PostgreSQL 在 120 秒内未就绪"
+	die "split 模式的 PostgreSQL 在 120 秒内未就绪"
 }
 
-init_shared_database() {
+init_pastebox_database() {
 	case "$mode" in
-		shared) init_shared_database_on infra_compose "$infra_env_file" ;;
-		shared-split) init_shared_database_on split_pg_compose "$split_pg_env_file" ;;
+		combined) init_pastebox_database_on infra_compose "$infra_env_file" ;;
+		split) init_pastebox_database_on split_pg_compose "$split_pg_env_file" ;;
 	esac
 }
 
-init_shared_database_on() {
+init_pastebox_database_on() {
 	compose_cmd=$1
 	infra_env=$2
-	superuser=$(env_value "$infra_env" SHARED_POSTGRES_SUPERUSER)
+	superuser=$(env_value "$infra_env" POSTGRESQL_SUPERUSER)
 	[ -n "$superuser" ] || superuser=postgres
 	database_url=$(env_value "$env_file" PASTEBOX_DATABASE_URL)
 	case "$database_url" in
-		postgres://pastebox@shared-postgres:5432/pastebox*) ;;
-		*) die "共享模式下 PASTEBOX_DATABASE_URL 应连接 shared-postgres:5432/pastebox，并使用 pastebox 独立账号" ;;
+		postgres://pastebox@postgresql:5432/pastebox*) ;;
+		*) die "combined/split 模式下 PASTEBOX_DATABASE_URL 应连接 postgresql:5432/pastebox，并使用 pastebox 独立账号" ;;
 	esac
 	password=$(env_value "$env_file" PASTEBOX_POSTGRES_PASSWORD)
 	case "$password" in
@@ -174,8 +174,8 @@ if [ "$#" -gt 0 ]; then
 fi
 
 case "$mode" in
-	shared|shared-split|integrated) ;;
-	*) die "PASTEBOX_DEPLOY_MODE 只能是 shared、shared-split 或 integrated" ;;
+	combined|split|integrated) ;;
+	*) die "PASTEBOX_DEPLOY_MODE 只能是 combined、split 或 integrated" ;;
 esac
 
 require_split_files() {
@@ -192,14 +192,14 @@ case "$command_name" in
 		;;
 	infra-status|infra-down|infra-reset)
 		case "$mode" in
-			shared) require_file "$infra_env_file" ;;
-			shared-split) require_split_files ;;
+			combined) require_file "$infra_env_file" ;;
+			split) require_split_files ;;
 		esac
 		case "$command_name" in
 			infra-status)
 				case "$mode" in
-					shared) infra_compose ps ;;
-					shared-split)
+					combined) infra_compose ps ;;
+					split)
 						split_pg_compose ps
 						split_redis_compose ps
 						;;
@@ -207,27 +207,27 @@ case "$command_name" in
 				;;
 			infra-down)
 				case "$mode" in
-					shared) infra_compose down ;;
-					shared-split)
+					combined) infra_compose down ;;
+					split)
 						split_pg_compose down
 						split_redis_compose down
 						;;
 				esac
 				;;
 			infra-reset)
-				[ "${1:-}" = "--confirm-delete-all-data" ] || die "危险操作：使用 infra-reset --confirm-delete-all-data 才会删除共享数据库和 Redis 数据卷"
+				[ "${1:-}" = "--confirm-delete-all-data" ] || die "危险操作：使用 infra-reset --confirm-delete-all-data 才会删除 PostgreSQL 和 Redis 数据卷"
 				case "$mode" in
-					shared)
+					combined)
 						infra_compose down -v --remove-orphans
-						backup_volume=$(env_value "$infra_env_file" SHARED_BACKUP_VOLUME)
-						[ -n "$backup_volume" ] || backup_volume=shared-postgres-backups
+						backup_volume=$(env_value "$infra_env_file" POSTGRESQL_BACKUP_VOLUME)
+						[ -n "$backup_volume" ] || backup_volume=postgresql-backups
 						docker volume rm "$backup_volume" >/dev/null 2>&1 || true
 						;;
-					shared-split)
+					split)
 						split_pg_compose down -v --remove-orphans
 						split_redis_compose down -v --remove-orphans
-						backup_volume=$(env_value "$split_pg_env_file" SHARED_BACKUP_VOLUME)
-						[ -n "$backup_volume" ] || backup_volume=shared-postgres-backups
+						backup_volume=$(env_value "$split_pg_env_file" POSTGRESQL_BACKUP_VOLUME)
+						[ -n "$backup_volume" ] || backup_volume=postgresql-backups
 						docker volume rm "$backup_volume" >/dev/null 2>&1 || true
 						;;
 				esac
@@ -245,8 +245,8 @@ esac
 require_file "$env_file"
 [ -z "$host_override" ] || require_file "$host_override"
 case "$mode" in
-	shared) require_file "$infra_env_file" ;;
-	shared-split) require_split_files ;;
+	combined) require_file "$infra_env_file" ;;
+	split) require_split_files ;;
 esac
 export PASTEBOX_ENV_FILE="$env_file"
 build_compose_args
@@ -254,27 +254,27 @@ build_compose_args
 case "$command_name" in
 	init)
 		case "$mode" in
-			shared)
+			combined)
 				infra_compose config --quiet
-				backup_volume=$(env_value "$infra_env_file" SHARED_BACKUP_VOLUME)
-				[ -n "$backup_volume" ] || backup_volume=shared-postgres-backups
+				backup_volume=$(env_value "$infra_env_file" POSTGRESQL_BACKUP_VOLUME)
+				[ -n "$backup_volume" ] || backup_volume=postgresql-backups
 				docker volume create "$backup_volume" >/dev/null
 				infra_compose up -d postgres redis
-				wait_for_shared_postgres
-				init_shared_database
-				printf '共享 PostgreSQL/Redis 和 PasteBox 独立数据库已就绪。\n'
+				wait_for_combined_postgresql
+				init_pastebox_database
+				printf 'combined 模式的 PostgreSQL、Redis 和 PasteBox 独立数据库已就绪。\n'
 				;;
-			shared-split)
+			split)
 				split_pg_compose config --quiet
 				split_redis_compose config --quiet
-				backup_volume=$(env_value "$split_pg_env_file" SHARED_BACKUP_VOLUME)
-				[ -n "$backup_volume" ] || backup_volume=shared-postgres-backups
+				backup_volume=$(env_value "$split_pg_env_file" POSTGRESQL_BACKUP_VOLUME)
+				[ -n "$backup_volume" ] || backup_volume=postgresql-backups
 				docker volume create "$backup_volume" >/dev/null
 				split_pg_compose up -d postgres
 				split_redis_compose up -d redis
-				wait_for_split_postgres
-				init_shared_database
-				printf '共享 PostgreSQL、Redis 和 PasteBox 独立数据库已就绪。\n'
+				wait_for_split_postgresql
+				init_pastebox_database
+				printf 'split 模式的 PostgreSQL、Redis 和 PasteBox 独立数据库已就绪。\n'
 				;;
 			*)
 				app_compose config --quiet

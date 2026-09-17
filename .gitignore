@@ -5,7 +5,9 @@
 .env.*
 !.env.example
 deploy/production.env
-deploy/shared-services.env
+deploy/infra.env
+deploy/postgresql.env
+deploy/redis.env
 compose.nginx-host.yaml
 
 # Go

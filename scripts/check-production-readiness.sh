@@ -35,12 +35,20 @@ require_file() {
 }
 
 require_file "$env_file"
-require_file deploy/shared-services.env.example
-require_file deploy/production.shared.env.example
-require_file deploy/shared-postgres.env.example
-require_file deploy/shared-redis.env.example
+require_file deploy/infra.env.example
+require_file deploy/production.combined.env.example
+require_file deploy/postgresql.env.example
+require_file deploy/redis.env.example
 require_file deploy/production.split.env.example
 require_file compose.nginx-host.example.yaml
+
+legacy_names='shared''-postgres|shared''-redis|shared''-postgresql|SHARED''_POSTGRES|SHARED''_REDIS|PASTEBOX''_SHARED|compose.''shared|production.''shared|shared''-infra|pastebox-shared''-services|shared''-postgres-net|shared''-redis-net|shared''-postgres-data|shared''-redis-data|shared''-postgres-backups|shared''-split'
+if rg -n -i "$legacy_names" \
+	compose*.yaml deploy docs scripts .gitignore .dockerignore \
+	--glob '!*.png' >/dev/null 2>&1; then
+	printf 'legacy PostgreSQL/Redis infrastructure names remain in active files\n' >&2
+	exit 1
+fi
 
 prometheus_image=$(env_value PASTEBOX_PROMETHEUS_IMAGE prom/prometheus:v2.55.1)
 caddy_image=$(env_value PASTEBOX_CADDY_IMAGE caddy:2.10-alpine)
@@ -52,57 +60,70 @@ section "Compose config"
 run docker compose --env-file "$env_file" -f compose.production.yaml config >/dev/null
 run docker compose --env-file "$env_file" -f compose.production.yaml --profile monitoring config >/dev/null
 run docker compose --env-file "$env_file" -f compose.production.yaml --profile maintenance config >/dev/null
-run docker compose --env-file deploy/shared-services.env.example -f compose.shared-services.yaml config >/dev/null
-run env PASTEBOX_ENV_FILE=./deploy/production.shared.env.example docker compose \
-	--env-file deploy/shared-services.env.example \
-	--env-file deploy/production.shared.env.example \
+run docker compose --env-file deploy/infra.env.example -f compose.infra.yaml config >/dev/null
+infra_config=$(docker compose --env-file deploy/infra.env.example -f compose.infra.yaml config)
+printf '%s\n' "$infra_config" | grep -q 'name: infra'
+printf '%s\n' "$infra_config" | grep -q 'name: infra-net'
+printf '%s\n' "$infra_config" | grep -q -- '- postgresql'
+printf '%s\n' "$infra_config" | grep -q -- '- redis'
+run env PASTEBOX_ENV_FILE=./deploy/production.combined.env.example docker compose \
+	--env-file deploy/infra.env.example \
+	--env-file deploy/production.combined.env.example \
 	-f compose.production.yaml \
 	-f compose.external-services.yaml \
 	--profile maintenance \
 	config >/dev/null
-run env PASTEBOX_ENV_FILE=./deploy/production.shared.env.example docker compose \
-	--env-file deploy/shared-services.env.example \
-	--env-file deploy/production.shared.env.example \
+run env PASTEBOX_ENV_FILE=./deploy/production.combined.env.example docker compose \
+	--env-file deploy/infra.env.example \
+	--env-file deploy/production.combined.env.example \
 	-f compose.production.yaml \
 	-f compose.external-services.yaml \
 	-f compose.nginx-host.example.yaml \
 	config >/dev/null
-shared_services=$(PASTEBOX_ENV_FILE=./deploy/production.shared.env.example docker compose \
-	--env-file deploy/shared-services.env.example \
-	--env-file deploy/production.shared.env.example \
+combined_services=$(PASTEBOX_ENV_FILE=./deploy/production.combined.env.example docker compose \
+	--env-file deploy/infra.env.example \
+	--env-file deploy/production.combined.env.example \
 	-f compose.production.yaml \
 	-f compose.external-services.yaml \
 	--profile maintenance \
 	config --services)
-printf '%s\n' "$shared_services" | grep -qx api
-printf '%s\n' "$shared_services" | grep -qx worker
-printf '%s\n' "$shared_services" | grep -qx migrate
-if printf '%s\n' "$shared_services" | grep -Eq '^(postgres|redis|backup-volume-init)$'; then
-	printf 'shared production config unexpectedly includes integrated infrastructure\n' >&2
+printf '%s\n' "$combined_services" | grep -qx api
+printf '%s\n' "$combined_services" | grep -qx worker
+printf '%s\n' "$combined_services" | grep -qx migrate
+if printf '%s\n' "$combined_services" | grep -Eq '^(postgres|redis|backup-volume-init)$'; then
+	printf 'combined production config unexpectedly includes integrated infrastructure\n' >&2
 	exit 1
 fi
 
-run docker compose --env-file deploy/shared-postgres.env.example -f compose.shared-postgres.yaml config >/dev/null
-run docker compose --env-file deploy/shared-redis.env.example -f compose.shared-redis.yaml config >/dev/null
+run docker compose --env-file deploy/postgresql.env.example -f compose.postgresql.yaml config >/dev/null
+run docker compose --env-file deploy/redis.env.example -f compose.redis.yaml config >/dev/null
+postgresql_config=$(docker compose --env-file deploy/postgresql.env.example -f compose.postgresql.yaml config)
+redis_config=$(docker compose --env-file deploy/redis.env.example -f compose.redis.yaml config)
+printf '%s\n' "$postgresql_config" | grep -q 'name: postgresql'
+printf '%s\n' "$postgresql_config" | grep -q 'name: postgresql-net'
+printf '%s\n' "$postgresql_config" | grep -q -- '- postgresql'
+printf '%s\n' "$redis_config" | grep -q 'name: redis'
+printf '%s\n' "$redis_config" | grep -q 'name: redis-net'
+printf '%s\n' "$redis_config" | grep -q -- '- redis'
 run env PASTEBOX_ENV_FILE=./deploy/production.split.env.example docker compose \
-	--env-file deploy/shared-postgres.env.example \
-	--env-file deploy/shared-redis.env.example \
+	--env-file deploy/postgresql.env.example \
+	--env-file deploy/redis.env.example \
 	--env-file deploy/production.split.env.example \
 	-f compose.production.yaml \
 	-f compose.external-split-services.yaml \
 	--profile maintenance \
 	config >/dev/null
 run env PASTEBOX_ENV_FILE=./deploy/production.split.env.example docker compose \
-	--env-file deploy/shared-postgres.env.example \
-	--env-file deploy/shared-redis.env.example \
+	--env-file deploy/postgresql.env.example \
+	--env-file deploy/redis.env.example \
 	--env-file deploy/production.split.env.example \
 	-f compose.production.yaml \
 	-f compose.external-split-services.yaml \
 	-f compose.nginx-host.example.yaml \
 	config >/dev/null
 split_services=$(PASTEBOX_ENV_FILE=./deploy/production.split.env.example docker compose \
-	--env-file deploy/shared-postgres.env.example \
-	--env-file deploy/shared-redis.env.example \
+	--env-file deploy/postgresql.env.example \
+	--env-file deploy/redis.env.example \
 	--env-file deploy/production.split.env.example \
 	-f compose.production.yaml \
 	-f compose.external-split-services.yaml \
@@ -117,17 +138,16 @@ if printf '%s\n' "$split_services" | grep -Eq '^(postgres|redis|backup-volume-in
 fi
 
 section "Maintenance script syntax"
-run sh -n \
-	scripts/check-production-preflight.sh \
-	scripts/check-postgres-integration.sh \
-	deploy/pastebox-deploy.sh \
-	deploy/monitoring/textfile-metrics.sh \
-	deploy/backup/postgres-backup.sh \
-	deploy/backup/postgres-basebackup.sh \
-	deploy/backup/postgres-wal-check.sh \
-	deploy/backup/restic-backup.sh \
-	deploy/backup/postgres-restore-drill.sh \
-	deploy/backup/postgres-pitr-restore-drill.sh
+run sh -n scripts/check-production-preflight.sh
+run sh -n scripts/check-postgres-integration.sh
+run sh -n deploy/pastebox-deploy.sh
+run sh -n deploy/monitoring/textfile-metrics.sh
+run sh -n deploy/backup/postgres-backup.sh
+run sh -n deploy/backup/postgres-basebackup.sh
+run sh -n deploy/backup/postgres-wal-check.sh
+run sh -n deploy/backup/restic-backup.sh
+run sh -n deploy/backup/postgres-restore-drill.sh
+run sh -n deploy/backup/postgres-pitr-restore-drill.sh
 
 section "Monitoring config syntax"
 run docker run --rm --user 0 --entrypoint sh \

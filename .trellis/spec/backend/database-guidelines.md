@@ -566,48 +566,48 @@ postgres:
     - "hba_file=/etc/postgresql/pg_hba.conf"
 ```
 
-## Scenario: Shared PostgreSQL And Redis Deployment
+## Scenario: Combined PostgreSQL And Redis Deployment
 
 ### 1. Scope / Trigger
 
-- Trigger: Any change to `compose.shared-services.yaml`,
-  `compose.external-services.yaml`, `deploy/pastebox-deploy.sh`, shared-service
+- Trigger: Any change to `compose.infra.yaml`,
+  `compose.external-services.yaml`, `deploy/pastebox-deploy.sh`, infrastructure
   env templates, or production maintenance jobs that connect to PostgreSQL.
 
 ### 2. Signatures
 
-- Shared stack: `compose.shared-services.yaml`
+- Combined stack: `compose.infra.yaml`
 - PasteBox override: `compose.external-services.yaml`
 - Operator command: `deploy/pastebox-deploy.sh`
-- External network: `pastebox-shared-services`
-- Shared aliases: `shared-postgres`, `shared-redis`
+- External network: `infra-net`
+- Combined aliases: `postgresql`, `redis`
 
 ### 3. Contracts
 
-- Shared PostgreSQL and Redis belong to a Compose project separate from
-  PasteBox so application `down` and upgrades do not stop shared data services.
-- Shared services publish only to loopback by default and also join a stable
+- Combined PostgreSQL and Redis belong to a Compose project separate from
+  PasteBox so application `down` and upgrades do not stop infrastructure data services.
+- Infrastructure services publish only to loopback by default and also join a stable
   external Docker network for container consumers.
 - PasteBox uses a dedicated PostgreSQL role and database. It must not use the
-  shared PostgreSQL superuser for normal API, worker, migration, or preflight
+  PostgreSQL superuser for normal API, worker, migration, or preflight
   traffic.
-- Shared-mode `PASTEBOX_DATABASE_URL` omits the password. Compose injects
+- Combined-mode `PASTEBOX_DATABASE_URL` omits the password. Compose injects
   `PASTEBOX_POSTGRES_PASSWORD` through libpq's standard `PGPASSWORD` variable
   so special characters do not need duplicate URL encoding.
 - Every other application sharing PostgreSQL must use its own role and
   database. Redis consumers must use separate DB numbers or key prefixes.
-- PostgreSQL maintenance jobs use the shared superuser only where backup,
+- PostgreSQL maintenance jobs use the PostgreSQL superuser only where backup,
   replication, WAL inspection, or restore drills require it, and mount the
-  same named backup volume as the shared PostgreSQL container.
+  same named backup volume as the combined PostgreSQL container.
 - The original integrated production Compose remains renderable and is
   selected with `PASTEBOX_DEPLOY_MODE=integrated`.
 
 ### 4. Validation & Error Matrix
 
-- Missing shared env file in shared mode -> deploy script exits before Compose.
-- Shared database URL does not use the `pastebox` role, database, or
-  `shared-postgres` alias -> `init` exits without creating anything.
-- External network or backup volume does not exist -> shared-mode Compose
+- Missing infra env file in combined mode -> deploy script exits before Compose.
+- Combined database URL does not use the `pastebox` role, database, or
+  `postgresql` alias -> `init` exits without creating anything.
+- External network or backup volume does not exist -> combined-mode Compose
   command fails; run `init` first.
 - PostgreSQL or Redis publishes to a non-loopback address without an explicit
   operator override -> deployment review failure.
@@ -616,22 +616,22 @@ postgres:
 
 ### 5. Good/Base/Bad Cases
 
-- Good: `init` creates shared infrastructure once, and repeated PasteBox
+- Good: `init` creates combined infrastructure once, and repeated PasteBox
   `up`, `upgrade`, and `down` operations leave it running.
 - Base: Integrated mode continues to use the `postgres` and `redis` services
   from `compose.production.yaml`.
 - Bad: Multiple applications share the PostgreSQL superuser or write to the
   same database schema.
 - Bad: A maintenance container writes backups to a PasteBox-local volume while
-  shared PostgreSQL archives WAL into a different volume.
+  combined PostgreSQL archives WAL into a different volume.
 
 ### 6. Tests Required
 
 - Run `sh -n deploy/pastebox-deploy.sh`.
-- Render `compose.shared-services.yaml` with
-  `deploy/shared-services.env.example`.
+- Render `compose.infra.yaml` with
+  `deploy/infra.env.example`.
 - Render the merged production, external-services, and maintenance profiles
-  with both shared env templates.
+  with `deploy/infra.env.example` and `deploy/production.combined.env.example`.
 - Keep the original `compose.production.yaml` render checks green.
 - Run `git diff --check` for deployment and documentation changes.
 
@@ -653,7 +653,7 @@ api:
   depends_on:
     postgres: !reset null
   networks:
-    - shared-services
+    - infra
 ```
 
 ## Scenario: User Repository Boundary

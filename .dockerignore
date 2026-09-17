@@ -7,6 +7,10 @@
 
 .env
 .env.*
+deploy/production.env
+deploy/infra.env
+deploy/postgresql.env
+deploy/redis.env
 
 .cache
 bin

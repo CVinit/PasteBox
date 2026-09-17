@@ -14,12 +14,12 @@
 PasteBox 域名走 Cloudflare CDN，宿主机 Nginx 反代 PasteBox 容器。s3-orchestrator 也用 Docker 部署，但建议对象存储域名不要走 Cloudflare CDN，而是 DNS only 直连源站 Nginx，再由 Nginx 反代到 s3-orchestrator 容器。
 
 本文先给出可以直接照抄的快速部署，再把 R2、S3Orchestrator、备份和排错细节
-放在后面。默认把 PostgreSQL、Redis 作为共享基础服务独立运行，PasteBox 停止、
+放在后面。默认把 PostgreSQL、Redis 作为独立基础设施运行，PasteBox 停止、
 升级或删除时不会影响它们，其他程序也可以在同一容器中使用自己的数据库。
-该形态把 PostgreSQL 和 Redis 放在同一个 `shared-infra` Compose project 里；
-如果你需要两者各自独立成 project、PasteBox 分别接入两个共享容器网络（宿主机
+该形态把 PostgreSQL 和 Redis 放在同一个 `infra` Compose project 里；
+如果你需要两者各自独立成 project、PasteBox 分别接入两个基础设施网络（宿主机
 Nginx + certbot，无 Cloudflare），改用
-[共享 PostgreSQL/Redis 独立部署教程](shared-pg-redis-deployment.zh-CN.md)。
+[PostgreSQL/Redis 独立部署教程](postgresql-redis-deployment.zh-CN.md)。
 
 ## 快速部署
 
@@ -30,28 +30,28 @@ Nginx + certbot，无 Cloudflare），改用
 ```sh
 git clone https://github.com/CVinit/PasteBox.git /opt/pastebox
 cd /opt/pastebox
-cp deploy/production.shared.env.example deploy/production.env
-cp deploy/shared-services.env.example deploy/shared-services.env
+cp deploy/production.combined.env.example deploy/production.env
+cp deploy/infra.env.example deploy/infra.env
 cp compose.nginx-host.example.yaml compose.nginx-host.yaml
-chmod 600 deploy/production.env deploy/shared-services.env
+chmod 600 deploy/production.env deploy/infra.env
 ```
 
 只需要编辑：
 
 - `deploy/production.env`：PasteBox 镜像、域名、数据库连接、加密主密钥和备份参数。
-- `deploy/shared-services.env`：共享 PostgreSQL 超级管理员密码、宿主机监听地址和数据卷名称。
+- `deploy/infra.env`：combined 基础设施的 PostgreSQL 超级管理员密码、宿主机监听地址和数据卷名称。
 
 SMTP、OAuth、S3、扫描器、支付、限流等应用配置不写 `.env`，首次启动后在管理员
 后台填写。
 
-### 2. 一条命令初始化共享服务
+### 2. 一条命令初始化 combined 基础设施
 
 ```sh
 ./deploy/pastebox-deploy.sh init
 ```
 
 它会启动独立的 PostgreSQL、Redis，并自动创建仅供 PasteBox 使用的数据库和账号。
-共享容器属于 `shared-infra` Compose project，不跟随 PasteBox 停止。
+基础设施容器属于 `infra` Compose project，不跟随 PasteBox 停止。
 
 ### 3. 一条命令启动 PasteBox
 
@@ -85,27 +85,27 @@ SMTP、OAuth、S3、扫描器、支付、限流等应用配置不写 `.env`，�
 ./deploy/pastebox-deploy.sh down
 ```
 
-`down` 只停止 PasteBox；共享 PostgreSQL、Redis 继续运行。确实要停止共享服务时才
+`down` 只停止 PasteBox；combined 模式的 PostgreSQL、Redis 继续运行。确实要停止基础设施时才
 执行 `./deploy/pastebox-deploy.sh infra-down`。这个命令也保留数据卷；只有明确执行
-`infra-reset --confirm-delete-all-data` 才会删除共享数据，日常运维不要使用它。
+`infra-reset --confirm-delete-all-data` 才会删除基础设施数据，日常运维不要使用它。
 
 ### 4. 复用 PostgreSQL 和 Redis
 
-其他程序接入共享基础服务时：
+其他程序接入 combined 基础设施时：
 
 1. 为它创建独立 PostgreSQL 数据库和账号，不要共用 `pastebox` 数据库或账号。
-2. 把它的容器加入外部网络 `pastebox-shared-services`。
-3. PostgreSQL 主机使用 `shared-postgres:5432`，Redis 使用 `shared-redis:6379`。
+2. 把它的容器加入外部网络 `infra-net`。
+3. PostgreSQL 主机使用 `postgresql:5432`，Redis 使用 `redis:6379`。
 4. Redis 当前只做可用性检查，不承载 PasteBox 核心数据；其他程序应使用不同的
    Redis DB 编号或 key 前缀，避免键名冲突。
 
-共享服务默认只发布到宿主机 `127.0.0.1:5432` 和 `127.0.0.1:6379`，便于宿主机
+基础设施默认只发布到宿主机 `127.0.0.1:5432` 和 `127.0.0.1:6379`，便于宿主机
 程序复用，同时不会暴露到公网。跨服务器复用应使用专用内网、TLS 和防火墙，不要
 把这两个端口直接开放到 Internet。
 
-需要原来的一体化模式时仍然支持：把 `deploy/production.env` 中的数据库主机改回
-`postgres`、Redis 主机改回 `redis`，然后在命令前加
-`PASTEBOX_DEPLOY_MODE=integrated`。下文以推荐的共享模式为准。
+需要 PasteBox 自带数据库和 Redis 的 integrated 模式时仍然支持：把
+`deploy/production.env` 中的数据库主机改回 `postgres`、Redis 主机改回 `redis`，
+然后在命令前加 `PASTEBOX_DEPLOY_MODE=integrated`。下文以 combined 模式为准。
 
 ## 最终会部署出什么
 
@@ -119,11 +119,11 @@ SMTP、OAuth、S3、扫描器、支付、限流等应用配置不写 `.env`，�
   └── data/
 
 /opt/pastebox
-  ├── compose.shared-services.yaml
+  ├── compose.infra.yaml
   ├── compose.production.yaml
   ├── compose.external-services.yaml
   ├── compose.nginx-host.yaml
-  ├── deploy/shared-services.env
+  ├── deploy/infra.env
   ├── deploy/production.env
   └── deploy/...              # 数据库、备份和监控辅助文件
 ```
@@ -131,7 +131,7 @@ SMTP、OAuth、S3、扫描器、支付、限流等应用配置不写 `.env`，�
 三个 Compose project 的职责是：
 
 - s3-orchestrator 可以独立升级、重启、备份和回滚。
-- `shared-infra` 独立托管可复用的 PostgreSQL、Redis 和持久化卷。
+- `infra` 独立托管可复用的 PostgreSQL、Redis 和持久化卷。
 - PasteBox project 只管理 `api`、`worker`、ClamAV 等应用容器。
 - s3-orchestrator 和 PasteBox 都使用 GitHub 已构建的 GHCR 镜像，不需要在服务器构建应用。
 - 三边的环境变量和密钥不会混在同一个文件里。
@@ -192,7 +192,7 @@ Secret Key: 你生成的虚拟 bucket secret key
 4. 独立部署并验证 s3-orchestrator。
 5. 配置 DNS、证书和宿主机 Nginx。
 6. 从 GHCR 拉取固定版本的 PasteBox 镜像。
-7. 初始化共享 PostgreSQL/Redis，再用短命令完成迁移并启动 PasteBox。
+7. 初始化 combined PostgreSQL/Redis，再用短命令完成迁移并启动 PasteBox。
 8. 依次完成 S3 API、readiness 和浏览器业务验收。
 
 ## 域名规划
@@ -1069,24 +1069,24 @@ PASTEBOX_IMAGE=ghcr.io/cvinit/pastebox@sha256:<digest>
 
 ```sh
 cd /opt/pastebox
-cp deploy/production.shared.env.example deploy/production.env
-cp deploy/shared-services.env.example deploy/shared-services.env
-chmod 600 deploy/production.env deploy/shared-services.env
+cp deploy/production.combined.env.example deploy/production.env
+cp deploy/infra.env.example deploy/infra.env
+chmod 600 deploy/production.env deploy/infra.env
 ```
 
 `deploy/production.env` 只保存应用启动前必须存在、长期不变的根配置，以及
 PostgreSQL 备份参数。站点、对象存储、邮件、OAuth、扫描器、通知、支付、游客
 额度、注册安全、接口限流、日志级别和运行告警都不再写入这里。
 
-`deploy/shared-services.env` 只属于共享基础服务，至少替换
-`SHARED_POSTGRES_PASSWORD`。默认端口写成 `127.0.0.1:5432` 和
+`deploy/infra.env` 只属于 combined 基础设施，至少替换
+`POSTGRESQL_PASSWORD`。默认端口写成 `127.0.0.1:5432` 和
 `127.0.0.1:6379`，宿主机上的其他程序可访问，公网不能访问。固定卷名让多个
 Compose project 都能找到同一份数据；执行 PasteBox 的 `down` 不会删除这些卷。
 如果宿主机已有服务占用端口，把它们改成例如 `127.0.0.1:55432` 和
-`127.0.0.1:56379`；容器内地址仍然保持 `shared-postgres:5432` 和
-`shared-redis:6379`。
+`127.0.0.1:56379`；容器内地址仍然保持 `postgresql:5432` 和
+`redis:6379`。
 
-共享模式按当前 `deploy/production.shared.env.example` 填写：
+combined 模式按当前 `deploy/production.combined.env.example` 填写：
 
 ```sh
 PASTEBOX_IMAGE=ghcr.io/cvinit/pastebox:sha-<commit>
@@ -1099,8 +1099,8 @@ PASTEBOX_METRICS_TOKEN=<long-random-token>
 PASTEBOX_TRUSTED_PROXY_CIDRS=172.16.0.0/12
 
 PASTEBOX_POSTGRES_PASSWORD=<long-random-postgres-password>
-PASTEBOX_DATABASE_URL=postgres://pastebox@shared-postgres:5432/pastebox?sslmode=disable
-PASTEBOX_REDIS_ADDR=shared-redis:6379
+PASTEBOX_DATABASE_URL=postgres://pastebox@postgresql:5432/pastebox?sslmode=disable
+PASTEBOX_REDIS_ADDR=redis:6379
 
 PASTEBOX_BACKUP_RETENTION_DAYS=30
 PASTEBOX_WAL_ARCHIVE_TIMEOUT_SECONDS=900
@@ -1131,14 +1131,14 @@ Nginx 通过 Docker bridge 访问 API，所以沿用模板的 `172.16.0.0/12`。
 自定义 Docker 网段，应根据 `docker network inspect` 的结果缩小范围，绝不能设置
 为 `0.0.0.0/0` 或 `::/0`。
 
-共享模式下密码只写在 `PASTEBOX_POSTGRES_PASSWORD`，Compose 通过标准
+combined 模式下密码只写在 `PASTEBOX_POSTGRES_PASSWORD`，Compose 通过标准
 `PGPASSWORD` 注入给应用容器；`PASTEBOX_DATABASE_URL` 不再重复写密码。因此随机
 密码可以安全包含 URL 特殊字符，但仍建议使用足够长的十六进制随机值，减少复制
 和 shell 转义错误。
 
 这里有两种不同的数据库密码：
 
-- `SHARED_POSTGRES_PASSWORD` 是共享 PostgreSQL 超级管理员密码，只用于维护基础服务。
+- `POSTGRESQL_PASSWORD` 是 combined PostgreSQL 超级管理员密码，只用于维护基础设施。
 - `PASTEBOX_POSTGRES_PASSWORD` 是权限更小的 PasteBox 专用账号密码。
 
 不要让 PasteBox 使用超级管理员账号。部署脚本会根据 `PASTEBOX_DATABASE_URL`
@@ -1267,9 +1267,9 @@ services:
 1. 只把 PasteBox API 发布到宿主机 `127.0.0.1:18080`。
 2. 让需要访问对象存储的容器把 `s3o.example.com` 解析到宿主机 Docker gateway。
 
-S3Orchestrator、共享基础服务和 PasteBox 是三个独立 project，因此这里没有跨
+S3Orchestrator、基础设施和 PasteBox 是三个独立 project，因此这里没有跨
 project 的 `depends_on`。`compose.external-services.yaml` 会把 PasteBox 接入外部
-网络 `pastebox-shared-services`，启动顺序由部署脚本保证。
+网络 `infra-net`，启动顺序由部署脚本保证。
 
 后续日常命令统一使用：
 
@@ -1278,8 +1278,8 @@ project 的 `depends_on`。`compose.external-services.yaml` 会把 PasteBox 接�
 ```
 
 脚本内部自动组合环境文件和多个 Compose 文件，不需要反复输入长参数。本文由
-宿主机 Nginx 占用 `80` 和 `443`，脚本只启动 `clamav`、`api` 和 `worker`；共享
-PostgreSQL、Redis 由 `shared-infra` project 管理。
+宿主机 Nginx 占用 `80` 和 `443`，脚本只启动 `clamav`、`api` 和 `worker`；combined
+模式的 PostgreSQL、Redis 由 `infra` project 管理。
 
 ### 9. 检查 PasteBox 配置
 
@@ -1551,7 +1551,7 @@ sudo ss -lntp | grep -E ':(80|443|18080|19000)\b'
 
 ## 启动顺序
 
-快速部署按本节执行即可；脚本会自动组合环境文件、共享网络和 Compose override。
+快速部署按本节执行即可；脚本会自动组合环境文件、基础设施网络和 Compose override。
 长命令只保留在脚本内部。
 
 ### 1. 确认 S3Orchestrator 已就绪
@@ -1581,7 +1581,7 @@ curl -fsS https://s3o.example.com/health/ready
 
 如果宿主机 HTTP 健康检查成功、HTTPS 域名失败，问题在 DNS、证书、Nginx 或防火墙，不在 R2。
 
-### 3. 初始化共享 PostgreSQL 和 Redis
+### 3. 初始化 combined PostgreSQL 和 Redis
 
 执行目录：`/opt/pastebox`。
 
@@ -1590,7 +1590,7 @@ cd /opt/pastebox
 ./deploy/pastebox-deploy.sh init
 ```
 
-脚本会启动 `shared-infra` project 中的 PostgreSQL 和 Redis，等待数据库就绪，
+脚本会启动 `infra` project 中的 PostgreSQL 和 Redis，等待数据库就绪，
 然后创建独立的 `pastebox` 账号和数据库。检查状态：
 
 ```sh
@@ -1631,7 +1631,7 @@ ClamAV 首次下载病毒库可能需要几分钟，可以查看：
 ./deploy/pastebox-deploy.sh logs clamav
 ```
 
-运行中的 PasteBox service 应包含 `api`、`worker`、`clamav`，共享服务状态中应包含
+运行中的 PasteBox service 应包含 `api`、`worker`、`clamav`，基础设施状态中应包含
 `postgres`、`redis`。脚本不会启动 `caddy`。
 
 这时 `/healthz` 可以成功，但后台配置未保存前不要把 `/readyz` 当成已通过。
@@ -1956,8 +1956,8 @@ sudo sqlite3 \
 
 ### PasteBox 数据库和异地备份
 
-共享 PostgreSQL 的数据、WAL 和 Redis 持久化位于固定命名卷中。PasteBox 的
-maintenance services 通过外部网络访问共享 PostgreSQL，并继续负责逻辑备份、
+combined PostgreSQL 的数据、WAL 和 Redis 持久化位于固定命名卷中。PasteBox 的
+maintenance services 通过外部网络访问 PostgreSQL，并继续负责逻辑备份、
 WAL 检查和 off-host restic 备份。S3Orchestrator 的 SQLite 备份不会包含
 PasteBox 用户、paste、订单和附件元数据。
 
@@ -2138,8 +2138,8 @@ buckets:
 - [ ] `S3O_IMAGE` 使用 `ghcr.io/afreidah/s3-orchestrator` 的固定版本 tag 或 digest，不使用 `latest`。
 - [ ] PasteBox 使用固定 `sha-*` tag 或 digest，不使用 `latest`。
 - [ ] `deploy/production.env` 只包含当前模板中的启动根配置和备份配置。
-- [ ] `deploy/shared-services.env` 权限是 `600`，共享 PostgreSQL 与 PasteBox 使用不同密码。
-- [ ] 共享 PostgreSQL 中每个程序使用独立数据库和账号。
+- [ ] `deploy/infra.env` 权限是 `600`，PostgreSQL 管理员与 PasteBox 使用不同密码。
+- [ ] PostgreSQL 中每个程序使用独立数据库和账号。
 - [ ] `PASTEBOX_CONFIG_ENCRYPTION_KEY` 已与 PostgreSQL 分开安全备份。
 - [ ] `PASTEBOX_TRUSTED_PROXY_CIDRS` 只覆盖实际 Docker bridge，不是全网 CIDR。
 - [ ] 管理员已创建，并已在 **管理后台 > 应用配置** 保存完整生产配置。

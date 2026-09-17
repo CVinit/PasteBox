@@ -209,7 +209,7 @@ server {
 
 The demo Compose file is single-node. Do not run more than one PasteBox API
 container behind a load balancer from this file; use the production runbook and
-shared production services before horizontal scaling.
+the combined infrastructure stack before horizontal scaling.
 
 ## Administrator And Application Config
 

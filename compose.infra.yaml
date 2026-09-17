@@ -1,18 +1,18 @@
-name: ${SHARED_COMPOSE_PROJECT_NAME:-shared-infra}
+name: ${INFRA_COMPOSE_PROJECT_NAME:-infra}
 
 services:
   postgres:
-    image: ${SHARED_POSTGRES_IMAGE:-postgres:17-alpine}
+    image: ${POSTGRESQL_IMAGE:-postgres:17-alpine}
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${SHARED_POSTGRES_SUPERUSER:-postgres}
-      POSTGRES_PASSWORD: ${SHARED_POSTGRES_PASSWORD:?set SHARED_POSTGRES_PASSWORD}
+      POSTGRES_USER: ${POSTGRESQL_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRESQL_PASSWORD:?set POSTGRESQL_PASSWORD}
       POSTGRES_DB: postgres
     ports:
-      - "${SHARED_POSTGRES_HOST_PORT:-127.0.0.1:5432}:5432"
+      - "${POSTGRESQL_HOST_PORT:-127.0.0.1:5432}:5432"
     volumes:
-      - shared-postgres:/var/lib/postgresql/data
-      - shared-backups:/backups
+      - postgresql-data:/var/lib/postgresql/data
+      - postgresql-backups:/backups
       - ./deploy/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
     command:
       - "postgres"
@@ -21,7 +21,7 @@ services:
       - "-c"
       - "archive_mode=on"
       - "-c"
-      - "archive_timeout=${SHARED_POSTGRES_WAL_ARCHIVE_TIMEOUT_SECONDS:-900}"
+      - "archive_timeout=${POSTGRESQL_WAL_ARCHIVE_TIMEOUT_SECONDS:-900}"
       - "-c"
       - "archive_command=mkdir -p /backups/wal && test ! -f /backups/wal/%f && cp %p /backups/wal/%f || test -f /backups/wal/%f"
       - "-c"
@@ -32,9 +32,9 @@ services:
       timeout: 5s
       retries: 10
     networks:
-      shared-services:
+      infra:
         aliases:
-          - shared-postgres
+          - postgresql
     logging:
       driver: json-file
       options:
@@ -42,22 +42,22 @@ services:
         max-file: "5"
 
   redis:
-    image: ${SHARED_REDIS_IMAGE:-redis:7-alpine}
+    image: ${REDIS_IMAGE:-redis:7-alpine}
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
     ports:
-      - "${SHARED_REDIS_HOST_PORT:-127.0.0.1:6379}:6379"
+      - "${REDIS_HOST_PORT:-127.0.0.1:6379}:6379"
     volumes:
-      - shared-redis:/data
+      - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 10
     networks:
-      shared-services:
+      infra:
         aliases:
-          - shared-redis
+          - redis
     logging:
       driver: json-file
       options:
@@ -65,17 +65,17 @@ services:
         max-file: "5"
 
 networks:
-  shared-services:
-    name: pastebox-shared-services
+  infra:
+    name: infra-net
     ipam:
       config:
-        - subnet: ${SHARED_NETWORK_SUBNET:-172.30.0.0/24}
+        - subnet: ${INFRA_NETWORK_SUBNET:-172.30.0.0/24}
 
 volumes:
-  shared-postgres:
-    name: ${SHARED_POSTGRES_VOLUME:-shared-postgres-data}
-  shared-redis:
-    name: ${SHARED_REDIS_VOLUME:-shared-redis-data}
-  shared-backups:
+  postgresql-data:
+    name: ${POSTGRESQL_VOLUME:-postgresql-data}
+  redis-data:
+    name: ${REDIS_VOLUME:-redis-data}
+  postgresql-backups:
     external: true
-    name: ${SHARED_BACKUP_VOLUME:-shared-postgres-backups}
+    name: ${POSTGRESQL_BACKUP_VOLUME:-postgresql-backups}

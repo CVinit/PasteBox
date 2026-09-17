@@ -49,8 +49,8 @@
 
 | 服务 | 所属 project | 容器端口 | 宿主机监听 | 加入的网络 |
 | --- | --- | ---: | --- | --- |
-| PostgreSQL | postgresql | 5432 | `127.0.0.1:5432` | `shared-postgres-net` |
-| Redis | redis | 6379 | `127.0.0.1:6379` | `shared-redis-net` |
+| PostgreSQL | postgresql | 5432 | `127.0.0.1:5432` | `postgresql-net` |
+| Redis | redis | 6379 | `127.0.0.1:6379` | `redis-net` |
 | PasteBox api/worker | pastebox | 8080 | `127.0.0.1:18080` | 项目默认网 + 上面两个 |
 | ClamAV | pastebox | 3310 | 不发布 | 项目默认网 |
 | s3-orchestrator | s3-orchestrator | 9000 | `127.0.0.1:19000` | s3o 自己的网络 |
@@ -58,8 +58,8 @@
 PasteBox 容器通过 PostgreSQL 和 Redis 网络里的服务别名访问数据库：
 
 ```text
-PASTEBOX_DATABASE_URL = postgres://pastebox@shared-postgres:5432/pastebox?sslmode=disable
-PASTEBOX_REDIS_ADDR   = shared-redis:6379
+PASTEBOX_DATABASE_URL = postgres://pastebox@postgresql:5432/pastebox?sslmode=disable
+PASTEBOX_REDIS_ADDR   = redis:6379
 ```
 
 PostgreSQL 和 Redis 网络只存在于 Docker 内部，不发布到公网；宿主机程序如需直连，用
@@ -72,8 +72,8 @@ PostgreSQL 和 Redis 网络只存在于 Docker 内部，不发布到公网；宿
   -> https://pastebox.example.com
   -> 宿主机 Nginx (443)
   -> 127.0.0.1:18080 -> PasteBox api 容器
-      |- shared-postgres-net -> PostgreSQL（读写业务数据）
-      |- shared-redis-net    -> Redis（可用性检查）
+      |- postgresql-net -> PostgreSQL（读写业务数据）
+      |- redis-net    -> Redis（可用性检查）
       -> https://s3o.example.com
          -> 宿主机 Nginx -> s3-orchestrator 容器 -> R2 backend
 ```
@@ -158,16 +158,16 @@ cp -r deploy /opt/pastebox/
 PostgreSQL 模板复制到 `/opt/postgresql`：
 
 ```sh
-cp compose.shared-postgres.yaml /opt/postgresql/compose.yaml
-cp deploy/shared-postgres.env.example /opt/postgresql/.env
+cp compose.postgresql.yaml /opt/postgresql/compose.yaml
+cp deploy/postgresql.env.example /opt/postgresql/.env
 cp deploy/postgres/pg_hba.conf /opt/postgresql/pg_hba.conf
 ```
 
 Redis 模板复制到 `/opt/redis`：
 
 ```sh
-cp compose.shared-redis.yaml /opt/redis/compose.yaml
-cp deploy/shared-redis.env.example /opt/redis/.env
+cp compose.redis.yaml /opt/redis/compose.yaml
+cp deploy/redis.env.example /opt/redis/.env
 ```
 
 最终三个目录的文件：
@@ -198,22 +198,22 @@ openssl rand -base64 24
 需要修改的项：
 
 ```sh
-SHARED_POSTGRES_PASSWORD=<上面生成的密码>
+POSTGRESQL_PASSWORD=<上面生成的密码>
 ```
 
 其余保持默认即可，含义如下（遇到冲突再改）：
 
-- `SHARED_POSTGRES_HOST_PORT=127.0.0.1:5432`：宿主机监听地址，只绑回环。
-- `SHARED_POSTGRES_NETWORK=shared-postgres-net`：Docker 网络名，其他项目接入时
+- `POSTGRESQL_HOST_PORT=127.0.0.1:5432`：宿主机监听地址，只绑回环。
+- `POSTGRESQL_NETWORK=postgresql-net`：Docker 网络名，其他项目接入时
   用这个名字。
-- `SHARED_POSTGRES_VOLUME=shared-postgres-data`：数据卷名，固定不动。
-- `SHARED_BACKUP_VOLUME=shared-postgres-backups`：备份卷名，WAL 归档和 base
+- `POSTGRESQL_VOLUME=postgresql-data`：数据卷名，固定不动。
+- `POSTGRESQL_BACKUP_VOLUME=postgresql-backups`：备份卷名，WAL 归档和 base
   backup 都写这里。
 
 手动创建备份卷并启动 `postgresql` project：
 
 ```sh
-docker volume create shared-postgres-backups
+docker volume create postgresql-backups
 docker compose -p postgresql --env-file .env -f compose.yaml up -d postgres
 docker compose -p postgresql --env-file .env -f compose.yaml ps
 ```
@@ -228,7 +228,7 @@ postgresql-postgres-1 postgres:17-alpine Up 30 seconds     127.0.0.1:5432->5432/
 验证网络和数据库：
 
 ```sh
-docker network ls | grep shared-postgres-net
+docker network ls | grep postgresql-net
 docker compose -p postgresql --env-file .env -f compose.yaml exec postgres \
   pg_isready -U postgres -d postgres
 ```
@@ -236,10 +236,9 @@ docker compose -p postgresql --env-file .env -f compose.yaml exec postgres \
 预期输出 `accepting connections`。
 
 模板默认开启了 WAL 归档（`wal_level=replica`、`archive_mode=on`），归档写入
-`shared-postgres-backups` 卷，为后面的 PITR 备份做准备。这里使用的是仓库现有的
-`SHARED_*` 配置名和网络名，目录及 Compose project 名称仍统一使用 `postgresql`。
-同理，Compose 模板内部服务名仍是 `postgres` 和 `redis`，所以启动命令保留这两个
-服务参数。
+`postgresql-backups` 卷，为后面的 PITR 备份做准备。配置变量、网络名、数据卷名和
+Compose project 名称都直接使用 `postgresql` / `redis` 命名。Compose 模板内部的
+服务键仍是 `postgres` 和 `redis`，所以启动命令保留这两个服务参数。
 
 ## 第 4 步：手动启动 Redis
 
@@ -252,16 +251,16 @@ chmod 600 .env
 
 默认值通常不用改：
 
-- `SHARED_REDIS_HOST_PORT=127.0.0.1:6379`：宿主机监听，只绑回环。
-- `SHARED_REDIS_NETWORK=shared-redis-net`：Docker 网络名。
-- `SHARED_REDIS_VOLUME=shared-redis-data`：数据卷名。
+- `REDIS_HOST_PORT=127.0.0.1:6379`：宿主机监听，只绑回环。
+- `REDIS_NETWORK=redis-net`：Docker 网络名。
+- `REDIS_VOLUME=redis-data`：数据卷名。
 
 手动启动 `redis` project 并验证：
 
 ```sh
 docker compose -p redis --env-file .env -f compose.yaml up -d redis
 docker compose -p redis --env-file .env -f compose.yaml ps
-docker network ls | grep shared-redis-net
+docker network ls | grep redis-net
 docker compose -p redis --env-file .env -f compose.yaml exec redis redis-cli ping
 ```
 
@@ -276,7 +275,7 @@ PasteBox 只把它用于可用性检查，不承载核心业务数据。
 
 ```sh
 cd /opt/pastebox
-cp deploy/production.shared.env.example deploy/production.env
+cp deploy/production.combined.env.example deploy/production.env
 chmod 600 deploy/production.env
 ```
 
@@ -298,8 +297,8 @@ PASTEBOX_CONFIG_ENCRYPTION_KEY=<base64-32-byte-key>
 PASTEBOX_METRICS_TOKEN=<long-random-token>
 
 PASTEBOX_POSTGRES_PASSWORD=<为 pastebox 账号新生成的长随机密码>
-PASTEBOX_DATABASE_URL=postgres://pastebox@shared-postgres:5432/pastebox?sslmode=disable
-PASTEBOX_REDIS_ADDR=shared-redis:6379
+PASTEBOX_DATABASE_URL=postgres://pastebox@postgresql:5432/pastebox?sslmode=disable
+PASTEBOX_REDIS_ADDR=redis:6379
 
 PASTEBOX_RESTIC_REPOSITORY=s3:https://<backup-storage-endpoint>/pastebox-backups
 PASTEBOX_RESTIC_PASSWORD=<long-random-restic-password>
@@ -309,7 +308,7 @@ PASTEBOX_BACKUP_S3_SECRET_KEY=<backup-secret-key>
 
 要点：
 
-- `PASTEBOX_DATABASE_URL` 的主机名必须是 `shared-postgres`（PostgreSQL 网络里的服务
+- `PASTEBOX_DATABASE_URL` 的主机名必须是 `postgresql`（PostgreSQL 网络里的服务
   别名），不是 `127.0.0.1`。URL 里不写密码，部署脚本通过
   `PASTEBOX_POSTGRES_PASSWORD` 注入。
 - `PASTEBOX_CONFIG_ENCRYPTION_KEY` 必须单独备份：后台保存的第三方密钥用它做
@@ -322,12 +321,12 @@ PASTEBOX_BACKUP_S3_SECRET_KEY=<backup-secret-key>
 
 ```sh
 cat > /opt/pastebox/pastebox.env <<'EOF'
-# 这是部署脚本的兼容配置，不改变 postgresql/redis/pastebox 的命名。
-export PASTEBOX_DEPLOY_MODE=shared-split
-export PASTEBOX_SHARED_POSTGRES_COMPOSE_FILE=/opt/postgresql/compose.yaml
-export PASTEBOX_SHARED_POSTGRES_ENV_FILE=/opt/postgresql/.env
-export PASTEBOX_SHARED_REDIS_COMPOSE_FILE=/opt/redis/compose.yaml
-export PASTEBOX_SHARED_REDIS_ENV_FILE=/opt/redis/.env
+# 这是部署脚本的 split 模式配置。
+export PASTEBOX_DEPLOY_MODE=split
+export PASTEBOX_POSTGRESQL_COMPOSE_FILE=/opt/postgresql/compose.yaml
+export PASTEBOX_POSTGRESQL_ENV_FILE=/opt/postgresql/.env
+export PASTEBOX_REDIS_COMPOSE_FILE=/opt/redis/compose.yaml
+export PASTEBOX_REDIS_ENV_FILE=/opt/redis/.env
 EOF
 chmod 600 /opt/pastebox/pastebox.env
 ```
@@ -340,8 +339,41 @@ chmod 600 /opt/pastebox/pastebox.env
 
 cron 任务同样需要先加载这个文件。直接执行 Compose 命令时不需要加载它。
 
-下面命令中的 `shared`/`split` 只出现在仓库现有的文件名、环境变量和网络别名中；
-本教程的部署名称统一按 `postgresql`、`redis`、`pastebox` 处理。
+这里的 `split` 是部署模式名称；基础设施和 PasteBox 的部署名称统一为
+`postgresql`、`redis`、`pastebox`。
+
+### 已有部署迁移说明
+
+本次命名调整是一次破坏性配置迁移：旧版文件名、以 `SHARED_` 开头的基础设施变量
+和旧版路径变量不会自动兼容。请先复制新模板，再把旧配置的
+值手动迁移到 `POSTGRESQL_*`、`REDIS_*`、`INFRA_*` 和新的 `PASTEBOX_*` 变量中。
+不要在确认数据卷复用前执行 `docker compose down -v`。
+
+如果已有 PostgreSQL 或 Redis 数据，需要先查看现有资源名称：
+
+```sh
+docker volume ls
+docker network ls
+```
+
+然后把现有名称填入新变量。split 模式示例：
+
+```sh
+# /opt/postgresql/.env
+POSTGRESQL_VOLUME=<现有 PostgreSQL 数据卷名>
+POSTGRESQL_BACKUP_VOLUME=<现有 PostgreSQL 备份卷名>
+POSTGRESQL_NETWORK=<现有 PostgreSQL 网络名>
+
+# /opt/redis/.env
+REDIS_VOLUME=<现有 Redis 数据卷名>
+REDIS_NETWORK=<现有 Redis 网络名>
+```
+
+combined 模式则在 `/opt/pastebox/deploy/infra.env` 中设置
+`POSTGRESQL_VOLUME`、`POSTGRESQL_BACKUP_VOLUME` 和 `REDIS_VOLUME`。先执行
+`docker compose ... config` 检查最终配置，确认数据卷和网络名称正确后，再执行
+`init` 或 `up`。不填写这些覆盖变量时，Compose 会按新默认值创建
+`postgresql-data`、`redis-data` 和 `postgresql-backups`。
 
 再创建 Nginx 覆盖文件 `/opt/pastebox/compose.nginx-host.yaml`（把
 `s3o.example.com` 换成真实对象存储域名）：
@@ -376,7 +408,7 @@ set +a
 
 docker compose -p postgresql --env-file /opt/postgresql/.env \
   -f /opt/postgresql/compose.yaml exec -T postgres \
-  psql -v ON_ERROR_STOP=1 -U "${SHARED_POSTGRES_SUPERUSER:-postgres}" -d postgres \
+  psql -v ON_ERROR_STOP=1 -U "${POSTGRESQL_SUPERUSER:-postgres}" -d postgres \
   -v app_password="$PASTEBOX_POSTGRES_PASSWORD" <<'SQL'
 SELECT format('CREATE ROLE pastebox LOGIN PASSWORD %L', :'app_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pastebox') \gexec
@@ -648,8 +680,8 @@ s3o 日志里看到 `PutObject`，可进一步确认对象存储链路。
 ## 第 9 步：备份
 
 PasteBox 的备份体系基于 maintenance profile 容器，全部通过部署脚本调用。
-备份容器连接 `shared-postgres-net` 里的 PostgreSQL 服务别名
-`shared-postgres`，读写 `shared-postgres-backups` 卷。以下命令都在
+备份容器连接 `postgresql-net` 里的 PostgreSQL 服务别名
+`postgresql`，读写 `postgresql-backups` 卷。以下命令都在
 `/opt/pastebox` 下执行，并已加载 `/opt/pastebox/pastebox.env`。
 
 逻辑备份（pg_dump 自定义格式，保留 `PASTEBOX_BACKUP_RETENTION_DAYS` 天）：
@@ -754,20 +786,20 @@ tag，需要 `pg_upgrade` 或逻辑导出导入，另行规划。
 其他 Docker 项目接入时：
 
 1. PostgreSQL：为其创建独立的数据库和账号（参考第 6 步命令创建 `pastebox`
-   的方式），把项目容器加入外部网络 `shared-postgres-net`，主机写
-   `shared-postgres:5432`。
-2. Redis：加入外部网络 `shared-redis-net`，主机写 `shared-redis:6379`；与
+   的方式），把项目容器加入外部网络 `postgresql-net`，主机写
+   `postgresql:5432`。
+2. Redis：加入外部网络 `redis-net`，主机写 `redis:6379`；与
    PasteBox 共用实例时建议使用不同 DB 编号或 key 前缀。
 3. Compose 写法示例：
 
 ```yaml
 networks:
-  shared-postgres:
+  postgresql:
     external: true
-    name: shared-postgres-net
-  shared-redis:
+    name: postgresql-net
+  redis:
     external: true
-    name: shared-redis-net
+    name: redis-net
 ```
 
 不要让其他项目共用 `pastebox` 数据库或账号。
@@ -782,13 +814,13 @@ docker compose -p postgresql --env-file .env -f compose.yaml ps
 docker compose -p postgresql --env-file .env -f compose.yaml logs postgres
 ```
 
-常见原因：`.env` 里 `SHARED_POSTGRES_PASSWORD` 为空、数据卷残留旧集群初始化
+常见原因：`.env` 里 `POSTGRESQL_PASSWORD` 为空、数据卷残留旧集群初始化
 数据、内存不足。
 
 ### `up` 或 `migrate` 连不上数据库
 
 确认三个条件：PostgreSQL 已 `Up (healthy)`；`deploy/production.env` 的
-`PASTEBOX_DATABASE_URL` 主机是 `shared-postgres`（不是 `postgres` 或
+`PASTEBOX_DATABASE_URL` 主机是 `postgresql`（不是 `postgres` 或
 `127.0.0.1`）；当前 shell 已加载 `. /opt/pastebox/pastebox.env`（否则
 不会加载 `compose.external-split-services.yaml`，容器不会加入 PostgreSQL/Redis 网络）。
 
@@ -797,9 +829,9 @@ docker compose -p postgresql --env-file .env -f compose.yaml logs postgres
 
 ```sh
 docker exec "$(docker ps -qf name=api)" \
-  nc -zv shared-postgres 5432
+  nc -zv postgresql 5432
 docker exec "$(docker ps -qf name=api)" \
-  nc -zv shared-redis 6379
+  nc -zv redis 6379
 ```
 
 ### 登录后马上掉线
@@ -827,8 +859,8 @@ style；在宿主机用 AWS CLI 对 `https://s3o.example.com` 做 head-bucket �
 
 ### 备份容器启动即退出
 
-备份类容器依赖 PostgreSQL 健康，且读取 `shared-postgres-backups` 外部卷；先确认
-PostgreSQL project 正常，再确认卷存在：`docker volume ls | grep shared-postgres-backups`。
+备份类容器依赖 PostgreSQL 健康，且读取 `postgresql-backups` 外部卷；先确认
+PostgreSQL project 正常，再确认卷存在：`docker volume ls | grep postgresql-backups`。
 
 ## 与本架构相关的其他文档
 

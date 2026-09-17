@@ -399,7 +399,7 @@ docker compose --env-file deploy/production.env -f compose.production.yaml exec 
 
 PostgreSQL runs with `archive_mode=on`, `wal_level=replica`, and
 `archive_timeout=$PASTEBOX_WAL_ARCHIVE_TIMEOUT_SECONDS`. Archived WAL segments
-are staged under `/backups/wal` in the shared backup volume and must be pushed
+are staged under `/backups/wal` in the PostgreSQL backup volume and must be pushed
 off-host by `backup-push`.
 
 Run a logical PostgreSQL backup:

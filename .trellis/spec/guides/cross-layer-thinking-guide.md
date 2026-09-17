@@ -91,30 +91,28 @@ PasteBox has three production infra layouts. Changing one file is not enough.
 
 | Mode | Compose projects | PasteBox override | Default env |
 |------|------------------|-------------------|-------------|
-| `shared` | one `shared-infra` | `compose.external-services.yaml` | `deploy/shared-services.env` |
-| `shared-split` | `shared-postgres` + `shared-redis` | `compose.external-split-services.yaml` | four path overrides |
+| `combined` | one `infra` | `compose.external-services.yaml` | `deploy/infra.env` |
+| `split` | `postgresql` + `redis` | `compose.external-split-services.yaml` | four path overrides |
 | `integrated` | PasteBox-owned postgres/redis | none | `deploy/production.env` |
 
-### Checklist: After Changing Shared Infra
+### Checklist: After Changing PostgreSQL/Redis Infrastructure
 
-- [ ] Keep `shared` and `integrated` working; do not reuse split-only filenames
-- [ ] Service aliases stay `shared-postgres` / `shared-redis` even when networks split
+- [ ] Keep `combined`, `split`, and `integrated` working; do not reuse split-only filenames
+- [ ] Service aliases stay `postgresql` / `redis` for external infrastructure
 - [ ] DSN host is the alias, never `127.0.0.1`; password stays in `PASTEBOX_POSTGRES_PASSWORD`
-- [ ] If templates are copied to `/opt/shared-*`, document
-  `PASTEBOX_SHARED_*_COMPOSE_FILE` / `PASTEBOX_SHARED_*_ENV_FILE` and require
+- [ ] If templates are copied to `/opt/postgresql` or `/opt/redis`, document
+  `PASTEBOX_POSTGRESQL_*` / `PASTEBOX_REDIS_*` path overrides and require
   sourcing them (including cron)
-- [ ] Independent PG compose binds `./pg_hba.conf`; combined shared-infra binds
+- [ ] Independent PG compose binds `./pg_hba.conf`; combined infra binds
   `./deploy/postgres/pg_hba.conf`
 - [ ] Readiness script renders the new combo with `PASTEBOX_ENV_FILE` pointing at
   an example file that exists
 - [ ] Connectivity probes use TCP (`nc -zv`), not HTTP, against 5432/6379
 
-**Real-world example**: Split-mode tutorials copied compose files to
-`/opt/shared-postgres/compose.yaml`, but `pastebox-deploy.sh` still looked for
-`compose.shared-postgres.yaml` in the PasteBox repo root. Fix: path override env
-vars plus `/opt/pastebox/.env.shared-split`. Rendering `compose.production.yaml`
-without `PASTEBOX_ENV_FILE` failed because `deploy/production.env` is not
-committed.
+**Real-world example**: Split-mode templates copied to `/opt/postgresql` and
+`/opt/redis` need explicit compose and env path overrides. Rendering
+`compose.production.yaml` also needs `PASTEBOX_ENV_FILE` because
+`deploy/production.env` is not committed.
 
 ---
 
