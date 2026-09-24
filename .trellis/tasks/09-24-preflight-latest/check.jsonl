@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "校验实现质量、测试覆盖与命名一致性"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "校验错误信息可诊断性与文案一致性"}

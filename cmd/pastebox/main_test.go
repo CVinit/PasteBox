@@ -406,6 +406,64 @@ func TestProductionPreflightAllowsDigestImage(t *testing.T) {
 	}
 }
 
+func TestProductionPreflightAllowsLatestImageWithOverride(t *testing.T) {
+	setValidProductionEnv(t)
+	t.Setenv("PASTEBOX_IMAGE", "ghcr.io/cvinit/pastebox:latest")
+	t.Setenv("PASTEBOX_ALLOW_LATEST_IMAGE", "true")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"preflight", "production"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("expected latest image override to pass, got %d stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "production preflight passed") {
+		t.Fatalf("expected preflight success output, got %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+}
+
+func TestProductionPreflightLatestImageOverrideIsCaseInsensitive(t *testing.T) {
+	for _, value := range []string{"TRUE", "True", "  true  "} {
+		t.Run(value, func(t *testing.T) {
+			setValidProductionEnv(t)
+			t.Setenv("PASTEBOX_IMAGE", "ghcr.io/cvinit/pastebox:latest")
+			t.Setenv("PASTEBOX_ALLOW_LATEST_IMAGE", value)
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			if code := run([]string{"preflight", "production"}, &stdout, &stderr); code != 0 {
+				t.Fatalf("expected %q override to pass, got %d stderr=%q", value, code, stderr.String())
+			}
+		})
+	}
+}
+
+func TestProductionPreflightRejectsLatestImageWithNonTrueOverride(t *testing.T) {
+	for _, value := range []string{"1", "yes", "false", ""} {
+		t.Run(value, func(t *testing.T) {
+			setValidProductionEnv(t)
+			t.Setenv("PASTEBOX_IMAGE", "ghcr.io/cvinit/pastebox:latest")
+			t.Setenv("PASTEBOX_ALLOW_LATEST_IMAGE", value)
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run([]string{"preflight", "production"}, &stdout, &stderr)
+			if code != 1 {
+				t.Fatalf("expected latest image to fail, got %d", code)
+			}
+			if !strings.Contains(stderr.String(), "must be a sha-* tag or digest") {
+				t.Fatalf("expected pinned image validation error, got %q", stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("expected empty stdout, got %q", stdout.String())
+			}
+		})
+	}
+}
+
 func TestProductionPreflightRequiresHTTPSPublicURL(t *testing.T) {
 	setValidProductionEnv(t)
 	t.Setenv("PASTEBOX_PUBLIC_URL", "http://pastebox.example.com")
@@ -1195,6 +1253,7 @@ func (s fakeWorkerHeartbeatReader) LastWorkerHeartbeat(context.Context) (postgre
 func setValidProductionEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("PASTEBOX_IMAGE", "ghcr.io/cvinit/pastebox:sha-abc123")
+	t.Setenv("PASTEBOX_ALLOW_LATEST_IMAGE", "")
 	t.Setenv("PASTEBOX_APP_ENV", "production")
 	t.Setenv("PASTEBOX_CONFIG_ENCRYPTION_KEY", "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=")
 	t.Setenv("PASTEBOX_PREFLIGHT_ROOT_ONLY", "true")

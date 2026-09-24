@@ -556,8 +556,8 @@ func runProductionPreflight(stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "production preflight failed: PASTEBOX_METRICS_TOKEN must be a production random token at least 32 characters long")
 		return 1
 	}
-	if image := strings.TrimSpace(os.Getenv("PASTEBOX_IMAGE")); !isPinnedImage(image) {
-		fmt.Fprintf(stderr, "production preflight failed: PASTEBOX_IMAGE must be a sha-* tag or digest, got %q\n", image)
+	if image := strings.TrimSpace(os.Getenv("PASTEBOX_IMAGE")); !isPinnedImage(image) && !allowLatestImage() {
+		fmt.Fprintf(stderr, "production preflight failed: PASTEBOX_IMAGE must be a sha-* tag or digest, got %q (set PASTEBOX_ALLOW_LATEST_IMAGE=true to skip this pinned-image check)\n", image)
 		return 1
 	}
 	if err := validateResticRepository(strings.TrimSpace(os.Getenv("PASTEBOX_RESTIC_REPOSITORY"))); err != nil {
@@ -712,6 +712,13 @@ func loadManagedProductionConfig(root config.Config) (config.Config, error) {
 		WebhookLimit: runtimeCfg.RateLimits.WebhookLimit,
 	}
 	return effective, nil
+}
+
+// allowLatestImage reports whether the operator explicitly opted out of the
+// pinned-image check via PASTEBOX_ALLOW_LATEST_IMAGE=true. This is an escape
+// hatch: the default remains that production requires a sha-* tag or digest.
+func allowLatestImage() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("PASTEBOX_ALLOW_LATEST_IMAGE")), "true")
 }
 
 func isPinnedImage(image string) bool {
