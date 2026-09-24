@@ -569,3 +569,37 @@ Resume after e6a2a884 API failures. Verified split compose rendering, path overr
 ### Next Steps
 
 - None - task complete
+
+
+## Session 17: 完成 TODO 前端与分组保存修复
+
+**Date**: 2026-09-25
+**Task**: 完成 TODO 前端与分组保存修复
+**Branch**: `feat/preflight-allow-latest-override`
+
+### Summary
+
+完成 TODO 1-7：Turnstile 可编辑与密钥保留、首页会话、登录/注册跳转、明确操作按钮、局部保存反馈、单项/分组保存、页脚链接。production-readiness、75.3% 覆盖率、race、四语言与桌面/375px 浏览器检查通过；真实 Cloudflare 挑战留待部署环境验收。本地提交并归档，保留初始无关改动。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `978a3e9` | (see git log) |
+| `12074ad` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
