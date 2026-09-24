@@ -536,3 +536,36 @@ Resume after e6a2a884 API failures. Verified split compose rendering, path overr
 ### Next Steps
 
 - None - task complete
+
+
+## Session 16: 完成后端审查修复
+
+**Date**: 2026-09-25
+**Task**: 完成后端审查修复
+**Branch**: `feat/preflight-allow-latest-override`
+
+### Summary
+
+恢复并完成后端未提交任务：原子认证和分享计数、对象锁、Context、流式扫描、分页聚合、按职责拆分；全部门禁通过，含 PostgreSQL 的覆盖率 75.1%。接下来按 TODO 逐项修复界面。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c3498ba` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
