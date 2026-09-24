@@ -28,7 +28,7 @@ func TestContentMetadataStoresRoundTripPasteAttachmentObjectAndShare(t *testing.
 	if err != nil {
 		t.Fatalf("connect postgres: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 
 	userID := "usr_content_metadata_test"
 	pasteID := "pst_content_metadata_test"
@@ -43,7 +43,7 @@ func TestContentMetadataStoresRoundTripPasteAttachmentObjectAndShare(t *testing.
 		cleanupContentMetadataTestRows(cleanupCtx, t, pool, userID, pasteID, attachmentID, shareID, objectKey, tokenHash)
 	})
 
-	now := time.Date(2026, 5, 24, 11, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	if err := NewUserStore(pool).CreateUser(ctx, app.User{
 		ID:            userID,
 		Email:         "content-metadata-test@example.com",
@@ -76,6 +76,13 @@ func TestContentMetadataStoresRoundTripPasteAttachmentObjectAndShare(t *testing.
 	}
 	if err := pasteStore.CreatePaste(ctx, paste); err != nil {
 		t.Fatalf("create paste: %v", err)
+	}
+	page, err := pasteStore.ListPastesByUserPage(ctx, userID, 1, 0)
+	if err != nil {
+		t.Fatalf("list paged pastes: %v", err)
+	}
+	if len(page) != 1 || page[0].ID != pasteID {
+		t.Fatalf("expected one active paste page, got %#v", page)
 	}
 	loadedPaste, err := pasteStore.PasteByID(ctx, pasteID)
 	if err != nil {
@@ -135,6 +142,20 @@ func TestContentMetadataStoresRoundTripPasteAttachmentObjectAndShare(t *testing.
 	if updatedRef.RefCount != 2 {
 		t.Fatalf("expected updated ref count, got %#v", updatedRef)
 	}
+	incrementedRef, err := attachmentStore.IncrementObjectRef(ctx, ObjectRef{ObjectKey: objectKey, Size: 12, SHA256: "sha", UpdatedAt: now.Add(2 * time.Minute)})
+	if err != nil {
+		t.Fatalf("increment object ref atomically: %v", err)
+	}
+	if incrementedRef.RefCount != 3 {
+		t.Fatalf("expected atomic object ref count 3, got %#v", incrementedRef)
+	}
+	remainingRef, removed, err := attachmentStore.DecrementObjectRef(ctx, objectKey)
+	if err != nil {
+		t.Fatalf("decrement object ref atomically: %v", err)
+	}
+	if removed || remainingRef.RefCount != 2 {
+		t.Fatalf("expected two remaining object refs, removed=%t ref=%#v", removed, remainingRef)
+	}
 
 	attachment := app.Attachment{
 		ID:          attachmentID,
@@ -156,28 +177,20 @@ func TestContentMetadataStoresRoundTripPasteAttachmentObjectAndShare(t *testing.
 	if err := attachmentStore.CreateAttachment(ctx, attachment); err != nil {
 		t.Fatalf("create attachment: %v", err)
 	}
+	updatedDownload, err := attachmentStore.IncrementAttachmentDownload(ctx, attachmentID)
+	if err != nil {
+		t.Fatalf("increment attachment download: %v", err)
+	}
+	if updatedDownload.DownloadN != 2 {
+		t.Fatalf("expected atomic attachment download count 2, got %#v", updatedDownload)
+	}
 	loadedAttachment, err := attachmentStore.AttachmentByID(ctx, attachmentID)
 	if err != nil {
 		t.Fatalf("read attachment: %v", err)
 	}
-	if loadedAttachment.ID != attachmentID || loadedAttachment.ObjectKey != objectKey || loadedAttachment.DownloadN != 1 || loadedAttachment.Content != nil {
+	if loadedAttachment.ID != attachmentID || loadedAttachment.ObjectKey != objectKey || loadedAttachment.DownloadN != 2 || loadedAttachment.Content != nil {
 		t.Fatalf("unexpected attachment: %#v", loadedAttachment)
 	}
-	attachment.Status = "frozen"
-	attachment.ScanStatus = "malicious"
-	attachment.Risk = "signature"
-	attachment.DownloadN = 3
-	if err := attachmentStore.UpdateAttachment(ctx, attachment); err != nil {
-		t.Fatalf("update attachment: %v", err)
-	}
-	attachments, err := attachmentStore.ListAttachmentsByPaste(ctx, pasteID)
-	if err != nil {
-		t.Fatalf("list attachments: %v", err)
-	}
-	if len(attachments) != 1 || attachments[0].Status != "frozen" || attachments[0].Risk != "signature" || attachments[0].DownloadN != 3 {
-		t.Fatalf("unexpected attachments: %#v", attachments)
-	}
-
 	shareStore := NewShareStore(pool)
 	visitedAt := now.Add(3 * time.Minute)
 	share := app.Share{
@@ -198,6 +211,34 @@ func TestContentMetadataStoresRoundTripPasteAttachmentObjectAndShare(t *testing.
 	}
 	if err := shareStore.CreateShare(ctx, share); err != nil {
 		t.Fatalf("create share: %v", err)
+	}
+	visitedShare, err := shareStore.ConsumeShareVisit(ctx, shareID, now.Add(3*time.Minute))
+	if err != nil {
+		t.Fatalf("consume share visit: %v", err)
+	}
+	if visitedShare.VisitCount != 2 || visitedShare.LastVisitedAt == nil {
+		t.Fatalf("unexpected consumed share visit: %#v", visitedShare)
+	}
+	consumedShare, consumedAttachment, err := shareStore.ConsumeShareDownload(ctx, shareID, attachmentID, userID, 1000, now.Add(4*time.Minute))
+	if err != nil {
+		t.Fatalf("consume share download: %v", err)
+	}
+	if consumedShare.DownloadCount != 1 || consumedShare.LastDownloadedAt == nil || consumedAttachment.DownloadN != 3 {
+		t.Fatalf("unexpected consumed share download: share=%#v attachment=%#v", consumedShare, consumedAttachment)
+	}
+	attachment.Status = "frozen"
+	attachment.ScanStatus = "malicious"
+	attachment.Risk = "signature"
+	attachment.DownloadN = 3
+	if err := attachmentStore.UpdateAttachment(ctx, attachment); err != nil {
+		t.Fatalf("update attachment: %v", err)
+	}
+	attachments, err := attachmentStore.ListAttachmentsByPaste(ctx, pasteID)
+	if err != nil {
+		t.Fatalf("list attachments: %v", err)
+	}
+	if len(attachments) != 1 || attachments[0].Status != "frozen" || attachments[0].Risk != "signature" || attachments[0].DownloadN != 3 {
+		t.Fatalf("unexpected attachments: %#v", attachments)
 	}
 	loadedShare, err := shareStore.ShareByTokenHash(ctx, tokenHash)
 	if err != nil {

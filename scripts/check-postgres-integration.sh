@@ -46,8 +46,23 @@ fi
 
 database_url="postgres://$user:$password@127.0.0.1:$port/$database?sslmode=disable"
 printf 'Running PostgreSQL-backed integration tests\n'
-PASTEBOX_TEST_DATABASE_URL="$database_url" \
-	env GOCACHE="$repo_root/.cache/go-build" GOPATH="$repo_root/.cache/gopath" \
-	go test ./internal/postgres
+if [ "${1:-}" = "--coverage" ]; then
+	mkdir -p .cache/coverage
+	PASTEBOX_TEST_DATABASE_URL="$database_url" \
+		env GOCACHE="$repo_root/.cache/go-build" GOPATH="$repo_root/.cache/gopath" \
+		go test -coverpkg=pastebox/... -coverprofile=.cache/coverage/backend.out ./...
+	go tool cover -func=.cache/coverage/backend.out | awk '
+		$1 == "total:" {
+			print
+			if (($3 + 0) < 75) { exit 1 }
+			passed = 1
+		}
+		END { if (!passed) { print "Backend statement coverage must reach 75%."; exit 1 } }
+	'
+else
+	PASTEBOX_TEST_DATABASE_URL="$database_url" \
+		env GOCACHE="$repo_root/.cache/go-build" GOPATH="$repo_root/.cache/gopath" \
+		go test ./internal/postgres
+fi
 
 printf 'PostgreSQL integration checks passed.\n'

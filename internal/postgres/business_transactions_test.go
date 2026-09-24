@@ -137,6 +137,197 @@ func TestBusinessTransactionsSerializeRedemptionAndRollbackBilling(t *testing.T)
 	assertBillingTransactionCommitted(t, ctx, pool, billingUser.ID, order.ID, successInput)
 }
 
+func TestPasswordResetTransactionCommitsAllAuthState(t *testing.T) {
+	databaseURL := os.Getenv("PASTEBOX_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set PASTEBOX_TEST_DATABASE_URL to run PostgreSQL password reset transaction integration test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := ApplyMigrations(ctx, databaseURL); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	defer pool.Close()
+
+	const (
+		userID         = "usr_password_reset_transaction"
+		email          = "password-reset-transaction@example.com"
+		session        = "sess_password_reset_transaction"
+		tokenHashValue = "password_reset_transaction_hash"
+		mailID         = "mail_password_reset_transaction"
+	)
+	cleanup := func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM mails WHERE id = $1`, mailID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM auth_tokens WHERE hash = $1`, tokenHashValue)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM sessions WHERE id = $1`, session)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM users WHERE id = $1`, userID)
+	}
+	cleanup()
+	defer cleanup()
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	user := app.User{ID: userID, Email: email, DisplayName: "Reset User", Language: "en", PasswordHash: "old-hash", Role: "user", EmailVerified: true, PlanID: "free", CreatedAt: now, UpdatedAt: now}
+	if err := NewUserStore(pool).CreateUser(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := NewSessionStore(pool).CreateSession(ctx, app.Session{ID: session, UserID: userID, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := NewAuthTokenStore(pool).CreateAuthToken(ctx, "password_reset", app.AuthToken{Hash: tokenHashValue, UserID: userID, Email: email, ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatalf("create reset token: %v", err)
+	}
+
+	result, err := NewBusinessTransactionStore(pool).FinishPasswordReset(ctx, app.PasswordResetTransactionInput{
+		TokenHash: tokenHashValue, PasswordHash: "new-hash", UsedAt: now.Add(time.Minute), MailID: mailID, MailCreatedAt: now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("finish password reset transaction: %v", err)
+	}
+	if result.User.PasswordHash != "new-hash" || result.Mail.ID != mailID {
+		t.Fatalf("unexpected transaction result: %#v", result)
+	}
+	updated, err := NewUserStore(pool).UserByID(ctx, userID)
+	if err != nil || updated.PasswordHash != "new-hash" {
+		t.Fatalf("expected password update, user=%#v err=%v", updated, err)
+	}
+	var revokedAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT revoked_at FROM sessions WHERE id = $1`, session).Scan(&revokedAt); err != nil {
+		t.Fatalf("read revoked session: %v", err)
+	}
+	if revokedAt == nil {
+		t.Fatal("expected session revocation")
+	}
+	mail, err := NewMailStore(pool).MailByID(ctx, mailID)
+	if err != nil || mail.Status != "queued" {
+		t.Fatalf("expected queued password change mail, mail=%#v err=%v", mail, err)
+	}
+	if _, err := NewBusinessTransactionStore(pool).FinishPasswordReset(ctx, app.PasswordResetTransactionInput{
+		TokenHash: tokenHashValue, PasswordHash: "another-hash", UsedAt: now.Add(2 * time.Minute), MailID: "mail_password_reset_transaction_second", MailCreatedAt: now.Add(2 * time.Minute),
+	}); !errors.Is(err, app.ErrStoreNotFound) {
+		t.Fatalf("expected reset token to be single-use, got %v", err)
+	}
+}
+
+func TestAuthRegistrationTransactionsRollbackOnMailFailure(t *testing.T) {
+	databaseURL := os.Getenv("PASTEBOX_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set PASTEBOX_TEST_DATABASE_URL to run PostgreSQL auth registration transaction integration test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := ApplyMigrations(ctx, databaseURL); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	defer pool.Close()
+
+	const (
+		registerUserID    = "usr_auth_tx_register"
+		oauthUserID       = "usr_auth_tx_oauth"
+		registerMailID    = "mail_auth_tx_register"
+		registerTokenHash = "token_auth_tx_register"
+		oauthMailID       = "mail_auth_tx_oauth"
+		oauthSubject      = "auth-tx-oauth-subject"
+	)
+	cleanup := func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM mails WHERE id IN ($1, $2)`, registerMailID, oauthMailID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM auth_tokens WHERE hash = $1`, registerTokenHash)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM audit_logs WHERE id IN ('aud_auth_tx_linked', 'aud_auth_tx_login')`)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM oauth_identities WHERE provider = 'google' AND subject = $1`, oauthSubject)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM users WHERE id IN ($1, $2)`, registerUserID, oauthUserID)
+	}
+	cleanup()
+	defer cleanup()
+
+	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	if err := NewMailStore(pool).CreateMail(ctx, MailRecord{
+		ID: registerMailID, To: "existing@example.com", Subject: "existing", Body: "existing", Status: "queued", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("create registration mail conflict: %v", err)
+	}
+	transactions := NewBusinessTransactionStore(pool)
+	registerUser := app.User{
+		ID: registerUserID, Email: "auth-tx-register@example.com", DisplayName: "Register", Language: "en",
+		PasswordHash: "hash", Role: "user", EmailVerified: true, PlanID: "free", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := transactions.RegisterUser(ctx, registerUser, app.Mail{
+		ID: registerMailID, To: registerUser.Email, Subject: "Welcome", Body: "Welcome", CreatedAt: now,
+	}); err == nil {
+		t.Fatal("expected registration transaction mail conflict")
+	}
+	if _, err := NewUserStore(pool).UserByID(ctx, registerUserID); !errors.Is(err, app.ErrStoreNotFound) {
+		t.Fatalf("registration user survived rollback: %v", err)
+	}
+	if err := NewAuthTokenStore(pool).CreateAuthToken(ctx, "registration_email_verification", app.AuthToken{
+		Hash: registerTokenHash, Email: registerUser.Email, ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("create registration token: %v", err)
+	}
+	verifiedUser := registerUser
+	verifiedUser.ID = "usr_auth_tx_verified"
+	verifiedUser.Email = "auth-tx-verified@example.com"
+	if err := transactions.RegisterUserWithEmailVerification(ctx, verifiedUser, app.Mail{
+		ID: registerMailID, To: verifiedUser.Email, Subject: "Welcome", Body: "Welcome", CreatedAt: now,
+	}, registerTokenHash, verifiedUser.Email, now.Add(time.Minute)); err == nil {
+		t.Fatal("expected verified registration transaction mail conflict")
+	}
+	var tokenUsedAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT used_at FROM auth_tokens WHERE hash = $1`, registerTokenHash).Scan(&tokenUsedAt); err != nil {
+		t.Fatalf("read registration token after rollback: %v", err)
+	}
+	if tokenUsedAt != nil {
+		t.Fatalf("registration token was consumed despite rollback: %v", tokenUsedAt)
+	}
+	if _, err := NewUserStore(pool).UserByID(ctx, verifiedUser.ID); !errors.Is(err, app.ErrStoreNotFound) {
+		t.Fatalf("verified registration user survived rollback: %v", err)
+	}
+
+	if err := NewMailStore(pool).CreateMail(ctx, MailRecord{
+		ID: oauthMailID, To: "existing-oauth@example.com", Subject: "existing", Body: "existing", Status: "queued", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("create oauth mail conflict: %v", err)
+	}
+	oauthUser := app.User{
+		ID: oauthUserID, Email: "auth-tx-oauth@example.com", DisplayName: "OAuth", Language: "en",
+		PasswordHash: "hash", Role: "user", EmailVerified: true, PlanID: "free", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := transactions.RegisterOAuthUser(ctx, app.OAuthRegistrationTransactionInput{
+		User:     oauthUser,
+		Identity: app.OAuthIdentity{UserID: oauthUserID, Provider: "google", Subject: oauthSubject, CreatedAt: now, UpdatedAt: now},
+		Audits: []app.AuditLog{
+			{ID: "aud_auth_tx_linked", ActorID: oauthUserID, Action: "auth.oauth_linked", Target: oauthUserID, Metadata: map[string]any{"provider": "google"}, CreatedAt: now},
+			{ID: "aud_auth_tx_login", ActorID: oauthUserID, Action: "auth.google_oauth", Target: oauthUserID, Metadata: map[string]any{"provider": "google"}, CreatedAt: now},
+		},
+		Mail: app.Mail{ID: oauthMailID, To: oauthUser.Email, Subject: "Welcome", Body: "Welcome", CreatedAt: now},
+	}); err == nil {
+		t.Fatal("expected oauth registration transaction mail conflict")
+	}
+	if _, err := NewUserStore(pool).UserByID(ctx, oauthUserID); !errors.Is(err, app.ErrStoreNotFound) {
+		t.Fatalf("oauth user survived rollback: %v", err)
+	}
+	var identities, audits int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM oauth_identities WHERE provider = 'google' AND subject = $1`, oauthSubject).Scan(&identities); err != nil {
+		t.Fatalf("count oauth identities: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE id IN ('aud_auth_tx_linked', 'aud_auth_tx_login')`).Scan(&audits); err != nil {
+		t.Fatalf("count oauth audits: %v", err)
+	}
+	if identities != 0 || audits != 0 {
+		t.Fatalf("oauth transaction partially committed: identities=%d audits=%d", identities, audits)
+	}
+}
+
 func assertRedemptionTransactionState(t *testing.T, ctx context.Context, pool *pgxpool.Pool, userID string, batchID string, codeHash string) {
 	t.Helper()
 	user, err := NewUserStore(pool).UserByID(ctx, userID)

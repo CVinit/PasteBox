@@ -260,9 +260,10 @@ func newPostgresBackedService(t *testing.T, ctx context.Context, pool *pgxpool.P
 			Queues:        NewJobStore(pool),
 			Mails:         NewMailStore(pool),
 		},
-		DailyMetrics: NewDailyMetricStore(pool),
-		Catalog:      NewCatalogStore(pool),
-		AuditLogs:    NewAuditLogStore(pool),
+		DailyMetrics:         NewDailyMetricStore(pool),
+		Catalog:              NewCatalogStore(pool),
+		AuditLogs:            NewAuditLogStore(pool),
+		BusinessTransactions: NewBusinessTransactionStore(pool),
 	})
 	if err != nil {
 		t.Fatalf("new postgres-backed service: %v", err)

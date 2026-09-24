@@ -27,7 +27,7 @@ func TestAuditLogStorePersistsMetadataAndListsNewestFirst(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect postgres: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 
 	ids := []string{"aud_store_test_old", "aud_store_test_new"}
 	for _, id := range ids {

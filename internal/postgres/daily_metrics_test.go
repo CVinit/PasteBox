@@ -25,7 +25,7 @@ func TestDailyMetricStorePersistsAndAccumulatesByUTCDay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect postgres: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 
 	userID := "usr_daily_metrics_test"
 	_, _ = pool.Exec(ctx, `DELETE FROM daily_metrics WHERE user_id = $1`, userID)

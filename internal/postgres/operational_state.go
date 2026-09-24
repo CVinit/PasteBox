@@ -138,11 +138,16 @@ ORDER BY created_at DESC, id DESC
 }
 
 func (s *OrderStore) ListOrders(ctx context.Context) ([]app.Order, error) {
+	return s.ListOrdersPage(ctx, 0, 0)
+}
+
+func (s *OrderStore) ListOrdersPage(ctx context.Context, limit int, offset int) ([]app.Order, error) {
 	rows, err := s.pool.Query(ctx, `
 SELECT id, user_id, provider, plan_id, period, amount_cents, currency, status, checkout_url, address, chain, tx_id, created_at, expires_at, paid_at
 FROM orders
 ORDER BY created_at DESC, id DESC
-`)
+LIMIT NULLIF($1, 0) OFFSET $2
+`, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("query orders: %w", err)
 	}
@@ -252,11 +257,16 @@ WHERE id = $1
 }
 
 func (s *WebhookEventStore) ListWebhookEvents(ctx context.Context) ([]app.WebhookEvent, error) {
+	return s.ListWebhookEventsPage(ctx, 0, 0)
+}
+
+func (s *WebhookEventStore) ListWebhookEventsPage(ctx context.Context, limit int, offset int) ([]app.WebhookEvent, error) {
 	rows, err := s.pool.Query(ctx, `
 SELECT id, provider, event_type, target_id, idempotency_key, processed, metadata, received_at
 FROM webhook_events
 ORDER BY received_at DESC, id DESC
-`)
+LIMIT NULLIF($1, 0) OFFSET $2
+`, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("query webhook events: %w", err)
 	}
@@ -336,11 +346,16 @@ WHERE id = $1
 }
 
 func (s *ReportStore) ListReports(ctx context.Context) ([]app.Report, error) {
+	return s.ListReportsPage(ctx, 0, 0)
+}
+
+func (s *ReportStore) ListReportsPage(ctx context.Context, limit int, offset int) ([]app.Report, error) {
 	rows, err := s.pool.Query(ctx, `
 SELECT id, user_id, target, reason, status, created_at
 FROM reports
 ORDER BY created_at DESC, id DESC
-`)
+LIMIT NULLIF($1, 0) OFFSET $2
+`, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("query reports: %w", err)
 	}
@@ -486,6 +501,7 @@ SELECT id, kind, target_id, status, attempts, last_error, run_after, claimed_by,
 FROM jobs
 WHERE kind = $1
 ORDER BY updated_at DESC, created_at DESC, id DESC
+LIMIT 1000
 `, kind)
 	if err != nil {
 		return nil, fmt.Errorf("query queue items by kind: %w", err)
@@ -1027,4 +1043,47 @@ func mailQueueItemFromRecord(record MailRecord) app.MailQueueItem {
 		CreatedAt: record.CreatedAt,
 		SentAt:    record.SentAt,
 	}
+}
+
+func (s *OrderStore) ListExpiredPendingOrders(ctx context.Context, now time.Time, limit int) ([]app.Order, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT id, user_id, provider, plan_id, period, amount_cents, currency, status, checkout_url, address, chain, tx_id, created_at, expires_at, paid_at
+FROM orders WHERE status = 'pending' AND expires_at <= $1 ORDER BY expires_at, id LIMIT $2`, now, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query expired orders: %w", err)
+	}
+	defer rows.Close()
+	return scanOrders(rows)
+}
+func (s *ReportStore) ListReportsByUser(ctx context.Context, userID string) ([]app.Report, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, user_id, target, reason, status, created_at FROM reports WHERE user_id = $1 ORDER BY created_at DESC, id DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []app.Report{}
+	for rows.Next() {
+		item, err := scanReport(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+func (s *WebhookEventStore) ListWebhookEventsByUser(ctx context.Context, userID string) ([]app.WebhookEvent, error) {
+	rows, err := s.pool.Query(ctx, `SELECT e.id, e.provider, e.event_type, e.target_id, e.idempotency_key, e.processed, e.metadata, e.received_at FROM webhook_events e JOIN orders o ON o.id = e.target_id WHERE o.user_id = $1 ORDER BY e.received_at DESC, e.id DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []app.WebhookEvent{}
+	for rows.Next() {
+		item, err := scanWebhookEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }

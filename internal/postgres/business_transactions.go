@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"pastebox/internal/app"
@@ -20,6 +21,177 @@ type BusinessTransactionStore struct {
 
 func NewBusinessTransactionStore(pool *pgxpool.Pool) *BusinessTransactionStore {
 	return &BusinessTransactionStore{pool: pool}
+}
+
+func (s *BusinessTransactionStore) RegisterUser(ctx context.Context, user app.User, mail app.Mail) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin user registration transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := insertUserRecord(ctx, tx, user); err != nil {
+		return err
+	}
+	if err := insertMailRecord(ctx, tx, MailRecord{
+		ID: mail.ID, To: mail.To, Subject: mail.Subject, Body: mail.Body,
+		Status: "queued", CreatedAt: mail.CreatedAt,
+	}); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit user registration transaction: %w", err)
+	}
+	return nil
+}
+
+func (s *BusinessTransactionStore) RegisterUserWithEmailVerification(ctx context.Context, user app.User, mail app.Mail, tokenHash string, email string, usedAt time.Time) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin verified user registration transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var tokenEmail string
+	if err := tx.QueryRow(ctx, `
+UPDATE auth_tokens
+SET used_at = $2
+WHERE kind = 'registration_email_verification'
+  AND hash = $1
+  AND email = $3
+  AND used_at IS NULL
+  AND expires_at > $2
+RETURNING email
+`, tokenHash, usedAt, email).Scan(&tokenEmail); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return app.E(http.StatusUnauthorized, "invalid_token", "token is invalid or expired")
+		}
+		return fmt.Errorf("consume registration email token: %w", err)
+	}
+	if err := insertUserRecord(ctx, tx, user); err != nil {
+		return err
+	}
+	if err := insertMailRecord(ctx, tx, MailRecord{
+		ID: mail.ID, To: mail.To, Subject: mail.Subject, Body: mail.Body,
+		Status: "queued", CreatedAt: mail.CreatedAt,
+	}); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit verified user registration transaction: %w", err)
+	}
+	return nil
+}
+
+func (s *BusinessTransactionStore) RegisterOAuthUser(ctx context.Context, input app.OAuthRegistrationTransactionInput) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin oauth registration transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := insertUserRecord(ctx, tx, input.User); err != nil {
+		return err
+	}
+	if err := insertOAuthIdentityRecord(ctx, tx, input.Identity); err != nil {
+		return err
+	}
+	for _, audit := range input.Audits {
+		if err := insertAuditLog(ctx, tx, audit); err != nil {
+			return err
+		}
+	}
+	if err := insertMailRecord(ctx, tx, MailRecord{
+		ID: input.Mail.ID, To: input.Mail.To, Subject: input.Mail.Subject, Body: input.Mail.Body,
+		Status: "queued", CreatedAt: input.Mail.CreatedAt,
+	}); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit oauth registration transaction: %w", err)
+	}
+	return nil
+}
+
+func (s *BusinessTransactionStore) FinishPasswordReset(ctx context.Context, input app.PasswordResetTransactionInput) (app.PasswordResetTransactionResult, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return app.PasswordResetTransactionResult{}, fmt.Errorf("begin password reset transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var token app.AuthToken
+	var userID pgtype.Text
+	var usedAt pgtype.Timestamptz
+	err = tx.QueryRow(ctx, `
+UPDATE auth_tokens
+SET used_at = $2
+WHERE kind = 'password_reset'
+  AND hash = $1
+  AND used_at IS NULL
+  AND expires_at > $2
+RETURNING hash, user_id, email, expires_at, used_at
+`, input.TokenHash, input.UsedAt).Scan(&token.Hash, &userID, &token.Email, &token.ExpiresAt, &usedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return app.PasswordResetTransactionResult{}, app.ErrStoreNotFound
+		}
+		return app.PasswordResetTransactionResult{}, fmt.Errorf("consume password reset token: %w", err)
+	}
+	token.UserID = userID.String
+	token.UsedAt = optionalTime(usedAt)
+	if token.UserID == "" {
+		return app.PasswordResetTransactionResult{}, fmt.Errorf("password reset token has no user")
+	}
+
+	user, err := scanUser(tx.QueryRow(ctx, `
+SELECT
+	id, email, display_name, language, password_hash, role, email_verified,
+	plan_id, plan_expires_at, frozen, created_at, updated_at,
+	delete_requested_at, delete_scheduled_at, deleted_at
+FROM users
+WHERE id = $1
+FOR UPDATE
+`, token.UserID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return app.PasswordResetTransactionResult{}, app.ErrStoreNotFound
+		}
+		return app.PasswordResetTransactionResult{}, fmt.Errorf("load password reset user: %w", err)
+	}
+	if user.DeletedAt != nil || user.Frozen {
+		return app.PasswordResetTransactionResult{}, app.E(http.StatusForbidden, "account_unavailable", "account is unavailable")
+	}
+	user.PasswordHash = input.PasswordHash
+	user.UpdatedAt = input.UsedAt
+	if err := updateUserRecord(ctx, tx, user); err != nil {
+		return app.PasswordResetTransactionResult{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE sessions
+SET revoked_at = $2
+WHERE user_id = $1 AND revoked_at IS NULL
+`, user.ID, input.UsedAt); err != nil {
+		return app.PasswordResetTransactionResult{}, fmt.Errorf("revoke password reset sessions: %w", err)
+	}
+	mail := app.Mail{
+		ID:        input.MailID,
+		To:        user.Email,
+		Subject:   "PasteBox password changed",
+		Body:      "Your password was changed.",
+		CreatedAt: input.MailCreatedAt,
+	}
+	if err := insertMailRecord(ctx, tx, MailRecord{
+		ID:        mail.ID,
+		To:        mail.To,
+		Subject:   mail.Subject,
+		Body:      mail.Body,
+		Status:    "queued",
+		CreatedAt: mail.CreatedAt,
+	}); err != nil {
+		return app.PasswordResetTransactionResult{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return app.PasswordResetTransactionResult{}, fmt.Errorf("commit password reset transaction: %w", err)
+	}
+	return app.PasswordResetTransactionResult{User: user, Mail: mail}, nil
 }
 
 func (s *BusinessTransactionStore) CreatePasteWithDailyMetric(ctx context.Context, paste app.Paste, day time.Time, bytes int64) error {
@@ -255,4 +427,30 @@ FOR UPDATE
 		return app.BillingTransactionResult{}, fmt.Errorf("commit billing transaction: %w", err)
 	}
 	return result, nil
+}
+
+func (s *BusinessTransactionStore) SaveOAuthAccount(ctx context.Context, user app.User, identity *app.OAuthIdentity, audits []app.AuditLog) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `UPDATE users SET display_name = $2, email_verified = $3, updated_at = $4 WHERE id = $1 AND deleted_at IS NULL AND frozen = false`, user.ID, user.DisplayName, user.EmailVerified, user.UpdatedAt)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return app.E(http.StatusForbidden, "account_unavailable", "account is unavailable")
+	}
+	if identity != nil {
+		if err := insertOAuthIdentityRecord(ctx, tx, *identity); err != nil {
+			return err
+		}
+	}
+	for _, audit := range audits {
+		if err := insertAuditLog(ctx, tx, audit); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }

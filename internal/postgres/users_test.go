@@ -28,7 +28,7 @@ func TestUserStoreCreatesReadsAndUpdatesUsers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect postgres: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 
 	userID := "usr_store_test"
 	duplicateID := "usr_store_test_duplicate"

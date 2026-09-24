@@ -398,7 +398,7 @@ func (s *Server) prometheusMetrics(ctx context.Context) string {
 		}, float64(sample.count))
 	}
 
-	ops, err := s.app.OperationalMetrics()
+	ops, err := s.app.OperationalMetricsWithContext(ctx)
 	writeMetricHelp(&b, "pastebox_operational_metrics_available", "Whether aggregate operational metrics could be loaded.")
 	writeMetricType(&b, "pastebox_operational_metrics_available", "gauge")
 	if err != nil {
@@ -592,7 +592,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &req) {
 		return
 	}
-	result, err := s.app.Login(r.Context(), req.Email, req.Password)
+	result, err := s.app.LoginFromIP(r.Context(), req.Email, req.Password, s.clientIP(r))
 	if s.handleErr(w, err) {
 		return
 	}
@@ -781,7 +781,9 @@ func (s *Server) githubOAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie(sessionCookieName); err == nil {
-		s.app.Logout(cookie.Value)
+		if s.handleErr(w, s.app.Logout(r.Context(), cookie.Value)) {
+			return
+		}
 	}
 	s.clearSessionCookie(w, r)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -792,7 +794,9 @@ func (s *Server) logoutAll(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.app.LogoutAll(user.ID)
+	if s.handleErr(w, s.app.LogoutAll(r.Context(), user.ID)) {
+		return
+	}
 	s.clearSessionCookie(w, r)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -802,7 +806,7 @@ func (s *Server) startEmailVerification(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	resp, err := s.app.StartEmailVerification(user.ID)
+	resp, err := s.app.StartEmailVerificationWithContext(r.Context(), user.ID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -816,7 +820,7 @@ func (s *Server) finishEmailVerification(w http.ResponseWriter, r *http.Request)
 	if !s.decode(w, r, &req) {
 		return
 	}
-	user, err := s.app.FinishEmailVerification(req.Token)
+	user, err := s.app.FinishEmailVerificationWithContext(r.Context(), req.Token)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -872,7 +876,7 @@ func (s *Server) updateMe(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &req) {
 		return
 	}
-	updated, err := s.app.UpdateProfile(user.ID, req.DisplayName, req.Language)
+	updated, err := s.app.UpdateProfileWithContext(r.Context(), user.ID, req.DisplayName, req.Language)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -884,7 +888,7 @@ func (s *Server) unlinkOAuthIdentity(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	updated, err := s.app.UnlinkOAuthIdentity(user.ID, chi.URLParam(r, "provider"))
+	updated, err := s.app.UnlinkOAuthIdentityWithContext(r.Context(), user.ID, chi.URLParam(r, "provider"))
 	if s.handleErr(w, err) {
 		return
 	}
@@ -896,7 +900,7 @@ func (s *Server) requestAccountDeletion(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	updated, err := s.app.RequestAccountDeletion(user.ID)
+	updated, err := s.app.RequestAccountDeletionWithContext(r.Context(), user.ID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -908,7 +912,7 @@ func (s *Server) cancelAccountDeletion(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	updated, err := s.app.CancelAccountDeletion(user.ID)
+	updated, err := s.app.CancelAccountDeletionWithContext(r.Context(), user.ID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -920,7 +924,7 @@ func (s *Server) executeAccountDeletion(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	err := s.app.ExecuteAccountDeletion(user.ID)
+	err := s.app.ExecuteAccountDeletionWithContext(r.Context(), user.ID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -933,7 +937,7 @@ func (s *Server) exportMe(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	payload, err := s.app.ExportUser(user.ID)
+	payload, err := s.app.ExportUserWithContext(r.Context(), user.ID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -946,7 +950,7 @@ func (s *Server) quota(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	quota, err := s.app.Quota(user.ID)
+	quota, err := s.app.QuotaWithContext(r.Context(), user.ID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -964,7 +968,7 @@ func (s *Server) redeemCode(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &req) {
 		return
 	}
-	updated, err := s.app.RedeemCode(user.ID, req.Code)
+	updated, err := s.app.RedeemCodeWithContext(r.Context(), user.ID, req.Code)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -976,15 +980,25 @@ func (s *Server) listPastes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	items, err := s.app.ListPastes(user.ID, app.ListOptions{
+	items, err := s.app.ListPastesWithContext(r.Context(), user.ID, app.ListOptions{
 		Query:  r.URL.Query().Get("query"),
 		Filter: r.URL.Query().Get("filter"),
 		Tag:    r.URL.Query().Get("tag"),
+		Limit:  parseListQueryInt(r.URL.Query().Get("limit")),
+		Offset: parseListQueryInt(r.URL.Query().Get("offset")),
 	})
 	if s.handleErr(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"pastes": items})
+}
+
+func parseListQueryInt(value string) int {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || parsed < 0 {
+		return 0
+	}
+	return parsed
 }
 
 func (s *Server) createPaste(w http.ResponseWriter, r *http.Request) {
@@ -996,7 +1010,7 @@ func (s *Server) createPaste(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &req) {
 		return
 	}
-	paste, err := s.app.CreatePaste(user.ID, app.PasteInput{
+	paste, err := s.app.CreatePasteWithContext(r.Context(), user.ID, app.PasteInput{
 		Title:            req.Title,
 		Text:             req.Text,
 		Tags:             req.Tags,
@@ -1023,7 +1037,7 @@ func (s *Server) createGuestPaste(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &req) {
 		return
 	}
-	token, paste, err := s.app.CreateGuestPaste(app.GuestCreatePasteInput{
+	token, paste, err := s.app.CreateGuestPasteWithContext(r.Context(), app.GuestCreatePasteInput{
 		Token:            firstNonEmpty(req.GuestToken, guestTokenFromRequest(r)),
 		Title:            req.Title,
 		Text:             req.Text,
@@ -1044,7 +1058,7 @@ func (s *Server) getPaste(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	paste, err := s.app.GetPaste(user.ID, chi.URLParam(r, "pasteID"))
+	paste, err := s.app.GetPasteWithContext(r.Context(), user.ID, chi.URLParam(r, "pasteID"))
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1060,7 +1074,7 @@ func (s *Server) updatePaste(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &req) {
 		return
 	}
-	paste, err := s.app.UpdatePaste(user.ID, chi.URLParam(r, "pasteID"), app.PastePatch{
+	paste, err := s.app.UpdatePasteWithContext(r.Context(), user.ID, chi.URLParam(r, "pasteID"), app.PastePatch{
 		Title:    req.Title,
 		Text:     req.Text,
 		Tags:     req.Tags,
@@ -1080,7 +1094,7 @@ func (s *Server) deletePaste(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if s.handleErr(w, s.app.DeletePaste(user.ID, chi.URLParam(r, "pasteID"))) {
+	if s.handleErr(w, s.app.DeletePasteWithContext(r.Context(), user.ID, chi.URLParam(r, "pasteID"))) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -1097,7 +1111,7 @@ func (s *Server) extendPaste(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &req) {
 		return
 	}
-	paste, err := s.app.ExtendPaste(user.ID, chi.URLParam(r, "pasteID"), req.ExpiresInSeconds)
+	paste, err := s.app.ExtendPasteWithContext(r.Context(), user.ID, chi.URLParam(r, "pasteID"), req.ExpiresInSeconds)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1110,7 +1124,7 @@ func (s *Server) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pasteID := chi.URLParam(r, "pasteID")
-	preflight, err := s.app.PreflightAttachmentUpload(user.ID, pasteID)
+	preflight, err := s.app.PreflightAttachmentUploadWithContext(r.Context(), user.ID, pasteID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1194,7 +1208,7 @@ func (s *Server) createGuestShare(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &req) {
 		return
 	}
-	share, err := s.app.CreateGuestShare(
+	share, err := s.app.CreateGuestShareWithContext(r.Context(),
 		firstNonEmpty(req.GuestToken, guestTokenFromRequest(r)),
 		chi.URLParam(r, "pasteID"),
 		app.ShareInput{
@@ -1239,7 +1253,7 @@ func (s *Server) createShare(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &req) {
 		return
 	}
-	share, err := s.app.CreateShare(user.ID, chi.URLParam(r, "pasteID"), app.ShareInput{
+	share, err := s.app.CreateShareWithContext(r.Context(), user.ID, chi.URLParam(r, "pasteID"), app.ShareInput{
 		Password:         req.Password,
 		LoginRequired:    req.LoginRequired,
 		MaxVisits:        req.MaxVisits,
@@ -1258,7 +1272,7 @@ func (s *Server) listShares(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	shares, err := s.app.ListShares(user.ID)
+	shares, err := s.app.ListSharesWithContext(r.Context(), user.ID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1270,7 +1284,7 @@ func (s *Server) revokeShare(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if s.handleErr(w, s.app.RevokeShare(user.ID, chi.URLParam(r, "shareID"))) {
+	if s.handleErr(w, s.app.RevokeShareWithContext(r.Context(), user.ID, chi.URLParam(r, "shareID"))) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
@@ -1284,7 +1298,7 @@ func (s *Server) accessShare(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeOptionalLimited(w, r, &req, shareAccessBodyLimitBytes) {
 		return
 	}
-	paste, share, err := s.app.AccessShare(chi.URLParam(r, "token"), req.Password, viewerID)
+	paste, share, err := s.app.AccessShareWithContext(r.Context(), chi.URLParam(r, "token"), req.Password, viewerID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1329,7 +1343,7 @@ func (s *Server) createOrder(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &req) {
 		return
 	}
-	order, err := s.app.CreateOrder(user.ID, req.Provider, req.PlanID, req.Period)
+	order, err := s.app.CreateOrderWithContext(r.Context(), user.ID, req.Provider, req.PlanID, req.Period)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1341,7 +1355,7 @@ func (s *Server) listOrders(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	orders, err := s.app.ListOrders(user.ID)
+	orders, err := s.app.ListOrdersWithContext(r.Context(), user.ID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1361,7 +1375,7 @@ func (s *Server) billingWebhook(w http.ResponseWriter, r *http.Request) {
 	if s.handleErr(w, err) {
 		return
 	}
-	event, order, err := s.app.ProcessBillingWebhook(input)
+	event, order, err := s.app.ProcessBillingWebhookWithContext(r.Context(), input)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1383,7 +1397,7 @@ func (s *Server) report(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reporterID := s.optionalUserID(r)
-	report, err := s.app.Report(reporterID, req.Target, req.Reason)
+	report, err := s.app.ReportWithContext(r.Context(), reporterID, req.Target, req.Reason)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1395,7 +1409,7 @@ func (s *Server) adminDashboard(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	payload, err := s.app.AdminDashboard(user.ID)
+	payload, err := s.app.AdminDashboardWithContext(r.Context(), user.ID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1407,7 +1421,7 @@ func (s *Server) adminRuntimeConfig(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	cfg, err := s.app.AdminRuntimeConfig(user.ID)
+	cfg, err := s.app.AdminRuntimeConfigWithContext(r.Context(), user.ID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1423,7 +1437,7 @@ func (s *Server) adminUpdateRuntimeConfig(w http.ResponseWriter, r *http.Request
 	if !s.decode(w, r, &req) {
 		return
 	}
-	cfg, err := s.app.AdminUpdateRuntimeConfig(user.ID, req)
+	cfg, err := s.app.AdminUpdateRuntimeConfigWithContext(r.Context(), user.ID, req)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1436,7 +1450,7 @@ func (s *Server) adminManagedConfig(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	cfg, err := s.app.AdminManagedConfig(user.ID)
+	cfg, err := s.app.AdminManagedConfigWithContext(r.Context(), user.ID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1452,7 +1466,7 @@ func (s *Server) adminUpdateManagedConfig(w http.ResponseWriter, r *http.Request
 	if !s.decode(w, r, &req) {
 		return
 	}
-	cfg, err := s.app.AdminUpdateManagedConfig(user.ID, req)
+	cfg, err := s.app.AdminUpdateManagedConfigWithContext(r.Context(), user.ID, req)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1465,7 +1479,7 @@ func (s *Server) adminRuntimePanel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	panel, err := s.app.AdminRuntimePanel(user.ID)
+	panel, err := s.app.AdminRuntimePanelWithContext(r.Context(), user.ID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1477,7 +1491,7 @@ func (s *Server) adminManualWorkItems(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	items, err := s.app.AdminManualWorkItems(user.ID)
+	items, err := s.app.AdminManualWorkItemsWithContext(r.Context(), user.ID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1493,7 +1507,7 @@ func (s *Server) adminUpdateCatalog(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &req) {
 		return
 	}
-	catalog, err := s.app.AdminUpdateCatalog(user.ID, req)
+	catalog, err := s.app.AdminUpdateCatalogWithContext(r.Context(), user.ID, req)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1505,7 +1519,7 @@ func (s *Server) adminProviderTest(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	cfg, err := s.app.AdminProviderTest(user.ID, chi.URLParam(r, "provider"))
+	cfg, err := s.app.AdminProviderTestWithContext(r.Context(), user.ID, chi.URLParam(r, "provider"))
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1517,7 +1531,7 @@ func (s *Server) adminRedemptionBatches(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	batches, err := s.app.AdminListRedemptionBatches(user.ID)
+	batches, err := s.app.AdminListRedemptionBatchesWithContext(r.Context(), user.ID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1544,7 +1558,7 @@ func (s *Server) adminCreateRedemptionBatch(w http.ResponseWriter, r *http.Reque
 	if !s.decode(w, r, &req) {
 		return
 	}
-	batch, err := s.app.AdminCreateRedemptionBatch(user.ID, app.RedemptionBatchInput{
+	batch, err := s.app.AdminCreateRedemptionBatchWithContext(r.Context(), user.ID, app.RedemptionBatchInput{
 		PlanID:                req.PlanID,
 		DurationDays:          req.DurationDays,
 		Quantity:              req.Quantity,
@@ -1574,7 +1588,7 @@ func (s *Server) adminUpdateRedemptionBatch(w http.ResponseWriter, r *http.Reque
 	if !s.decode(w, r, &req) {
 		return
 	}
-	batch, err := s.app.AdminUpdateRedemptionBatch(user.ID, chi.URLParam(r, "batchID"), req.Disabled, req.Note)
+	batch, err := s.app.AdminUpdateRedemptionBatchWithContext(r.Context(), user.ID, chi.URLParam(r, "batchID"), req.Disabled, req.Note)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1586,7 +1600,7 @@ func (s *Server) adminAlertEvents(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	events, err := s.app.AdminAlertEvents(user.ID)
+	events, err := s.app.AdminAlertEventsWithContext(r.Context(), user.ID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1604,7 +1618,7 @@ func (s *Server) adminSendTestAlert(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &req) {
 		return
 	}
-	event, err := s.app.AdminSendTestAlert(user.ID, req.Message)
+	event, err := s.app.AdminSendTestAlertWithContext(r.Context(), user.ID, req.Message)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1616,7 +1630,10 @@ func (s *Server) adminUsers(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	users, err := s.app.AdminUsers(user.ID)
+	users, err := s.app.AdminUsersWithContext(r.Context(), user.ID, app.ListOptions{
+		Limit:  parseListQueryInt(r.URL.Query().Get("limit")),
+		Offset: parseListQueryInt(r.URL.Query().Get("offset")),
+	})
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1637,7 +1654,7 @@ func (s *Server) adminSetUserPlan(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &req) {
 		return
 	}
-	updated, err := s.app.AdminSetUserPlan(user.ID, chi.URLParam(r, "userID"), req.PlanID, req.ExpiresAt, req.Reason, req.TicketID)
+	updated, err := s.app.AdminSetUserPlanWithContext(r.Context(), user.ID, chi.URLParam(r, "userID"), req.PlanID, req.ExpiresAt, req.Reason, req.TicketID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1655,7 +1672,7 @@ func (s *Server) adminFreezeUser(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &req) {
 		return
 	}
-	updated, err := s.app.AdminFreezeUser(user.ID, chi.URLParam(r, "userID"), req.Frozen)
+	updated, err := s.app.AdminFreezeUserWithContext(r.Context(), user.ID, chi.URLParam(r, "userID"), req.Frozen)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1667,7 +1684,10 @@ func (s *Server) adminPastes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	pastes, err := s.app.AdminPastes(user.ID)
+	pastes, err := s.app.AdminPastesWithContext(r.Context(), user.ID, app.ListOptions{
+		Limit:  parseListQueryInt(r.URL.Query().Get("limit")),
+		Offset: parseListQueryInt(r.URL.Query().Get("offset")),
+	})
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1679,7 +1699,7 @@ func (s *Server) adminTakedownPaste(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if s.handleErr(w, s.app.AdminTakedownPaste(user.ID, chi.URLParam(r, "pasteID"))) {
+	if s.handleErr(w, s.app.AdminTakedownPasteWithContext(r.Context(), user.ID, chi.URLParam(r, "pasteID"))) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "taken_down"})
@@ -1690,7 +1710,11 @@ func (s *Server) adminAttachments(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	attachments, err := s.app.AdminAttachments(user.ID, r.URL.Query().Get("query"))
+	attachments, err := s.app.AdminAttachmentsWithContext(r.Context(), user.ID, app.ListOptions{
+		Query:  r.URL.Query().Get("query"),
+		Limit:  parseListQueryInt(r.URL.Query().Get("limit")),
+		Offset: parseListQueryInt(r.URL.Query().Get("offset")),
+	})
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1708,7 +1732,7 @@ func (s *Server) adminFreezeAttachment(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &req) {
 		return
 	}
-	attachment, err := s.app.AdminFreezeAttachment(user.ID, chi.URLParam(r, "attachmentID"), req.Frozen)
+	attachment, err := s.app.AdminFreezeAttachmentWithContext(r.Context(), user.ID, chi.URLParam(r, "attachmentID"), req.Frozen)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1720,7 +1744,7 @@ func (s *Server) adminRetryScan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	attachment, err := s.app.AdminRetryScan(user.ID, chi.URLParam(r, "attachmentID"))
+	attachment, err := s.app.AdminRetryScanWithContext(r.Context(), user.ID, chi.URLParam(r, "attachmentID"))
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1732,7 +1756,10 @@ func (s *Server) adminShares(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	shares, err := s.app.AdminShares(user.ID)
+	shares, err := s.app.AdminSharesWithContext(r.Context(), user.ID, app.ListOptions{
+		Limit:  parseListQueryInt(r.URL.Query().Get("limit")),
+		Offset: parseListQueryInt(r.URL.Query().Get("offset")),
+	})
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1744,7 +1771,7 @@ func (s *Server) adminRevokeShare(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	share, err := s.app.AdminRevokeShare(user.ID, chi.URLParam(r, "shareID"))
+	share, err := s.app.AdminRevokeShareWithContext(r.Context(), user.ID, chi.URLParam(r, "shareID"))
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1756,7 +1783,7 @@ func (s *Server) adminOrders(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	orders, err := s.app.AdminOrders(user.ID)
+	orders, err := s.app.AdminOrdersPage(r.Context(), user.ID, app.ListOptions{Limit: parseListQueryInt(r.URL.Query().Get("limit")), Offset: parseListQueryInt(r.URL.Query().Get("offset"))})
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1768,7 +1795,7 @@ func (s *Server) adminWebhookEvents(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	events, err := s.app.AdminWebhookEvents(user.ID)
+	events, err := s.app.AdminWebhookEventsPage(r.Context(), user.ID, app.ListOptions{Limit: parseListQueryInt(r.URL.Query().Get("limit")), Offset: parseListQueryInt(r.URL.Query().Get("offset"))})
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1780,7 +1807,7 @@ func (s *Server) adminReplayWebhookEvent(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	event, err := s.app.ReplayWebhookEvent(user.ID, chi.URLParam(r, "eventID"))
+	event, err := s.app.ReplayWebhookEventWithContext(r.Context(), user.ID, chi.URLParam(r, "eventID"))
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1792,7 +1819,7 @@ func (s *Server) adminAuditLogs(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	logs, err := s.app.AdminAuditLogs(user.ID)
+	logs, err := s.app.AdminAuditLogsWithContext(r.Context(), user.ID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1804,7 +1831,7 @@ func (s *Server) adminQueues(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	queues, err := s.app.AdminQueues(user.ID)
+	queues, err := s.app.AdminQueuesWithContext(r.Context(), user.ID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1822,7 +1849,7 @@ func (s *Server) adminResolveReport(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &req) {
 		return
 	}
-	report, err := s.app.AdminResolveReport(user.ID, chi.URLParam(r, "reportID"), req.Status)
+	report, err := s.app.AdminResolveReportWithContext(r.Context(), user.ID, chi.URLParam(r, "reportID"), req.Status)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1834,7 +1861,7 @@ func (s *Server) adminRunCleanup(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	result, err := s.app.RunCleanup(user.ID)
+	result, err := s.app.RunCleanupWithContext(r.Context(), user.ID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1846,7 +1873,7 @@ func (s *Server) adminRunBillingReconciliation(w http.ResponseWriter, r *http.Re
 	if !ok {
 		return
 	}
-	result, err := s.app.RunBillingReconciliation(user.ID)
+	result, err := s.app.RunBillingReconciliationWithContext(r.Context(), user.ID)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1865,7 +1892,7 @@ func (s *Server) adminMarkOrderPaid(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &req) {
 		return
 	}
-	order, err := s.app.MarkOrderPaid(user.ID, chi.URLParam(r, "orderID"), req.TxID, req.Reason)
+	order, err := s.app.MarkOrderPaidWithContext(r.Context(), user.ID, chi.URLParam(r, "orderID"), req.TxID, req.Reason)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -2076,7 +2103,7 @@ func (s *Server) rateLimitUserID(r *http.Request) string {
 	if err != nil || strings.TrimSpace(cookie.Value) == "" {
 		return ""
 	}
-	user, err := s.app.UserForSession(cookie.Value)
+	user, err := s.app.UserForSessionWithContext(r.Context(), cookie.Value)
 	if err != nil {
 		return ""
 	}
@@ -2262,17 +2289,14 @@ type pastePatchRequest struct {
 }
 
 func (s *Server) decode(w http.ResponseWriter, r *http.Request, target any) bool {
-	defer r.Body.Close()
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 2<<20))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json", "message": "request body is invalid"})
-		return false
-	}
-	return true
+	return s.decodeLimited(w, r, target, 2<<20, false)
 }
 
 func (s *Server) decodeOptionalLimited(w http.ResponseWriter, r *http.Request, target any, limit int64) bool {
+	return s.decodeLimited(w, r, target, limit, true)
+}
+
+func (s *Server) decodeLimited(w http.ResponseWriter, r *http.Request, target any, limit int64, allowEmpty bool) bool {
 	defer r.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {
@@ -2285,7 +2309,11 @@ func (s *Server) decodeOptionalLimited(w http.ResponseWriter, r *http.Request, t
 	}
 	body = bytes.TrimSpace(body)
 	if len(body) == 0 {
-		return true
+		if allowEmpty {
+			return true
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json", "message": "request body is invalid"})
+		return false
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
@@ -2306,7 +2334,7 @@ func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (app.UserVi
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated", "message": "login required"})
 		return app.UserView{}, false
 	}
-	user, err := s.app.UserForSession(cookie.Value)
+	user, err := s.app.UserForSessionWithContext(r.Context(), cookie.Value)
 	if s.handleErr(w, err) {
 		return app.UserView{}, false
 	}
@@ -2318,7 +2346,7 @@ func (s *Server) optionalUserID(r *http.Request) string {
 	if err != nil || cookie.Value == "" {
 		return ""
 	}
-	user, err := s.app.UserForSession(cookie.Value)
+	user, err := s.app.UserForSessionWithContext(r.Context(), cookie.Value)
 	if err != nil {
 		return ""
 	}
@@ -3148,31 +3176,7 @@ func (s *Server) clearSessionCookie(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) secureSessionCookie(r *http.Request) bool {
-	if s.currentConfig().AppEnv == "development" {
-		return false
-	}
-	return requestIsHTTPS(r)
-}
-
-func requestIsHTTPS(r *http.Request) bool {
-	if r.TLS != nil {
-		return true
-	}
-	if proto := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])); proto == "https" {
-		return true
-	}
-	for _, entry := range strings.Split(r.Header.Get("Forwarded"), ",") {
-		for _, part := range strings.Split(entry, ";") {
-			key, value, ok := strings.Cut(part, "=")
-			if !ok || !strings.EqualFold(strings.TrimSpace(key), "proto") {
-				continue
-			}
-			if strings.EqualFold(strings.Trim(strings.TrimSpace(value), `"`), "https") {
-				return true
-			}
-		}
-	}
-	return false
+	return s.currentConfig().AppEnv != "development"
 }
 
 func (s *Server) handleErr(w http.ResponseWriter, err error) bool {
@@ -3271,11 +3275,16 @@ func readMultipartField(part *multipart.Part) (string, error) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		// Serialization happens before headers are written. Keep the writer
+		// untouched when payload encoding fails.
+		return
+	}
+	body = append(body, '\n')
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(payload); err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-	}
+	_, _ = w.Write(body)
 }
 
 func sanitizeHeaderValue(value string) string {

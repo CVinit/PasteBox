@@ -307,6 +307,10 @@ VALUES ($1, $2, $3, $4, $5, $6)
 }
 
 func (s *RedemptionStore) ListRedemptionBatches(ctx context.Context) ([]app.RedemptionBatch, error) {
+	return s.ListRedemptionBatchesPage(ctx, 0, 0)
+}
+
+func (s *RedemptionStore) ListRedemptionBatchesPage(ctx context.Context, limit int, offset int) ([]app.RedemptionBatch, error) {
 	rows, err := s.pool.Query(ctx, `
 SELECT
 	id,
@@ -325,7 +329,8 @@ SELECT
 	updated_at
 FROM redemption_batches
 ORDER BY created_at DESC, id DESC
-`)
+LIMIT NULLIF($1, 0) OFFSET $2
+`, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("query redemption batches: %w", err)
 	}
@@ -566,4 +571,44 @@ func scanAlertEvent(row runtimeRow) (app.AlertEvent, error) {
 	}
 	event.SentAt = optionalTime(sentAt)
 	return event, nil
+}
+
+func (s *RedemptionStore) RedemptionBatchByID(ctx context.Context, id string) (app.RedemptionBatch, error) {
+	batch, err := scanRedemptionBatch(s.pool.QueryRow(ctx, `SELECT
+	id,
+	plan_id,
+	duration_days,
+	quantity,
+	expires_at,
+	max_total_redemptions,
+	max_redemptions_per_user,
+	allowed_emails,
+	allowed_domains,
+	note,
+	disabled,
+	redeemed_count,
+	created_at,
+	updated_at
+FROM redemption_batches
+ WHERE id=$1`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return app.RedemptionBatch{}, app.E(404, "redemption_batch_not_found", "redemption batch not found")
+	}
+	return batch, err
+}
+func (s *RedemptionStore) ListRedemptionCodesByBatch(ctx context.Context, id string, limit int) ([]app.RedemptionCode, error) {
+	rows, err := s.pool.Query(ctx, `SELECT code_hash,batch_id,redeemed_by,redeemed_at,created_at FROM redemption_codes WHERE batch_id=$1 ORDER BY created_at,code_hash LIMIT $2`, id, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []app.RedemptionCode{}
+	for rows.Next() {
+		item, err := scanRedemptionCode(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }

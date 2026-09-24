@@ -1857,3 +1857,79 @@ steps:
 - Are limits/config values sourced from a domain package or config path instead
   of being duplicated in transport code?
 - Did `make test` pass with project-local caches?
+
+## Scenario: Concurrent Persistence, Context And Coverage
+
+### 1. Scope / Trigger
+
+Authentication, content metadata, cleanup, runtime configuration, worker jobs,
+admin pagination, or persistence-backed account export and deletion changes.
+
+### 2. Signatures
+
+- HTTP handlers call `*WithContext(r.Context(), ...)`; worker service methods
+  accept the job context. Older public methods delegate for compatibility.
+- `LoginFromIP(ctx, email, password, remoteIP)` uses the trusted client IP.
+- `AtomicShareStore`, `ObjectRefCoordinator`, `CleanupCoordinator`,
+  `AuthRegistrationTransactionStore`, and `OAuthAccountTransactionStore` own
+  database concurrency boundaries.
+- `make test-coverage` uses ephemeral PostgreSQL and measures all Go packages
+  with `go test -coverpkg=pastebox/... -coverprofile=.cache/coverage/backend.out ./...`.
+
+### 3. Contracts
+
+- Password hashing, network I/O, and durable-store calls release `Service.mu`;
+  snapshot mutable inputs first and publish successful results under the lock.
+  Runtime writes use `configWriteMu` to preserve local write ordering.
+- Production login failure counters are atomic and scoped to email plus IP.
+  One source must not lock the same account out from all other sources.
+- Share counters and daily traffic reservations are conditional SQL updates;
+  stale metadata writes must not decrease counters or clear revocation.
+- Object-key locks cover upload reservation and object deletion. Cleanup sweeps
+  coordinate across worker processes. Never wait on an object lock while holding
+  the cache mutex: uploads publish cache state while holding the object lock.
+- Startup/admin caches are bounded to 1000 entries. Export and account deletion
+  query the owner's durable records; dashboard totals use SQL aggregates.
+  Billing reconciliation fetches expired pending orders in batches of 100; its
+  checked/pending counts describe those candidates, not the entire order table.
+- New share passwords use salted Argon2id; successful legacy SHA-256 validation
+  upgrades the stored hash. Auth token consumption and business writes are atomic.
+- ClamAV streams content, and SMTP/ClamAV connections close on cancellation.
+- Coverage has a 75% combined backend floor, includes PostgreSQL integration
+  tests and cross-package calls, and is required by production readiness. The
+  offline `make test-api` remains usable without Docker; its skipped database
+  tests are not evidence of the coverage gate.
+
+### 4. Validation & Error Matrix
+
+| Trigger | Required result |
+| --- | --- |
+| Session revocation persistence fails | Return error; do not pretend logout persisted |
+| Two requests consume one auth token | Exactly one succeeds |
+| Share visit/download ceiling reached | Reject without increasing counters |
+| Context canceled during I/O | Stop the database/socket operation |
+| OAuth audit/link write fails | Roll back profile and identity writes together |
+| Backend coverage below 75% | `make test-coverage` exits nonzero |
+
+### 5. Good/Base/Bad Cases
+
+- Good: Export includes 1002 owned records even when the initial cache holds 1000.
+- Base: A slow login lookup does not block catalog reads.
+- Bad: A cleanup worker deletes an object reserved by another API process.
+
+### 6. Tests Required
+
+Keep cancellation and slow-store tests, 2 GiB generated streaming input,
+PostgreSQL multi-connection counter/lock tests, OAuth rollback tests, and HTTP
+session lifecycle tests. Run `make test`, `make test-coverage`, `go vet ./...`,
+`go test -race ./internal/...`, and production readiness before closing the task.
+PostgreSQL fixtures must register `t.Cleanup(pool.Close)` before row cleanup so
+LIFO cleanup removes rows while the pool is still open.
+
+### 7. Wrong vs Correct
+
+Wrong: `store.Query(context.Background(), ...)` inside a request, or exporting
+from the bounded startup cache.
+
+Correct: pass `r.Context()` through the service/store boundary and query owner
+records explicitly for full-account operations.

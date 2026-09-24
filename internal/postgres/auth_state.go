@@ -126,19 +126,28 @@ WHERE kind = $1 AND hash = $2
 	return token, nil
 }
 
-func (s *AuthTokenStore) MarkAuthTokenUsed(ctx context.Context, kind string, hash string, usedAt time.Time) error {
-	tag, err := s.pool.Exec(ctx, `
+func (s *AuthTokenStore) ConsumeAuthToken(ctx context.Context, kind string, hash string, usedAt time.Time) (app.AuthToken, error) {
+	var token app.AuthToken
+	var userID pgtype.Text
+	var consumedAt pgtype.Timestamptz
+	err := s.pool.QueryRow(ctx, `
 UPDATE auth_tokens
 SET used_at = $3
-WHERE kind = $1 AND hash = $2
-`, kind, hash, usedAt)
+WHERE kind = $1
+	AND hash = $2
+	AND used_at IS NULL
+	AND expires_at > $3
+RETURNING hash, user_id, email, expires_at, used_at
+`, kind, hash, usedAt).Scan(&token.Hash, &userID, &token.Email, &token.ExpiresAt, &consumedAt)
 	if err != nil {
-		return fmt.Errorf("mark auth token used: %w", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return app.AuthToken{}, ErrAuthTokenNotFound
+		}
+		return app.AuthToken{}, fmt.Errorf("consume auth token: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrAuthTokenNotFound
-	}
-	return nil
+	token.UserID = userID.String
+	token.UsedAt = optionalTime(consumedAt)
+	return token, nil
 }
 
 type LoginFailureStore struct {
@@ -203,12 +212,16 @@ func NewOAuthIdentityStore(pool *pgxpool.Pool) *OAuthIdentityStore {
 }
 
 func (s *OAuthIdentityStore) LinkOAuthIdentity(ctx context.Context, identity app.OAuthIdentity) error {
-	if _, err := s.pool.Exec(ctx, `
+	return insertOAuthIdentityRecord(ctx, s.pool, identity)
+}
+
+func insertOAuthIdentityRecord(ctx context.Context, executor execQuerier, identity app.OAuthIdentity) error {
+	if _, err := executor.Exec(ctx, `
 INSERT INTO oauth_identities (user_id, provider, subject, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5)
-`, identity.UserID, identity.Provider, identity.Subject, identity.CreatedAt, identity.UpdatedAt); err != nil {
+	`, identity.UserID, identity.Provider, identity.Subject, identity.CreatedAt, identity.UpdatedAt); err != nil {
 		if isUniqueViolation(err, "") {
-			return ErrOAuthIdentityConflict
+			return errors.Join(ErrOAuthIdentityConflict, app.ErrOAuthIdentityConflict)
 		}
 		return fmt.Errorf("link oauth identity: %w", err)
 	}
@@ -290,4 +303,29 @@ func scanOAuthIdentity(row oauthIdentityRow) (app.OAuthIdentity, error) {
 		return app.OAuthIdentity{}, fmt.Errorf("scan oauth identity: %w", err)
 	}
 	return identity, nil
+}
+
+// RecordLoginFailure increments the durable source-specific counter atomically.
+func (s *LoginFailureStore) RecordLoginFailure(ctx context.Context, key string, now time.Time) (app.LoginFailure, error) {
+	var failure app.LoginFailure
+	var lockedUntil pgtype.Timestamptz
+	err := s.pool.QueryRow(ctx, `
+INSERT INTO login_failures (email, count, window_start, locked_until)
+VALUES ($1, 1, $2, NULL)
+ON CONFLICT (email) DO UPDATE SET
+ count = CASE WHEN login_failures.window_start < $2 - interval '15 minutes' THEN 1 ELSE login_failures.count + 1 END,
+ window_start = CASE WHEN login_failures.window_start < $2 - interval '15 minutes' THEN $2 ELSE login_failures.window_start END,
+ locked_until = CASE
+  WHEN login_failures.window_start < $2 - interval '15 minutes' THEN NULL
+  WHEN login_failures.count + 1 >= 5 THEN $2 + interval '15 minutes'
+  ELSE login_failures.locked_until END
+RETURNING count, window_start, locked_until
+`, key, now).Scan(&failure.Count, &failure.WindowStart, &lockedUntil)
+	if err != nil {
+		return app.LoginFailure{}, fmt.Errorf("record login failure: %w", err)
+	}
+	if value := optionalTime(lockedUntil); value != nil {
+		failure.LockedUntil = *value
+	}
+	return failure, nil
 }

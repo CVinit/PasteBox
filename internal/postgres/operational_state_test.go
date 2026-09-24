@@ -30,7 +30,7 @@ func TestOperationalStateStoresRoundTripBillingSupportJobsAndMail(t *testing.T) 
 	if err != nil {
 		t.Fatalf("connect postgres: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 
 	userID := "usr_operational_state_test"
 	orderID := "ord_operational_state_test"
@@ -336,7 +336,7 @@ func TestQueueClaimsAreAtomicRecoverExpiredLeasesAndRejectStaleWorkers(t *testin
 	if err != nil {
 		t.Fatalf("connect postgres: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 	cleanup := func(cleanupCtx context.Context) {
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM jobs WHERE id LIKE 'job_queue_claim_test_%'`)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM mails WHERE id LIKE 'mail_queue_claim_test_%'`)

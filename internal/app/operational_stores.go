@@ -1,6 +1,9 @@
 package app
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type OperationalStores struct {
 	Orders        OrderStore
@@ -44,4 +47,28 @@ type MailStore interface {
 	QueueMail(ctx context.Context, mail Mail) error
 	QueuedMails(ctx context.Context, limit int) ([]Mail, error)
 	MailQueueItems(ctx context.Context, status string, limit int) ([]MailQueueItem, error)
+}
+
+type PagedOrderStore interface {
+	ListOrdersPage(context.Context, int, int) ([]Order, error)
+}
+type PagedWebhookEventStore interface {
+	ListWebhookEventsPage(context.Context, int, int) ([]WebhookEvent, error)
+}
+type PagedReportStore interface {
+	ListReportsPage(context.Context, int, int) ([]Report, error)
+}
+type OperationalMetricsStore interface {
+	OperationalMetrics(context.Context) (OperationalMetrics, error)
+}
+
+// Export queries are scoped to the owner and independent of bounded admin caches.
+type UserReportStore interface {
+	ListReportsByUser(context.Context, string) ([]Report, error)
+}
+type UserWebhookEventStore interface {
+	ListWebhookEventsByUser(context.Context, string) ([]WebhookEvent, error)
+}
+type ExpiredOrderStore interface {
+	ListExpiredPendingOrders(context.Context, time.Time, int) ([]Order, error)
 }

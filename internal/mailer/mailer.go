@@ -114,11 +114,11 @@ func (s *SMTPSender) Send(ctx context.Context, to string, subject string, body s
 	if err != nil {
 		return err
 	}
-	client, err := s.smtpClient(ctx)
+	client, closeClient, err := s.smtpClient(ctx)
 	if err != nil {
 		return err
 	}
-	defer client.Close()
+	defer closeClient()
 
 	if strings.TrimSpace(s.cfg.Username) != "" || strings.TrimSpace(s.cfg.Password) != "" {
 		auth := smtp.PlainAuth("", s.cfg.Username, s.cfg.Password, s.cfg.Host)
@@ -149,7 +149,7 @@ func (s *SMTPSender) Send(ctx context.Context, to string, subject string, body s
 	return nil
 }
 
-func (s *SMTPSender) smtpClient(ctx context.Context) (*smtp.Client, error) {
+func (s *SMTPSender) smtpClient(ctx context.Context) (*smtp.Client, func(), error) {
 	address := net.JoinHostPort(s.cfg.Host, strconv.Itoa(s.cfg.Port))
 	var conn net.Conn
 	var err error
@@ -160,8 +160,16 @@ func (s *SMTPSender) smtpClient(ctx context.Context) (*smtp.Client, error) {
 		conn, err = (&net.Dialer{}).DialContext(ctx, "tcp", address)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("connect smtp: %w", err)
+		return nil, nil, fmt.Errorf("connect smtp: %w", err)
 	}
+	stopCancel := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	opened := false
+	defer func() {
+		if !opened {
+			stopCancel()
+			_ = conn.Close()
+		}
+	}()
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	} else {
@@ -170,19 +178,20 @@ func (s *SMTPSender) smtpClient(ctx context.Context) (*smtp.Client, error) {
 	client, err := smtp.NewClient(conn, s.cfg.Host)
 	if err != nil {
 		_ = conn.Close()
-		return nil, fmt.Errorf("create smtp client: %w", err)
+		return nil, nil, fmt.Errorf("create smtp client: %w", err)
 	}
 	if s.cfg.TLSMode == "starttls" {
 		if ok, _ := client.Extension("STARTTLS"); !ok {
 			_ = client.Close()
-			return nil, fmt.Errorf("smtp server does not advertise STARTTLS")
+			return nil, nil, fmt.Errorf("smtp server does not advertise STARTTLS")
 		}
 		if err := client.StartTLS(tlsConfig(s.cfg.Host)); err != nil {
 			_ = client.Close()
-			return nil, fmt.Errorf("smtp starttls: %w", err)
+			return nil, nil, fmt.Errorf("smtp starttls: %w", err)
 		}
 	}
-	return client, nil
+	opened = true
+	return client, func() { stopCancel(); _ = client.Close() }, nil
 }
 
 func tlsConfig(host string) *tls.Config {

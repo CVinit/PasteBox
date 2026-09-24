@@ -193,6 +193,29 @@ func TestRunnerCompletesScanJob(t *testing.T) {
 	}
 }
 
+func TestRunnerPassesContextToScanService(t *testing.T) {
+	now := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
+	jobs := &fakeJobStore{runnable: []postgres.JobRecord{{
+		ID:        "job_scan_context",
+		Kind:      "scan",
+		TargetID:  "att_scan_context",
+		Status:    "pending",
+		RunAfter:  now.Add(-time.Minute),
+		CreatedAt: now.Add(-time.Minute),
+		UpdatedAt: now.Add(-time.Minute),
+	}}}
+	service := &fakeCleanupService{}
+	ctx := context.WithValue(context.Background(), scanContextKey{}, "scan-context")
+
+	runner := NewRunner(jobs, service, Config{Now: func() time.Time { return now }, Logger: slog.Default(), Scanner: fakeScanner{}})
+	if _, err := runner.RunOnce(ctx); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if service.scanContext == nil || service.scanContext.Value(scanContextKey{}) != "scan-context" {
+		t.Fatalf("expected scan context to reach service, got %#v", service.scanContext)
+	}
+}
+
 func TestRunnerRetriesScanWhenScannerIsMissing(t *testing.T) {
 	now := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
 	jobs := &fakeJobStore{runnable: []postgres.JobRecord{{
@@ -313,11 +336,12 @@ type fakeCleanupService struct {
 	billingCalls        int
 	scanCalls           int
 	scannedAttachmentID string
+	scanContext         context.Context
 	err                 error
 	scanErr             error
 }
 
-func (s *fakeCleanupService) RunCleanup(_ string) (map[string]int, error) {
+func (s *fakeCleanupService) RunCleanupWithContext(_ context.Context, _ string) (map[string]int, error) {
 	s.cleanupCalls++
 	if s.err != nil {
 		return nil, s.err
@@ -325,7 +349,7 @@ func (s *fakeCleanupService) RunCleanup(_ string) (map[string]int, error) {
 	return map[string]int{"expired": 1}, nil
 }
 
-func (s *fakeCleanupService) RunBillingReconciliation(_ string) (map[string]int, error) {
+func (s *fakeCleanupService) RunBillingReconciliationWithContext(_ context.Context, _ string) (map[string]int, error) {
 	s.billingCalls++
 	if s.err != nil {
 		return nil, s.err
@@ -334,10 +358,20 @@ func (s *fakeCleanupService) RunBillingReconciliation(_ string) (map[string]int,
 }
 
 func (s *fakeCleanupService) RunAttachmentScan(_ app.Scanner, attachmentID string) error {
+	return s.RunAttachmentScanWithContext(context.Background(), nil, attachmentID)
+}
+
+func (s *fakeCleanupService) RunAttachmentScanWithContext(ctx context.Context, _ app.Scanner, attachmentID string) error {
 	s.scanCalls++
 	s.scannedAttachmentID = attachmentID
+	s.scanContext = ctx
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return s.scanErr
 }
+
+type scanContextKey struct{}
 
 type fakeScanner struct{}
 

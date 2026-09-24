@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,7 +29,7 @@ func TestAuthStateStoresPersistSessionTokenAndLoginFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect postgres: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 
 	userID := "usr_auth_state_test"
 	sessionID := "sess_auth_state_test"
@@ -108,8 +109,15 @@ func TestAuthStateStoresPersistSessionTokenAndLoginFailure(t *testing.T) {
 		t.Fatalf("unexpected auth token: %#v", loadedToken)
 	}
 	usedAt := createdAt.Add(2 * time.Hour)
-	if err := authTokenStore.MarkAuthTokenUsed(ctx, "email_verification", tokenHash, usedAt); err != nil {
-		t.Fatalf("mark auth token used: %v", err)
+	consumedToken, err := authTokenStore.ConsumeAuthToken(ctx, "email_verification", tokenHash, usedAt)
+	if err != nil {
+		t.Fatalf("consume auth token: %v", err)
+	}
+	if consumedToken.UsedAt == nil || !consumedToken.UsedAt.Equal(usedAt) {
+		t.Fatalf("expected consumed token used at %s, got %#v", usedAt, consumedToken.UsedAt)
+	}
+	if _, err := authTokenStore.ConsumeAuthToken(ctx, "email_verification", tokenHash, usedAt.Add(time.Second)); !errors.Is(err, ErrAuthTokenNotFound) {
+		t.Fatalf("expected consumed auth token to reject reuse, got %v", err)
 	}
 	usedToken, err := authTokenStore.AuthToken(ctx, "email_verification", tokenHash)
 	if err != nil {
@@ -121,8 +129,65 @@ func TestAuthStateStoresPersistSessionTokenAndLoginFailure(t *testing.T) {
 	if _, err := authTokenStore.AuthToken(ctx, "wrong_kind", tokenHash); !errors.Is(err, ErrAuthTokenNotFound) {
 		t.Fatalf("expected wrong-kind token miss, got %v", err)
 	}
+	concurrentHash := "auth_state_concurrent_token_hash"
+	if err := authTokenStore.CreateAuthToken(ctx, "password_reset", app.AuthToken{Hash: concurrentHash, UserID: userID, Email: email, ExpiresAt: tokenExpiresAt}); err != nil {
+		t.Fatalf("create concurrent auth token: %v", err)
+	}
+	const consumers = 8
+	start := make(chan struct{})
+	results := make(chan error, consumers)
+	var wg sync.WaitGroup
+	for range consumers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := authTokenStore.ConsumeAuthToken(ctx, "password_reset", concurrentHash, usedAt)
+			results <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	successes := 0
+	for err := range results {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrAuthTokenNotFound):
+		default:
+			t.Fatalf("unexpected concurrent consume error: %v", err)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("expected one concurrent token consumer, got %d", successes)
+	}
 
 	loginFailureStore := NewLoginFailureStore(pool)
+	t.Run("atomic source-scoped failures", func(t *testing.T) {
+		key := "login:atomic-test"
+		if err := loginFailureStore.DeleteLoginFailure(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+		defer loginFailureStore.DeleteLoginFailure(ctx, key)
+		results := make(chan error, 8)
+		for range 8 {
+			go func() { _, err := loginFailureStore.RecordLoginFailure(ctx, key, createdAt); results <- err }()
+		}
+		for range 8 {
+			if err := <-results; err != nil {
+				t.Fatal(err)
+			}
+		}
+		failure, err := loginFailureStore.LoginFailure(ctx, key)
+		if err != nil || failure.Count != 8 || !failure.LockedUntil.Equal(createdAt.Add(15*time.Minute)) {
+			t.Fatalf("lost concurrent failures: %#v, %v", failure, err)
+		}
+		failure, err = loginFailureStore.RecordLoginFailure(ctx, key, createdAt.Add(16*time.Minute))
+		if err != nil || failure.Count != 1 || !failure.LockedUntil.IsZero() {
+			t.Fatalf("expired window was not reset: %#v, %v", failure, err)
+		}
+	})
 	failure := app.LoginFailure{Count: 4, WindowStart: createdAt, LockedUntil: createdAt.Add(15 * time.Minute)}
 	if err := loginFailureStore.SaveLoginFailure(ctx, email, failure); err != nil {
 		t.Fatalf("save login failure: %v", err)

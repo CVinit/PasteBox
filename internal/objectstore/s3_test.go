@@ -243,3 +243,66 @@ func writeS3Error(w http.ResponseWriter, status int, code string) {
 	w.WriteHeader(status)
 	_, _ = io.WriteString(w, `<Error><Code>`+code+`</Code><Message>`+code+`</Message></Error>`)
 }
+
+func TestDynamicStorageReloadPreservesObjectsAndCanDisable(t *testing.T) {
+	store := NewDynamicS3Store()
+	ctx := context.Background()
+	assertDisabled := func() {
+		t.Helper()
+		if err := store.Health(ctx); !errors.Is(err, ErrNotConfigured) {
+			t.Fatalf("health while disabled: %v", err)
+		}
+		if _, err := store.GetObject(ctx, "file"); !errors.Is(err, ErrNotConfigured) {
+			t.Fatal(err)
+		}
+		if _, err := store.OpenObject(ctx, "file"); !errors.Is(err, ErrNotConfigured) {
+			t.Fatal(err)
+		}
+		if err := store.PutObject(ctx, "file", nil, "text/plain"); !errors.Is(err, ErrNotConfigured) {
+			t.Fatal(err)
+		}
+		if err := store.PutObjectStream(ctx, "file", strings.NewReader(""), 0, "text/plain"); !errors.Is(err, ErrNotConfigured) {
+			t.Fatal(err)
+		}
+		if err := store.DeleteObject(ctx, "file"); !errors.Is(err, ErrNotConfigured) {
+			t.Fatal(err)
+		}
+	}
+	assertDisabled()
+	fake := newFakeS3Server(t, "pastebox")
+	cfg := config.S3Config{Endpoint: fake.URL, Bucket: "pastebox", Region: "us-east-1", AccessKey: "access", SecretKey: "secret", UsePathStyle: true}
+	if err := store.Update(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutObject(ctx, "file", []byte("before"), "text/plain"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.GetObject(ctx, "file"); err != nil || string(got) != "before" {
+		t.Fatalf("reload lost working store: %q %v", got, err)
+	}
+	if err := store.PutObjectStream(ctx, "file", strings.NewReader("after"), 5, "text/plain"); err != nil {
+		t.Fatal(err)
+	}
+	object, err := store.OpenObject(ctx, "file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(object.Body)
+	object.Body.Close()
+	if err != nil || string(data) != "after" {
+		t.Fatalf("stream: %q %v", data, err)
+	}
+	if err := store.Health(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteObject(ctx, "file"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(config.S3Config{}); err != nil {
+		t.Fatal(err)
+	}
+	assertDisabled()
+}

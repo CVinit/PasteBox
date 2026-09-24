@@ -59,6 +59,32 @@ func (s *Dynamic) Scan(ctx context.Context, fileName string, contentType string,
 	return current.Scan(ctx, fileName, contentType, content)
 }
 
+func (s *Dynamic) ScanStream(ctx context.Context, fileName string, contentType string, content io.Reader, size int64) (app.ScanResult, error) {
+	if content == nil {
+		return app.ScanResult{}, fmt.Errorf("scanner content is missing")
+	}
+	s.mu.RLock()
+	current := s.scanner
+	s.mu.RUnlock()
+	if current == nil {
+		return app.ScanResult{}, fmt.Errorf("scanner is not configured")
+	}
+	if streaming, ok := current.(interface {
+		ScanStream(context.Context, string, string, io.Reader, int64) (app.ScanResult, error)
+	}); ok {
+		return streaming.ScanStream(ctx, fileName, contentType, content, size)
+	}
+	const legacyScanMemoryLimit = 64 << 20
+	buffer, err := io.ReadAll(io.LimitReader(content, legacyScanMemoryLimit+1))
+	if err != nil {
+		return app.ScanResult{}, fmt.Errorf("read scanner content: %w", err)
+	}
+	if len(buffer) > legacyScanMemoryLimit {
+		return app.ScanResult{}, fmt.Errorf("legacy scanner cannot buffer attachments larger than %d bytes", legacyScanMemoryLimit)
+	}
+	return current.Scan(ctx, fileName, contentType, buffer)
+}
+
 func New(cfg config.ScannerConfig) (Scanner, error) {
 	switch strings.ToLower(strings.TrimSpace(cfg.Provider)) {
 	case "", "heuristic":
@@ -81,15 +107,23 @@ func New(cfg config.ScannerConfig) (Scanner, error) {
 type Heuristic struct{}
 
 func (Heuristic) Scan(_ context.Context, fileName string, contentType string, _ []byte) (app.ScanResult, error) {
+	return heuristicResult(fileName, contentType), nil
+}
+
+func (Heuristic) ScanStream(_ context.Context, fileName string, contentType string, _ io.Reader, _ int64) (app.ScanResult, error) {
+	return heuristicResult(fileName, contentType), nil
+}
+
+func heuristicResult(fileName string, contentType string) app.ScanResult {
 	ext := strings.ToLower(filepath.Ext(fileName))
 	switch ext {
 	case ".exe", ".bat", ".cmd", ".scr", ".msi":
-		return app.ScanResult{Status: string(VerdictMalicious), Risk: "executable_file"}, nil
+		return app.ScanResult{Status: string(VerdictMalicious), Risk: "executable_file"}
 	}
 	if strings.Contains(strings.ToLower(contentType), "html") || strings.Contains(strings.ToLower(contentType), "svg") {
-		return app.ScanResult{Status: string(VerdictClean), Risk: "render_as_download_only"}, nil
+		return app.ScanResult{Status: string(VerdictClean), Risk: "render_as_download_only"}
 	}
-	return app.ScanResult{Status: string(VerdictClean)}, nil
+	return app.ScanResult{Status: string(VerdictClean)}
 }
 
 type ClamAV struct {
@@ -98,6 +132,10 @@ type ClamAV struct {
 }
 
 func (c ClamAV) Scan(ctx context.Context, fileName string, contentType string, content []byte) (app.ScanResult, error) {
+	return c.ScanStream(ctx, fileName, contentType, bytes.NewReader(content), int64(len(content)))
+}
+
+func (c ClamAV) ScanStream(ctx context.Context, fileName string, contentType string, reader io.Reader, _ int64) (app.ScanResult, error) {
 	timeout := c.Timeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -108,6 +146,8 @@ func (c ClamAV) Scan(ctx context.Context, fileName string, contentType string, c
 		return app.ScanResult{}, fmt.Errorf("connect clamav: %w", err)
 	}
 	defer conn.Close()
+	stopCancel := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopCancel()
 
 	deadline := time.Now().Add(timeout)
 	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
@@ -118,7 +158,6 @@ func (c ClamAV) Scan(ctx context.Context, fileName string, contentType string, c
 	if _, err := io.WriteString(conn, "zINSTREAM\x00"); err != nil {
 		return app.ScanResult{}, fmt.Errorf("start clamav stream: %w", err)
 	}
-	reader := bytes.NewReader(content)
 	var size [4]byte
 	buf := make([]byte, 128*1024)
 	for {

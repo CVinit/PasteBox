@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -358,6 +359,128 @@ func TestAuthEmailsUseRouteScopedTokenLinks(t *testing.T) {
 	assertQueuedAuthMailLink(t, svc, "Reset your PasteBox password", "https://pastebox.example.com/password-reset?token=")
 }
 
+func TestPasswordResetStartDoesNotRevealAccountState(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	verified := registerTestUser(t, svc, "reset-verified@example.com")
+	unverified := registerTestUser(t, svc, "reset-unverified@example.com")
+	svc.usersByID[unverified.User.ID].EmailVerified = false
+
+	beforeMails := len(svc.mails)
+	missingResponse, err := svc.StartPasswordReset(context.Background(), "missing@example.com")
+	if err != nil {
+		t.Fatalf("missing account reset should return generic success: %v", err)
+	}
+	unverifiedResponse, err := svc.StartPasswordReset(context.Background(), unverified.User.Email)
+	if err != nil {
+		t.Fatalf("unverified account reset should return generic success: %v", err)
+	}
+	verifiedResponse, err := svc.StartPasswordReset(context.Background(), verified.User.Email)
+	if err != nil {
+		t.Fatalf("verified account reset: %v", err)
+	}
+	for name, response := range map[string]map[string]string{
+		"missing":    missingResponse,
+		"unverified": unverifiedResponse,
+		"verified":   verifiedResponse,
+	} {
+		if response["message"] != "password reset sent" || response["devToken"] == "" {
+			t.Fatalf("expected indistinguishable reset response for %s account, got %#v", name, response)
+		}
+	}
+	if len(svc.mails) != beforeMails+1 {
+		t.Fatalf("expected only verified account to queue a reset mail, before=%d after=%d", beforeMails, len(svc.mails))
+	}
+}
+
+func TestPasswordResetTransactionPublishesCachesAfterCommit(t *testing.T) {
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	token := "reset-transaction-token"
+	transaction := &passwordResetTransactionStore{}
+	svc := newTestServiceWithStorage(t, &now, Stores{BusinessTransactions: transaction})
+	user := User{ID: "usr-reset-transaction", Email: "reset-transaction@example.com", Role: "user", EmailVerified: true, PlanID: "free", CreatedAt: now, UpdatedAt: now, PasswordHash: "old-hash"}
+	svc.usersByID[user.ID] = &user
+	svc.userIDByEmail[user.Email] = user.ID
+	svc.passwordResets[tokenHash(token)] = &AuthToken{Hash: tokenHash(token), UserID: user.ID, Email: user.Email, ExpiresAt: now.Add(time.Hour)}
+	session := &Session{ID: "sess-reset-transaction", UserID: user.ID, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+	svc.sessionsByID[session.ID] = session
+	transaction.result = PasswordResetTransactionResult{
+		User: User{ID: user.ID, Email: user.Email, Role: user.Role, EmailVerified: true, PlanID: "free", CreatedAt: now, UpdatedAt: now, PasswordHash: "new-hash"},
+		Mail: Mail{ID: "mail-reset-transaction", To: user.Email, Subject: "Password changed", Body: "changed", CreatedAt: now},
+	}
+
+	if err := svc.FinishPasswordReset(context.Background(), token, "new-password"); err != nil {
+		t.Fatalf("finish password reset transaction: %v", err)
+	}
+	if transaction.calls != 1 || transaction.input.TokenHash != tokenHash(token) || transaction.input.PasswordHash == "" {
+		t.Fatalf("unexpected password reset transaction input: calls=%d input=%#v", transaction.calls, transaction.input)
+	}
+	if got := svc.usersByID[user.ID].PasswordHash; got != "new-hash" {
+		t.Fatalf("expected committed user cache, got %q", got)
+	}
+	if session.RevokedAt == nil {
+		t.Fatal("expected committed password reset to revoke local sessions")
+	}
+	if len(svc.mails) != 1 || svc.mails[0].ID != "mail-reset-transaction" {
+		t.Fatalf("expected committed password change mail cache, got %#v", svc.mails)
+	}
+}
+
+func TestLogoutKeepsLocalSessionActiveWhenPersistenceFails(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	session := &Session{ID: "sess_logout_failure", UserID: "usr_logout_failure", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+	svc.sessionsByID[session.ID] = session
+	svc.auth.Sessions = failingSessionStore{err: errors.New("session store unavailable")}
+
+	if err := svc.Logout(context.Background(), session.ID); err == nil {
+		t.Fatal("expected logout persistence failure")
+	}
+	if session.RevokedAt != nil {
+		t.Fatalf("failed logout must not publish a local revoke, got %#v", session.RevokedAt)
+	}
+	if err := svc.LogoutAll(context.Background(), session.UserID); err == nil {
+		t.Fatal("expected logout-all persistence failure")
+	}
+	if session.RevokedAt != nil {
+		t.Fatalf("failed logout-all must not publish a local revoke, got %#v", session.RevokedAt)
+	}
+}
+
+func TestSharePasswordsUseArgon2AndUpgradeLegacyHashes(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	authStores := newMemoryAuthStores()
+	contentStores := newMemoryContentStores()
+	svc := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	owner := registerTestUser(t, svc, "share-password@example.com")
+	paste := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "password", Text: "secret", ExpiresInSeconds: 3600})
+	share := createTestShare(t, svc, owner.User.ID, paste.ID, ShareInput{Password: "legacy-password", ExpiresInSeconds: 1800})
+
+	persisted := contentStores.shares[share.ID]
+	if !strings.HasPrefix(persisted.PasswordHash, "argon2id$") {
+		t.Fatalf("new share password must use Argon2id, got %q", persisted.PasswordHash)
+	}
+	persisted.PasswordHash = tokenHash("legacy-password")
+	contentStores.shares[share.ID] = persisted
+
+	restarted := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	if _, _, err := restarted.AccessShare(share.Token, "legacy-password", ""); err != nil {
+		t.Fatalf("legacy share password should remain valid: %v", err)
+	}
+	upgraded := contentStores.shares[share.ID]
+	if !strings.HasPrefix(upgraded.PasswordHash, "argon2id$") {
+		t.Fatalf("legacy share hash should upgrade after successful access, got %q", upgraded.PasswordHash)
+	}
+}
+
 func TestSeedAdminCreatesAndUpdatesBootstrapAdmin(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	stores := newMemoryAuthStores()
@@ -477,7 +600,9 @@ func TestStoreBackedAuthStateSurvivesServiceRestart(t *testing.T) {
 		t.Fatalf("unexpected login after restart: %#v", loggedIn)
 	}
 
-	restartedAgain.Logout(loggedIn.SessionID)
+	if err := restartedAgain.Logout(context.Background(), loggedIn.SessionID); err != nil {
+		t.Fatalf("logout persisted session: %v", err)
+	}
 	afterLogout := newTestServiceWithAuthStores(t, &now, stores.authStores())
 	if _, err := afterLogout.UserForSession(loggedIn.SessionID); !hasAppCode(err, "unauthenticated") {
 		t.Fatalf("logout should revoke persisted session, got %v", err)
@@ -769,6 +894,351 @@ func TestPreparedAttachmentUploadDoesNotHoldServiceLockDuringObjectWrite(t *test
 	}
 }
 
+func TestLoginDoesNotHoldServiceLockDuringMailQueue(t *testing.T) {
+	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	user := registerTestUser(t, svc, "nonblocking-login-mail@example.com")
+	mailStore := newBlockingMailStore()
+	svc.ops.Mails = mailStore
+	defer mailStore.unblock()
+
+	loginErr := make(chan error, 1)
+	go func() {
+		_, err := svc.Login(context.Background(), user.User.Email, "password123")
+		loginErr <- err
+	}()
+
+	select {
+	case <-mailStore.started:
+	case <-time.After(time.Second):
+		t.Fatal("login mail queue did not start")
+	}
+
+	quotaErr := make(chan error, 1)
+	go func() {
+		_, err := svc.Quota(user.User.ID)
+		quotaErr <- err
+	}()
+	select {
+	case err := <-quotaErr:
+		if err != nil {
+			t.Fatalf("quota while login mail is blocked: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("service lock was held while login mail queue was blocked")
+	}
+
+	mailStore.unblock()
+	select {
+	case err := <-loginErr:
+		if err != nil {
+			t.Fatalf("login after mail queue unblocked: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("login did not finish after mail queue unblocked")
+	}
+}
+
+func TestOAuthRegistrationDoesNotHoldServiceLockDuringMailQueue(t *testing.T) {
+	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	mailStore := newBlockingMailStore()
+	svc.ops.Mails = mailStore
+	defer mailStore.unblock()
+
+	oauthErr := make(chan error, 1)
+	go func() {
+		_, err := svc.GoogleOAuth(context.Background(), "nonblocking-oauth@example.com", "OAuth User", "oauth-subject-blocked", "en")
+		oauthErr <- err
+	}()
+
+	select {
+	case <-mailStore.started:
+	case <-time.After(time.Second):
+		t.Fatal("oauth welcome mail queue did not start")
+	}
+
+	quotaErr := make(chan error, 1)
+	go func() {
+		_, err := svc.Quota("missing-user")
+		quotaErr <- err
+	}()
+	select {
+	case <-quotaErr:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("service lock was held while oauth welcome mail queue was blocked")
+	}
+
+	mailStore.unblock()
+	select {
+	case err := <-oauthErr:
+		if err != nil {
+			t.Fatalf("oauth login after mail queue unblocked: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("oauth login did not finish after mail queue unblocked")
+	}
+}
+
+func TestAuthRegistrationTransactionFailureDoesNotPublishCaches(t *testing.T) {
+	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	transactions := &authRegistrationTransactionStore{registerErr: errors.New("auth registration transaction failed")}
+	svc := newTestServiceWithStorage(t, &now, Stores{BusinessTransactions: transactions})
+	svc.mu.Lock()
+	svc.runtimeConfig.Registration.RequireEmailVerification = false
+	svc.mu.Unlock()
+
+	if _, err := svc.Register(context.Background(), RegisterInput{Email: "transaction-register@example.com", Password: "password123"}); err == nil {
+		t.Fatal("expected registration transaction failure")
+	}
+	if transactions.registerCalls != 1 {
+		t.Fatalf("expected one registration transaction call, got %d", transactions.registerCalls)
+	}
+	svc.mu.Lock()
+	_, userCached := svc.userIDByEmail["transaction-register@example.com"]
+	mailCached := len(svc.mails)
+	svc.mu.Unlock()
+	if userCached || mailCached != 0 {
+		t.Fatalf("transaction failure published cache state: userCached=%v mails=%d", userCached, mailCached)
+	}
+
+	transactions.oauthErr = errors.New("oauth registration transaction failed")
+	if _, err := svc.GoogleOAuth(context.Background(), "transaction-oauth@example.com", "OAuth", "transaction-oauth-subject", "en"); err == nil {
+		t.Fatal("expected oauth registration transaction failure")
+	}
+	svc.mu.Lock()
+	_, userCached = svc.userIDByEmail["transaction-oauth@example.com"]
+	_, identityCached := svc.oauthIdentities[oauthIdentityKey("google", "transaction-oauth-subject")]
+	svc.mu.Unlock()
+	if userCached || identityCached {
+		t.Fatalf("oauth transaction failure published cache state: userCached=%v identityCached=%v", userCached, identityCached)
+	}
+}
+
+func TestOAuthRegistrationTransactionMapsIdentityConflict(t *testing.T) {
+	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	transactions := &authRegistrationTransactionStore{oauthErr: ErrOAuthIdentityConflict}
+	svc := newTestServiceWithStorage(t, &now, Stores{BusinessTransactions: transactions})
+	svc.mu.Lock()
+	svc.runtimeConfig.Registration.RequireEmailVerification = false
+	svc.mu.Unlock()
+
+	_, err := svc.GoogleOAuth(context.Background(), "oauth-conflict@example.com", "OAuth", "oauth-conflict-subject", "en")
+	if !hasAppCode(err, "oauth_identity_conflict") {
+		t.Fatalf("expected oauth identity conflict, got %v", err)
+	}
+}
+
+func TestAuthRegistrationTransactionsPublishCachesAfterCommit(t *testing.T) {
+	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	transactions := &authRegistrationTransactionStore{}
+	svc := newTestServiceWithStorage(t, &now, Stores{BusinessTransactions: transactions})
+	svc.mu.Lock()
+	svc.runtimeConfig.Registration.RequireEmailVerification = false
+	svc.mu.Unlock()
+
+	registered, err := svc.Register(context.Background(), RegisterInput{Email: "transaction-success@example.com", Password: "password123"})
+	if err != nil {
+		t.Fatalf("register through transaction: %v", err)
+	}
+	if transactions.registerCalls != 1 || registered.SessionID == "" {
+		t.Fatalf("unexpected registered result: calls=%d result=%#v", transactions.registerCalls, registered)
+	}
+	if _, err := svc.UserForSession(registered.SessionID); err != nil {
+		t.Fatalf("committed registration should publish session/user cache: %v", err)
+	}
+
+	oauth, err := svc.GoogleOAuth(context.Background(), "transaction-success-oauth@example.com", "OAuth", "transaction-success-subject", "en")
+	if err != nil {
+		t.Fatalf("oauth through transaction: %v", err)
+	}
+	if transactions.oauthCalls != 1 || oauth.SessionID == "" || len(oauth.User.OAuthProviders) != 1 || oauth.User.OAuthProviders[0] != "google" {
+		t.Fatalf("unexpected oauth result: calls=%d result=%#v", transactions.oauthCalls, oauth)
+	}
+}
+
+func TestEmailVerificationProfileAndPasteLifecycle(t *testing.T) {
+	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	user := registerTestUser(t, svc, "lifecycle@example.com")
+	svc.mu.Lock()
+	svc.usersByID[user.User.ID].EmailVerified = false
+	svc.mu.Unlock()
+
+	start, err := svc.StartEmailVerification(user.User.ID)
+	if err != nil {
+		t.Fatalf("start email verification: %v", err)
+	}
+	if start["devToken"] == "" {
+		t.Fatalf("expected development verification token, got %#v", start)
+	}
+	verified, err := svc.FinishEmailVerification(start["devToken"])
+	if err != nil {
+		t.Fatalf("finish email verification: %v", err)
+	}
+	if !verified.EmailVerified {
+		t.Fatalf("expected verified user, got %#v", verified)
+	}
+	if already, err := svc.StartEmailVerification(user.User.ID); err != nil || already["message"] != "email already verified" {
+		t.Fatalf("expected already verified response, result=%#v err=%v", already, err)
+	}
+
+	updated, err := svc.UpdateProfile(user.User.ID, "Lifecycle User", "zh-CN")
+	if err != nil {
+		t.Fatalf("update profile: %v", err)
+	}
+	if updated.DisplayName != "Lifecycle User" || updated.Language != "zh-CN" {
+		t.Fatalf("unexpected profile update: %#v", updated)
+	}
+	paste := createTestPaste(t, svc, user.User.ID, PasteInput{Title: "lifecycle", Text: "body", ExpiresInSeconds: 60})
+	if _, err := svc.ExtendPaste(user.User.ID, paste.ID, 3600); err != nil {
+		t.Fatalf("extend paste: %v", err)
+	}
+	if _, err := svc.ExtendPaste(user.User.ID, paste.ID, 30); !hasAppCode(err, "invalid_expiration") {
+		t.Fatalf("expected shrinking expiration to fail, got %v", err)
+	}
+	prices := svc.Prices()
+	if len(prices.Plans) == 0 {
+		t.Fatalf("expected plan catalog in prices response")
+	}
+}
+
+func TestAdminListSurfacesAndOperationalMetrics(t *testing.T) {
+	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	admin := seedAdminTestUser(t, svc, "list-admin@example.com")
+	owner := registerTestUser(t, svc, "list-owner@example.com")
+	paste := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "admin-list", Text: "content", ExpiresInSeconds: 3600})
+	attachment := addTestAttachment(t, svc, owner.User.ID, paste.ID, "list.txt", []byte("attachment"))
+	share := createTestShare(t, svc, owner.User.ID, paste.ID, ShareInput{ExpiresInSeconds: 3600})
+
+	users, err := svc.AdminUsersWithContext(context.Background(), admin.ID, ListOptions{Limit: 1})
+	if err != nil || len(users) != 1 {
+		t.Fatalf("admin users page: users=%#v err=%v", users, err)
+	}
+	pastes, err := svc.AdminPastesWithContext(context.Background(), admin.ID, ListOptions{Limit: 1})
+	if err != nil || len(pastes) != 1 || pastes[0].ID != paste.ID {
+		t.Fatalf("admin pastes page: pastes=%#v err=%v", pastes, err)
+	}
+	attachments, err := svc.AdminAttachmentsWithContext(context.Background(), admin.ID, ListOptions{Query: "list.txt"})
+	if err != nil || len(attachments) != 1 || attachments[0].ID != attachment.ID {
+		t.Fatalf("admin attachments: attachments=%#v err=%v", attachments, err)
+	}
+	shares, err := svc.AdminSharesWithContext(context.Background(), admin.ID, ListOptions{Limit: 1})
+	if err != nil || len(shares) != 1 || shares[0].ID != share.ID {
+		t.Fatalf("admin shares: shares=%#v err=%v", shares, err)
+	}
+	orders, err := svc.AdminOrders(admin.ID)
+	if err != nil || len(orders) != 0 {
+		t.Fatalf("admin orders: orders=%#v err=%v", orders, err)
+	}
+	metrics, err := svc.OperationalMetrics()
+	if err != nil || metrics.UserCount < 2 || metrics.ActivePastes < 1 {
+		t.Fatalf("operational metrics: metrics=%#v err=%v", metrics, err)
+	}
+	if _, err := svc.AdminUsers(owner.User.ID); !hasAppCode(err, "admin_required") {
+		t.Fatalf("expected non-admin list rejection, got %v", err)
+	}
+}
+
+func TestAttachmentOpenWrappersAndUtilityBoundaries(t *testing.T) {
+	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	owner := registerTestUser(t, svc, "attachment-wrapper@example.com")
+	paste := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "wrapper", Text: "body", ExpiresInSeconds: 3600})
+	attachment := addTestAttachment(t, svc, owner.User.ID, paste.ID, "wrapper.txt", []byte("payload"))
+	if err := svc.RunAttachmentScan(staticScanner{result: ScanResult{Status: "clean"}}, attachment.ID); err != nil {
+		t.Fatalf("mark attachment clean: %v", err)
+	}
+	opened, err := svc.OpenAttachment(owner.User.ID, attachment.ID)
+	if err != nil {
+		t.Fatalf("open attachment wrapper: %v", err)
+	}
+	content, err := io.ReadAll(opened.Body)
+	_ = opened.Body.Close()
+	if err != nil || string(content) != "payload" {
+		t.Fatalf("read opened attachment: content=%q err=%v", content, err)
+	}
+	view, content, err := svc.DownloadAttachment(owner.User.ID, attachment.ID)
+	if err != nil || string(content) != "payload" || view.ID != attachment.ID {
+		t.Fatalf("download attachment wrapper: view=%#v content=%q err=%v", view, content, err)
+	}
+	share := createTestShare(t, svc, owner.User.ID, paste.ID, ShareInput{Password: "share-password", ExpiresInSeconds: 3600})
+	shared, err := svc.OpenSharedAttachment(share.Token, "share-password", attachment.ID, "")
+	if err != nil {
+		t.Fatalf("open shared attachment wrapper: %v", err)
+	}
+	sharedContent, readErr := io.ReadAll(shared.Body)
+	_ = shared.Body.Close()
+	if readErr != nil || string(sharedContent) != "payload" {
+		t.Fatalf("read shared attachment: content=%q err=%v", sharedContent, readErr)
+	}
+	grant, err := svc.OpenSharedAttachmentWithAccessGrant(share.Token, attachment.ID, "")
+	if err != nil {
+		t.Fatalf("open shared attachment with access grant: %v", err)
+	}
+	if grant.Body == nil {
+		t.Fatal("expected access-granted attachment body")
+	}
+	_ = grant.Body.Close()
+	for _, value := range []string{"", "file.exe", "file.html"} {
+		_ = classifyAttachmentRisk(value, "")
+	}
+	if got := sanitizeFileName("/tmp/../safe.txt"); got != "safe.txt" {
+		t.Fatalf("sanitize filename: %q", got)
+	}
+	if _, err := ReadAllLimited(bytes.NewBufferString("12345"), 4); !hasAppCode(err, "file_too_large") {
+		t.Fatalf("expected limited reader rejection, got %v", err)
+	}
+}
+
+func TestLoginDoesNotHoldServiceLockDuringSessionPersistence(t *testing.T) {
+	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	stores := newMemoryAuthStores()
+	svc := newTestServiceWithAuthStores(t, &now, stores.authStores())
+	user := registerTestUser(t, svc, "nonblocking-login-session@example.com")
+	store := newBlockingSessionStore()
+	stores.sessions = store.sessions
+	svc.auth.Sessions = store
+	defer store.unblock()
+
+	loginErr := make(chan error, 1)
+	go func() {
+		_, err := svc.Login(context.Background(), user.User.Email, "password123")
+		loginErr <- err
+	}()
+
+	select {
+	case <-store.started:
+	case <-time.After(time.Second):
+		t.Fatal("session persistence did not start")
+	}
+
+	quotaErr := make(chan error, 1)
+	go func() {
+		_, err := svc.Quota(user.User.ID)
+		quotaErr <- err
+	}()
+	select {
+	case err := <-quotaErr:
+		if err != nil {
+			t.Fatalf("quota while session persistence is blocked: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("service lock was held while session persistence was blocked")
+	}
+
+	store.unblock()
+	select {
+	case err := <-loginErr:
+		if err != nil {
+			t.Fatalf("login after session persistence unblocked: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("login did not finish after session persistence unblocked")
+	}
+}
+
 func TestAttachmentDownloadDoesNotHoldServiceLockDuringObjectRead(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	objectStore := newMemoryObjectStore()
@@ -978,6 +1448,45 @@ func TestCleanupAttachmentUpdateFailurePreservesSharedObjectRef(t *testing.T) {
 	}
 }
 
+func TestCleanupObjectDeleteFailureRestoresObjectRef(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	deleteErr := errors.New("object delete unavailable")
+	authStores := newMemoryAuthStores()
+	contentStores := newMemoryContentStores()
+	objectStore := newMemoryObjectStore()
+
+	svc := newTestServiceWithStorage(t, &now, Stores{
+		Auth:         authStores.authStores(),
+		Content:      contentStores.contentStores(),
+		Objects:      objectStore,
+		DailyMetrics: newMemoryDailyMetricStore(),
+	})
+	owner := registerTestUser(t, svc, "cleanup-delete-failure@example.com")
+	paste := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "cleanup", Text: "one", ExpiresInSeconds: 3600})
+	attachment := addTestAttachment(t, svc, owner.User.ID, paste.ID, "cleanup.txt", []byte("cleanup bytes"))
+	objectKey := svc.attachmentsByID[attachment.ID].ObjectKey
+
+	if err := svc.DeletePaste(owner.User.ID, paste.ID); err != nil {
+		t.Fatalf("delete paste: %v", err)
+	}
+	objectStore.delErr = deleteErr
+	if _, err := svc.RunCleanup(""); !errors.Is(err, deleteErr) {
+		t.Fatalf("expected object delete error, got %v", err)
+	}
+	if refs := svc.objectRefs[objectKey]; refs != 1 {
+		t.Fatalf("expected in-memory object ref count to be restored, got %d", refs)
+	}
+	if ref := contentStores.objectRefs[objectKey]; ref.RefCount != 1 {
+		t.Fatalf("expected persisted object ref count to be restored, got %#v", ref)
+	}
+	if stored := svc.attachmentsByID[attachment.ID]; stored.Status != "pending_delete" {
+		t.Fatalf("expected attachment status to remain pending_delete, got %q", stored.Status)
+	}
+	if !objectStore.has(objectKey) {
+		t.Fatalf("expected object to remain after delete failure")
+	}
+}
+
 func TestDeletePasteSchedulesDurableCleanupJob(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	authStores := newMemoryAuthStores()
@@ -1118,6 +1627,137 @@ func TestListPastesRefreshesWorkerScanResultsFromStore(t *testing.T) {
 	}
 	if len(after) != 1 || after[0].ScanStatus != "clean" || len(after[0].Attachments) != 1 || after[0].Attachments[0].ScanStatus != "clean" {
 		t.Fatalf("expected API list to refresh worker scan result, got %#v", after)
+	}
+}
+
+func TestListPastesUsesBoundedUserPageWithoutRefreshingAllPastes(t *testing.T) {
+	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	authStores := newMemoryAuthStores()
+	contentStores := newMemoryContentStores()
+	svc := newTestServiceWithStorage(t, &now, Stores{
+		Auth:    authStores.authStores(),
+		Content: contentStores.contentStores(),
+	})
+	owner := registerTestUser(t, svc, "paged-owner@example.com")
+	first := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "first", Text: "first", ExpiresInSeconds: 3600})
+	second := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "second", Text: "second", Pinned: true, ExpiresInSeconds: 3600})
+	fullListCalls := contentStores.listPastesCalls
+
+	page, err := svc.ListPastes(owner.User.ID, ListOptions{Limit: 1})
+	if err != nil {
+		t.Fatalf("list first page: %v", err)
+	}
+	if len(page) != 1 || page[0].ID != second.ID {
+		t.Fatalf("expected pinned paste on first page, got %#v", page)
+	}
+	if contentStores.listPastesCalls != fullListCalls {
+		t.Fatalf("paged list must not refresh all pastes, before=%d after=%d", fullListCalls, contentStores.listPastesCalls)
+	}
+	if contentStores.listPastesByUserPageCalls != 1 {
+		t.Fatalf("expected one bounded user-page query, got %d", contentStores.listPastesByUserPageCalls)
+	}
+
+	page, err = svc.ListPastes(owner.User.ID, ListOptions{Limit: 1, Offset: 1})
+	if err != nil {
+		t.Fatalf("list second page: %v", err)
+	}
+	if len(page) != 1 || page[0].ID != first.ID {
+		t.Fatalf("expected second paste on second page, got %#v", page)
+	}
+}
+
+func TestListPastesAppliesFiltersBeforePagination(t *testing.T) {
+	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	contentStores := newMemoryContentStores()
+	svc := newTestServiceWithStorage(t, &now, Stores{
+		Auth:    newMemoryAuthStores().authStores(),
+		Content: contentStores.contentStores(),
+	})
+	owner := registerTestUser(t, svc, "filtered-page-owner@example.com")
+	matching := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "needle", Text: "matching", ExpiresInSeconds: 3600})
+	_ = createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "newer unrelated", Text: "other", ExpiresInSeconds: 3600})
+
+	page, err := svc.ListPastes(owner.User.ID, ListOptions{Query: "needle", Limit: 1})
+	if err != nil {
+		t.Fatalf("list filtered page: %v", err)
+	}
+	if len(page) != 1 || page[0].ID != matching.ID {
+		t.Fatalf("expected matching paste after filtering before pagination, got %#v", page)
+	}
+}
+
+func TestBoundedContentCachesAndCleanupUseStorePages(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	contentStores := newBoundedMemoryContentStores(now)
+	for i := 0; i < initialContentCacheLimit+1; i++ {
+		createdAt := now.Add(-time.Duration(i) * time.Minute)
+		contentStores.pastes[fmt.Sprintf("pst-%04d", i)] = Paste{
+			ID:         fmt.Sprintf("pst-%04d", i),
+			UserID:     "usr-owner",
+			Title:      fmt.Sprintf("paste %04d", i),
+			Text:       "content",
+			Status:     "active",
+			ScanStatus: "clean",
+			ExpiresAt:  now.Add(time.Hour),
+			CreatedAt:  createdAt,
+			UpdatedAt:  createdAt,
+		}
+	}
+	admin := User{ID: "usr-admin", Email: "bounded-admin@example.com", Role: "admin", EmailVerified: true, PlanID: "free", CreatedAt: now, UpdatedAt: now}
+	authStores := newMemoryAuthStores()
+	authStores.usersByID[admin.ID] = admin
+	authStores.userIDByEmail[admin.Email] = admin.ID
+
+	svc := newTestServiceWithStorage(t, &now, Stores{
+		Auth:    authStores.authStores(),
+		Content: contentStores.contentStores(),
+	})
+	if len(svc.pastesByID) != initialContentCacheLimit {
+		t.Fatalf("expected startup cache to load %d pastes, got %d", initialContentCacheLimit, len(svc.pastesByID))
+	}
+	if contentStores.listPastesPageCalls != 1 || contentStores.listPastesCalls != 0 {
+		t.Fatalf("expected bounded startup paste query, page_calls=%d full_calls=%d", contentStores.listPastesPageCalls, contentStores.listPastesCalls)
+	}
+
+	page, err := svc.AdminPastesWithContext(context.Background(), admin.ID, ListOptions{Limit: 1, Offset: 1})
+	if err != nil {
+		t.Fatalf("admin paste page: %v", err)
+	}
+	if len(page) != 1 || page[0].ID != "pst-0001" {
+		t.Fatalf("expected second newest paste, got %#v", page)
+	}
+	if contentStores.listPastesPageCalls != 2 || contentStores.listPastesCalls != 0 {
+		t.Fatalf("expected admin paste page query, page_calls=%d full_calls=%d", contentStores.listPastesPageCalls, contentStores.listPastesCalls)
+	}
+
+	cleanupStores := newBoundedMemoryContentStores(now)
+	for i := 0; i < 101; i++ {
+		createdAt := now.Add(-time.Duration(i) * time.Minute)
+		cleanupStores.pastes[fmt.Sprintf("cleanup-%03d", i)] = Paste{
+			ID:        fmt.Sprintf("cleanup-%03d", i),
+			UserID:    "usr-owner",
+			Status:    "pending_delete",
+			ExpiresAt: now.Add(time.Hour),
+			CreatedAt: createdAt,
+			UpdatedAt: createdAt,
+		}
+	}
+	cleanupSvc := newTestServiceWithStorage(t, &now, Stores{Content: cleanupStores.contentStores()})
+	result, err := cleanupSvc.RunCleanupWithContext(context.Background(), "")
+	if err != nil {
+		t.Fatalf("bounded cleanup: %v", err)
+	}
+	deleted := 0
+	for _, paste := range cleanupStores.pastes {
+		if paste.Status == "deleted" {
+			deleted++
+		}
+	}
+	if result["deletedPastes"] != 101 || deleted != 101 {
+		t.Fatalf("expected all cleanup batches to complete, result=%v deleted=%d", result, deleted)
+	}
+	if cleanupStores.cleanupPasteCalls < 3 || cleanupStores.listPastesCalls != 0 {
+		t.Fatalf("expected repeated bounded cleanup queries, cleanup_calls=%d full_calls=%d", cleanupStores.cleanupPasteCalls, cleanupStores.listPastesCalls)
 	}
 }
 
@@ -2531,6 +3171,60 @@ type failingBusinessTransactionStore struct {
 	pasteUpdates int
 }
 
+type authRegistrationTransactionStore struct {
+	registerErr   error
+	oauthErr      error
+	registerCalls int
+	oauthCalls    int
+}
+
+func (s *authRegistrationTransactionStore) RegisterUser(context.Context, User, Mail) error {
+	s.registerCalls++
+	return s.registerErr
+}
+
+func (s *authRegistrationTransactionStore) RegisterUserWithEmailVerification(context.Context, User, Mail, string, string, time.Time) error {
+	s.registerCalls++
+	return s.registerErr
+}
+
+func (s *authRegistrationTransactionStore) RegisterOAuthUser(context.Context, OAuthRegistrationTransactionInput) error {
+	s.oauthCalls++
+	return s.oauthErr
+}
+
+func (s *authRegistrationTransactionStore) RedeemCode(context.Context, RedemptionTransactionInput) (RedemptionTransactionResult, error) {
+	return RedemptionTransactionResult{}, nil
+}
+
+func (s *authRegistrationTransactionStore) ApplyBilling(context.Context, BillingTransactionInput) (BillingTransactionResult, error) {
+	return BillingTransactionResult{}, nil
+}
+
+type passwordResetTransactionStore struct {
+	result PasswordResetTransactionResult
+	err    error
+	input  PasswordResetTransactionInput
+	calls  int
+}
+
+func (s *passwordResetTransactionStore) RedeemCode(context.Context, RedemptionTransactionInput) (RedemptionTransactionResult, error) {
+	return RedemptionTransactionResult{}, nil
+}
+
+func (s *passwordResetTransactionStore) ApplyBilling(context.Context, BillingTransactionInput) (BillingTransactionResult, error) {
+	return BillingTransactionResult{}, nil
+}
+
+func (s *passwordResetTransactionStore) FinishPasswordReset(_ context.Context, input PasswordResetTransactionInput) (PasswordResetTransactionResult, error) {
+	s.calls++
+	s.input = input
+	if s.err != nil {
+		return PasswordResetTransactionResult{}, s.err
+	}
+	return s.result, nil
+}
+
 func (s *failingBusinessTransactionStore) RedeemCode(context.Context, RedemptionTransactionInput) (RedemptionTransactionResult, error) {
 	return RedemptionTransactionResult{}, s.redeemErr
 }
@@ -2950,14 +3644,142 @@ func (s *memoryAuditLogStore) AuditLogsForActorOrTargets(ctx context.Context, ac
 }
 
 type memoryContentStores struct {
-	pastes              map[string]Paste
-	attachments         map[string]Attachment
-	objectRefs          map[string]ObjectRef
-	shares              map[string]Share
-	shareTokens         map[string]string
-	updatePasteErr      error
-	updateAttachmentErr error
-	objectRefErr        error
+	pastes                    map[string]Paste
+	attachments               map[string]Attachment
+	objectRefs                map[string]ObjectRef
+	shares                    map[string]Share
+	shareTokens               map[string]string
+	listPastesCalls           int
+	listPastesByUserPageCalls int
+	updatePasteErr            error
+	updateAttachmentErr       error
+	objectRefErr              error
+}
+
+type boundedMemoryContentStores struct {
+	*memoryContentStores
+	now                      time.Time
+	listPastesPageCalls      int
+	listAttachmentsPageCalls int
+	listSharesPageCalls      int
+	cleanupPasteCalls        int
+}
+
+func newBoundedMemoryContentStores(now time.Time) *boundedMemoryContentStores {
+	return &boundedMemoryContentStores{memoryContentStores: newMemoryContentStores(), now: now}
+}
+
+func (s *boundedMemoryContentStores) contentStores() ContentStores {
+	return ContentStores{Pastes: s, Attachments: s, ObjectRefs: s, Shares: s}
+}
+
+func (s *boundedMemoryContentStores) ListPastesPage(_ context.Context, limit int, offset int) ([]Paste, error) {
+	s.listPastesPageCalls++
+	out := make([]Paste, 0, len(s.pastes))
+	for _, paste := range s.pastes {
+		out = append(out, clonePasteForStore(paste))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID > out[j].ID
+		}
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	return sliceBoundedPastes(out, limit, offset), nil
+}
+
+func (s *boundedMemoryContentStores) ListPastesForCleanup(_ context.Context, limit int) ([]Paste, error) {
+	s.cleanupPasteCalls++
+	out := make([]Paste, 0)
+	for _, paste := range s.pastes {
+		if paste.Status == "pending_delete" || (paste.Status == "active" && !paste.ExpiresAt.After(s.now)) {
+			out = append(out, clonePasteForStore(paste))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UpdatedAt.Equal(out[j].UpdatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].UpdatedAt.Before(out[j].UpdatedAt)
+	})
+	return sliceBoundedPastes(out, limit, 0), nil
+}
+
+func (s *boundedMemoryContentStores) ListAttachmentsPage(_ context.Context, query string, limit int, offset int) ([]Attachment, error) {
+	s.listAttachmentsPageCalls++
+	query = strings.ToLower(strings.TrimSpace(query))
+	out := make([]Attachment, 0, len(s.attachments))
+	for _, attachment := range s.attachments {
+		haystack := strings.ToLower(attachment.UserID + "\n" + attachment.FileName + "\n" + attachment.SHA256 + "\n" + attachment.Status + "\n" + attachment.ScanStatus)
+		if query == "" || strings.Contains(haystack, query) {
+			out = append(out, cloneAttachmentForStore(attachment))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID > out[j].ID
+		}
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	return sliceBoundedAttachments(out, limit, offset), nil
+}
+
+func (s *boundedMemoryContentStores) ListSharesPage(_ context.Context, limit int, offset int) ([]Share, error) {
+	s.listSharesPageCalls++
+	out := make([]Share, 0, len(s.shares))
+	for _, share := range s.shares {
+		out = append(out, share)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID > out[j].ID
+		}
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	return sliceBoundedShares(out, limit, offset), nil
+}
+
+func (s *boundedMemoryContentStores) ListSharesByPaste(_ context.Context, pasteID string) ([]Share, error) {
+	out := make([]Share, 0)
+	for _, share := range s.shares {
+		if share.PasteID == pasteID {
+			out = append(out, share)
+		}
+	}
+	return out, nil
+}
+
+func sliceBoundedPastes(out []Paste, limit int, offset int) []Paste {
+	if offset >= len(out) {
+		return []Paste{}
+	}
+	end := offset + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	return out[offset:end]
+}
+
+func sliceBoundedAttachments(out []Attachment, limit int, offset int) []Attachment {
+	if offset >= len(out) {
+		return []Attachment{}
+	}
+	end := offset + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	return out[offset:end]
+}
+
+func sliceBoundedShares(out []Share, limit int, offset int) []Share {
+	if offset >= len(out) {
+		return []Share{}
+	}
+	end := offset + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	return out[offset:end]
 }
 
 func newMemoryContentStores() *memoryContentStores {
@@ -2996,6 +3818,7 @@ func (s *memoryContentStores) PasteByID(_ context.Context, id string) (Paste, er
 }
 
 func (s *memoryContentStores) ListPastes(_ context.Context) ([]Paste, error) {
+	s.listPastesCalls++
 	out := make([]Paste, 0, len(s.pastes))
 	for _, paste := range s.pastes {
 		out = append(out, clonePasteForStore(paste))
@@ -3011,6 +3834,112 @@ func (s *memoryContentStores) ListPastesByUser(_ context.Context, userID string)
 		}
 	}
 	return out, nil
+}
+
+func (s *memoryContentStores) ListPastesByUserPage(_ context.Context, userID string, limit int, offset int) ([]Paste, error) {
+	s.listPastesByUserPageCalls++
+	out, err := s.listPastesByUser(userID)
+	if err != nil {
+		return nil, err
+	}
+	return pagePastes(out, limit, offset), nil
+}
+
+func (s *memoryContentStores) ListPastesByUserPageWithOptions(_ context.Context, userID string, opts ListOptions, limit int, offset int) ([]Paste, error) {
+	s.listPastesByUserPageCalls++
+	out, err := s.listPastesByUser(userID)
+	if err != nil {
+		return nil, err
+	}
+	query := strings.ToLower(strings.TrimSpace(opts.Query))
+	tag := strings.ToLower(strings.TrimSpace(opts.Tag))
+	filter := strings.ToLower(strings.TrimSpace(opts.Filter))
+	filtered := out[:0]
+	for _, paste := range out {
+		if tag != "" && !contains(paste.Tags, tag) {
+			continue
+		}
+		if query != "" {
+			haystack := strings.ToLower(paste.Title + "\n" + paste.Text + "\n" + strings.Join(paste.Tags, " "))
+			for _, attachment := range s.attachments {
+				if attachment.PasteID == paste.ID && attachment.Status != "deleted" {
+					haystack += "\n" + strings.ToLower(attachment.FileName)
+				}
+			}
+			if !strings.Contains(haystack, query) {
+				continue
+			}
+		}
+		switch filter {
+		case "", "all":
+		case "text":
+			if strings.TrimSpace(paste.Text) == "" {
+				continue
+			}
+		case "file", "image":
+			found := false
+			for _, attachment := range s.attachments {
+				if attachment.PasteID == paste.ID && attachment.Status != "deleted" && (filter == "file" || strings.HasPrefix(attachment.ContentType, "image/")) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		case "shared":
+			found := false
+			for _, share := range s.shares {
+				if share.PasteID == paste.ID && share.RevokedAt == nil {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		case "favorite":
+			if !paste.Favorite {
+				continue
+			}
+		case "pinned":
+			if !paste.Pinned {
+				continue
+			}
+		}
+		filtered = append(filtered, paste)
+	}
+	return pagePastes(filtered, limit, offset), nil
+}
+
+func (s *memoryContentStores) listPastesByUser(userID string) ([]Paste, error) {
+	out := []Paste{}
+	for _, paste := range s.pastes {
+		if paste.UserID == userID {
+			out = append(out, clonePasteForStore(paste))
+		}
+	}
+	return out, nil
+}
+
+func pagePastes(out []Paste, limit int, offset int) []Paste {
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Pinned != out[j].Pinned {
+			return out[i].Pinned
+		}
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID > out[j].ID
+		}
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	if offset >= len(out) {
+		return []Paste{}
+	}
+	end := offset + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	return out[offset:end]
 }
 
 func (s *memoryContentStores) UpdatePaste(_ context.Context, paste Paste) error {
@@ -3083,6 +4012,51 @@ func (s *memoryContentStores) UpsertObjectRef(_ context.Context, ref ObjectRef) 
 	}
 	s.objectRefs[ref.ObjectKey] = ref
 	return nil
+}
+
+func (s *memoryContentStores) IncrementObjectRef(_ context.Context, ref ObjectRef) (ObjectRef, error) {
+	if s.objectRefErr != nil {
+		return ObjectRef{}, s.objectRefErr
+	}
+	if ref.CreatedAt.IsZero() {
+		ref.CreatedAt = time.Now().UTC()
+	}
+	if ref.UpdatedAt.IsZero() {
+		ref.UpdatedAt = ref.CreatedAt
+	}
+	if existing, ok := s.objectRefs[ref.ObjectKey]; ok {
+		existing.RefCount++
+		existing.UpdatedAt = ref.UpdatedAt
+		if existing.Size == 0 {
+			existing.Size = ref.Size
+		}
+		if existing.SHA256 == "" {
+			existing.SHA256 = ref.SHA256
+		}
+		s.objectRefs[ref.ObjectKey] = existing
+		return existing, nil
+	}
+	ref.RefCount = 1
+	s.objectRefs[ref.ObjectKey] = ref
+	return ref, nil
+}
+
+func (s *memoryContentStores) DecrementObjectRef(_ context.Context, objectKey string) (ObjectRef, bool, error) {
+	if s.objectRefErr != nil {
+		return ObjectRef{}, false, s.objectRefErr
+	}
+	ref, ok := s.objectRefs[objectKey]
+	if !ok {
+		return ObjectRef{}, false, ErrStoreNotFound
+	}
+	if ref.RefCount <= 1 {
+		delete(s.objectRefs, objectKey)
+		return ref, true, nil
+	}
+	ref.RefCount--
+	ref.UpdatedAt = time.Now().UTC()
+	s.objectRefs[objectKey] = ref
+	return ref, false, nil
 }
 
 func (s *memoryContentStores) DeleteObjectRef(_ context.Context, objectKey string) error {
@@ -3339,6 +4313,39 @@ type memoryOperationalStores struct {
 	reports            map[string]Report
 	queues             map[string]QueueItem
 	mails              map[string]Mail
+}
+
+type blockingMailStore struct {
+	started     chan struct{}
+	release     chan struct{}
+	startedOnce sync.Once
+	releaseOnce sync.Once
+}
+
+func newBlockingMailStore() *blockingMailStore {
+	return &blockingMailStore{started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (s *blockingMailStore) QueueMail(ctx context.Context, _ Mail) error {
+	s.startedOnce.Do(func() { close(s.started) })
+	select {
+	case <-s.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *blockingMailStore) QueuedMails(context.Context, int) ([]Mail, error) {
+	return []Mail{}, nil
+}
+
+func (s *blockingMailStore) MailQueueItems(context.Context, string, int) ([]MailQueueItem, error) {
+	return []MailQueueItem{}, nil
+}
+
+func (s *blockingMailStore) unblock() {
+	s.releaseOnce.Do(func() { close(s.release) })
 }
 
 func newMemoryOperationalStores() *memoryOperationalStores {
@@ -3877,6 +4884,84 @@ func hasUserEmail(users []UserView, email string) bool {
 	return false
 }
 
+type failingSessionStore struct {
+	err error
+}
+
+type blockingSessionStore struct {
+	sessions    map[string]Session
+	started     chan struct{}
+	release     chan struct{}
+	startedOnce sync.Once
+	releaseOnce sync.Once
+}
+
+func newBlockingSessionStore() *blockingSessionStore {
+	return &blockingSessionStore{sessions: map[string]Session{}, started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (s *blockingSessionStore) CreateSession(ctx context.Context, session Session) error {
+	s.startedOnce.Do(func() { close(s.started) })
+	select {
+	case <-s.release:
+		s.sessions[session.ID] = session
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *blockingSessionStore) SessionByID(_ context.Context, id string) (Session, error) {
+	session, ok := s.sessions[id]
+	if !ok {
+		return Session{}, ErrStoreNotFound
+	}
+	return session, nil
+}
+
+func (s *blockingSessionStore) RevokeSession(_ context.Context, id string, revokedAt time.Time) error {
+	session, ok := s.sessions[id]
+	if !ok {
+		return ErrStoreNotFound
+	}
+	session.RevokedAt = &revokedAt
+	s.sessions[id] = session
+	return nil
+}
+
+func (s *blockingSessionStore) RevokeUserSessions(_ context.Context, userID string, revokedAt time.Time) (int64, error) {
+	var count int64
+	for id, session := range s.sessions {
+		if session.UserID != userID || session.RevokedAt != nil {
+			continue
+		}
+		session.RevokedAt = &revokedAt
+		s.sessions[id] = session
+		count++
+	}
+	return count, nil
+}
+
+func (s *blockingSessionStore) unblock() {
+	s.releaseOnce.Do(func() { close(s.release) })
+}
+
+func (s failingSessionStore) CreateSession(context.Context, Session) error {
+	return s.err
+}
+
+func (s failingSessionStore) SessionByID(context.Context, string) (Session, error) {
+	return Session{}, s.err
+}
+
+func (s failingSessionStore) RevokeSession(context.Context, string, time.Time) error {
+	return s.err
+}
+
+func (s failingSessionStore) RevokeUserSessions(context.Context, string, time.Time) (int64, error) {
+	return 0, s.err
+}
+
 type memoryAuthStores struct {
 	usersByID     map[string]User
 	userIDByEmail map[string]string
@@ -4008,15 +5093,15 @@ func (s *memoryAuthStores) AuthToken(_ context.Context, kind string, hash string
 	return token, nil
 }
 
-func (s *memoryAuthStores) MarkAuthTokenUsed(_ context.Context, kind string, hash string, usedAt time.Time) error {
+func (s *memoryAuthStores) ConsumeAuthToken(_ context.Context, kind string, hash string, usedAt time.Time) (AuthToken, error) {
 	key := kind + "\x00" + hash
 	token, ok := s.tokens[key]
-	if !ok {
-		return ErrStoreNotFound
+	if !ok || token.UsedAt != nil || !token.ExpiresAt.After(usedAt) {
+		return AuthToken{}, ErrStoreNotFound
 	}
 	token.UsedAt = &usedAt
 	s.tokens[key] = token
-	return nil
+	return token, nil
 }
 
 func (s *memoryAuthStores) LoginFailure(_ context.Context, email string) (LoginFailure, error) {

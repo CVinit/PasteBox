@@ -51,6 +51,33 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
+func TestJSONDecoderRejectsEmptyTrailingAndOversizedBodies(t *testing.T) {
+	handler := New(config.FromEnv(), slog.New(slog.NewTextHandler(testWriter{t: t}, nil)))
+	client := newHTTPTestClient(t, handler)
+
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantError  string
+	}{
+		{name: "empty", body: "", wantStatus: http.StatusBadRequest, wantError: "invalid_json"},
+		{name: "trailing", body: `{"email":"user@example.com","password":"password123"}{}`, wantStatus: http.StatusBadRequest, wantError: "invalid_json"},
+		{name: "oversized", body: strings.Repeat("x", (2<<20)+1), wantStatus: http.StatusRequestEntityTooLarge, wantError: "request_body_too_large"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := client.json(http.MethodPost, "/api/v1/auth/login", tt.body)
+			assertStatus(t, res, tt.wantStatus)
+			var response map[string]string
+			decodeResponse(t, res, &response)
+			if response["error"] != tt.wantError {
+				t.Fatalf("expected %s, got %#v", tt.wantError, response)
+			}
+		})
+	}
+}
+
 func TestReadinessEndpoints(t *testing.T) {
 	cfg := config.FromEnv()
 	cfg.AppEnv = "production"
@@ -650,7 +677,7 @@ func TestStaticFallbackServesAssetsAndFrontendRoutes(t *testing.T) {
 	}
 }
 
-func TestSessionCookieSecureFollowsProductionRequestScheme(t *testing.T) {
+func TestSessionCookieIsAlwaysSecureInProduction(t *testing.T) {
 	cfg := config.FromEnv()
 	cfg.AppEnv = "production"
 	cfg.BootstrapAdminEmail = ""
@@ -681,8 +708,8 @@ func TestSessionCookieSecureFollowsProductionRequestScheme(t *testing.T) {
 	handler.ServeHTTP(plain, plainReq)
 	assertStatus(t, plain, http.StatusCreated)
 	plainCookie := sessionCookieFromResponse(t, plain)
-	if plainCookie.Secure {
-		t.Fatalf("expected plain HTTP test cookie to omit Secure, got %#v", plainCookie)
+	if !plainCookie.Secure {
+		t.Fatalf("expected production cookie to remain Secure without proxy headers, got %#v", plainCookie)
 	}
 
 	proxied := httptest.NewRecorder()
@@ -715,6 +742,17 @@ func TestSessionCookieSecureFollowsProductionRequestScheme(t *testing.T) {
 	forwardedCookie := sessionCookieFromResponse(t, forwarded)
 	if !forwardedCookie.Secure {
 		t.Fatalf("expected standard Forwarded HTTPS cookie to set Secure, got %#v", forwardedCookie)
+	}
+}
+
+func TestWriteJSONLeavesWriterUntouchedWhenPayloadCannotBeEncoded(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writeJSON(recorder, http.StatusOK, map[string]any{"unsupported": func() {}})
+	if recorder.Code != http.StatusOK && recorder.Code != 0 {
+		t.Fatalf("expected no error response to be written, got status %d", recorder.Code)
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("expected no response body after encoding failure, got %q", recorder.Body.String())
 	}
 }
 

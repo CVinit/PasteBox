@@ -13,9 +13,9 @@ import (
 )
 
 type Service interface {
-	RunCleanup(actorID string) (map[string]int, error)
-	RunBillingReconciliation(actorID string) (map[string]int, error)
-	RunAttachmentScan(scanner app.Scanner, attachmentID string) error
+	RunCleanupWithContext(ctx context.Context, actorID string) (map[string]int, error)
+	RunBillingReconciliationWithContext(ctx context.Context, actorID string) (map[string]int, error)
+	RunAttachmentScanWithContext(ctx context.Context, scanner app.Scanner, attachmentID string) error
 }
 
 type JobStore interface {
@@ -224,16 +224,16 @@ func (r *Runner) handleJob(ctx context.Context, job postgres.JobRecord) error {
 	}
 	switch job.Kind {
 	case "billing_reconcile":
-		_, err := r.service.RunBillingReconciliation("")
+		_, err := r.service.RunBillingReconciliationWithContext(ctx, "")
 		return err
 	case "cleanup":
-		_, err := r.service.RunCleanup("")
+		_, err := r.service.RunCleanupWithContext(ctx, "")
 		return err
 	case "scan":
 		if r.cfg.Scanner == nil {
 			return errors.New("scanner is not configured")
 		}
-		return r.service.RunAttachmentScan(r.cfg.Scanner, job.TargetID)
+		return r.service.RunAttachmentScanWithContext(ctx, r.cfg.Scanner, job.TargetID)
 	default:
 		return fmt.Errorf("unsupported job kind %q", job.Kind)
 	}

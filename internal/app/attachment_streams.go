@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"pastebox/internal/plans"
 )
@@ -46,9 +47,10 @@ type AttachmentDownload struct {
 }
 
 type preparedObjectStorage struct {
-	objectKey string
-	inMemory  bool
-	content   []byte
+	objectKey   string
+	inMemory    bool
+	content     []byte
+	refReserved bool
 }
 
 func PrepareAttachmentUpload(fileName string, contentType string, body io.Reader) (*PreparedAttachmentUpload, error) {
@@ -99,17 +101,17 @@ func PrepareAttachmentUploadWithLimit(fileName string, contentType string, body 
 	return upload, nil
 }
 
-func (s *Service) PreflightAttachmentUpload(userID string, pasteID string) (AttachmentUploadPreflight, error) {
+func (s *Service) PreflightAttachmentUploadWithContext(ctx context.Context, userID string, pasteID string) (AttachmentUploadPreflight, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	paste, err := s.ownerPasteLocked(userID, pasteID)
+	paste, err := s.ownerPasteLocked(ctx, userID, pasteID)
 	if err != nil {
 		return AttachmentUploadPreflight{}, err
 	}
 	user := s.usersByID[userID]
 	plan, _ := s.planForUserLocked(user)
-	maxBytes, err := s.attachmentUploadLimitLocked(user, paste, plan)
+	maxBytes, err := s.attachmentUploadLimitLocked(ctx, user, paste, plan)
 	if err != nil {
 		return AttachmentUploadPreflight{}, err
 	}
@@ -133,15 +135,15 @@ func (s *Service) PreflightGuestAttachmentUpload(ctx context.Context, token stri
 		}
 	}
 	token = strings.TrimSpace(token)
-	user, err := s.guestUserForTokenLocked(token)
+	user, err := s.guestUserForTokenLocked(ctx, token)
 	if err != nil {
 		return AttachmentUploadPreflight{}, err
 	}
-	paste, err := s.pasteByIDLocked(pasteID)
+	paste, err := s.pasteByIDLocked(ctx, pasteID)
 	if err != nil || paste.UserID != user.ID {
 		return AttachmentUploadPreflight{}, E(http.StatusNotFound, "paste_not_found", "paste not found")
 	}
-	maxBytes, err := s.attachmentUploadLimitLocked(user, paste, guestPlan(cfg))
+	maxBytes, err := s.attachmentUploadLimitLocked(ctx, user, paste, guestPlan(cfg))
 	if err != nil {
 		return AttachmentUploadPreflight{}, err
 	}
@@ -177,8 +179,8 @@ func (u *PreparedAttachmentUpload) reader() (io.Reader, error) {
 	return u.file, nil
 }
 
-func (s *Service) AddAttachmentStream(userID string, pasteID string, fileName string, contentType string, body io.Reader) (AttachmentView, error) {
-	preflight, err := s.PreflightAttachmentUpload(userID, pasteID)
+func (s *Service) AddAttachmentStreamWithContext(ctx context.Context, userID string, pasteID string, fileName string, contentType string, body io.Reader) (AttachmentView, error) {
+	preflight, err := s.PreflightAttachmentUploadWithContext(ctx, userID, pasteID)
 	if err != nil {
 		return AttachmentView{}, err
 	}
@@ -187,7 +189,7 @@ func (s *Service) AddAttachmentStream(userID string, pasteID string, fileName st
 		return AttachmentView{}, err
 	}
 	defer upload.Close()
-	return s.AddPreparedAttachment(userID, pasteID, upload)
+	return s.AddPreparedAttachmentWithContext(ctx, userID, pasteID, upload)
 }
 
 func (s *Service) AddPreparedAttachment(userID string, pasteID string, upload *PreparedAttachmentUpload) (AttachmentView, error) {
@@ -198,21 +200,27 @@ func (s *Service) AddPreparedAttachmentWithContext(ctx context.Context, userID s
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	objectKey, err := s.preflightPreparedAttachment(userID, pasteID, upload)
+	objectKey, err := s.preflightPreparedAttachment(ctx, userID, pasteID, upload)
 	if err != nil {
 		return AttachmentView{}, err
 	}
-	s.objectWriteMu.Lock()
-	defer s.objectWriteMu.Unlock()
-	stored, err := s.storePreparedObject(ctx, objectKey, upload)
+	releaseObjectKey := s.lockObjectKey(objectKey)
+	defer releaseObjectKey()
+	stored, err := s.reserveAndStorePreparedObject(ctx, objectKey, upload)
 	if err != nil {
 		return AttachmentView{}, err
 	}
-	return s.finalizePreparedAttachment(userID, pasteID, upload, stored)
+	view, err := s.finalizePreparedAttachment(ctx, userID, pasteID, upload, stored)
+	if err != nil && stored.refReserved {
+		if cleanupErr := s.releaseReservedObjectRef(ctx, stored); cleanupErr != nil {
+			err = errors.Join(err, cleanupErr)
+		}
+	}
+	return view, err
 }
 
-func (s *Service) AddGuestAttachmentStream(token string, pasteID string, fileName string, contentType string, body io.Reader, turnstileToken string, remoteIP string) (AttachmentView, error) {
-	preflight, err := s.PreflightGuestAttachmentUpload(context.Background(), token, pasteID, turnstileToken, remoteIP)
+func (s *Service) AddGuestAttachmentStreamWithContext(ctx context.Context, token string, pasteID string, fileName string, contentType string, body io.Reader, turnstileToken string, remoteIP string) (AttachmentView, error) {
+	preflight, err := s.PreflightGuestAttachmentUpload(ctx, token, pasteID, turnstileToken, remoteIP)
 	if err != nil {
 		return AttachmentView{}, err
 	}
@@ -221,7 +229,7 @@ func (s *Service) AddGuestAttachmentStream(token string, pasteID string, fileNam
 		return AttachmentView{}, err
 	}
 	defer upload.Close()
-	return s.AddPreflightedGuestAttachmentWithContext(context.Background(), preflight, upload)
+	return s.AddPreflightedGuestAttachmentWithContext(ctx, preflight, upload)
 }
 
 func (s *Service) AddPreparedGuestAttachment(token string, pasteID string, upload *PreparedAttachmentUpload, turnstileToken string, remoteIP string) (AttachmentView, error) {
@@ -236,13 +244,19 @@ func (s *Service) AddPreparedGuestAttachmentWithContext(ctx context.Context, tok
 	if err != nil {
 		return AttachmentView{}, err
 	}
-	s.objectWriteMu.Lock()
-	defer s.objectWriteMu.Unlock()
-	stored, err := s.storePreparedObject(ctx, objectKey, upload)
+	releaseObjectKey := s.lockObjectKey(objectKey)
+	defer releaseObjectKey()
+	stored, err := s.reserveAndStorePreparedObject(ctx, objectKey, upload)
 	if err != nil {
 		return AttachmentView{}, err
 	}
-	return s.finalizePreparedGuestAttachment(token, pasteID, upload, stored)
+	view, err := s.finalizePreparedGuestAttachment(ctx, token, pasteID, upload, stored)
+	if err != nil && stored.refReserved {
+		if cleanupErr := s.releaseReservedObjectRef(ctx, stored); cleanupErr != nil {
+			err = errors.Join(err, cleanupErr)
+		}
+	}
+	return view, err
 }
 
 func (s *Service) AddPreflightedGuestAttachmentWithContext(ctx context.Context, preflight AttachmentUploadPreflight, upload *PreparedAttachmentUpload) (AttachmentView, error) {
@@ -256,26 +270,54 @@ func (s *Service) AddPreflightedGuestAttachmentWithContext(ctx context.Context, 
 	if err != nil {
 		return AttachmentView{}, err
 	}
-	s.objectWriteMu.Lock()
-	defer s.objectWriteMu.Unlock()
-	stored, err := s.storePreparedObject(ctx, objectKey, upload)
+	releaseObjectKey := s.lockObjectKey(objectKey)
+	defer releaseObjectKey()
+	stored, err := s.reserveAndStorePreparedObject(ctx, objectKey, upload)
 	if err != nil {
 		return AttachmentView{}, err
 	}
-	return s.finalizePreparedGuestAttachment(preflight.guestToken, preflight.pasteID, upload, stored)
+	view, err := s.finalizePreparedGuestAttachment(ctx, preflight.guestToken, preflight.pasteID, upload, stored)
+	if err != nil && stored.refReserved {
+		if cleanupErr := s.releaseReservedObjectRef(ctx, stored); cleanupErr != nil {
+			err = errors.Join(err, cleanupErr)
+		}
+	}
+	return view, err
 }
 
-func (s *Service) preflightPreparedAttachment(userID string, pasteID string, upload *PreparedAttachmentUpload) (string, error) {
+func (s *Service) lockObjectKey(objectKey string) func() {
+	s.objectLocksMu.Lock()
+	lock := s.objectLocks[objectKey]
+	if lock == nil {
+		lock = &objectKeyLock{}
+		s.objectLocks[objectKey] = lock
+	}
+	lock.refs++
+	s.objectLocksMu.Unlock()
+
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		s.objectLocksMu.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(s.objectLocks, objectKey)
+		}
+		s.objectLocksMu.Unlock()
+	}
+}
+
+func (s *Service) preflightPreparedAttachment(ctx context.Context, userID string, pasteID string, upload *PreparedAttachmentUpload) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	paste, err := s.ownerPasteLocked(userID, pasteID)
+	paste, err := s.ownerPasteLocked(ctx, userID, pasteID)
 	if err != nil {
 		return "", err
 	}
 	user := s.usersByID[userID]
 	plan, _ := s.planForUserLocked(user)
-	if err := s.validatePreparedAttachmentLocked(user, paste, plan, upload); err != nil {
+	if err := s.validatePreparedAttachmentLocked(ctx, user, paste, plan, upload); err != nil {
 		return "", err
 	}
 	return preparedAttachmentObjectKey(user.ID, upload), nil
@@ -294,26 +336,26 @@ func (s *Service) preflightPreparedGuestAttachment(ctx context.Context, token st
 			return "", err
 		}
 	}
-	user, err := s.guestUserForTokenLocked(strings.TrimSpace(token))
+	user, err := s.guestUserForTokenLocked(ctx, strings.TrimSpace(token))
 	if err != nil {
 		return "", err
 	}
-	paste, err := s.pasteByIDLocked(pasteID)
+	paste, err := s.pasteByIDLocked(ctx, pasteID)
 	if err != nil || paste.UserID != user.ID {
 		return "", E(http.StatusNotFound, "paste_not_found", "paste not found")
 	}
 	plan := guestPlan(cfg)
-	if err := s.validatePreparedAttachmentLocked(user, paste, plan, upload); err != nil {
+	if err := s.validatePreparedAttachmentLocked(ctx, user, paste, plan, upload); err != nil {
 		return "", err
 	}
 	return preparedAttachmentObjectKey(user.ID, upload), nil
 }
 
-func (s *Service) attachmentUploadLimitLocked(user *User, paste *Paste, plan plans.Plan) (int64, error) {
-	if err := s.validatePreparedAttachmentLocked(user, paste, plan, &PreparedAttachmentUpload{}); err != nil {
+func (s *Service) attachmentUploadLimitLocked(ctx context.Context, user *User, paste *Paste, plan plans.Plan) (int64, error) {
+	if err := s.validatePreparedAttachmentLocked(ctx, user, paste, plan, &PreparedAttachmentUpload{}); err != nil {
 		return 0, err
 	}
-	quota, err := s.quotaLocked(user.ID, plan)
+	quota, err := s.quotaLocked(ctx, user.ID, plan)
 	if err != nil {
 		return 0, err
 	}
@@ -334,49 +376,49 @@ func (s *Service) attachmentUploadLimitLocked(user *User, paste *Paste, plan pla
 	return maxBytes, nil
 }
 
-func (s *Service) finalizePreparedAttachment(userID string, pasteID string, upload *PreparedAttachmentUpload, stored preparedObjectStorage) (AttachmentView, error) {
+func (s *Service) finalizePreparedAttachment(ctx context.Context, userID string, pasteID string, upload *PreparedAttachmentUpload, stored preparedObjectStorage) (AttachmentView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	paste, err := s.ownerPasteLocked(userID, pasteID)
+	paste, err := s.ownerPasteLocked(ctx, userID, pasteID)
 	if err != nil {
-		s.rollbackPreparedObjectLocked(stored)
+		s.rollbackPreparedObjectLocked(ctx, stored)
 		return AttachmentView{}, err
 	}
 	user := s.usersByID[userID]
 	plan, _ := s.planForUserLocked(user)
-	if err := s.validatePreparedAttachmentLocked(user, paste, plan, upload); err != nil {
-		s.rollbackPreparedObjectLocked(stored)
+	if err := s.validatePreparedAttachmentLocked(ctx, user, paste, plan, upload); err != nil {
+		s.rollbackPreparedObjectLocked(ctx, stored)
 		return AttachmentView{}, err
 	}
-	return s.createPreparedAttachmentForPasteLocked(user.ID, paste, upload, stored)
+	return s.createPreparedAttachmentForPasteLocked(ctx, user.ID, paste, upload, stored)
 }
 
-func (s *Service) finalizePreparedGuestAttachment(token string, pasteID string, upload *PreparedAttachmentUpload, stored preparedObjectStorage) (AttachmentView, error) {
+func (s *Service) finalizePreparedGuestAttachment(ctx context.Context, token string, pasteID string, upload *PreparedAttachmentUpload, stored preparedObjectStorage) (AttachmentView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	cfg := s.runtimeConfig.GuestUploads
 	if !cfg.Enabled {
-		s.rollbackPreparedObjectLocked(stored)
+		s.rollbackPreparedObjectLocked(ctx, stored)
 		return AttachmentView{}, E(http.StatusForbidden, "guest_uploads_disabled", "guest uploads are disabled")
 	}
-	user, err := s.guestUserForTokenLocked(strings.TrimSpace(token))
+	user, err := s.guestUserForTokenLocked(ctx, strings.TrimSpace(token))
 	if err != nil {
-		s.rollbackPreparedObjectLocked(stored)
+		s.rollbackPreparedObjectLocked(ctx, stored)
 		return AttachmentView{}, err
 	}
-	paste, err := s.pasteByIDLocked(pasteID)
+	paste, err := s.pasteByIDLocked(ctx, pasteID)
 	if err != nil || paste.UserID != user.ID {
-		s.rollbackPreparedObjectLocked(stored)
+		s.rollbackPreparedObjectLocked(ctx, stored)
 		return AttachmentView{}, E(http.StatusNotFound, "paste_not_found", "paste not found")
 	}
 	plan := guestPlan(cfg)
-	if err := s.validatePreparedAttachmentLocked(user, paste, plan, upload); err != nil {
-		s.rollbackPreparedObjectLocked(stored)
+	if err := s.validatePreparedAttachmentLocked(ctx, user, paste, plan, upload); err != nil {
+		s.rollbackPreparedObjectLocked(ctx, stored)
 		return AttachmentView{}, err
 	}
-	return s.createPreparedAttachmentForPasteLocked(user.ID, paste, upload, stored)
+	return s.createPreparedAttachmentForPasteLocked(ctx, user.ID, paste, upload, stored)
 }
 
 func (s *Service) OpenAttachment(userID string, attachmentID string) (AttachmentDownload, error) {
@@ -388,12 +430,12 @@ func (s *Service) OpenAttachmentWithContext(ctx context.Context, userID string, 
 		ctx = context.Background()
 	}
 	s.mu.Lock()
-	attachment, err := s.attachmentByIDLocked(attachmentID)
+	attachment, err := s.attachmentByIDLocked(ctx, attachmentID)
 	if err != nil || attachment.UserID != userID {
 		s.mu.Unlock()
 		return AttachmentDownload{}, E(http.StatusNotFound, "attachment_not_found", "attachment not found")
 	}
-	paste, err := s.pasteByIDLocked(attachment.PasteID)
+	paste, err := s.pasteByIDLocked(ctx, attachment.PasteID)
 	if err != nil || !s.isPasteVisibleLocked(paste) || attachment.Status != "active" {
 		s.mu.Unlock()
 		return AttachmentDownload{}, E(http.StatusGone, "attachment_unavailable", "attachment is unavailable")
@@ -411,15 +453,36 @@ func (s *Service) OpenAttachmentWithContext(ctx context.Context, userID string, 
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	attachment, err = s.attachmentByIDLocked(attachmentID)
-	paste, pasteErr := s.pasteByIDLocked(snapshot.PasteID)
+	attachment, err = s.attachmentByIDLocked(ctx, attachmentID)
+	paste, pasteErr := s.pasteByIDLocked(ctx, snapshot.PasteID)
 	if err != nil || pasteErr != nil || !s.isPasteVisibleLocked(paste) || attachment.UserID != userID || attachment.Status != "active" || attachment.ScanStatus == "malicious" || attachment.ObjectKey != snapshot.ObjectKey {
+		s.mu.Unlock()
 		_ = object.Body.Close()
 		return AttachmentDownload{}, E(http.StatusGone, "attachment_unavailable", "attachment is unavailable")
 	}
+	if atomicStore, ok := s.content.Attachments.(AtomicAttachmentDownloadStore); ok {
+		s.mu.Unlock()
+		updated, updateErr := atomicStore.IncrementAttachmentDownload(ctx, attachmentID)
+		if updateErr != nil {
+			_ = object.Body.Close()
+			return AttachmentDownload{}, updateErr
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		attachment, err = s.attachmentByIDLocked(ctx, attachmentID)
+		paste, pasteErr = s.pasteByIDLocked(ctx, snapshot.PasteID)
+		if err != nil || pasteErr != nil || !s.isPasteVisibleLocked(paste) || attachment.UserID != userID || attachment.Status != "active" || attachment.ScanStatus == "malicious" || attachment.ObjectKey != snapshot.ObjectKey {
+			_ = object.Body.Close()
+			return AttachmentDownload{}, E(http.StatusGone, "attachment_unavailable", "attachment content is unavailable")
+		}
+		if updated.DownloadN > attachment.DownloadN {
+			attachment = s.cacheAttachmentLocked(updated)
+		}
+		return AttachmentDownload{Attachment: viewAttachment(attachment), Body: object.Body, Size: attachment.Size}, nil
+	}
+	defer s.mu.Unlock()
 	attachment.DownloadN++
-	if err := s.updateAttachmentLocked(attachment); err != nil {
+	if err := s.updateAttachmentLocked(ctx, attachment); err != nil {
 		_ = object.Body.Close()
 		return AttachmentDownload{}, err
 	}
@@ -442,13 +505,20 @@ func (s *Service) openSharedAttachment(ctx context.Context, token string, passwo
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if !passwordVerified {
+		verified, err := s.verifySharePasswordForAccess(ctx, token, password)
+		if err != nil {
+			return AttachmentDownload{}, err
+		}
+		passwordVerified = verified
+	}
 	s.mu.Lock()
-	share, paste, err := s.validShareAccessLocked(token, password, viewerUserID, true, passwordVerified)
+	share, paste, err := s.validShareAccessLocked(ctx, token, password, viewerUserID, true, passwordVerified)
 	if err != nil {
 		s.mu.Unlock()
 		return AttachmentDownload{}, err
 	}
-	attachment, err := s.attachmentByIDLocked(attachmentID)
+	attachment, err := s.attachmentByIDLocked(ctx, attachmentID)
 	if err != nil || attachment.PasteID != paste.ID || attachment.Status != "active" {
 		s.mu.Unlock()
 		return AttachmentDownload{}, E(http.StatusNotFound, "attachment_not_found", "attachment not found")
@@ -459,7 +529,33 @@ func (s *Service) openSharedAttachment(ctx context.Context, token string, passwo
 	}
 	owner := s.usersByID[share.UserID]
 	plan, _ := s.planForUserLocked(owner)
-	downloadBytes, err := s.dailyMetricLocked(share.UserID, "share_download")
+	atomicStore, atomic := s.content.Shares.(AtomicShareStore)
+	if atomic {
+		shareID := share.ID
+		ownerID := share.UserID
+		now := s.now().UTC()
+		snapshot := *attachment
+		s.mu.Unlock()
+
+		object, openErr := s.objectStream(ctx, &snapshot)
+		if openErr != nil {
+			return AttachmentDownload{}, E(http.StatusGone, "attachment_unavailable", "attachment content is unavailable")
+		}
+		consumed, updatedAttachment, consumeErr := atomicStore.ConsumeShareDownload(ctx, shareID, snapshot.ID, ownerID, plan.DailyShareDownloadBytes, now)
+		if consumeErr != nil {
+			_ = object.Body.Close()
+			if isStoreNotFound(consumeErr) {
+				return AttachmentDownload{}, E(http.StatusNotFound, "attachment_not_found", "attachment not found")
+			}
+			return AttachmentDownload{}, consumeErr
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		share = s.cacheShareLocked(consumed)
+		attachment = s.cacheAttachmentLocked(updatedAttachment)
+		return AttachmentDownload{Attachment: viewAttachment(attachment), Body: object.Body, Size: attachment.Size}, nil
+	}
+	downloadBytes, err := s.dailyMetricLocked(ctx, share.UserID, "share_download")
 	if err != nil {
 		s.mu.Unlock()
 		return AttachmentDownload{}, err
@@ -478,19 +574,19 @@ func (s *Service) openSharedAttachment(ctx context.Context, token string, passwo
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	share, paste, err = s.validShareAccessLocked(token, password, viewerUserID, true, passwordVerified)
+	share, paste, err = s.validShareAccessLocked(ctx, token, password, viewerUserID, true, passwordVerified)
 	if err != nil {
 		_ = object.Body.Close()
 		return AttachmentDownload{}, err
 	}
-	attachment, err = s.attachmentByIDLocked(attachmentID)
+	attachment, err = s.attachmentByIDLocked(ctx, attachmentID)
 	if err != nil || attachment.PasteID != paste.ID || attachment.Status != "active" || attachment.ScanStatus != "clean" || attachment.ObjectKey != snapshot.ObjectKey {
 		_ = object.Body.Close()
 		return AttachmentDownload{}, E(http.StatusGone, "attachment_unavailable", "attachment content is unavailable")
 	}
 	owner = s.usersByID[share.UserID]
 	plan, _ = s.planForUserLocked(owner)
-	downloadBytes, err = s.dailyMetricLocked(share.UserID, "share_download")
+	downloadBytes, err = s.dailyMetricLocked(ctx, share.UserID, "share_download")
 	if err != nil || downloadBytes+attachment.Size > plan.DailyShareDownloadBytes {
 		_ = object.Body.Close()
 		if err != nil {
@@ -498,14 +594,14 @@ func (s *Service) openSharedAttachment(ctx context.Context, token string, passwo
 		}
 		return AttachmentDownload{}, E(http.StatusForbidden, "daily_download_limit", "daily share download traffic exceeds plan limit")
 	}
-	if err := s.commitSharedDownloadLocked(share, attachment, s.now().UTC()); err != nil {
+	if err := s.commitSharedDownloadLocked(ctx, share, attachment, s.now().UTC()); err != nil {
 		_ = object.Body.Close()
 		return AttachmentDownload{}, err
 	}
 	return AttachmentDownload{Attachment: viewAttachment(attachment), Body: object.Body, Size: attachment.Size}, nil
 }
 
-func (s *Service) validatePreparedAttachmentLocked(user *User, paste *Paste, plan plans.Plan, upload *PreparedAttachmentUpload) error {
+func (s *Service) validatePreparedAttachmentLocked(ctx context.Context, user *User, paste *Paste, plan plans.Plan, upload *PreparedAttachmentUpload) error {
 	if upload == nil {
 		return E(http.StatusBadRequest, "missing_file", "file is required")
 	}
@@ -521,7 +617,7 @@ func (s *Service) validatePreparedAttachmentLocked(user *User, paste *Paste, pla
 	if s.pasteSizeLocked(paste)+upload.Size > plan.SinglePasteBytes {
 		return E(http.StatusRequestEntityTooLarge, "paste_too_large", "paste exceeds plan total size")
 	}
-	if err := s.ensureCanCreatePasteLocked(user, plan, PasteInput{ExpiresInSeconds: int64(paste.ExpiresAt.Sub(s.now().UTC()).Seconds())}, upload.Size, 1); err != nil {
+	if err := s.ensureCanCreatePasteLocked(ctx, user, plan, PasteInput{ExpiresInSeconds: int64(paste.ExpiresAt.Sub(s.now().UTC()).Seconds())}, upload.Size, 1); err != nil {
 		return err
 	}
 	return nil
@@ -531,8 +627,97 @@ func preparedAttachmentObjectKey(userID string, upload *PreparedAttachmentUpload
 	return userID + "/" + upload.SHA256
 }
 
-func (s *Service) storePreparedObject(ctx context.Context, objectKey string, upload *PreparedAttachmentUpload) (preparedObjectStorage, error) {
+func (s *Service) reserveAndStorePreparedObject(ctx context.Context, objectKey string, upload *PreparedAttachmentUpload) (preparedObjectStorage, error) {
 	stored := preparedObjectStorage{objectKey: objectKey}
+	atomicStore, ok := s.content.ObjectRefs.(AtomicObjectRefStore)
+	if !ok {
+		return s.storePreparedObject(ctx, objectKey, upload, stored)
+	}
+	reserveAt := s.now().UTC()
+	var resultErr error
+	resultErr = s.withObjectRefLock(ctx, objectKey, func(lockCtx context.Context, lockedStore AtomicObjectRefStore) error {
+		if lockedStore == nil {
+			lockedStore = atomicStore
+		}
+		ref, err := lockedStore.IncrementObjectRef(lockCtx, ObjectRef{
+			ObjectKey: objectKey,
+			Size:      upload.Size,
+			SHA256:    upload.SHA256,
+			CreatedAt: reserveAt,
+			UpdatedAt: reserveAt,
+		})
+		if err != nil {
+			return err
+		}
+		s.mu.Lock()
+		s.objectRefs[objectKey] = ref.RefCount
+		s.mu.Unlock()
+		stored.refReserved = true
+		stored, resultErr = s.storePreparedObject(lockCtx, objectKey, upload, stored)
+		if resultErr == nil {
+			return nil
+		}
+		cleanupErr := s.releaseReservedObjectRefWithStore(lockCtx, lockedStore, stored)
+		return errors.Join(resultErr, cleanupErr)
+	})
+	return stored, resultErr
+}
+
+func (s *Service) releaseReservedObjectRef(ctx context.Context, stored preparedObjectStorage) error {
+	if !stored.refReserved {
+		return nil
+	}
+	atomicStore, ok := s.content.ObjectRefs.(AtomicObjectRefStore)
+	if !ok {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return s.withObjectRefLock(cleanupCtx, stored.objectKey, func(lockCtx context.Context, lockedStore AtomicObjectRefStore) error {
+		if lockedStore == nil {
+			lockedStore = atomicStore
+		}
+		return s.releaseReservedObjectRefWithStore(lockCtx, lockedStore, stored)
+	})
+}
+
+func (s *Service) releaseReservedObjectRefWithStore(ctx context.Context, store AtomicObjectRefStore, stored preparedObjectStorage) error {
+	ref, removed, err := store.DecrementObjectRef(ctx, stored.objectKey)
+	if err != nil {
+		return err
+	}
+	var deleteErr error
+	if removed {
+		deleteErr = s.deleteObjectWithContext(ctx, stored.objectKey)
+	}
+	s.mu.Lock()
+	if removed {
+		delete(s.objectRefs, stored.objectKey)
+	} else {
+		s.objectRefs[stored.objectKey] = ref.RefCount
+	}
+	s.mu.Unlock()
+	return deleteErr
+}
+
+func (s *Service) withObjectRefLock(ctx context.Context, objectKey string, fn func(context.Context, AtomicObjectRefStore) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if coordinator, ok := s.content.ObjectRefs.(ObjectRefCoordinator); ok {
+		return coordinator.WithObjectRefLock(ctx, objectKey, fn)
+	}
+	store, ok := s.content.ObjectRefs.(AtomicObjectRefStore)
+	if !ok {
+		return fn(ctx, nil)
+	}
+	return fn(ctx, store)
+}
+
+func (s *Service) storePreparedObject(ctx context.Context, objectKey string, upload *PreparedAttachmentUpload, stored preparedObjectStorage) (preparedObjectStorage, error) {
 	reader, err := upload.reader()
 	if err != nil {
 		return stored, err
@@ -562,7 +747,7 @@ func (s *Service) storePreparedObject(ctx context.Context, objectKey string, upl
 	return stored, nil
 }
 
-func (s *Service) createPreparedAttachmentForPasteLocked(userID string, paste *Paste, upload *PreparedAttachmentUpload, stored preparedObjectStorage) (AttachmentView, error) {
+func (s *Service) createPreparedAttachmentForPasteLocked(ctx context.Context, userID string, paste *Paste, upload *PreparedAttachmentUpload, stored preparedObjectStorage) (AttachmentView, error) {
 	now := s.now().UTC()
 	status, scanStatus, risk := "active", "pending", classifyAttachmentRisk(upload.FileName, upload.ContentType)
 	objectKey := stored.objectKey
@@ -589,40 +774,45 @@ func (s *Service) createPreparedAttachmentForPasteLocked(userID string, paste *P
 		ImageHeight: upload.ImageHeight,
 		CreatedAt:   now,
 	}
-	if err := s.createAttachmentLocked(attachment); err != nil {
-		s.rollbackUnreferencedStoredObjectLocked(attachment.ObjectKey, existingObjectRefs)
+	if err := s.createAttachmentLocked(ctx, attachment); err != nil {
+		s.rollbackUnreferencedStoredObjectLocked(ctx, attachment.ObjectKey, existingObjectRefs)
 		return AttachmentView{}, err
 	}
 	attachmentCreated := true
-	if err := s.incrementObjectRefLocked(attachment, existingObjectRefs, now); err != nil {
-		_ = s.deleteAttachmentLocked(attachment)
-		s.rollbackUnreferencedStoredObjectLocked(attachment.ObjectKey, existingObjectRefs)
-		return AttachmentView{}, err
+	if !stored.refReserved {
+		if err := s.incrementObjectRefLocked(ctx, attachment, existingObjectRefs, now); err != nil {
+			_ = s.deleteAttachmentLocked(ctx, attachment)
+			s.rollbackUnreferencedStoredObjectLocked(ctx, attachment.ObjectKey, existingObjectRefs)
+			return AttachmentView{}, err
+		}
 	}
 	previousPasteScanStatus := paste.ScanStatus
 	previousPasteUpdatedAt := paste.UpdatedAt
 	paste.ScanStatus = aggregateScanStatus(s.attachmentsForPasteLocked(paste))
 	paste.UpdatedAt = now
-	if err := s.updatePasteLocked(paste); err != nil {
-		s.rollbackAttachmentCreateLocked(paste, previousPasteScanStatus, previousPasteUpdatedAt, attachment, attachmentCreated, false, false)
+	if err := s.updatePasteLocked(ctx, paste); err != nil {
+		s.rollbackAttachmentCreateLocked(ctx, paste, previousPasteScanStatus, previousPasteUpdatedAt, attachment, stored, attachmentCreated, false, false)
 		return AttachmentView{}, err
 	}
 	pasteUpdated := true
 	scanQueueCreated := false
-	if err := s.scheduleScanJobLocked(attachment.ID, now); err != nil {
-		s.rollbackAttachmentCreateLocked(paste, previousPasteScanStatus, previousPasteUpdatedAt, attachment, attachmentCreated, pasteUpdated, false)
+	if err := s.scheduleScanJobLocked(ctx, attachment.ID, now); err != nil {
+		s.rollbackAttachmentCreateLocked(ctx, paste, previousPasteScanStatus, previousPasteUpdatedAt, attachment, stored, attachmentCreated, pasteUpdated, false)
 		return AttachmentView{}, err
 	}
 	scanQueueCreated = true
-	if err := s.recordDailyUploadLocked(userID, upload.Size); err != nil {
-		s.rollbackAttachmentCreateLocked(paste, previousPasteScanStatus, previousPasteUpdatedAt, attachment, attachmentCreated, pasteUpdated, scanQueueCreated)
+	if err := s.recordDailyUploadLocked(ctx, userID, upload.Size); err != nil {
+		s.rollbackAttachmentCreateLocked(ctx, paste, previousPasteScanStatus, previousPasteUpdatedAt, attachment, stored, attachmentCreated, pasteUpdated, scanQueueCreated)
 		return AttachmentView{}, err
 	}
 	return viewAttachment(attachment), nil
 }
 
-func (s *Service) rollbackPreparedObjectLocked(stored preparedObjectStorage) {
+func (s *Service) rollbackPreparedObjectLocked(ctx context.Context, stored preparedObjectStorage) {
 	if stored.objectKey == "" {
+		return
+	}
+	if stored.refReserved {
 		return
 	}
 	previousRefs := s.objectRefs[stored.objectKey]
@@ -632,7 +822,7 @@ func (s *Service) rollbackPreparedObjectLocked(stored preparedObjectStorage) {
 		}
 		return
 	}
-	s.rollbackUnreferencedStoredObjectLocked(stored.objectKey, previousRefs)
+	s.rollbackUnreferencedStoredObjectLocked(ctx, stored.objectKey, previousRefs)
 }
 
 func (s *Service) objectStream(ctx context.Context, attachment *Attachment) (ObjectStream, error) {
@@ -737,4 +927,16 @@ func (w *prefixBuffer) Write(p []byte) (int, error) {
 
 func (w *prefixBuffer) Bytes() []byte {
 	return w.buf
+}
+
+func (s *Service) AddGuestAttachmentStream(token string, pasteID string, fileName string, contentType string, body io.Reader, turnstileToken string, remoteIP string) (AttachmentView, error) {
+	return s.AddGuestAttachmentStreamWithContext(context.Background(), token, pasteID, fileName, contentType, body, turnstileToken, remoteIP)
+}
+
+func (s *Service) AddAttachmentStream(userID string, pasteID string, fileName string, contentType string, body io.Reader) (AttachmentView, error) {
+	return s.AddAttachmentStreamWithContext(context.Background(), userID, pasteID, fileName, contentType, body)
+}
+
+func (s *Service) PreflightAttachmentUpload(userID string, pasteID string) (AttachmentUploadPreflight, error) {
+	return s.PreflightAttachmentUploadWithContext(context.Background(), userID, pasteID)
 }

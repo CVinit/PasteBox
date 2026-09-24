@@ -14,9 +14,43 @@ type BusinessTransactionStore interface {
 	ApplyBilling(ctx context.Context, input BillingTransactionInput) (BillingTransactionResult, error)
 }
 
+// AuthRegistrationTransactionStore commits newly registered users together
+// with their durable authentication records and welcome mail. Production
+// stores implement this with one PostgreSQL transaction; the service keeps
+// its existing in-memory fallback for tests and local development.
+type AuthRegistrationTransactionStore interface {
+	RegisterUser(ctx context.Context, user User, mail Mail) error
+	RegisterUserWithEmailVerification(ctx context.Context, user User, mail Mail, tokenHash string, email string, usedAt time.Time) error
+	RegisterOAuthUser(ctx context.Context, input OAuthRegistrationTransactionInput) error
+}
+
+type OAuthRegistrationTransactionInput struct {
+	User     User
+	Identity OAuthIdentity
+	Audits   []AuditLog
+	Mail     Mail
+}
+
 type PasteDailyMetricTransactionStore interface {
 	CreatePasteWithDailyMetric(ctx context.Context, paste Paste, day time.Time, bytes int64) error
 	UpdatePasteWithDailyMetric(ctx context.Context, paste Paste, day time.Time, bytes int64) error
+}
+
+type PasswordResetTransactionStore interface {
+	FinishPasswordReset(ctx context.Context, input PasswordResetTransactionInput) (PasswordResetTransactionResult, error)
+}
+
+type PasswordResetTransactionInput struct {
+	TokenHash     string
+	PasswordHash  string
+	UsedAt        time.Time
+	MailID        string
+	MailCreatedAt time.Time
+}
+
+type PasswordResetTransactionResult struct {
+	User User
+	Mail Mail
 }
 
 type RedemptionTransactionInput struct {
@@ -244,4 +278,10 @@ func BuildBillingTransaction(input BillingTransactionInput, order *Order, user *
 	auditMetadata["planRevoked"] = planRevoked
 	result.Audit = &AuditLog{ID: input.AuditID, ActorID: input.ActorID, Action: "billing.order_" + status, Target: result.Order.ID, Metadata: auditMetadata, CreatedAt: now}
 	return result, nil
+}
+
+// OAuthAccountTransactionStore links an existing account and records its audit
+// entries in the same commit as the verified profile update.
+type OAuthAccountTransactionStore interface {
+	SaveOAuthAccount(context.Context, User, *OAuthIdentity, []AuditLog) error
 }
