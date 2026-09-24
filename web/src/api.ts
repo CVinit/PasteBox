@@ -750,7 +750,8 @@ export const client = {
   adminRuntimeConfig: () => api<RuntimeConfig>("/admin/runtime-config"),
   adminManagedConfig: () => api<ManagedConfigView>("/admin/managed-config"),
   adminUpdateManagedConfig: (body: {
-    config: ManagedConfig;
+    config: Partial<ManagedConfig>;
+    fields?: (keyof ManagedConfig)[];
     secrets: ManagedSecretPatch;
   }) =>
     api<ManagedConfigView>("/admin/managed-config", {
@@ -773,6 +774,13 @@ export const client = {
     api<{ items: ManualWorkItem[] }>("/admin/manual-work-items"),
   adminUpdateCatalog: (body: PlanCatalog) =>
     api<PlanCatalog>("/admin/catalog", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  adminUpdateCatalogEntries: (
+    body: Partial<Pick<PlanCatalog, "plans" | "prices">>,
+  ) =>
+    api<PlanCatalog>("/admin/catalog/entries", {
       method: "PATCH",
       body: JSON.stringify(body),
     }),

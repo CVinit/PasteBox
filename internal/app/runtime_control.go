@@ -155,6 +155,7 @@ type ManagedConfigView struct {
 }
 
 type ManagedConfigUpdate struct {
+	Fields  []string             `json:"fields,omitempty"`
 	Config  config.ManagedConfig `json:"config"`
 	Secrets ManagedSecretPatch   `json:"secrets"`
 }
@@ -1010,6 +1011,47 @@ func (s *Service) AdminUpdateManagedConfigWithContext(ctx context.Context, actor
 	defer s.mu.Unlock()
 	if err := s.requireAdminLocked(ctx, actorID); err != nil {
 		return ManagedConfigView{}, err
+	}
+
+	if len(update.Fields) > 0 {
+		merged := cloneRuntimeConfig(s.runtimeConfig).Managed
+		for _, field := range update.Fields {
+			switch field {
+			case "site":
+				merged.Site = update.Config.Site
+			case "workerHeartbeatMaxAgeSeconds":
+				merged.WorkerHeartbeatMaxAgeSeconds = update.Config.WorkerHeartbeatMaxAgeSeconds
+			case "s3":
+				merged.S3 = update.Config.S3
+			case "scanner":
+				merged.Scanner = update.Config.Scanner
+			case "googleOAuth":
+				merged.GoogleOAuth = update.Config.GoogleOAuth
+			case "githubOAuth":
+				merged.GitHubOAuth = update.Config.GitHubOAuth
+			case "turnstile":
+				merged.Turnstile = update.Config.Turnstile
+			case "telegram":
+				merged.Telegram = update.Config.Telegram
+			case "mailerProvider":
+				merged.MailerProvider = update.Config.MailerProvider
+			case "smtp":
+				merged.SMTP = update.Config.SMTP
+			case "devAuthTokens":
+				merged.DevAuthTokens = update.Config.DevAuthTokens
+			case "stripeEnabled":
+				merged.StripeEnabled = update.Config.StripeEnabled
+			case "epusdtEnabled":
+				merged.EpusdtEnabled = update.Config.EpusdtEnabled
+			case "stripe":
+				merged.Stripe = update.Config.Stripe
+			case "epusdt":
+				merged.Epusdt = update.Config.Epusdt
+			default:
+				return ManagedConfigView{}, E(http.StatusBadRequest, "invalid_managed_config_field", "unknown application configuration field")
+			}
+		}
+		update.Config = merged
 	}
 	managed, err := normalizeManagedConfig(update.Config, s.rootConfig.AppEnv)
 	if err != nil {

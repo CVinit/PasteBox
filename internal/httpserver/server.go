@@ -265,6 +265,7 @@ func (s *Server) routes() http.Handler {
 			r.Get("/runtime-panel", s.adminRuntimePanel)
 			r.Get("/manual-work-items", s.adminManualWorkItems)
 			r.Patch("/catalog", s.adminUpdateCatalog)
+			r.Patch("/catalog/entries", s.adminUpdateCatalogEntries)
 			r.Post("/providers/{provider}/test", s.adminProviderTest)
 			r.Get("/redemption-batches", s.adminRedemptionBatches)
 			r.Post("/redemption-batches", s.adminCreateRedemptionBatch)
@@ -1508,6 +1509,22 @@ func (s *Server) adminUpdateCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	catalog, err := s.app.AdminUpdateCatalogWithContext(r.Context(), user.ID, req)
+	if s.handleErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, catalog)
+}
+
+func (s *Server) adminUpdateCatalogEntries(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	var req app.AdminPlanUpdate
+	if !s.decode(w, r, &req) {
+		return
+	}
+	catalog, err := s.app.AdminUpdateCatalogEntries(r.Context(), user.ID, req)
 	if s.handleErr(w, err) {
 		return
 	}

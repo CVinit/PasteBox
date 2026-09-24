@@ -1049,6 +1049,19 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     logLevelWarn: "Warn",
     logLevelError: "Error",
     resourcePanel: "Resources",
+    loadingSession: "Checking session…",
+    openWorkspace: "Open workspace",
+    saving: "Saving…",
+    configSection: "Settings group",
+    planLimits: "Plan limits",
+    priceSettings: "Prices",
+    choosePlan: "Choose plan",
+    choosePrice: "Choose price",
+    savePlan: "Save this plan",
+    savePrice: "Save this price",
+    periodMonthly: "Monthly",
+    periodYearly: "Yearly",
+
     planCatalog: "Plans and prices",
     providerStatus: "Provider status",
     manualReview: "Manual review",
@@ -1454,6 +1467,19 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     logLevelWarn: "警告",
     logLevelError: "错误",
     resourcePanel: "资源面板",
+    loadingSession: "正在读取登录状态…",
+    openWorkspace: "进入工作区",
+    saving: "正在保存…",
+    configSection: "设置分组",
+    planLimits: "套餐额度",
+    priceSettings: "价格设置",
+    choosePlan: "选择套餐",
+    choosePrice: "选择价格",
+    savePlan: "保存此套餐",
+    savePrice: "保存此价格",
+    periodMonthly: "月付",
+    periodYearly: "年付",
+
     planCatalog: "套餐和价格",
     providerStatus: "服务配置状态",
     manualReview: "人工处理",
@@ -1842,6 +1868,19 @@ const copy: Record<Locale, Record<string, string>> = {
     logLevelWarn: "警告",
     logLevelError: "錯誤",
     resourcePanel: "資源面板",
+    loadingSession: "正在讀取登入狀態…",
+    openWorkspace: "進入工作區",
+    saving: "正在儲存…",
+    configSection: "設定分組",
+    planLimits: "方案額度",
+    priceSettings: "價格設定",
+    choosePlan: "選擇方案",
+    choosePrice: "選擇價格",
+    savePlan: "儲存此方案",
+    savePrice: "儲存此價格",
+    periodMonthly: "月付",
+    periodYearly: "年付",
+
     planCatalog: "方案和價格",
     providerStatus: "服務設定狀態",
     manualReview: "人工處理",
@@ -2205,6 +2244,19 @@ const copy: Record<Locale, Record<string, string>> = {
     logLevelWarn: "Advertencia",
     logLevelError: "Error",
     resourcePanel: "Recursos",
+    loadingSession: "Comprobando sesión…",
+    openWorkspace: "Abrir espacio de trabajo",
+    saving: "Guardando…",
+    configSection: "Grupo de ajustes",
+    planLimits: "Límites del plan",
+    priceSettings: "Precios",
+    choosePlan: "Elegir plan",
+    choosePrice: "Elegir precio",
+    savePlan: "Guardar este plan",
+    savePrice: "Guardar este precio",
+    periodMonthly: "Mensual",
+    periodYearly: "Anual",
+
     planCatalog: "Planes y precios",
     providerStatus: "Estado de proveedores",
     manualReview: "Revisión manual",
@@ -2723,6 +2775,19 @@ function AdminNumberField({
   );
 }
 
+type SaveResult = { text: string; error: boolean };
+
+function SaveFeedback({ result }: { result?: SaveResult }) {
+  return result ? (
+    <p
+      className={`save-feedback${result.error ? " save-feedback--error" : ""}`}
+      role={result.error ? "alert" : "status"}
+    >
+      {result.text}
+    </p>
+  ) : null;
+}
+
 function ManagedTextField({
   label,
   value,
@@ -2759,7 +2824,7 @@ function ManagedSecretField({
   configured: boolean;
   draft: ManagedSecretPatch;
   t: (key: string) => string;
-  onChange: (name: keyof ManagedSecretPatch, value: string) => void;
+  onChange: (name: keyof ManagedSecretPatch, value: string | undefined) => void;
 }) {
   return (
     <div className="field-row managed-secret-field">
@@ -2772,7 +2837,8 @@ function ManagedSecretField({
           type="password"
           value={draft[name] ?? ""}
           placeholder={configured ? t("secretKeepPlaceholder") : ""}
-          onChange={(event) => onChange(name, event.target.value)}
+          aria-label={label}
+          onChange={(event) => onChange(name, event.target.value || undefined)}
         />
         <button
           aria-label={t("clearSecret")}
@@ -2787,6 +2853,50 @@ function ManagedSecretField({
   );
 }
 
+const managedGroups: Array<{
+  id: string;
+  label: string;
+  fields: (keyof ManagedConfig)[];
+  secrets: (keyof ManagedSecretPatch)[];
+}> = [
+  {
+    id: "site",
+    label: "siteSettings",
+    fields: ["site", "workerHeartbeatMaxAgeSeconds"],
+    secrets: [],
+  },
+  {
+    id: "storage",
+    label: "objectStorage",
+    fields: ["s3"],
+    secrets: ["s3AccessKey", "s3SecretKey"],
+  },
+  {
+    id: "mail",
+    label: "mailService",
+    fields: ["mailerProvider", "smtp", "devAuthTokens"],
+    secrets: ["smtpPassword"],
+  },
+  {
+    id: "auth",
+    label: "oauthAndCaptcha",
+    fields: ["googleOAuth", "githubOAuth", "turnstile"],
+    secrets: ["googleClientSecret", "githubClientSecret", "turnstileSecretKey"],
+  },
+  {
+    id: "scanner",
+    label: "scannerAndNotifications",
+    fields: ["scanner", "telegram"],
+    secrets: ["telegramBotToken"],
+  },
+  {
+    id: "payments",
+    label: "paymentProviders",
+    fields: ["stripeEnabled", "stripe", "epusdtEnabled", "epusdt"],
+    secrets: ["stripeWebhookSecret", "epusdtSecretKey"],
+  },
+];
+
 function ManagedConfigEditor({
   view,
   secretDraft,
@@ -2794,15 +2904,25 @@ function ManagedConfigEditor({
   onChange,
   onSecretChange,
   onSave,
+  saveResults,
+  busy,
 }: {
   view: ManagedConfigView;
   secretDraft: ManagedSecretPatch;
   t: (key: string) => string;
   onChange: (config: ManagedConfig) => void;
-  onSecretChange: (name: keyof ManagedSecretPatch, value: string) => void;
-  onSave: () => void;
+  onSecretChange: (
+    name: keyof ManagedSecretPatch,
+    value: string | undefined,
+  ) => void;
+  onSave: (group: (typeof managedGroups)[number]) => void;
+  saveResults: Record<string, SaveResult>;
+  busy: boolean;
 }) {
   const cfg = view.config;
+  const [section, setSection] = useState("site");
+  const group =
+    managedGroups.find((entry) => entry.id === section) ?? managedGroups[0];
   const patch = (value: Partial<ManagedConfig>) =>
     onChange({ ...cfg, ...value });
   const secret = (label: string, name: keyof ManagedSecretPatch) => (
@@ -2819,8 +2939,21 @@ function ManagedConfigEditor({
   return (
     <section className="admin-section admin-section--wide managed-config-editor">
       <h3>{t("applicationConfig")}</h3>
+      <label className="field-row config-section-select">
+        <span>{t("configSection")}</span>
+        <select
+          value={section}
+          onChange={(event) => setSection(event.target.value)}
+        >
+          {managedGroups.map((entry) => (
+            <option key={entry.id} value={entry.id}>
+              {t(entry.label)}
+            </option>
+          ))}
+        </select>
+      </label>
       <div className="managed-config-grid">
-        <article className="list-card">
+        <article className="list-card" hidden={section !== "site"}>
           <strong>{t("siteSettings")}</strong>
           <div className="form-grid">
             <ManagedTextField
@@ -2881,7 +3014,7 @@ function ManagedConfigEditor({
           </div>
         </article>
 
-        <article className="list-card">
+        <article className="list-card" hidden={section !== "storage"}>
           <strong>{t("objectStorage")}</strong>
           <div className="form-grid">
             <ManagedTextField
@@ -2917,7 +3050,7 @@ function ManagedConfigEditor({
           </div>
         </article>
 
-        <article className="list-card">
+        <article className="list-card" hidden={section !== "mail"}>
           <strong>{t("mailService")}</strong>
           <div className="form-grid">
             <label className="field-row">
@@ -2985,7 +3118,7 @@ function ManagedConfigEditor({
           </div>
         </article>
 
-        <article className="list-card">
+        <article className="list-card" hidden={section !== "auth"}>
           <strong>{t("oauthAndCaptcha")}</strong>
           <div className="form-grid">
             <ManagedTextField
@@ -3045,7 +3178,7 @@ function ManagedConfigEditor({
           </div>
         </article>
 
-        <article className="list-card">
+        <article className="list-card" hidden={section !== "scanner"}>
           <strong>{t("scannerAndNotifications")}</strong>
           <div className="form-grid">
             <label className="field-row">
@@ -3107,7 +3240,7 @@ function ManagedConfigEditor({
           </div>
         </article>
 
-        <article className="list-card">
+        <article className="list-card" hidden={section !== "payments"}>
           <strong>{t("paymentProviders")}</strong>
           <div className="form-grid">
             <label className="check-row">
@@ -3180,10 +3313,11 @@ function ManagedConfigEditor({
           </div>
         </article>
       </div>
-      <button type="button" onClick={onSave}>
+      <button type="button" onClick={() => onSave(group)} disabled={busy}>
         <ShieldCheck size={16} aria-hidden="true" />
         {t("saveApplicationConfig")}
       </button>
+      <SaveFeedback result={saveResults[`managed-${group.id}`]} />
     </section>
   );
 }
@@ -3751,6 +3885,7 @@ function App() {
     [],
   );
   const [user, setUser] = useState<User | null>(null);
+  const [sessionChecked, setSessionChecked] = useState(false);
   const [catalog, setCatalog] = useState<PlanCatalog | null>(null);
   const [quota, setQuota] = useState<Quota | null>(null);
   const [pastes, setPastes] = useState<Paste[]>([]);
@@ -3768,6 +3903,11 @@ function App() {
     defaultRedemptionDraft,
   );
   const [adminTab, setAdminTab] = useState<AdminTab>("overview");
+  const [catalogSection, setCatalogSection] = useState<
+    "plans" | "prices" | "redemptions"
+  >("plans");
+  const [catalogPlanId, setCatalogPlanId] = useState("free");
+  const [catalogPriceId, setCatalogPriceId] = useState("");
   const [adminSizeUnits, setAdminSizeUnits] = useState<
     Record<string, SizeUnit>
   >({});
@@ -3822,6 +3962,9 @@ function App() {
     language: requestLocale,
   });
   const [message, setMessage] = useState("");
+  const [saveResults, setSaveResults] = useState<Record<string, SaveResult>>(
+    {},
+  );
   const [busy, setBusy] = useState(false);
   const [supportContacts, setSupportContacts] =
     useState<SupportContacts | null>(null);
@@ -3845,8 +3988,23 @@ function App() {
   const authRoute = authModeForPath(currentPath);
   const workspaceRoute = isWorkspacePath(currentPath);
   const shouldProbeSession = Boolean(
-    authLink?.kind === "email-verification" || workspaceRoute,
+    authLink?.kind === "email-verification" ||
+    workspaceRoute ||
+    authRoute ||
+    currentPath === "/",
   );
+
+  useEffect(() => {
+    if (
+      user &&
+      authRoute &&
+      !passwordResetLinkActive &&
+      authLink?.kind !== "password-reset"
+    ) {
+      moveToWorkspacePath();
+      void refreshAuthed();
+    }
+  }, [user, authRoute, passwordResetLinkActive, authLink]);
 
   const activePlan = useMemo(() => {
     const planId = user?.planId ?? "free";
@@ -3965,8 +4123,9 @@ function App() {
         displayName: meResult.value.displayName,
         language: localeFor(meResult.value.language),
       });
-      await refreshAuthed();
+      if (isWorkspacePath(normalizedPathname())) await refreshAuthed();
     }
+    setSessionChecked(true);
   }, []);
 
   const refreshAuthed = useCallback(async () => {
@@ -4077,7 +4236,7 @@ function App() {
 
   useEffect(() => {
     if (publicPage) return;
-    if (user) void refreshAuthed();
+    if (user && workspaceRoute) void refreshAuthed();
   }, [filter, publicPage, query, user]);
 
   useEffect(() => {
@@ -4123,16 +4282,35 @@ function App() {
   async function run<T>(
     action: () => Promise<T>,
     success: string,
+    saveKey?: string,
   ): Promise<T | null> {
     setBusy(true);
     setMessage("");
+    if (saveKey)
+      setSaveResults((previous) => ({
+        ...previous,
+        [saveKey]: { text: t("saving"), error: false },
+      }));
     try {
       const result = await action();
-      setMessage(success);
+      if (!saveKey) setMessage(success);
+      if (saveKey)
+        setSaveResults((previous) => ({
+          ...previous,
+          [saveKey]: { text: success, error: false },
+        }));
       return result;
     } catch (error) {
       const apiError = error as ApiError;
-      setMessage(apiError.message || t("requestFailed"));
+      if (!saveKey) setMessage(apiError.message || t("requestFailed"));
+      if (saveKey)
+        setSaveResults((previous) => ({
+          ...previous,
+          [saveKey]: {
+            text: apiError.message || t("requestFailed"),
+            error: true,
+          },
+        }));
       return null;
     } finally {
       setBusy(false);
@@ -4160,6 +4338,7 @@ function App() {
   }
 
   async function register() {
+    if (user || !sessionChecked) return;
     const result = await run(
       () =>
         client.register({
@@ -4710,7 +4889,30 @@ function App() {
     );
   }
 
-  function updateManagedSecret(name: keyof ManagedSecretPatch, value: string) {
+  function updateManagedTurnstile(patch: Partial<ManagedConfig["turnstile"]>) {
+    setAdminData((previous) =>
+      previous.managedConfig
+        ? {
+            ...previous,
+            managedConfig: {
+              ...previous.managedConfig,
+              config: {
+                ...previous.managedConfig.config,
+                turnstile: {
+                  ...previous.managedConfig.config.turnstile,
+                  ...patch,
+                },
+              },
+            },
+          }
+        : previous,
+    );
+  }
+
+  function updateManagedSecret(
+    name: keyof ManagedSecretPatch,
+    value: string | undefined,
+  ) {
     setManagedSecretDraft((previous) => ({ ...previous, [name]: value }));
   }
 
@@ -4730,85 +4932,169 @@ function App() {
     setAdminTimeUnits((previous) => ({ ...previous, [key]: unit }));
   }
 
-  async function saveAdminCatalog() {
+  async function saveAdminCatalog(kind: "plans" | "prices", id: string) {
     if (!catalog) return;
+    const body =
+      kind === "plans"
+        ? { plans: catalog.plans.filter((plan) => plan.id === id) }
+        : {
+            prices: catalog.prices
+              .filter((price) => price.id === id)
+              .map(
+                ({
+                  id,
+                  planId,
+                  period,
+                  amountCents,
+                  currency,
+                  visible,
+                  purchaseEnabled,
+                }) => ({
+                  id,
+                  planId,
+                  period,
+                  amountCents,
+                  currency,
+                  visible,
+                  purchaseEnabled,
+                }),
+              ),
+          };
     const updated = await run(
-      () =>
-        client.adminUpdateCatalog({
-          plans: catalog.plans,
-          prices: catalog.prices.map(
-            ({
-              id,
-              planId,
-              period,
-              amountCents,
-              currency,
-              visible,
-              purchaseEnabled,
-            }) => ({
-              id,
-              planId,
-              period,
-              amountCents,
-              currency,
-              visible,
-              purchaseEnabled,
-            }),
-          ),
-        }),
+      () => client.adminUpdateCatalogEntries(body),
       t("catalogSaved"),
+      `${kind}-${id}`,
     );
     if (updated) {
-      setCatalog(updated);
+      setCatalog((previous) =>
+        previous
+          ? {
+              ...previous,
+              plans: previous.plans.map((entry) =>
+                kind === "plans" && entry.id === id
+                  ? (updated.plans.find((item) => item.id === id) ?? entry)
+                  : entry,
+              ),
+              prices: previous.prices.map((entry) =>
+                kind === "prices" && entry.id === id
+                  ? (updated.prices.find((item) => item.id === id) ?? entry)
+                  : entry,
+              ),
+            }
+          : updated,
+      );
       await refreshAuthed();
-      await refreshAdmin();
     }
   }
 
   async function saveRuntimeConfig() {
     const cfg = adminData.runtimeConfig;
     if (!cfg) return;
+    const managed = adminData.managedConfig;
+    const security = adminTab === "security";
     const updated = await run(
-      () =>
-        client.adminUpdateRuntimeConfig({
-          logLevel: cfg.logLevel,
-          guestUploads: cfg.guestUploads,
-          registration: cfg.registration,
-          rateLimits: cfg.rateLimits,
-          alerts: cfg.alerts,
-        }),
+      async () => {
+        if (security && managed) {
+          const saved = await client.adminUpdateManagedConfig({
+            fields: ["turnstile"],
+            config: { turnstile: managed.config.turnstile },
+            secrets: {
+              turnstileSecretKey: managedSecretDraft.turnstileSecretKey,
+            },
+          });
+          setAdminData((previous) => ({
+            ...previous,
+            managedConfig: previous.managedConfig
+              ? {
+                  ...previous.managedConfig,
+                  secrets: {
+                    ...previous.managedConfig.secrets,
+                    turnstileSecretKey: saved.secrets.turnstileSecretKey,
+                  },
+                }
+              : saved,
+          }));
+        }
+        return client.adminUpdateRuntimeConfig(
+          security
+            ? { registration: cfg.registration, rateLimits: cfg.rateLimits }
+            : adminTab === "guest"
+              ? { guestUploads: cfg.guestUploads }
+              : { logLevel: cfg.logLevel, alerts: cfg.alerts },
+        );
+      },
       t("runtimeConfigSaved"),
+      `runtime-${adminTab}`,
     );
     if (updated) {
       setAdminData((previous) => ({
         ...previous,
-        runtimeConfig: updated,
+        runtimeConfig: previous.runtimeConfig
+          ? {
+              ...previous.runtimeConfig,
+              ...(security
+                ? {
+                    registration: updated.registration,
+                    rateLimits: updated.rateLimits,
+                  }
+                : adminTab === "guest"
+                  ? { guestUploads: updated.guestUploads }
+                  : { logLevel: updated.logLevel, alerts: updated.alerts }),
+            }
+          : updated,
         runtimePanel: previous.runtimePanel
           ? { ...previous.runtimePanel, config: updated }
-          : previous.runtimePanel,
+          : null,
       }));
-      await refreshAdmin();
+      if (security) {
+        setManagedSecretDraft((previous) => ({
+          ...previous,
+          turnstileSecretKey: undefined,
+        }));
+      }
     }
   }
 
-  async function saveManagedConfig() {
+  async function saveManagedConfig(group: (typeof managedGroups)[number]) {
     const managed = adminData.managedConfig;
     if (!managed) return;
+    const config = group.fields.reduce<Partial<ManagedConfig>>(
+      (selected, key) => ({ ...selected, [key]: managed.config[key] }),
+      {},
+    );
+    const secrets = group.secrets.reduce<ManagedSecretPatch>(
+      (selected, key) => ({ ...selected, [key]: managedSecretDraft[key] }),
+      {},
+    );
     const updated = await run(
       () =>
         client.adminUpdateManagedConfig({
-          config: managed.config,
-          secrets: managedSecretDraft,
+          config,
+          fields: group.fields,
+          secrets,
         }),
       t("managedConfigSaved"),
+      `managed-${group.id}`,
     );
     if (updated) {
       setAdminData((previous) => ({
         ...previous,
-        managedConfig: updated,
+        managedConfig: previous.managedConfig
+          ? {
+              ...previous.managedConfig,
+              secrets: updated.secrets,
+              config: group.fields.reduce(
+                (current, key) => ({ ...current, [key]: updated.config[key] }),
+                previous.managedConfig.config,
+              ),
+            }
+          : updated,
       }));
-      setManagedSecretDraft({});
-      await refreshAdmin();
+      setManagedSecretDraft((previous) => {
+        const next = { ...previous };
+        for (const key of group.secrets) delete next[key];
+        return next;
+      });
     }
   }
 
@@ -4839,6 +5125,7 @@ function App() {
           note: redemptionDraft.note,
         }),
       t("redemptionBatchCreated"),
+      "redemption-create",
     );
     if (created) {
       setRedemptionDraft((previous) => ({
@@ -4857,6 +5144,7 @@ function App() {
           note: batch.note ?? "",
         }),
       t("redemptionBatchUpdated"),
+      `redemption-${batch.id}`,
     );
     await refreshAdmin();
   }
@@ -4895,6 +5183,14 @@ function App() {
     );
   }
 
+  if (authRoute && !sessionChecked && !passwordResetLinkActive) {
+    return (
+      <main className="session-loading" role="status">
+        {t("loadingSession")}
+      </main>
+    );
+  }
+
   if (authRoute && (!user || passwordResetLinkActive)) {
     return (
       <AuthScreen
@@ -4920,8 +5216,15 @@ function App() {
     );
   }
 
-  if (!user) {
-    return <LandingPage catalog={catalog} locale={locale} />;
+  if (currentPath === "/" || !user) {
+    return (
+      <LandingPage
+        catalog={catalog}
+        locale={locale}
+        user={user}
+        sessionChecked={sessionChecked}
+      />
+    );
   }
 
   return (
@@ -5601,11 +5904,13 @@ function App() {
               <div className={`admin-grid admin-grid--${adminTab}`}>
                 {adminTab === "configuration" && adminData.managedConfig ? (
                   <ManagedConfigEditor
+                    busy={busy}
+                    saveResults={saveResults}
                     secretDraft={managedSecretDraft}
                     t={t}
                     view={adminData.managedConfig}
                     onChange={updateManagedConfig}
-                    onSave={() => void saveManagedConfig()}
+                    onSave={(group) => void saveManagedConfig(group)}
                     onSecretChange={updateManagedSecret}
                   />
                 ) : null}
@@ -6061,11 +6366,13 @@ function App() {
                     ) : null}
                     <button
                       type="button"
+                      disabled={busy}
                       onClick={() => void saveRuntimeConfig()}
                     >
                       <ShieldCheck size={16} aria-hidden="true" />
                       {t("saveRuntimeConfig")}
                     </button>
+                    <SaveFeedback result={saveResults[`runtime-${adminTab}`]} />
                   </section>
                 ) : null}
                 {adminTab === "security" ? (
@@ -6121,16 +6428,30 @@ function App() {
                             }
                           />
                         </label>
-                        <label className="field-row field-row--wide">
-                          <span>{t("turnstileSiteKey")}</span>
-                          <input
-                            readOnly
-                            value={
-                              adminData.runtimeConfig?.registration
-                                .turnstileSiteKey || t("disabled")
-                            }
-                          />
-                        </label>
+                        {adminData.managedConfig ? (
+                          <>
+                            <ManagedTextField
+                              label={t("turnstileSiteKey")}
+                              value={
+                                adminData.managedConfig.config.turnstile.siteKey
+                              }
+                              onChange={(siteKey) =>
+                                updateManagedTurnstile({ siteKey })
+                              }
+                            />
+                            <ManagedSecretField
+                              label={t("turnstileSecretKey")}
+                              name="turnstileSecretKey"
+                              configured={
+                                adminData.managedConfig.secrets
+                                  .turnstileSecretKey
+                              }
+                              draft={managedSecretDraft}
+                              t={t}
+                              onChange={updateManagedSecret}
+                            />
+                          </>
+                        ) : null}
                       </div>
                     </article>
                     <article className="list-card">
@@ -6300,11 +6621,13 @@ function App() {
                     </article>
                     <button
                       type="button"
+                      disabled={busy}
                       onClick={() => void saveRuntimeConfig()}
                     >
                       <ShieldCheck size={16} aria-hidden="true" />
                       {t("saveRuntimeConfig")}
                     </button>
+                    <SaveFeedback result={saveResults[`runtime-${adminTab}`]} />
                   </section>
                 ) : null}
                 {adminTab === "overview" || adminTab === "services" ? (
@@ -6404,284 +6727,389 @@ function App() {
                 {adminTab === "plans" ? (
                   <section className="admin-section admin-section--wide">
                     <h3>{t("planCatalog")}</h3>
-                    {(catalog?.plans ?? []).map((plan) => (
-                      <article className="list-card" key={plan.id}>
-                        <strong>{plan.id}</strong>
-                        <div className="form-grid">
-                          <label className="field-row">
-                            <span>{t("title")}</span>
-                            <input
-                              value={plan.name}
-                              onChange={(event) =>
-                                updateCatalogPlan(plan.id, {
-                                  name: event.target.value,
-                                })
-                              }
-                            />
-                          </label>
-                          <AdminNumberField
-                            label={t("activePasteLimitShort")}
-                            min={0}
-                            unitLabel={t("unitItems")}
-                            value={plan.activePasteLimit}
-                            onChange={(value) =>
-                              updateCatalogPlan(plan.id, {
-                                activePasteLimit: value,
-                              })
-                            }
-                          />
-                          <AdminSizeField
-                            label={t("activeStorageLimit")}
-                            minBytes={0}
-                            t={t}
-                            unit={adminSizeUnitFor(
-                              `plan.${plan.id}.activeStorageBytes`,
-                              plan.activeStorageBytes,
-                            )}
-                            valueBytes={plan.activeStorageBytes}
-                            onChangeBytes={(value) =>
-                              updateCatalogPlan(plan.id, {
-                                activeStorageBytes: value,
-                              })
-                            }
-                            onUnitChange={(unit) =>
-                              setAdminSizeUnit(
-                                `plan.${plan.id}.activeStorageBytes`,
-                                unit,
-                              )
-                            }
-                          />
-                          <AdminSizeField
-                            label={t("singleTextLimit")}
-                            minBytes={0}
-                            t={t}
-                            unit={adminSizeUnitFor(
-                              `plan.${plan.id}.singleTextBytes`,
-                              plan.singleTextBytes,
-                            )}
-                            valueBytes={plan.singleTextBytes}
-                            onChangeBytes={(value) =>
-                              updateCatalogPlan(plan.id, {
-                                singleTextBytes: value,
-                              })
-                            }
-                            onUnitChange={(unit) =>
-                              setAdminSizeUnit(
-                                `plan.${plan.id}.singleTextBytes`,
-                                unit,
-                              )
-                            }
-                          />
-                          <AdminSizeField
-                            label={t("singleFileLimit")}
-                            minBytes={0}
-                            t={t}
-                            unit={adminSizeUnitFor(
-                              `plan.${plan.id}.singleFileBytes`,
-                              plan.singleFileBytes,
-                            )}
-                            valueBytes={plan.singleFileBytes}
-                            onChangeBytes={(value) =>
-                              updateCatalogPlan(plan.id, {
-                                singleFileBytes: value,
-                              })
-                            }
-                            onUnitChange={(unit) =>
-                              setAdminSizeUnit(
-                                `plan.${plan.id}.singleFileBytes`,
-                                unit,
-                              )
-                            }
-                          />
-                          <AdminSizeField
-                            label={t("singlePasteLimit")}
-                            minBytes={0}
-                            t={t}
-                            unit={adminSizeUnitFor(
-                              `plan.${plan.id}.singlePasteBytes`,
-                              plan.singlePasteBytes,
-                            )}
-                            valueBytes={plan.singlePasteBytes}
-                            onChangeBytes={(value) =>
-                              updateCatalogPlan(plan.id, {
-                                singlePasteBytes: value,
-                              })
-                            }
-                            onUnitChange={(unit) =>
-                              setAdminSizeUnit(
-                                `plan.${plan.id}.singlePasteBytes`,
-                                unit,
-                              )
-                            }
-                          />
-                          <AdminNumberField
-                            label={t("attachmentsPerPaste")}
-                            min={0}
-                            unitLabel={t("unitFiles")}
-                            value={plan.attachmentsPerPasteLimit}
-                            onChange={(value) =>
-                              updateCatalogPlan(plan.id, {
-                                attachmentsPerPasteLimit: value,
-                              })
-                            }
-                          />
-                          <AdminNumberField
-                            label={t("tagsPerPaste")}
-                            min={0}
-                            unitLabel={t("tags")}
-                            value={plan.tagsPerPasteLimit}
-                            onChange={(value) =>
-                              updateCatalogPlan(plan.id, {
-                                tagsPerPasteLimit: value,
-                              })
-                            }
-                          />
-                          <AdminTimeField
-                            label={t("retentionSeconds")}
-                            minSeconds={1}
-                            t={t}
-                            unit={adminTimeUnitFor(
-                              `plan.${plan.id}.maxRetentionSeconds`,
-                              plan.maxRetentionSeconds,
-                            )}
-                            valueSeconds={plan.maxRetentionSeconds}
-                            onChangeSeconds={(value) =>
-                              updateCatalogPlan(plan.id, {
-                                maxRetentionSeconds: value,
-                              })
-                            }
-                            onUnitChange={(unit) =>
-                              setAdminTimeUnit(
-                                `plan.${plan.id}.maxRetentionSeconds`,
-                                unit,
-                              )
-                            }
-                          />
-                          <AdminSizeField
-                            label={t("dailyUploadLimit")}
-                            minBytes={0}
-                            t={t}
-                            unit={adminSizeUnitFor(
-                              `plan.${plan.id}.dailyUploadBytes`,
-                              plan.dailyUploadBytes,
-                            )}
-                            valueBytes={plan.dailyUploadBytes}
-                            onChangeBytes={(value) =>
-                              updateCatalogPlan(plan.id, {
-                                dailyUploadBytes: value,
-                              })
-                            }
-                            onUnitChange={(unit) =>
-                              setAdminSizeUnit(
-                                `plan.${plan.id}.dailyUploadBytes`,
-                                unit,
-                              )
-                            }
-                          />
-                          <AdminSizeField
-                            label={t("dailyShareDownloadLimit")}
-                            minBytes={0}
-                            t={t}
-                            unit={adminSizeUnitFor(
-                              `plan.${plan.id}.dailyShareDownloadBytes`,
-                              plan.dailyShareDownloadBytes,
-                            )}
-                            valueBytes={plan.dailyShareDownloadBytes}
-                            onChangeBytes={(value) =>
-                              updateCatalogPlan(plan.id, {
-                                dailyShareDownloadBytes: value,
-                              })
-                            }
-                            onUnitChange={(unit) =>
-                              setAdminSizeUnit(
-                                `plan.${plan.id}.dailyShareDownloadBytes`,
-                                unit,
-                              )
-                            }
-                          />
-                        </div>
-                      </article>
-                    ))}
-                    {(catalog?.prices ?? []).map((price) => (
-                      <article className="list-card" key={price.id}>
-                        <strong>
-                          {price.planId} · {price.period}
-                        </strong>
-                        <div className="form-grid">
-                          <label className="field-row">
-                            <span>{t("period")}</span>
-                            <input
-                              value={price.period}
-                              onChange={(event) =>
-                                updateCatalogPrice(price.id, {
-                                  period: event.target.value,
-                                })
-                              }
-                            />
-                          </label>
-                          <label className="field-row">
-                            <span>{t("priceCents")}</span>
-                            <input
-                              min={0}
-                              type="number"
-                              value={price.amountCents}
-                              onChange={(event) =>
-                                updateCatalogPrice(price.id, {
-                                  amountCents: Number(event.target.value),
-                                })
-                              }
-                            />
-                          </label>
-                          <label className="field-row">
-                            <span>{t("currency")}</span>
-                            <input
-                              maxLength={8}
-                              value={price.currency}
-                              onChange={(event) =>
-                                updateCatalogPrice(price.id, {
-                                  currency: event.target.value,
-                                })
-                              }
-                            />
-                          </label>
-                          <label className="check-row">
-                            <input
-                              checked={price.visible}
-                              type="checkbox"
-                              onChange={(event) =>
-                                updateCatalogPrice(price.id, {
-                                  visible: event.target.checked,
-                                })
-                              }
-                            />
-                            {t("visible")}
-                          </label>
-                          <label className="check-row">
-                            <input
-                              checked={price.purchaseEnabled}
-                              type="checkbox"
-                              onChange={(event) =>
-                                updateCatalogPrice(price.id, {
-                                  purchaseEnabled: event.target.checked,
-                                })
-                              }
-                            />
-                            {t("purchase")}
-                          </label>
-                        </div>
-                      </article>
-                    ))}
-                    <button
-                      type="button"
-                      onClick={() => void saveAdminCatalog()}
+                    <div
+                      className="catalog-tabs"
+                      role="tablist"
+                      aria-label={t("planCatalog")}
                     >
-                      <ShieldCheck size={16} aria-hidden="true" />
-                      {t("saveCatalog")}
-                    </button>
+                      {(["plans", "prices", "redemptions"] as const).map(
+                        (section) => (
+                          <button
+                            type="button"
+                            role="tab"
+                            key={section}
+                            aria-selected={catalogSection === section}
+                            className={
+                              catalogSection === section ? "active" : ""
+                            }
+                            onClick={() => setCatalogSection(section)}
+                          >
+                            {t(
+                              section === "plans"
+                                ? "planLimits"
+                                : section === "prices"
+                                  ? "priceSettings"
+                                  : "redemptionCodes",
+                            )}
+                          </button>
+                        ),
+                      )}
+                    </div>
+                    {catalogSection === "plans" ? (
+                      <label className="field-row config-section-select">
+                        <span>{t("choosePlan")}</span>
+                        <select
+                          value={catalogPlanId}
+                          onChange={(event) =>
+                            setCatalogPlanId(event.target.value)
+                          }
+                        >
+                          {(catalog?.plans ?? []).map((plan) => (
+                            <option key={plan.id} value={plan.id}>
+                              {plan.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : null}
+                    {catalogSection === "plans"
+                      ? (catalog?.plans ?? [])
+                          .filter((plan) => plan.id === catalogPlanId)
+                          .map((plan) => (
+                            <article className="list-card" key={plan.id}>
+                              <strong>{plan.id}</strong>
+                              <div className="form-grid">
+                                <label className="field-row">
+                                  <span>{t("title")}</span>
+                                  <input
+                                    value={plan.name}
+                                    onChange={(event) =>
+                                      updateCatalogPlan(plan.id, {
+                                        name: event.target.value,
+                                      })
+                                    }
+                                  />
+                                </label>
+                                <AdminNumberField
+                                  label={t("activePasteLimitShort")}
+                                  min={0}
+                                  unitLabel={t("unitItems")}
+                                  value={plan.activePasteLimit}
+                                  onChange={(value) =>
+                                    updateCatalogPlan(plan.id, {
+                                      activePasteLimit: value,
+                                    })
+                                  }
+                                />
+                                <AdminSizeField
+                                  label={t("activeStorageLimit")}
+                                  minBytes={0}
+                                  t={t}
+                                  unit={adminSizeUnitFor(
+                                    `plan.${plan.id}.activeStorageBytes`,
+                                    plan.activeStorageBytes,
+                                  )}
+                                  valueBytes={plan.activeStorageBytes}
+                                  onChangeBytes={(value) =>
+                                    updateCatalogPlan(plan.id, {
+                                      activeStorageBytes: value,
+                                    })
+                                  }
+                                  onUnitChange={(unit) =>
+                                    setAdminSizeUnit(
+                                      `plan.${plan.id}.activeStorageBytes`,
+                                      unit,
+                                    )
+                                  }
+                                />
+                                <AdminSizeField
+                                  label={t("singleTextLimit")}
+                                  minBytes={0}
+                                  t={t}
+                                  unit={adminSizeUnitFor(
+                                    `plan.${plan.id}.singleTextBytes`,
+                                    plan.singleTextBytes,
+                                  )}
+                                  valueBytes={plan.singleTextBytes}
+                                  onChangeBytes={(value) =>
+                                    updateCatalogPlan(plan.id, {
+                                      singleTextBytes: value,
+                                    })
+                                  }
+                                  onUnitChange={(unit) =>
+                                    setAdminSizeUnit(
+                                      `plan.${plan.id}.singleTextBytes`,
+                                      unit,
+                                    )
+                                  }
+                                />
+                                <AdminSizeField
+                                  label={t("singleFileLimit")}
+                                  minBytes={0}
+                                  t={t}
+                                  unit={adminSizeUnitFor(
+                                    `plan.${plan.id}.singleFileBytes`,
+                                    plan.singleFileBytes,
+                                  )}
+                                  valueBytes={plan.singleFileBytes}
+                                  onChangeBytes={(value) =>
+                                    updateCatalogPlan(plan.id, {
+                                      singleFileBytes: value,
+                                    })
+                                  }
+                                  onUnitChange={(unit) =>
+                                    setAdminSizeUnit(
+                                      `plan.${plan.id}.singleFileBytes`,
+                                      unit,
+                                    )
+                                  }
+                                />
+                                <AdminSizeField
+                                  label={t("singlePasteLimit")}
+                                  minBytes={0}
+                                  t={t}
+                                  unit={adminSizeUnitFor(
+                                    `plan.${plan.id}.singlePasteBytes`,
+                                    plan.singlePasteBytes,
+                                  )}
+                                  valueBytes={plan.singlePasteBytes}
+                                  onChangeBytes={(value) =>
+                                    updateCatalogPlan(plan.id, {
+                                      singlePasteBytes: value,
+                                    })
+                                  }
+                                  onUnitChange={(unit) =>
+                                    setAdminSizeUnit(
+                                      `plan.${plan.id}.singlePasteBytes`,
+                                      unit,
+                                    )
+                                  }
+                                />
+                                <AdminNumberField
+                                  label={t("attachmentsPerPaste")}
+                                  min={0}
+                                  unitLabel={t("unitFiles")}
+                                  value={plan.attachmentsPerPasteLimit}
+                                  onChange={(value) =>
+                                    updateCatalogPlan(plan.id, {
+                                      attachmentsPerPasteLimit: value,
+                                    })
+                                  }
+                                />
+                                <AdminNumberField
+                                  label={t("tagsPerPaste")}
+                                  min={0}
+                                  unitLabel={t("tags")}
+                                  value={plan.tagsPerPasteLimit}
+                                  onChange={(value) =>
+                                    updateCatalogPlan(plan.id, {
+                                      tagsPerPasteLimit: value,
+                                    })
+                                  }
+                                />
+                                <AdminTimeField
+                                  label={t("retentionSeconds")}
+                                  minSeconds={1}
+                                  t={t}
+                                  unit={adminTimeUnitFor(
+                                    `plan.${plan.id}.maxRetentionSeconds`,
+                                    plan.maxRetentionSeconds,
+                                  )}
+                                  valueSeconds={plan.maxRetentionSeconds}
+                                  onChangeSeconds={(value) =>
+                                    updateCatalogPlan(plan.id, {
+                                      maxRetentionSeconds: value,
+                                    })
+                                  }
+                                  onUnitChange={(unit) =>
+                                    setAdminTimeUnit(
+                                      `plan.${plan.id}.maxRetentionSeconds`,
+                                      unit,
+                                    )
+                                  }
+                                />
+                                <AdminSizeField
+                                  label={t("dailyUploadLimit")}
+                                  minBytes={0}
+                                  t={t}
+                                  unit={adminSizeUnitFor(
+                                    `plan.${plan.id}.dailyUploadBytes`,
+                                    plan.dailyUploadBytes,
+                                  )}
+                                  valueBytes={plan.dailyUploadBytes}
+                                  onChangeBytes={(value) =>
+                                    updateCatalogPlan(plan.id, {
+                                      dailyUploadBytes: value,
+                                    })
+                                  }
+                                  onUnitChange={(unit) =>
+                                    setAdminSizeUnit(
+                                      `plan.${plan.id}.dailyUploadBytes`,
+                                      unit,
+                                    )
+                                  }
+                                />
+                                <AdminSizeField
+                                  label={t("dailyShareDownloadLimit")}
+                                  minBytes={0}
+                                  t={t}
+                                  unit={adminSizeUnitFor(
+                                    `plan.${plan.id}.dailyShareDownloadBytes`,
+                                    plan.dailyShareDownloadBytes,
+                                  )}
+                                  valueBytes={plan.dailyShareDownloadBytes}
+                                  onChangeBytes={(value) =>
+                                    updateCatalogPlan(plan.id, {
+                                      dailyShareDownloadBytes: value,
+                                    })
+                                  }
+                                  onUnitChange={(unit) =>
+                                    setAdminSizeUnit(
+                                      `plan.${plan.id}.dailyShareDownloadBytes`,
+                                      unit,
+                                    )
+                                  }
+                                />
+                              </div>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() =>
+                                  void saveAdminCatalog("plans", plan.id)
+                                }
+                              >
+                                <ShieldCheck size={16} aria-hidden="true" />
+                                {t("savePlan")}
+                              </button>
+                              <SaveFeedback
+                                result={saveResults[`plans-${plan.id}`]}
+                              />
+                            </article>
+                          ))
+                      : null}
+                    {catalogSection === "prices" ? (
+                      <label className="field-row config-section-select">
+                        <span>{t("choosePrice")}</span>
+                        <select
+                          value={catalogPriceId || catalog?.prices[0]?.id || ""}
+                          onChange={(event) =>
+                            setCatalogPriceId(event.target.value)
+                          }
+                        >
+                          {(catalog?.prices ?? []).map((price) => (
+                            <option key={price.id} value={price.id}>
+                              {price.planId} ·{" "}
+                              {t(
+                                price.period === "monthly"
+                                  ? "periodMonthly"
+                                  : price.period === "yearly"
+                                    ? "periodYearly"
+                                    : price.period,
+                              )}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : null}
+                    {catalogSection === "prices"
+                      ? (catalog?.prices ?? [])
+                          .filter(
+                            (price) =>
+                              price.id ===
+                              (catalogPriceId || catalog?.prices[0]?.id),
+                          )
+                          .map((price) => (
+                            <article className="list-card" key={price.id}>
+                              <strong>
+                                {price.planId} ·{" "}
+                                {price.period === "monthly"
+                                  ? t("periodMonthly")
+                                  : price.period === "yearly"
+                                    ? t("periodYearly")
+                                    : price.period}
+                              </strong>
+                              <div className="form-grid">
+                                <label className="field-row">
+                                  <span>{t("period")}</span>
+                                  <input
+                                    value={price.period}
+                                    onChange={(event) =>
+                                      updateCatalogPrice(price.id, {
+                                        period: event.target.value,
+                                      })
+                                    }
+                                  />
+                                </label>
+                                <label className="field-row">
+                                  <span>{t("priceCents")}</span>
+                                  <input
+                                    min={0}
+                                    type="number"
+                                    value={price.amountCents}
+                                    onChange={(event) =>
+                                      updateCatalogPrice(price.id, {
+                                        amountCents: Number(event.target.value),
+                                      })
+                                    }
+                                  />
+                                </label>
+                                <label className="field-row">
+                                  <span>{t("currency")}</span>
+                                  <input
+                                    maxLength={8}
+                                    value={price.currency}
+                                    onChange={(event) =>
+                                      updateCatalogPrice(price.id, {
+                                        currency: event.target.value,
+                                      })
+                                    }
+                                  />
+                                </label>
+                                <label className="check-row">
+                                  <input
+                                    checked={price.visible}
+                                    type="checkbox"
+                                    onChange={(event) =>
+                                      updateCatalogPrice(price.id, {
+                                        visible: event.target.checked,
+                                      })
+                                    }
+                                  />
+                                  {t("visible")}
+                                </label>
+                                <label className="check-row">
+                                  <input
+                                    checked={price.purchaseEnabled}
+                                    type="checkbox"
+                                    onChange={(event) =>
+                                      updateCatalogPrice(price.id, {
+                                        purchaseEnabled: event.target.checked,
+                                      })
+                                    }
+                                  />
+                                  {t("purchase")}
+                                </label>
+                              </div>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() =>
+                                  void saveAdminCatalog("prices", price.id)
+                                }
+                              >
+                                <ShieldCheck size={16} aria-hidden="true" />
+                                {t("savePrice")}
+                              </button>
+                              <SaveFeedback
+                                result={saveResults[`prices-${price.id}`]}
+                              />
+                            </article>
+                          ))
+                      : null}
                   </section>
                 ) : null}
-                {adminTab === "plans" ? (
-                  <section className="admin-section">
+                {adminTab === "plans" && catalogSection === "redemptions" ? (
+                  <section className="admin-section admin-section--wide">
                     <h3>{t("redemptionCodes")}</h3>
                     <div className="form-grid">
                       <select
@@ -6744,6 +7172,7 @@ function App() {
                       <Archive size={16} aria-hidden="true" />
                       {t("createRedemptionBatch")}
                     </button>
+                    <SaveFeedback result={saveResults["redemption-create"]} />
                     {adminData.redemptionBatches.slice(0, 5).map((batch) => (
                       <article className="list-card" key={batch.id}>
                         <div>
@@ -6771,6 +7200,9 @@ function App() {
                           )}
                           {batch.disabled ? t("enabled") : t("disabled")}
                         </button>
+                        <SaveFeedback
+                          result={saveResults[`redemption-${batch.id}`]}
+                        />
                       </article>
                     ))}
                   </section>
@@ -7162,43 +7594,57 @@ function PasteList({
               className={`icon-button small ${paste.pinned ? "active" : ""}`}
               type="button"
               onClick={() => onToggleFlag(paste, "pinned")}
+              aria-pressed={paste.pinned}
+              title={paste.pinned ? t("unpinPaste") : t("pinPaste")}
               aria-label={paste.pinned ? t("unpinPaste") : t("pinPaste")}
             >
               <Pin size={17} aria-hidden="true" />
+              <span>{paste.pinned ? t("unpinPaste") : t("pinPaste")}</span>
             </button>
             <button
               className={`icon-button small ${paste.favorite ? "active" : ""}`}
               type="button"
               onClick={() => onToggleFlag(paste, "favorite")}
+              aria-pressed={paste.favorite}
+              title={paste.favorite ? t("removeFavorite") : t("favoritePaste")}
               aria-label={
                 paste.favorite ? t("removeFavorite") : t("favoritePaste")
               }
             >
               <Star size={17} aria-hidden="true" />
+              <span>
+                {paste.favorite ? t("removeFavorite") : t("favoritePaste")}
+              </span>
             </button>
             <button
               className="icon-button small"
               type="button"
               onClick={() => onCopy(paste.text)}
               aria-label={t("copyText")}
+              title={t("copyText")}
             >
               <ClipboardCopy size={17} aria-hidden="true" />
+              <span>{t("copyText")}</span>
             </button>
             <button
               className="icon-button small"
               type="button"
               onClick={() => onExtend(paste, 7 * 24 * 60 * 60)}
               aria-label={t("extendPaste")}
+              title={t("extendPaste")}
             >
               <TimerReset size={17} aria-hidden="true" />
+              <span>{t("extendPaste")}</span>
             </button>
             <button
               className="icon-button small danger"
               type="button"
               onClick={() => onDelete(paste.id)}
               aria-label={t("deletePaste")}
+              title={t("deletePaste")}
             >
               <Trash2 size={17} aria-hidden="true" />
+              <span>{t("deletePaste")}</span>
             </button>
           </div>
           {paste.shareCount ? (
@@ -7410,9 +7856,13 @@ function byteSize(value: string): number {
 function LandingPage({
   catalog,
   locale,
+  user,
+  sessionChecked,
 }: {
   catalog: PlanCatalog | null;
   locale: Locale;
+  user: User | null;
+  sessionChecked: boolean;
 }) {
   const t = copyFor(locale);
   const content = landingContentFor(locale);
@@ -7450,12 +7900,30 @@ function LandingPage({
           {showPricing ? <a href="#pricing">{content.navPricing}</a> : null}
         </nav>
         <div className="landing-actions">
-          <a className="landing-link-button" href="/login">
-            {t("login")}
-          </a>
-          <a className="landing-primary-button" href="/register">
-            {t("register")}
-          </a>
+          {!sessionChecked ? (
+            <span role="status">{t("loadingSession")}</span>
+          ) : user ? (
+            <a className="landing-primary-button landing-user" href="/app">
+              <UserRound size={18} aria-hidden="true" />
+              <span>{user.displayName || user.email}</span>
+              <span>{t("openWorkspace")}</span>
+            </a>
+          ) : (
+            <>
+              <a
+                className="landing-link-button"
+                href={user ? "/app" : "/login"}
+              >
+                {t("login")}
+              </a>
+              <a
+                className="landing-primary-button"
+                href={user ? "/app" : "/register"}
+              >
+                {t("register")}
+              </a>
+            </>
+          )}
         </div>
       </header>
 
@@ -7465,13 +7933,19 @@ function LandingPage({
           <h1>{content.title}</h1>
           <p>{content.subtitle}</p>
           <div className="landing-cta-row">
-            <a className="landing-primary-button large" href="/register">
+            <a
+              className="landing-primary-button large"
+              href={user ? "/app" : "/register"}
+            >
               <Sparkles size={18} aria-hidden="true" />
-              {content.primaryCta}
+              {user ? t("openWorkspace") : content.primaryCta}
             </a>
-            <a className="landing-link-button large" href="/login">
+            <a
+              className="landing-link-button large"
+              href={user ? "/app" : "/login"}
+            >
               <KeyRound size={18} aria-hidden="true" />
-              {content.secondaryCta}
+              {user ? user.displayName || user.email : content.secondaryCta}
             </a>
           </div>
         </div>
@@ -7563,9 +8037,12 @@ function LandingPage({
             ))}
           </ul>
         </div>
-        <a className="landing-primary-button large" href="/register">
+        <a
+          className="landing-primary-button large"
+          href={user ? "/app" : "/register"}
+        >
           <Sparkles size={18} aria-hidden="true" />
-          {content.primaryCta}
+          {user ? t("openWorkspace") : content.primaryCta}
         </a>
       </section>
 

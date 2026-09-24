@@ -509,8 +509,8 @@ client.register({ ...auth, language: locale })
   editor must treat them as read-only while allowing non-tag paste edits.
 - Paste cards render tag chips from `Paste.tags`; clicking a chip applies the
   backend `tag` list filter and keeps the normal search/filter controls usable.
-- Admin plan editing must include `tagsPerPasteLimit` with the same typed
-  catalog object sent back to `/api/v1/admin/catalog`.
+- Admin plan editing must include `tagsPerPasteLimit` in the selected plan sent
+  to `/api/v1/admin/catalog/entries`.
 
 ### 4. Validation & Error Matrix
 
@@ -554,6 +554,67 @@ const tagLimit = activePlan?.tagsPerPasteLimit ?? 0;
 ```
 
 ---
+
+## Scenario: Session-Aware Entry Pages And Scoped Admin Saves
+
+### 1. Scope / Trigger
+
+- Changes to landing/auth routes, admin form grouping, secret inputs, save
+  feedback, recent-content actions, or footer links.
+
+### 2. Signatures
+
+- `App` session probe and `LandingPage` in `web/src/App.tsx`.
+- `ManagedConfigEditor`, `ManagedSecretField`, `SaveFeedback`, and
+  `client.adminUpdateCatalogEntries`.
+
+### 3. Contracts
+
+- The landing page probes the current session and shows user information plus
+  a workspace link for authenticated users. Auth routes show a loading state
+  until probing completes; signed-in visitors go to `/app`. Password reset
+  links retain their recovery flow.
+- Keep editable Turnstile site/secret fields next to the registration switch.
+  A blank secret input means preserve; only the explicit clear action sends an
+  empty secret. Save the provider configuration before enabling verification.
+- Group application settings and plan/price/redemption forms. Save only the
+  current group or entry, and merge responses only into the saved draft fields.
+  Strip public price capability flags from admin write payloads.
+- Show save progress, success, and errors beside the corresponding button with
+  `status`/`alert` semantics. Preserve drafts after failure; do not rely on the
+  distant global header message for a grouped save.
+- Recent-content actions have visible localized labels, titles, and pressed
+  state for toggles. Footer links use underlines and keyboard focus outlines.
+
+### 4. Validation & Error Matrix
+
+- Pending session lookup -> registration form remains hidden.
+- Signed-in `/login` or `/register` -> workspace; anonymous routes -> auth form.
+- Saving one entry -> request contains exactly that entry; unrelated drafts and
+  persisted entries remain unchanged.
+- Failed save -> inline error and editable draft; omitted secret -> preserved.
+
+### 5. Good / Base / Bad Cases
+
+- Good: Edit Plus, switch to Free, save Free, then return to the untouched Plus
+  draft. The server still has the old Plus value until explicitly saved.
+- Base: Legacy full catalog/config APIs continue working for other callers.
+- Bad: Refresh all admin data after a scoped save and silently discard drafts.
+
+### 6. Tests Required
+
+- Run `make test`, partial-update HTTP/service/PostgreSQL tests, and the web
+  launch surface check. Browser-check desktop and 375px layouts in all four
+  locales, successful/failed saves, session loading, redirects, and footer focus.
+- Local fixture Turnstile configuration checks do not establish real Cloudflare
+  challenge acceptance; report that boundary explicitly.
+
+### 7. Wrong vs Correct
+
+- Wrong: Send the full draft catalog when saving one price, or serialize a
+  blank password input as an explicit clear.
+- Correct: Send `{ prices: [selectedPrice] }` to the entries endpoint and omit
+  unchanged secret fields from JSON.
 
 ## Code Review Checklist
 
