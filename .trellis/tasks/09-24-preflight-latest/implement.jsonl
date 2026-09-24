@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "preflight 校验错误信息的构造与措辞需遵循后端错误处理约定"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "新增环境变量开关与测试需符合后端质量规范"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "确认 cmd/pastebox 的代码归属与放置约定"}

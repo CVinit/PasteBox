@@ -308,6 +308,11 @@ PASTEBOX_BACKUP_S3_SECRET_KEY=<backup-secret-key>
 
 要点：
 
+- `PASTEBOX_IMAGE` 默认必须是 `sha-*` tag 或 digest。确需临时使用
+  `latest` 等移动标签时，在上面的 `deploy/production.env` 里加一行
+  `PASTEBOX_ALLOW_LATEST_IMAGE=true`，会跳过整项固定镜像校验（`v1.2.3` 之类
+  标签同样会放行）。该开关只接受 `true`（大小写不敏感）。移动标签不可复现，
+  回滚前务必记录实际 digest，生产仍推荐用 `sha-*` tag 或 digest。
 - `PASTEBOX_DATABASE_URL` 的主机名必须是 `postgresql`（PostgreSQL 网络里的服务
   别名），不是 `127.0.0.1`。URL 里不写密码，部署脚本通过
   `PASTEBOX_POSTGRES_PASSWORD` 注入。
