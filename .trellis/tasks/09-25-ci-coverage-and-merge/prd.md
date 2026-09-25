@@ -48,6 +48,7 @@
 ## Technical Notes
 
 - 远程失败记录：GitHub Actions run `36082381458`，`Build and publish image / Run production readiness gate`。
+- 首轮补测提交 `5f19192` 的远程覆盖率为 74.8%（run `36084449372`）；继续补齐 OAuth 持久化、目录替换、对象引用归零及迁移 checksum 漂移测试。
 - 门禁脚本：`scripts/check-postgres-integration.sh`；Make 目标：`make test-coverage`。
 - 代码开发遵守 `.trellis/spec/backend/quality-guidelines.md`。
-- 本地新增测试后，Go 1.27.1/PostgreSQL 17 的 Linux 容器覆盖率为 75.7%；macOS 本地 `make test-coverage` 为 75.8%。
+- 当前本地 macOS `make test-coverage` 为 76.1%；等待新提交的远程 CI 作最终确认。

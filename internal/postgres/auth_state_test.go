@@ -59,6 +59,33 @@ func TestAuthStateStoresPersistSessionTokenAndLoginFailure(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
+	oauthStore := NewOAuthIdentityStore(pool)
+	identity := app.OAuthIdentity{
+		UserID:    userID,
+		Provider:  "google",
+		Subject:   "auth-state-google-subject",
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+	}
+	if err := oauthStore.LinkOAuthIdentity(ctx, identity); err != nil {
+		t.Fatalf("link OAuth identity: %v", err)
+	}
+	linkedIdentity, err := oauthStore.OAuthIdentityByProviderSubject(ctx, identity.Provider, identity.Subject)
+	if err != nil || linkedIdentity.UserID != identity.UserID || linkedIdentity.Provider != identity.Provider ||
+		linkedIdentity.Subject != identity.Subject || !linkedIdentity.CreatedAt.Equal(identity.CreatedAt) || !linkedIdentity.UpdatedAt.Equal(identity.UpdatedAt) {
+		t.Fatalf("read linked OAuth identity: %#v, %v", linkedIdentity, err)
+	}
+	identities, err := oauthStore.OAuthIdentitiesByUser(ctx, userID)
+	if err != nil || len(identities) != 1 || identities[0].UserID != identity.UserID || identities[0].Provider != identity.Provider || identities[0].Subject != identity.Subject {
+		t.Fatalf("list linked OAuth identities: %#v, %v", identities, err)
+	}
+	if err := oauthStore.DeleteOAuthIdentity(ctx, userID, identity.Provider); err != nil {
+		t.Fatalf("delete OAuth identity: %v", err)
+	}
+	if err := oauthStore.DeleteOAuthIdentity(ctx, userID, identity.Provider); !errors.Is(err, ErrOAuthIdentityNotFound) {
+		t.Fatalf("expected missing OAuth identity error, got %v", err)
+	}
+
 	sessionStore := NewSessionStore(pool)
 	createdAt := time.Date(2026, 5, 24, 10, 0, 0, 0, time.UTC)
 	expiresAt := createdAt.Add(30 * 24 * time.Hour)
@@ -209,6 +236,7 @@ func TestAuthStateStoresPersistSessionTokenAndLoginFailure(t *testing.T) {
 
 func cleanupAuthStateTestRows(ctx context.Context, t *testing.T, pool *pgxpool.Pool, userID string, email string) {
 	t.Helper()
+	_, _ = pool.Exec(ctx, `DELETE FROM oauth_identities WHERE user_id = $1`, userID)
 	_, _ = pool.Exec(ctx, `DELETE FROM auth_tokens WHERE user_id = $1`, userID)
 	_, _ = pool.Exec(ctx, `DELETE FROM sessions WHERE user_id = $1`, userID)
 	_, _ = pool.Exec(ctx, `DELETE FROM login_failures WHERE email = $1`, email)

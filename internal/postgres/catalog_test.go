@@ -76,6 +76,13 @@ func TestCatalogEntrySavePreservesOtherRowsAndRollsBackWithAudit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		if err := store.SaveCatalog(cleanupCtx, original); err != nil {
+			t.Errorf("restore catalog after replacement test: %v", err)
+		}
+	}()
 	plan := original.Plans[0]
 	plan.ID = prefix + "plan"
 	price := original.Prices[0]
@@ -116,5 +123,14 @@ func TestCatalogEntrySavePreservesOtherRowsAndRollsBackWithAudit(t *testing.T) {
 	}
 	if !reflect.DeepEqual(after, before) {
 		t.Fatal("price-only save changed unrelated catalog rows")
+	}
+
+	replacement := plans.Catalog{Plans: []plans.Plan{plan}, Prices: []plans.Price{price}}
+	if err := store.SaveCatalog(ctx, replacement); err != nil {
+		t.Fatalf("replace catalog: %v", err)
+	}
+	replaced, err := store.Catalog(ctx)
+	if err != nil || len(replaced.Plans) != len(original.Plans)+1 || !reflect.DeepEqual(replaced.Prices, replacement.Prices) {
+		t.Fatalf("unexpected replacement catalog: got %#v want prices %#v err=%v", replaced, replacement.Prices, err)
 	}
 }

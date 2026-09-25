@@ -170,6 +170,17 @@ func TestContentMetadataStoresRoundTripPasteAttachmentObjectAndShare(t *testing.
 	if removed || remainingRef.RefCount != 2 {
 		t.Fatalf("expected two remaining object refs, removed=%t ref=%#v", removed, remainingRef)
 	}
+	remainingRef, removed, err = attachmentStore.DecrementObjectRef(ctx, objectKey)
+	if err != nil || removed || remainingRef.RefCount != 1 {
+		t.Fatalf("expected one remaining object ref, ref=%#v removed=%t err=%v", remainingRef, removed, err)
+	}
+	removedRef, removed, err := attachmentStore.DecrementObjectRef(ctx, objectKey)
+	if err != nil || !removed || removedRef.RefCount != 1 {
+		t.Fatalf("expected final object ref removal, ref=%#v removed=%t err=%v", removedRef, removed, err)
+	}
+	if _, _, err := attachmentStore.DecrementObjectRef(ctx, objectKey); !errors.Is(err, ErrObjectRefNotFound) {
+		t.Fatalf("expected missing object ref error, got %v", err)
+	}
 
 	attachment := app.Attachment{
 		ID:          attachmentID,
