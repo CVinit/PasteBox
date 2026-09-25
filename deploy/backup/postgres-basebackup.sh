@@ -1,8 +1,6 @@
 #!/bin/sh
 set -eu
 
-. /usr/local/bin/pastebox-textfile-metrics.sh 2>/dev/null || pastebox_write_textfile_metrics() { :; }
-
 backup_root=/backups/basebackups
 wal_dir=/backups/wal
 retention_days="${PASTEBOX_BACKUP_RETENTION_DAYS:-30}"
@@ -120,19 +118,5 @@ find "$backup_root" -type f -name 'pastebox-base-*.tar.gz' -mtime +"$retention_d
 find "$backup_root" -type f -name 'pastebox-base-*.tar.gz.sha256' -mtime +"$retention_days" -delete
 find "$backup_root" -type f -name 'pastebox-base-*.manifest' -mtime +"$retention_days" -delete
 find "$wal_dir" -type f -mtime +"$retention_days" -delete
-
-pastebox_write_textfile_metrics "pastebox-basebackup.prom" \
-	"# HELP pastebox_basebackup_last_success_timestamp_seconds Unix timestamp of the latest successful PITR base backup." \
-	"# TYPE pastebox_basebackup_last_success_timestamp_seconds gauge" \
-	"pastebox_basebackup_last_success_timestamp_seconds $finished_at" \
-	"# HELP pastebox_basebackup_last_duration_seconds Duration of the latest successful PITR base backup job." \
-	"# TYPE pastebox_basebackup_last_duration_seconds gauge" \
-	"pastebox_basebackup_last_duration_seconds $duration_seconds" \
-	"# HELP pastebox_basebackup_last_size_bytes Size of the latest successful PITR base backup artifact." \
-	"# TYPE pastebox_basebackup_last_size_bytes gauge" \
-	"pastebox_basebackup_last_size_bytes $size_bytes" \
-	"# HELP pastebox_basebackup_latest_wal_age_seconds Age in seconds of the newest archived WAL segment used by the latest PITR base backup." \
-	"# TYPE pastebox_basebackup_latest_wal_age_seconds gauge" \
-	"pastebox_basebackup_latest_wal_age_seconds $wal_age_seconds"
 
 echo "created base backup $target_tar latest_wal=$latest_wal wal_age_seconds=$wal_age_seconds"

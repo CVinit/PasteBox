@@ -8,12 +8,9 @@
   ClamAV 等不属于公共业务的容器随 PasteBox 项目一起启动。
 - 边缘层是**宿主机 Nginx 反向代理**，证书用 certbot（Let's Encrypt）签发，
   不依赖 Cloudflare。
-- 对象存储对接**已独立部署完成的 s3-orchestrator**（下文简称 s3o）；如果你
-  还没部署 s3o，先看
-  [s3-orchestrator 聚合 R2 对接 PasteBox 教程](s3-orchestrator-r2-pastebox-docker.zh-CN.md)。
+- 对象存储使用**已独立部署完成的 s3-orchestrator**（下文简称 s3o）。
 
-如果你要让 PasteBox 同时管理 PostgreSQL、Redis 和其他依赖的一体化模式，见
-[Docker + Nginx + Cloudflare 生产部署教程](production-docker-nginx-cloudflare.zh-CN.md)。
+s3o 必须预先部署完成；本教程只负责配置 PasteBox 与现有 s3o 的连接。
 
 ## 最终会部署出什么
 
@@ -275,7 +272,7 @@ PasteBox 只把它用于可用性检查，不承载核心业务数据。
 
 ```sh
 cd /opt/pastebox
-cp deploy/production.combined.env.example deploy/production.env
+cp deploy/production.split.env.example deploy/production.env
 chmod 600 deploy/production.env
 ```
 
@@ -328,9 +325,7 @@ PASTEBOX_BACKUP_S3_SECRET_KEY=<backup-secret-key>
 cat > /opt/pastebox/pastebox.env <<'EOF'
 # 这是部署脚本的 split 模式配置。
 export PASTEBOX_DEPLOY_MODE=split
-export PASTEBOX_POSTGRESQL_COMPOSE_FILE=/opt/postgresql/compose.yaml
 export PASTEBOX_POSTGRESQL_ENV_FILE=/opt/postgresql/.env
-export PASTEBOX_REDIS_COMPOSE_FILE=/opt/redis/compose.yaml
 export PASTEBOX_REDIS_ENV_FILE=/opt/redis/.env
 EOF
 chmod 600 /opt/pastebox/pastebox.env
@@ -349,10 +344,8 @@ cron 任务同样需要先加载这个文件。直接执行 Compose 命令时不
 
 ### 已有部署迁移说明
 
-本次命名调整是一次破坏性配置迁移：旧版文件名、以 `SHARED_` 开头的基础设施变量
-和旧版路径变量不会自动兼容。请先复制新模板，再把旧配置的
-值手动迁移到 `POSTGRESQL_*`、`REDIS_*`、`INFRA_*` 和新的 `PASTEBOX_*` 变量中。
-不要在确认数据卷复用前执行 `docker compose down -v`。
+迁移已有部署时，先核对现有数据卷和网络的实际名称，再写入 PostgreSQL/Redis 的
+split 环境文件。不要在确认数据卷复用前执行 `docker compose down -v`。
 
 如果已有 PostgreSQL 或 Redis 数据，需要先查看现有资源名称：
 
@@ -361,7 +354,7 @@ docker volume ls
 docker network ls
 ```
 
-然后把现有名称填入新变量。split 模式示例：
+然后把现有名称填入新变量：
 
 ```sh
 # /opt/postgresql/.env
@@ -373,11 +366,8 @@ POSTGRESQL_NETWORK=<现有 PostgreSQL 网络名>
 REDIS_VOLUME=<现有 Redis 数据卷名>
 REDIS_NETWORK=<现有 Redis 网络名>
 ```
-
-combined 模式则在 `/opt/pastebox/deploy/infra.env` 中设置
-`POSTGRESQL_VOLUME`、`POSTGRESQL_BACKUP_VOLUME` 和 `REDIS_VOLUME`。先执行
-`docker compose ... config` 检查最终配置，确认数据卷和网络名称正确后，再执行
-`init` 或 `up`。不填写这些覆盖变量时，Compose 会按新默认值创建
+先执行 `docker compose ... config` 检查最终配置，确认数据卷和网络名称正确后，再
+启动服务。不填写这些覆盖变量时，Compose 会按新默认值创建
 `postgresql-data`、`redis-data` 和 `postgresql-backups`。
 
 再创建 Nginx 覆盖文件 `/opt/pastebox/compose.nginx-host.yaml`（把
@@ -493,9 +483,8 @@ cd /opt/pastebox
 ./deploy/pastebox-deploy.sh status
 ```
 
-预检通过后，预期运行的 PasteBox 服务包含 `api`、`worker`、`clamav`。不要在这套
-手动基础设施方案中执行 `./deploy/pastebox-deploy.sh init`，因为该命令会尝试管理
-PostgreSQL 和 Redis。
+预检通过后，预期运行的 PasteBox 服务包含 `api`、`worker`、`clamav`。部署脚本只管理
+PasteBox 应用容器；PostgreSQL 和 Redis 仍由管理员手动启动和停止。
 
 ClamAV 首次下载病毒库可能需要几分钟：
 
@@ -866,11 +855,3 @@ style；在宿主机用 AWS CLI 对 `https://s3o.example.com` 做 head-bucket �
 
 备份类容器依赖 PostgreSQL 健康，且读取 `postgresql-backups` 外部卷；先确认
 PostgreSQL project 正常，再确认卷存在：`docker volume ls | grep postgresql-backups`。
-
-## 与本架构相关的其他文档
-
-- [s3-orchestrator 聚合 R2 对接 PasteBox 教程](s3-orchestrator-r2-pastebox-docker.zh-CN.md)
-  — s3o 部署、R2 凭据、虚拟 bucket 管理。
-- [Docker + Nginx + Cloudflare 生产部署教程](production-docker-nginx-cloudflare.zh-CN.md)
-  — PasteBox 自带 PostgreSQL/Redis 的一体化模式。
-- [PasteBox 中文部署文档](deployment.zh-CN.md) — 演示栈说明与镜像发布流程。

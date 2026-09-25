@@ -72,27 +72,7 @@ docker build -t pastebox:local .
 ```
 
 The API image expects PostgreSQL, Redis, and S3-compatible storage to be
-available. For a local container smoke test, use the demo Compose stack instead
-of running the image alone:
-
-```sh
-PASTEBOX_IMAGE=pastebox:local docker compose -f compose.deploy.yaml up -d
-```
-
-Open `http://localhost:8080`.
-
-If port 8080 is already occupied, set a host-port override and open that port
-instead:
-
-```sh
-PASTEBOX_IMAGE=pastebox:local PASTEBOX_HTTP_PORT=18080 docker compose -f compose.deploy.yaml up -d
-```
-
-Then update the public URL in **Admin > Application config**.
-
-The demo Compose stack uses local ClamAV and Mailpit containers by default, and
-keeps `PASTEBOX_DEV_AUTH_TOKENS=true` in development mode so browser smoke tests
-can complete email verification without relying on an external mailbox.
+available. For local development, use `make dev` and the root `compose.yaml`.
 
 GitHub Actions publishes a moving convenience tag and immutable release
 references:
@@ -103,43 +83,15 @@ ghcr.io/cvinit/pastebox:sha-<commit>
 ghcr.io/cvinit/pastebox:<tag>
 ```
 
-See [docs/deployment.md](docs/deployment.md) for the GHCR image workflow,
-Docker Compose deployment, reverse proxy notes, and current production-readiness
-boundary. Use `sha-*` tags or digests for deployments; `latest` is only a
-convenience tag.
-
-中文部署说明见 [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md)，其中包含
-GitHub Actions 自动构建镜像后的 Docker Compose 部署方式。若要用 Docker
-部署到公网，并通过宿主机 Nginx 反代、Cloudflare CDN/WAF 接入，使用
-[docs/production-docker-nginx-cloudflare.zh-CN.md](docs/production-docker-nginx-cloudflare.zh-CN.md)。
-
-The production launch baseline now lives in
-[docs/production-deployment-runbook.md](docs/production-deployment-runbook.md)
-with `compose.production.yaml`, `deploy/production.env.example`, HTTPS reverse
-proxy config, backup jobs, production preflight, readiness checks, and rollback
-runbook. It is the production deployment foundation; public beta still requires
-operator-owned evidence for live provider credentials, restore/PITR drills,
-rollback rehearsal, monitoring/alerts, and support/compliance workflows. Track
-that release-candidate evidence in
-[docs/production-launch-evidence-checklist.md](docs/production-launch-evidence-checklist.md).
-Validate the completed sanitized checklist and release notes with
-`make release-evidence RELEASE_CHECKLIST=<completed-checklist.md> RELEASE_NOTES=<completed-release-notes.md>`
-before accepting public beta traffic.
+Use the [PostgreSQL + Redis deployment tutorial](docs/postgresql-redis-deployment.zh-CN.md)
+for the supported production deployment. Use immutable `sha-*` tags or image
+digests; `latest` is only a convenience tag.
 
 ## Deployment Readiness
 
-The current build can be deployed for demos, internal review, and low-risk
-evaluation with PostgreSQL, Redis, MinIO/S3-compatible storage, ClamAV scanning,
-Mailpit SMTP delivery, migrations, and the worker process through
-`compose.deploy.yaml`.
-
-For real public beta traffic, use `compose.production.yaml` and
-`docs/production-deployment-runbook.md`, not the demo Compose file. Production
-readiness is gated by external/operator evidence: pinned image deployment,
-production secrets, managed object storage, real SMTP/OAuth/billing/scanner
-credentials, provider smoke tests, restore/PITR drill results, rollback
-rehearsal, monitoring/alerting, and legal/support workflow readiness. Use the
-production launch evidence checklist before accepting public beta traffic.
+Production deployment is documented in
+`docs/postgresql-redis-deployment.zh-CN.md`; the repository's other Compose
+file, `compose.yaml`, is for local development only.
 
 ## Verification
 

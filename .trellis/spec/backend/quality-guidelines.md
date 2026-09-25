@@ -45,12 +45,12 @@ user-level Go cache permissions.
   repositories, and payment checkout templates.
 - HTTP request logs and Prometheus route labels must use sanitized route
   patterns, not raw URL paths.
-- Production deploy modes are `combined`, `split`, and `integrated`. New
-  infra layouts must keep the other two modes working, keep service
-  aliases `postgresql`/`redis`, keep the DSN password out of
-  `PASTEBOX_DATABASE_URL`, and extend `scripts/check-production-readiness.sh`
-  compose rendering. See directory-structure scenario
-  **Combined And Split PostgreSQL/Redis Deploy Modes**.
+- Production deployment uses the standalone PostgreSQL + Redis topology in
+  `docs/postgresql-redis-deployment.zh-CN.md`. Keep service aliases
+  `postgresql`/`redis`, keep the DSN password out of `PASTEBOX_DATABASE_URL`,
+  and extend `scripts/check-production-readiness.sh` when deployment wiring
+  changes. See directory-structure scenario
+  **Standalone PostgreSQL And Redis Deployment**.
 
 ## Scenario: Sanitized HTTP Observability Paths
 
@@ -676,8 +676,8 @@ _, _ = io.Copy(w, download.Body)
 - Start route query contract: `returnTo` plus optional `language`, `locale`,
   `lang`, or `hl`.
 - Config fields: `Config.GoogleOAuth` and `Config.GitHubOAuth`.
-- Demo deployment file: `compose.deploy.yaml`.
-- Production env template: `deploy/production.env.example`.
+- Local development uses `compose.yaml`.
+- Production env template: `deploy/production.split.env.example`.
 
 ### 3. Contracts
 
@@ -720,8 +720,8 @@ _, _ = io.Copy(w, download.Body)
   /api/v1/auth/google/start?returnTo=/app&language=zh-CN` and
   `/github/start?returnTo=/app&locale=es` both return `303` to their provider
   authorization URL and preserve language in signed state.
-- Bad: Adding GitHub OAuth to `internal/config` while leaving
-  `compose.deploy.yaml` unaware of the new env keys.
+- Bad: Adding GitHub OAuth to `internal/config` while leaving production
+  Compose unaware of the new env keys.
 
 ### 6. Tests Required
 
@@ -730,9 +730,9 @@ _, _ = io.Copy(w, download.Body)
 - Handler tests must cover OAuth start redirects and callback state handling
   for each supported provider, including language persistence into the created
   user.
-- Deployment changes must run `docker compose -f compose.deploy.yaml config`
-  with representative OAuth env values and assert the rendered services carry
-  those values.
+- Deployment changes must render the supported split production Compose with
+  representative OAuth env values and assert the rendered services carry those
+  values.
 
 ### 7. Wrong vs Correct
 
@@ -914,7 +914,7 @@ fail if the baseline is disabled or invalid.
 ### 1. Scope / Trigger
 
 - Trigger: Any change to `Dockerfile`, `.dockerignore`,
-  `.github/workflows/docker-image.yml`, `compose.deploy.yaml`, static asset
+  `.github/workflows/docker-image.yml`, production Compose, static asset
   serving, Vite build output assumptions, or deployment documentation.
 
 ### 2. Signatures
@@ -942,10 +942,8 @@ fail if the baseline is disabled or invalid.
 - The API image must not be documented as a standalone runnable service. Runtime
   startup requires PostgreSQL, Redis-compatible readiness/queue infrastructure,
   and an S3-compatible bucket.
-- Demo Compose must run migrations and initialize the object bucket before
-  starting API and worker containers.
-- Production Compose remains separate from demo Compose and must keep production
-  preflight, HTTPS, backup, restore, and rollback gates.
+- Local development dependencies are started by `make dev`; production
+  migrations, HTTPS, backups, and restores follow the deployment tutorial.
 
 ### 4. Validation & Error Matrix
 
@@ -958,14 +956,11 @@ fail if the baseline is disabled or invalid.
   readiness failure.
 - API container started without the configured S3 bucket -> object storage
   readiness failure.
-- Demo Compose used for real production data -> deployment docs must identify it
-  as demo-only and direct operators to the production runbook.
+- Local development Compose used for production data -> deployment docs must
+  direct operators to the standalone PostgreSQL/Redis tutorial.
 
 ### 5. Good/Base/Bad Cases
 
-- Good: `PASTEBOX_IMAGE=pastebox:local docker compose -f compose.deploy.yaml up
-  -d` starts PostgreSQL, Redis, MinIO, migration, bucket init, API, and worker
-  services.
 - Base: `go run ./cmd/pastebox` uses the default local PostgreSQL, Redis, and
   MinIO settings after `make dev` and `make db-migrate`.
 - Bad: Build the Vite app after `go build`; the generated files are not embedded
@@ -980,9 +975,7 @@ fail if the baseline is disabled or invalid.
 - Handler tests must assert missing asset-like paths return `404` and do not
   return index HTML.
 - Run `make test` after static-serving changes.
-- Run `docker compose -f compose.deploy.yaml config` after demo Compose changes.
-- Run `docker compose -f compose.production.yaml config` after production
-  Compose changes.
+- Run `make production-readiness` after production Compose changes.
 - Run `docker build -t pastebox:local .` after Dockerfile or workflow changes
   whenever the local Docker daemon is available.
 
@@ -1094,8 +1087,7 @@ writeJSON(w, statusCode, ReadinessReport{
 ### 1. Scope / Trigger
 
 - Trigger: Any change to `/metrics`, HTTP request middleware, readiness
-  reporting, admin/operational queue data, production preflight, production
-  Prometheus files, or monitoring runbooks.
+  reporting, admin/operational queue data, or production preflight.
 
 ### 2. Signatures
 
@@ -1103,9 +1095,6 @@ writeJSON(w, statusCode, ReadinessReport{
 - Config: `PASTEBOX_METRICS_TOKEN`
 - Preflight: `pastebox preflight production`
 - Service: `app.Service.OperationalMetrics()`
-- Compose profile: `monitoring` service `prometheus`
-- Scrape config: `deploy/monitoring/prometheus.yml`
-- Alert rules: `deploy/monitoring/pastebox-alerts.yml`
 
 ### 3. Contracts
 
@@ -1122,13 +1111,9 @@ writeJSON(w, statusCode, ReadinessReport{
 - Operational gauges are aggregate counts only: active pastes/storage, open
   reports, queue depths, mail backlog, webhook event count, and order counts by
   lifecycle status.
-- The optional production Prometheus profile must scrape `api:8080/metrics`
-  with `authorization.credentials_file = /run/secrets/pastebox_metrics_token`.
-  The secret is sourced from `PASTEBOX_METRICS_TOKEN`; do not write the token
-  into committed YAML.
-- Baseline alert rules must cover scrape availability, overall readiness,
-  component readiness, operational metric loading, failed jobs, scanner backlog,
-  mail backlog, and open abuse/support report backlog.
+- Any external metrics collector must scrape `/metrics` with the bearer token
+  sourced from `PASTEBOX_METRICS_TOKEN`; the repository does not ship a
+  Prometheus deployment stack.
 
 ### 4. Validation & Error Matrix
 
@@ -1138,10 +1123,6 @@ writeJSON(w, statusCode, ReadinessReport{
   gauges set to `0`.
 - Operational metric loading fails -> emit `pastebox_operational_metrics_available
   0` without exposing the internal error text.
-- Compose monitoring profile cannot render -> deployment config validation
-  fails.
-- Prometheus config or alert rules are syntactically invalid -> monitoring
-  validation fails before launch.
 
 ### 5. Good/Base/Bad Cases
 
@@ -1151,8 +1132,8 @@ writeJSON(w, statusCode, ReadinessReport{
 - Base: Development can leave the metrics token empty; `/metrics` remains
   unauthorized until a token is configured.
 - Bad: Exposing `/metrics` publicly without a token or labeling HTTP metrics
-  with raw share tokens, paste IDs, emails, or object keys. Also bad: putting
-  `PASTEBOX_METRICS_TOKEN` directly into committed Prometheus config.
+  with raw share tokens, paste IDs, emails, or object keys. Also bad: logging
+  `PASTEBOX_METRICS_TOKEN` or embedding it in a public collector config.
 
 ### 6. Tests Required
 
@@ -1161,13 +1142,8 @@ writeJSON(w, statusCode, ReadinessReport{
   HTTP request counters, and operational gauges.
 - Command tests must cover production preflight rejecting missing or short
   metrics tokens.
-- Deployment checks must render `docker compose --profile monitoring config`
-  against `deploy/production.env.example`.
-- Prometheus checks must validate `deploy/monitoring/prometheus.yml` and
-  `deploy/monitoring/pastebox-alerts.yml` with `promtool` or an equivalent
-  syntax checker.
 - Run full `make test` after changing metrics because middleware, preflight,
-  and deployment docs consume the same contract.
+  and runtime config consume the same contract.
 
 ### 7. Wrong vs Correct
 
@@ -1202,7 +1178,7 @@ authorization:
 ### 1. Scope / Trigger
 
 - Trigger: Any change to production backup scripts, restore-drill scripts,
-  Compose maintenance services, backup docs, or rollback runbooks.
+  Compose maintenance services, or the PostgreSQL/Redis deployment tutorial.
 
 ### 2. Signatures
 
@@ -1246,7 +1222,7 @@ authorization:
 ### 6. Tests Required
 
 - Run `sh -n` for all backup shell scripts after editing them.
-- Run full `make test` after Compose/runbook changes because deployment docs and
+- Run full `make test` after Compose/tutorial changes because deployment config and
   preflight assumptions depend on the maintenance profile.
 - A real launch gate still requires executing the restore drill against a real
   backup and recording the duration; static tests do not prove RTO.
@@ -1523,8 +1499,8 @@ if order.Status == "pending" && order.ExpiresAt != nil && !order.ExpiresAt.After
   addresses on production domains.
 - The `/support` page must render both addresses as `mailto:` links using the
   typed frontend API client, not hard-coded copy.
-- `deploy/production.env.example`, `.env.example`, production runbooks, and the
-  support operations runbook must stay in sync with these env keys.
+- `deploy/production.split.env.example`, `.env.example`, and the deployment
+  tutorial must stay in sync with these env keys.
 
 ### 4. Validation & Error Matrix
 
