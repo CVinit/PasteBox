@@ -506,9 +506,9 @@ export["auditLogs"] = logs
   `postgres-wal-check`, runs `postgres-basebackup`, and then runs
   `postgres-pitr-drill`; the drill prints `schema_migrations=<count>` and
   `in_recovery=f`.
-- Base: `docker compose --profile maintenance config` renders all maintenance
-  services with the committed example env when `PASTEBOX_ENV_FILE` points at
-  `deploy/production.env.example`.
+- Base: The production + split Compose pair renders maintenance services with
+  all three committed env templates and the PasteBox env path set to
+  `deploy/production.split.env.example`.
 - Bad: Waiting for `/backups/wal/$(pg_switch_wal)` can fail even while WAL
   archiving is healthy, because the archived file may be the completed previous
   segment or a `.backup` marker.
@@ -516,9 +516,8 @@ export["auditLogs"] = logs
 ### 6. Tests Required
 
 - Run `sh -n` for every changed backup script.
-- Run `docker compose --profile maintenance -f compose.production.yaml
-  --env-file deploy/production.env.example config` with
-  `PASTEBOX_ENV_FILE=./deploy/production.env.example`.
+- Run the production + split Compose pair with `--profile maintenance`, all
+  three env templates, and `PASTEBOX_ENV_FILE=./deploy/production.split.env.example`.
 - Run `go test ./cmd/pastebox` after changing production preflight env
   validation.
 - Run full `make test` before committing production backup/preflight changes.
@@ -566,73 +565,75 @@ postgres:
     - "hba_file=/etc/postgresql/pg_hba.conf"
 ```
 
-## Scenario: Combined PostgreSQL And Redis Deployment
+## Scenario: Standalone PostgreSQL And Redis Deployment
 
 ### 1. Scope / Trigger
 
-- Trigger: Any change to `compose.infra.yaml`,
-  `compose.external-services.yaml`, `deploy/pastebox-deploy.sh`, infrastructure
-  env templates, or production maintenance jobs that connect to PostgreSQL.
+- Trigger: Any change to `compose.postgresql.yaml`,
+  `compose.external-split-services.yaml`, `deploy/pastebox-deploy.sh`,
+  PostgreSQL/Redis env templates, or production maintenance jobs that connect
+  to PostgreSQL.
 
 ### 2. Signatures
 
-- Combined stack: `compose.infra.yaml`
-- PasteBox override: `compose.external-services.yaml`
+- PostgreSQL stack: `compose.postgresql.yaml`
+- Redis stack: `compose.redis.yaml`
+- PasteBox overlay: `compose.external-split-services.yaml`
 - Operator command: `deploy/pastebox-deploy.sh`
-- External network: `infra-net`
-- Combined aliases: `postgresql`, `redis`
+- External networks: `postgresql-net` and `redis-net`
+- Service aliases: `postgresql`, `redis`
 
 ### 3. Contracts
 
-- Combined PostgreSQL and Redis belong to a Compose project separate from
-  PasteBox so application `down` and upgrades do not stop infrastructure data services.
-- Infrastructure services publish only to loopback by default and also join a stable
-  external Docker network for container consumers.
+- PostgreSQL and Redis are separate Compose projects and have independent
+  lifecycles from PasteBox.
+- Infrastructure services publish only to loopback by default and join their
+  stable external Docker networks for container consumers.
 - PasteBox uses a dedicated PostgreSQL role and database. It must not use the
   PostgreSQL superuser for normal API, worker, migration, or preflight
   traffic.
-- Combined-mode `PASTEBOX_DATABASE_URL` omits the password. Compose injects
+- `PASTEBOX_DATABASE_URL` omits the password. Compose injects
   `PASTEBOX_POSTGRES_PASSWORD` through libpq's standard `PGPASSWORD` variable
   so special characters do not need duplicate URL encoding.
 - Every other application sharing PostgreSQL must use its own role and
   database. Redis consumers must use separate DB numbers or key prefixes.
 - PostgreSQL maintenance jobs use the PostgreSQL superuser only where backup,
   replication, WAL inspection, or restore drills require it, and mount the
-  same named backup volume as the combined PostgreSQL container.
-- The original integrated production Compose remains renderable and is
-  selected with `PASTEBOX_DEPLOY_MODE=integrated`.
+  external PostgreSQL backup volume.
+- The PasteBox project does not define PostgreSQL or Redis services; the
+  administrator starts and stops those services separately.
 
 ### 4. Validation & Error Matrix
 
-- Missing infra env file in combined mode -> deploy script exits before Compose.
-- Combined database URL does not use the `pastebox` role, database, or
-  `postgresql` alias -> `init` exits without creating anything.
-- External network or backup volume does not exist -> combined-mode Compose
-  command fails; run `init` first.
+- `PASTEBOX_DEPLOY_MODE` is not `split` -> deploy script exits before Compose.
+- Database URL does not use the `pastebox` role, database, or `postgresql`
+  alias -> production preflight fails.
+- External network or backup volume does not exist -> Compose cannot attach
+  PasteBox or maintenance services to PostgreSQL/Redis infrastructure.
 - PostgreSQL or Redis publishes to a non-loopback address without an explicit
   operator override -> deployment review failure.
-- `infra-reset` without `--confirm-delete-all-data` -> deploy script exits
-  without calling Compose or deleting volumes.
+- PasteBox `down` -> PostgreSQL and Redis remain running in their own projects.
 
 ### 5. Good/Base/Bad Cases
 
-- Good: `init` creates combined infrastructure once, and repeated PasteBox
-  `up`, `upgrade`, and `down` operations leave it running.
-- Base: Integrated mode continues to use the `postgres` and `redis` services
-  from `compose.production.yaml`.
+- Good: Start PostgreSQL and Redis independently, then repeated PasteBox `up`,
+  `upgrade`, and `down` operations leave those projects running.
+- Base: Backup and maintenance services use the external PostgreSQL network and
+  backup volume.
 - Bad: Multiple applications share the PostgreSQL superuser or write to the
   same database schema.
-- Bad: A maintenance container writes backups to a PasteBox-local volume while
-  combined PostgreSQL archives WAL into a different volume.
+- Bad: A maintenance container writes backups to a different volume than the
+  PostgreSQL project uses for WAL archives.
 
 ### 6. Tests Required
 
 - Run `sh -n deploy/pastebox-deploy.sh`.
-- Render `compose.infra.yaml` with
-  `deploy/infra.env.example`.
-- Render the merged production, external-services, and maintenance profiles
-  with `deploy/infra.env.example` and `deploy/production.combined.env.example`.
-- Keep the original `compose.production.yaml` render checks green.
+- Render `compose.postgresql.yaml` and `compose.redis.yaml` with their env
+  templates.
+- Render production + split + maintenance Compose with
+  `deploy/postgresql.env.example`, `deploy/redis.env.example`, and
+  `deploy/production.split.env.example`.
+- Keep the selected `compose.production.yaml` configuration checks green.
 - Run `git diff --check` for deployment and documentation changes.
 
 ### 7. Wrong vs Correct

@@ -4,7 +4,7 @@ set -eu
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo_root"
 
-env_file=${PASTEBOX_PREFLIGHT_TEMPLATE:-deploy/production.env.example}
+env_file=${PASTEBOX_PREFLIGHT_TEMPLATE:-deploy/production.split.env.example}
 if [ ! -f "$env_file" ]; then
 	printf 'missing production env template: %s\n' "$env_file" >&2
 	exit 1
@@ -20,7 +20,7 @@ synthetic_value() {
 	PASTEBOX_CONFIG_ENCRYPTION_KEY) value="MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=" ;;
 	PASTEBOX_METRICS_TOKEN) value="synthetic-metrics-token-32-bytes-prod" ;;
 	PASTEBOX_POSTGRES_PASSWORD) value="synthetic-db-secret" ;;
-	PASTEBOX_DATABASE_URL) value="postgres://pastebox:synthetic-db-secret@postgres:5432/pastebox?sslmode=disable" ;;
+	PASTEBOX_DATABASE_URL) value="postgres://pastebox@postgresql:5432/pastebox?sslmode=disable" ;;
 	PASTEBOX_RESTIC_REPOSITORY) value="s3:https://backups.pastebox-storage.app/pastebox-backups" ;;
 	PASTEBOX_RESTIC_PASSWORD) value="synthetic-restic-secret" ;;
 	PASTEBOX_BACKUP_S3_ACCESS_KEY) value="synthetic-backup-access-key" ;;

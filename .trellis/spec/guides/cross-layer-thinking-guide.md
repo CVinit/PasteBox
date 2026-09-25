@@ -87,32 +87,27 @@ After implementation:
 
 ## Production Deploy Mode Boundary
 
-PasteBox has three production infra layouts. Changing one file is not enough.
-
-| Mode | Compose projects | PasteBox override | Default env |
-|------|------------------|-------------------|-------------|
-| `combined` | one `infra` | `compose.external-services.yaml` | `deploy/infra.env` |
-| `split` | `postgresql` + `redis` | `compose.external-split-services.yaml` | four path overrides |
-| `integrated` | PasteBox-owned postgres/redis | none | `deploy/production.env` |
+The supported production deployment is the tutorial's standalone PostgreSQL +
+Redis layout. Changing one file is not enough; keep Compose templates, env
+examples, the deploy script, and readiness checks aligned.
 
 ### Checklist: After Changing PostgreSQL/Redis Infrastructure
 
-- [ ] Keep `combined`, `split`, and `integrated` working; do not reuse split-only filenames
+- [ ] Keep only the standalone PostgreSQL/Redis production topology
 - [ ] Service aliases stay `postgresql` / `redis` for external infrastructure
 - [ ] DSN host is the alias, never `127.0.0.1`; password stays in `PASTEBOX_POSTGRES_PASSWORD`
 - [ ] If templates are copied to `/opt/postgresql` or `/opt/redis`, document
   `PASTEBOX_POSTGRESQL_*` / `PASTEBOX_REDIS_*` path overrides and require
   sourcing them (including cron)
-- [ ] Independent PG compose binds `./pg_hba.conf`; combined infra binds
-  `./deploy/postgres/pg_hba.conf`
+- [ ] Independent PostgreSQL Compose binds `./pg_hba.conf` beside its Compose
+  file
 - [ ] Readiness script renders the new combo with `PASTEBOX_ENV_FILE` pointing at
   an example file that exists
 - [ ] Connectivity probes use TCP (`nc -zv`), not HTTP, against 5432/6379
 
-**Real-world example**: Split-mode templates copied to `/opt/postgresql` and
-`/opt/redis` need explicit compose and env path overrides. Rendering
-`compose.production.yaml` also needs `PASTEBOX_ENV_FILE` because
-`deploy/production.env` is not committed.
+**Real-world example**: Templates copied to `/opt/postgresql` and `/opt/redis`
+need explicit env path overrides for the PasteBox deploy script. Rendering production Compose also
+needs `PASTEBOX_ENV_FILE` because `deploy/production.env` is not committed.
 
 ---
 

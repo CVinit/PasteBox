@@ -1,8 +1,6 @@
 #!/bin/sh
 set -eu
 
-. /usr/local/bin/pastebox-textfile-metrics.sh 2>/dev/null || pastebox_write_textfile_metrics() { :; }
-
 manifest_dir=/backups/restic
 mkdir -p "$manifest_dir"
 
@@ -50,14 +48,5 @@ manifest="$manifest_dir/pastebox-restic-$(date -u +%Y%m%dT%H%M%SZ).manifest"
 } > "$manifest"
 
 find "$manifest_dir" -type f -name 'pastebox-restic-*.manifest' -mtime +"${PASTEBOX_BACKUP_RETENTION_DAYS:-30}" -delete
-
-pastebox_write_textfile_metrics "pastebox-offhost-backup.prom" \
-	"# Latest restic snapshot id: $snapshot_id" \
-	"# HELP pastebox_offhost_backup_last_success_timestamp_seconds Unix timestamp of the latest successful off-host backup push and integrity check." \
-	"# TYPE pastebox_offhost_backup_last_success_timestamp_seconds gauge" \
-	"pastebox_offhost_backup_last_success_timestamp_seconds $finished_at" \
-	"# HELP pastebox_offhost_backup_last_duration_seconds Duration of the latest successful off-host backup push and integrity check." \
-	"# TYPE pastebox_offhost_backup_last_duration_seconds gauge" \
-	"pastebox_offhost_backup_last_duration_seconds $duration_seconds"
 
 echo "off-host backup succeeded snapshot_id=$snapshot_id manifest=$manifest duration_seconds=$duration_seconds"

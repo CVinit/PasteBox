@@ -47,10 +47,10 @@ These guides help you **ask the right questions before coding**.
 
 → Read [Code Reuse Thinking Guide](./code-reuse-thinking-guide.md)
 
-### When to Think About Production Deploy Modes
+### When to Think About Production Deployment
 
 - [ ] Changing Compose files, `deploy/pastebox-deploy.sh`, or production env examples
-- [ ] Adding a infra layout (combined vs split PostgreSQL/Redis)
+- [ ] Changing the standalone PostgreSQL/Redis production layout
 - [ ] Copying templates out of the repo (`/opt/postgresql`, `/opt/redis`) so default relative paths break
 - [ ] Rendering `compose.production.yaml` in CI without a real `deploy/production.env`
 

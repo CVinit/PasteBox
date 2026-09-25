@@ -149,7 +149,7 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - API command: `pastebox` or `pastebox api`
 - Worker command: `pastebox worker [--once] [--batch-size <n>] [--poll-interval <duration>]`
 - Compose one-shot worker check:
-  `docker compose --env-file deploy/production.env -f compose.production.yaml run --rm worker worker --once`
+  `docker compose --env-file deploy/production.split.env.example --env-file deploy/postgresql.env.example --env-file deploy/redis.env.example -f compose.production.yaml -f compose.external-split-services.yaml run --rm worker worker --once`
 - Migration commands: `pastebox migrate status` and `pastebox migrate up`
 - Preflight command: `pastebox preflight production`
 - Scanner constructor: `scanner.New(config.ScannerConfig) (scanner.Scanner, error)`
@@ -158,11 +158,9 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - API liveness endpoint: `GET /api/v1/health`
 - API readiness endpoint: `GET /api/v1/ready`
 - Production Compose file: `compose.production.yaml`
-- Production env template: `deploy/production.env.example`
+- Production env template: `deploy/production.split.env.example`
 - Production preflight verifier:
   `scripts/check-production-preflight.sh`
-- Production monitoring files: `deploy/monitoring/prometheus.yml` and
-  `deploy/monitoring/pastebox-alerts.yml`
 - PostgreSQL integration verifier:
   `scripts/check-postgres-integration.sh`
 - Make target: `make test-postgres`
@@ -215,14 +213,11 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - `GET /api/v1/ready` returns `app`, `env`, and `status`.
 - Production deployment uses `compose.production.yaml`, a non-committed
   `deploy/production.env`, and a pinned `PASTEBOX_IMAGE` tag or digest.
-- The optional `monitoring` profile runs Prometheus with committed scrape and
-  alert-rule files. It must source the metrics bearer token from the
-  `PASTEBOX_METRICS_TOKEN` Compose secret, not from committed YAML.
 - The committed env template may contain placeholders; the real production env
   file must not be committed.
 - `scripts/check-production-preflight.sh` must derive a synthetic
-  production-safe environment from `deploy/production.env.example`, fail on any
-  unmapped `CHANGE_ME` placeholder, and execute
+  production-safe environment from `deploy/production.split.env.example`, fail
+  on any unmapped `CHANGE_ME` placeholder, and execute
   `go run ./cmd/pastebox preflight production`.
 - `make test-postgres` starts an ephemeral PostgreSQL container on a loopback
   random host port, sets `PASTEBOX_TEST_DATABASE_URL`, runs
@@ -262,10 +257,7 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 - `docker compose run --rm worker --once` -> exits 2 with
   `unknown command "--once"` because it omits the application `worker`
   subcommand.
-- Production monitoring profile fails to render -> config validation failure.
-- Prometheus scrape or alert-rule config is syntactically invalid -> launch
-  monitoring validation failure.
-- New placeholder env key added to `deploy/production.env.example` but not
+- New placeholder env key added to `deploy/production.split.env.example` but not
   mapped by `scripts/check-production-preflight.sh` -> preflight verifier exits
   1 with the unmapped key name.
 - Synthetic production preflight fails -> `make production-readiness` fails
@@ -282,10 +274,9 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 
 ### 5. Good/Base/Bad Cases
 
-- Good: Adding a new production dependency updates `deploy/production.env.example`,
-  `pastebox preflight production`, Compose wiring, runbooks, and tests together.
-- Good: Adding a metrics alert updates `deploy/monitoring/pastebox-alerts.yml`,
-  the deployment runbook, and the metrics spec together.
+- Good: Adding a new production dependency updates `deploy/production.split.env.example`,
+  `pastebox preflight production`, Compose wiring, the deployment tutorial, and
+  tests together.
 - Good: A release-candidate verification run executes `make test-postgres` with
   a throwaway PostgreSQL container instead of relying on integration tests that
   skip when `PASTEBOX_TEST_DATABASE_URL` is absent.
@@ -293,12 +284,12 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
   listener on `127.0.0.1:5432`, avoiding false readiness from the temporary
   init server's Unix socket.
 - Good: Adding a new required production env key updates
-  `deploy/production.env.example`, `pastebox preflight production`, and the
+  `deploy/production.split.env.example`, `pastebox preflight production`, and the
   synthetic preflight verifier mapping in the same change.
 - Base: Worker support may start with one job kind, but it must use the durable
   `jobs` table and preserve retry state across process restarts.
 - Bad: Editing an already-applied migration, silently ignoring checksum drift,
-  using `latest` in the production runbook, leaving `pastebox worker` as an
+  using `latest` in the production tutorial, leaving `pastebox worker` as an
   idle process once runnable jobs exist, or treating skipped PostgreSQL
   integration tests as production-readiness evidence.
 
@@ -315,14 +306,9 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
   completion, missing scanner retry/backoff, and unsupported job failure.
 - Scanner package tests for provider validation, ClamAV timeout defaults,
   heuristic verdicts, ClamAV response parsing, and risk normalization.
-- `docker compose --env-file deploy/production.env.example -f
-  compose.production.yaml config` must render successfully with
-  `PASTEBOX_ENV_FILE=./deploy/production.env.example`.
-- `docker compose --env-file deploy/production.env.example -f
-  compose.production.yaml --profile monitoring config` must render
-  successfully with `PASTEBOX_ENV_FILE=./deploy/production.env.example`.
-- Validate Prometheus syntax for `deploy/monitoring/prometheus.yml` and
-  `deploy/monitoring/pastebox-alerts.yml` after alert or scrape changes.
+- The Compose files and env templates used by
+  `docs/postgresql-redis-deployment.zh-CN.md` must render together in
+  `scripts/check-production-readiness.sh`.
 - `scripts/check-production-preflight.sh` must pass after changing production
   preflight validation, production env templates, or required launch secrets.
 - `make test-postgres` must pass after changing PostgreSQL stores, migrations,
@@ -385,7 +371,7 @@ docker exec "$container_name" pg_isready -h 127.0.0.1 -p 5432 -U "$user" -d "$da
 #### Wrong
 
 ```sh
-PASTEBOX_PRODUCTION_ENV_FILE=deploy/production.env.example make production-readiness
+PASTEBOX_PREFLIGHT_TEMPLATE=deploy/production.split.env.example make production-readiness
 # Compose renders, but the actual preflight command is never executed.
 ```
 
@@ -397,105 +383,85 @@ make production-readiness
 # release verification proves the preflight command accepts a complete env set.
 ```
 
-## Scenario: Combined And Split PostgreSQL/Redis Deploy Modes
+## Scenario: Standalone PostgreSQL And Redis Deployment
 
 ### 1. Scope / Trigger
 
 - Trigger: Any change to production Compose templates, `deploy/pastebox-deploy.sh`,
-  infra env examples, production readiness compose rendering, or the
-  PostgreSQL/Redis deployment tutorial.
+  production readiness Compose rendering, or the PostgreSQL/Redis deployment
+  tutorial.
 
 ### 2. Signatures
 
-- Deploy modes: `PASTEBOX_DEPLOY_MODE=combined|split|integrated`
-  (default `combined`).
-- Wrapper: `./deploy/pastebox-deploy.sh <init|up|upgrade|status|logs|down|preflight-root|preflight|admin|infra-status|infra-down|infra-reset|compose>`
-- Split Compose templates:
-  `compose.postgresql.yaml`, `compose.redis.yaml`,
-  `compose.external-split-services.yaml`
-- Split env templates:
-  `deploy/postgresql.env.example`, `deploy/redis.env.example`,
-  `deploy/production.split.env.example`
-- Combined infra:
-  `compose.infra.yaml`, `compose.external-services.yaml`,
-  `deploy/infra.env.example`, `deploy/production.combined.env.example`
+- Deploy mode: `PASTEBOX_DEPLOY_MODE=split` only.
+- Wrapper: `./deploy/pastebox-deploy.sh <up|upgrade|status|logs|down|preflight-root|preflight|admin|compose>`
+- Compose templates: `compose.production.yaml`,
+  `compose.external-split-services.yaml`, `compose.nginx-host.example.yaml`,
+  `compose.postgresql.yaml`, and `compose.redis.yaml`.
+- Env templates: `deploy/postgresql.env.example`, `deploy/redis.env.example`,
+  and `deploy/production.split.env.example`.
 - Tutorial: `docs/postgresql-redis-deployment.zh-CN.md`
 - Readiness gate: `scripts/check-production-readiness.sh`
 
 ### 3. Contracts
 
-- `split` runs PostgreSQL and Redis as two independent Compose projects
-  (`name: postgresql` / `name: redis`) with two Docker networks
-  (`postgresql-net` subnet `172.30.0.0/24`, `redis-net` subnet
-  `172.31.0.0/24`). Service aliases remain `postgresql` and `redis`.
-- PasteBox DSN stays hostname-only and password-free:
+- PostgreSQL and Redis run as independent Compose projects (`postgresql` and
+  `redis`) on networks `postgresql-net` (`172.30.0.0/24`) and `redis-net`
+  (`172.31.0.0/24`); service aliases remain `postgresql` and `redis`.
+- PasteBox DSN is hostname-only and password-free:
   `postgres://pastebox@postgresql:5432/pastebox?sslmode=disable` plus
   `PASTEBOX_POSTGRES_PASSWORD`. Redis is `redis:6379`.
-- `compose.external-split-services.yaml` joins api/worker/migrate/preflight to
-  both external networks, moves builtin postgres/redis/backup-volume-init to the
-  `integrated-infra` profile, and sets backup job `PGHOST=postgresql`.
-- Split-mode path overrides (required when templates live outside the repo root,
-  as in `/opt/postgresql` and `/opt/redis`):
-  - `PASTEBOX_POSTGRESQL_COMPOSE_FILE` (default `compose.postgresql.yaml`)
-  - `PASTEBOX_POSTGRESQL_ENV_FILE` (default `deploy/postgresql.env`)
-  - `PASTEBOX_REDIS_COMPOSE_FILE` (default `compose.redis.yaml`)
-  - `PASTEBOX_REDIS_ENV_FILE` (default `deploy/redis.env`)
-- Tutorial stores those exports in `/opt/pastebox/pastebox.env`. Every
-  `pastebox-deploy.sh` invocation, including cron, must source that file first.
-- Independent-directory PostgreSQL compose binds `./pg_hba.conf` (copied next to
-  that project's `compose.yaml`). Combined infra still binds
-  `./deploy/postgres/pg_hba.conf`.
-- Host nginx still binds api to `127.0.0.1:18080`. Object storage continues to
-  use `extra_hosts: "<s3o-domain>:host-gateway"`.
-- `combined` (one project, one network) and `integrated` (PasteBox-owned
-  postgres/redis) must keep working. Do not replace those files with split-only
-  templates.
-- `scripts/check-production-readiness.sh` must render both split templates and
-  the production + split + nginx-host combo, assert api/worker/migrate exist, and
-  fail if postgres/redis/backup-volume-init appear without `integrated-infra`.
-- Rendering `compose.production.yaml` requires `PASTEBOX_ENV_FILE` pointing at a
-  file that exists (example files in CI). The Compose `env_file` default
-  `deploy/production.env` is not committed.
+- `compose.external-split-services.yaml` connects PasteBox and maintenance
+  services to the existing infrastructure networks. The PasteBox project does
+  not define or manage PostgreSQL or Redis services.
+- External env paths are configurable through `PASTEBOX_POSTGRESQL_ENV_FILE`
+  and `PASTEBOX_REDIS_ENV_FILE`. The tutorial stores them in
+  `/opt/pastebox/pastebox.env`; source that file before each deploy-script or
+  cron invocation.
+- Independent-directory PostgreSQL Compose binds `./pg_hba.conf` next to its
+  `compose.yaml`. Host Nginx binds the API to `127.0.0.1:18080`; object storage
+  uses `extra_hosts: "<s3o-domain>:host-gateway"`.
+- `deploy/pastebox-deploy.sh` manages only PasteBox application services; the
+  administrator starts and stops PostgreSQL and Redis separately.
+- `scripts/check-production-readiness.sh` renders the standalone infrastructure
+  templates and the production + split + nginx-host stack, asserting application
+  services are present and database services are absent from the PasteBox project.
+- Production Compose requires `PASTEBOX_ENV_FILE` to reference an existing env
+  file. The real `deploy/production.env` is not committed.
 
 ### 4. Validation & Error Matrix
 
-- `PASTEBOX_DEPLOY_MODE` is not `combined|split|integrated` -> script dies.
-- `split` missing any of the four compose/env files -> `缺少文件`.
-- `PASTEBOX_DATABASE_URL` is not `postgres://pastebox@postgresql:5432/pastebox*`
-  in combined or split init -> script dies.
-- `PASTEBOX_POSTGRES_PASSWORD` empty or contains a single quote -> script dies.
-- Combined or split PostgreSQL not ready within 120s -> script dies with a
-  mode-specific readiness error.
-- Split compose render includes postgres/redis/backup-volume-init without
-  `integrated-infra` -> readiness script exits 1.
-- `docker compose -f compose.production.yaml config` without
-  `PASTEBOX_ENV_FILE` when `deploy/production.env` is absent -> compose fails
-  looking up the default env_file.
-- Shell that forgot `/opt/pastebox/pastebox.env` -> deploy script stays in
-  default `combined` mode and loads `compose.external-services.yaml` instead of
-  the two-network override.
+- `PASTEBOX_DEPLOY_MODE` is not `split` -> the deploy script exits with an error.
+- Any configured Compose or env path is missing -> the deploy script reports
+  `缺少文件`.
+- `PASTEBOX_DATABASE_URL` does not use the `postgresql` service alias or includes
+  a password -> production preflight fails.
+- The rendered PasteBox stack includes PostgreSQL or Redis services -> the
+  readiness check fails.
+- Missing `/opt/pastebox/pastebox.env` path exports -> Compose cannot load the
+  standalone PostgreSQL/Redis env files or networks.
 
 ### 5. Good/Base/Bad Cases
 
-- Good: Copy templates to `/opt/postgresql` and `/opt/redis`, source
-  `pastebox.env`, run `init` then `up`; api joins both networks and reaches
-  aliases `postgresql:5432` / `redis:6379`.
-- Base: Existing `combined` infra and `integrated` modes still init/up
-  without the new env vars.
-- Bad: Putting the password in `PASTEBOX_DATABASE_URL`, pointing the DSN at
-  `127.0.0.1` or service name `postgres`, or probing PostgreSQL 5432 with HTTP
-  `wget`.
+- Good: Start PostgreSQL and Redis from their independent projects, source
+  `pastebox.env`, then run PasteBox `up`; the app reaches `postgresql:5432` and
+  `redis:6379` over the external networks.
+- Base: PostgreSQL and Redis survive PasteBox upgrades and `down` because they
+  are managed independently.
+- Bad: Put the password in `PASTEBOX_DATABASE_URL`, use `127.0.0.1` or the
+  service name `postgres`, or probe PostgreSQL with HTTP.
 
 ### 6. Tests Required
 
-- `sh -n deploy/pastebox-deploy.sh`
-- `docker compose --env-file deploy/postgresql.env.example -f compose.postgresql.yaml config`
-- `docker compose --env-file deploy/redis.env.example -f compose.redis.yaml config`
-- `PASTEBOX_ENV_FILE=./deploy/production.split.env.example docker compose --env-file deploy/postgresql.env.example --env-file deploy/redis.env.example --env-file deploy/production.split.env.example -f compose.production.yaml -f compose.external-split-services.yaml --profile maintenance config --services` must list api/worker/migrate and must not list postgres/redis/backup-volume-init.
-- Same combo plus `-f compose.nginx-host.example.yaml` must render.
-- Combined infra combo (`compose.infra.yaml` + `compose.external-services.yaml` +
-  `deploy/production.combined.env.example`) must still render.
-- Tutorial commands must match the env var names and file paths above.
+- `sh -n deploy/pastebox-deploy.sh` and all `deploy/backup/*.sh` scripts.
+- Render `compose.postgresql.yaml` and `compose.redis.yaml` with their env
+  templates.
+- Render production + split + nginx-host Compose with all three env templates;
+  assert `api`, `worker`, and `migrate` exist and PostgreSQL/Redis services do
+  not.
+- Keep tutorial commands aligned with the env variable names and file paths.
+- Run `make production-readiness` after changes to deployment templates or
+  readiness checks.
 
 ### 7. Wrong vs Correct
 
@@ -504,29 +470,14 @@ make production-readiness
 ```sh
 PASTEBOX_DATABASE_URL=postgres://pastebox:secret@127.0.0.1:5432/pastebox?sslmode=disable
 ./deploy/pastebox-deploy.sh up
-# password in the URL, host is loopback, default mode never joins split networks
+# password in the URL and host is loopback, not the shared Docker network
 ```
 
 #### Correct
 
 ```sh
 . /opt/pastebox/pastebox.env
-# PASTEBOX_DEPLOY_MODE=split and the four path overrides
 # PASTEBOX_DATABASE_URL=postgres://pastebox@postgresql:5432/pastebox?sslmode=disable
 # PASTEBOX_POSTGRES_PASSWORD is injected separately
 ./deploy/pastebox-deploy.sh up
-```
-
-#### Wrong
-
-```sh
-docker exec "$api" wget -qO- http://postgresql:5432
-# HTTP probe against a PostgreSQL port
-```
-
-#### Correct
-
-```sh
-docker exec "$api" nc -zv postgresql 5432
-docker exec "$api" nc -zv redis 6379
 ```
