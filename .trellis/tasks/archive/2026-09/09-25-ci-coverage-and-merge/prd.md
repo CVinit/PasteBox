@@ -27,11 +27,11 @@
 
 ## Acceptance Criteria
 
-- [ ] 新增的测试覆盖此前未覆盖的实际代码路径。
-- [ ] `make test-coverage` 通过，汇总语句覆盖率不低于 75%。
-- [ ] GitHub Actions PR 检查通过。
-- [ ] PR #2 已在远程合并到 `main`，并核实远程提交 SHA。
-- [ ] 未跟踪文件保持未提交。
+- [x] 新增的测试覆盖此前未覆盖的实际代码路径。
+- [x] `make test-coverage` 通过，汇总语句覆盖率不低于 75%。
+- [x] GitHub Actions PR 检查通过。
+- [x] PR #2 已在远程合并到 `main`，并核实远程提交 SHA。
+- [x] 未跟踪文件保持未提交。
 
 ## Definition of Done
 
