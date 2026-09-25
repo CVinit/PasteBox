@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "核对 Go 测试与质量门禁要求"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "核对 PostgreSQL 集成测试规范"}

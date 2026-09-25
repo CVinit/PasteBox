@@ -114,6 +114,20 @@ func TestContentMetadataStoresRoundTripPasteAttachmentObjectAndShare(t *testing.
 	if len(pastes) != 1 || pastes[0].ID != pasteID {
 		t.Fatalf("expected one paste for user, got %#v", pastes)
 	}
+	allPastes, err := pasteStore.ListPastes(ctx)
+	if err != nil {
+		t.Fatalf("list all pastes: %v", err)
+	}
+	foundPaste := false
+	for _, listedPaste := range allPastes {
+		if listedPaste.ID == pasteID && listedPaste.Status == "pending_delete" {
+			foundPaste = true
+			break
+		}
+	}
+	if !foundPaste {
+		t.Fatalf("expected updated paste in global listing, got %#v", allPastes)
+	}
 	if _, err := pasteStore.PasteByID(ctx, "pst_content_metadata_missing"); !errors.Is(err, ErrPasteNotFound) {
 		t.Fatalf("expected missing paste error, got %v", err)
 	}
@@ -240,6 +254,20 @@ func TestContentMetadataStoresRoundTripPasteAttachmentObjectAndShare(t *testing.
 	if len(attachments) != 1 || attachments[0].Status != "frozen" || attachments[0].Risk != "signature" || attachments[0].DownloadN != 3 {
 		t.Fatalf("unexpected attachments: %#v", attachments)
 	}
+	allAttachments, err := attachmentStore.ListAttachments(ctx)
+	if err != nil {
+		t.Fatalf("list all attachments: %v", err)
+	}
+	foundAttachment := false
+	for _, listedAttachment := range allAttachments {
+		if listedAttachment.ID == attachmentID && listedAttachment.Status == "frozen" && listedAttachment.Risk == "signature" {
+			foundAttachment = true
+			break
+		}
+	}
+	if !foundAttachment {
+		t.Fatalf("expected updated attachment in global listing, got %#v", allAttachments)
+	}
 	loadedShare, err := shareStore.ShareByTokenHash(ctx, tokenHash)
 	if err != nil {
 		t.Fatalf("read share by token hash: %v", err)
@@ -265,6 +293,20 @@ func TestContentMetadataStoresRoundTripPasteAttachmentObjectAndShare(t *testing.
 	if len(shares) != 1 || shares[0].DownloadCount != 1 || shares[0].RevokedAt == nil || shares[0].LastAccessFailure == nil {
 		t.Fatalf("unexpected shares: %#v", shares)
 	}
+	allShares, err := shareStore.ListShares(ctx)
+	if err != nil {
+		t.Fatalf("list all shares: %v", err)
+	}
+	foundShare := false
+	for _, listedShare := range allShares {
+		if listedShare.ID == shareID && listedShare.DownloadCount == 1 && listedShare.RevokedAt != nil && listedShare.LastAccessFailure != nil {
+			foundShare = true
+			break
+		}
+	}
+	if !foundShare {
+		t.Fatalf("expected updated share in global listing, got %#v", allShares)
+	}
 	duplicate := share
 	duplicate.ID = "shr_content_metadata_duplicate"
 	if err := shareStore.CreateShare(ctx, duplicate); !errors.Is(err, ErrShareTokenExists) {
@@ -272,6 +314,12 @@ func TestContentMetadataStoresRoundTripPasteAttachmentObjectAndShare(t *testing.
 	}
 	if _, err := shareStore.ShareByID(ctx, "shr_content_metadata_missing"); !errors.Is(err, ErrShareNotFound) {
 		t.Fatalf("expected missing share error, got %v", err)
+	}
+	if err := attachmentStore.DeleteAttachment(ctx, attachmentID); err != nil {
+		t.Fatalf("delete attachment: %v", err)
+	}
+	if err := attachmentStore.DeleteAttachment(ctx, "att_content_metadata_missing"); !errors.Is(err, ErrAttachmentNotFound) {
+		t.Fatalf("expected missing attachment error, got %v", err)
 	}
 }
 
