@@ -189,7 +189,7 @@ section "Provider smoke runbook"
 run node scripts/check-provider-smoke-runbook.mjs
 
 section "PostgreSQL integration tests"
-run make test-postgres
+run make test-coverage
 
 section "Project build"
 run make build

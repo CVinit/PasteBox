@@ -155,6 +155,7 @@ type ManagedConfigView struct {
 }
 
 type ManagedConfigUpdate struct {
+	Fields  []string             `json:"fields,omitempty"`
 	Config  config.ManagedConfig `json:"config"`
 	Secrets ManagedSecretPatch   `json:"secrets"`
 }
@@ -765,6 +766,8 @@ func (s *Service) loadRuntimeConfig(ctx context.Context) error {
 }
 
 func (s *Service) RefreshRuntimeConfig(ctx context.Context) (RuntimeConfig, error) {
+	s.configWriteMu.Lock()
+	defer s.configWriteMu.Unlock()
 	s.mu.Lock()
 	store := s.runtime
 	current := cloneRuntimeConfig(s.runtimeConfig)
@@ -801,6 +804,8 @@ func (s *Service) RefreshRuntimeConfig(ctx context.Context) (RuntimeConfig, erro
 }
 
 func (s *Service) SetRuntimeConfigChangeHook(hook RuntimeConfigChangeHook) error {
+	s.configWriteMu.Lock()
+	defer s.configWriteMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cfg := cloneRuntimeConfig(s.runtimeConfig)
@@ -980,30 +985,73 @@ func normalizeRuntimeConfig(cfg RuntimeConfig, env config.Config) RuntimeConfig 
 	return cloneRuntimeConfig(cfg)
 }
 
-func (s *Service) AdminRuntimeConfig(actorID string) (RuntimeConfig, error) {
+func (s *Service) AdminRuntimeConfigWithContext(ctx context.Context, actorID string) (RuntimeConfig, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.requireAdminLocked(actorID); err != nil {
+	if err := s.requireAdminLocked(ctx, actorID); err != nil {
 		return RuntimeConfig{}, err
 	}
 	s.runtimeConfig.ProviderStatus = providerStatusFromConfig(s.cfg, providerTestStatuses(s.runtimeConfig.ProviderStatus))
 	return cloneRuntimeConfig(s.runtimeConfig), nil
 }
 
-func (s *Service) AdminManagedConfig(actorID string) (ManagedConfigView, error) {
+func (s *Service) AdminManagedConfigWithContext(ctx context.Context, actorID string) (ManagedConfigView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.requireAdminLocked(actorID); err != nil {
+	if err := s.requireAdminLocked(ctx, actorID); err != nil {
 		return ManagedConfigView{}, err
 	}
 	return s.managedConfigViewLocked(), nil
 }
 
-func (s *Service) AdminUpdateManagedConfig(actorID string, update ManagedConfigUpdate) (ManagedConfigView, error) {
+func (s *Service) AdminUpdateManagedConfigWithContext(ctx context.Context, actorID string, update ManagedConfigUpdate) (ManagedConfigView, error) {
+	s.configWriteMu.Lock()
+	defer s.configWriteMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.requireAdminLocked(actorID); err != nil {
+	if err := s.requireAdminLocked(ctx, actorID); err != nil {
 		return ManagedConfigView{}, err
+	}
+
+	if len(update.Fields) > 0 {
+		merged := cloneRuntimeConfig(s.runtimeConfig).Managed
+		for _, field := range update.Fields {
+			switch field {
+			case "site":
+				merged.Site = update.Config.Site
+			case "workerHeartbeatMaxAgeSeconds":
+				merged.WorkerHeartbeatMaxAgeSeconds = update.Config.WorkerHeartbeatMaxAgeSeconds
+			case "s3":
+				merged.S3 = update.Config.S3
+			case "scanner":
+				merged.Scanner = update.Config.Scanner
+			case "googleOAuth":
+				merged.GoogleOAuth = update.Config.GoogleOAuth
+			case "githubOAuth":
+				merged.GitHubOAuth = update.Config.GitHubOAuth
+			case "turnstile":
+				merged.Turnstile = update.Config.Turnstile
+			case "telegram":
+				merged.Telegram = update.Config.Telegram
+			case "mailerProvider":
+				merged.MailerProvider = update.Config.MailerProvider
+			case "smtp":
+				merged.SMTP = update.Config.SMTP
+			case "devAuthTokens":
+				merged.DevAuthTokens = update.Config.DevAuthTokens
+			case "stripeEnabled":
+				merged.StripeEnabled = update.Config.StripeEnabled
+			case "epusdtEnabled":
+				merged.EpusdtEnabled = update.Config.EpusdtEnabled
+			case "stripe":
+				merged.Stripe = update.Config.Stripe
+			case "epusdt":
+				merged.Epusdt = update.Config.Epusdt
+			default:
+				return ManagedConfigView{}, E(http.StatusBadRequest, "invalid_managed_config_field", "unknown application configuration field")
+			}
+		}
+		update.Config = merged
 	}
 	managed, err := normalizeManagedConfig(update.Config, s.rootConfig.AppEnv)
 	if err != nil {
@@ -1024,7 +1072,7 @@ func (s *Service) AdminUpdateManagedConfig(actorID string, update ManagedConfigU
 		ID: s.newID("aud"), ActorID: actorID, Action: "admin.managed_config_update", Target: runtimeConfigID,
 		Metadata: managedConfigAuditMetadata(managed, secrets), CreatedAt: next.UpdatedAt,
 	}
-	if err := s.commitRuntimeConfigLocked(next, secrets, audit, true); err != nil {
+	if err := s.commitRuntimeConfigLocked(ctx, next, secrets, audit, true); err != nil {
 		return ManagedConfigView{}, err
 	}
 	return s.managedConfigViewLocked(), nil
@@ -1285,14 +1333,16 @@ func managedConfigAuditMetadata(managed config.ManagedConfig, secrets config.Man
 	}
 }
 
-func (s *Service) AdminUpdateRuntimeConfig(actorID string, patch RuntimeConfigPatch) (RuntimeConfig, error) {
+func (s *Service) AdminUpdateRuntimeConfigWithContext(ctx context.Context, actorID string, patch RuntimeConfigPatch) (RuntimeConfig, error) {
+	s.configWriteMu.Lock()
+	defer s.configWriteMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.adminUpdateRuntimeConfigLocked(actorID, patch)
+	return s.adminUpdateRuntimeConfigLocked(ctx, actorID, patch)
 }
 
-func (s *Service) adminUpdateRuntimeConfigLocked(actorID string, patch RuntimeConfigPatch) (RuntimeConfig, error) {
-	if err := s.requireAdminLocked(actorID); err != nil {
+func (s *Service) adminUpdateRuntimeConfigLocked(ctx context.Context, actorID string, patch RuntimeConfigPatch) (RuntimeConfig, error) {
+	if err := s.requireAdminLocked(ctx, actorID); err != nil {
 		return RuntimeConfig{}, err
 	}
 	next := cloneRuntimeConfig(s.runtimeConfig)
@@ -1322,7 +1372,7 @@ func (s *Service) adminUpdateRuntimeConfigLocked(actorID string, patch RuntimeCo
 		ID: s.newID("aud"), ActorID: actorID, Action: "admin.runtime_config_update", Target: runtimeConfigID,
 		Metadata: runtimeConfigAuditMetadata(next), CreatedAt: next.UpdatedAt,
 	}
-	if err := s.commitRuntimeConfigLocked(next, s.managedSecrets, audit, true); err != nil {
+	if err := s.commitRuntimeConfigLocked(ctx, next, s.managedSecrets, audit, true); err != nil {
 		return RuntimeConfig{}, err
 	}
 	return cloneRuntimeConfig(s.runtimeConfig), nil
@@ -1475,7 +1525,7 @@ func runtimeConfigAuditMetadata(cfg RuntimeConfig) map[string]any {
 	}
 }
 
-func (s *Service) commitRuntimeConfigLocked(cfg RuntimeConfig, secrets config.ManagedSecrets, audit AuditLog, applyHook bool) error {
+func (s *Service) commitRuntimeConfigLocked(ctx context.Context, cfg RuntimeConfig, secrets config.ManagedSecrets, audit AuditLog, applyHook bool) error {
 	prepared, effective := s.prepareRuntimeConfigLocked(cfg, secrets)
 	if s.runtime != nil && s.audit != nil {
 		if _, ok := s.runtime.(RuntimeConfigAuditStore); !ok {
@@ -1495,8 +1545,8 @@ func (s *Service) commitRuntimeConfigLocked(cfg RuntimeConfig, secrets config.Ma
 		hookApplied = true
 	}
 
-	ctx := context.Background()
 	var err error
+	s.mu.Unlock()
 	switch {
 	case s.runtime != nil && s.audit != nil:
 		err = s.runtime.(RuntimeConfigAuditStore).SaveRuntimeConfigWithAudit(ctx, prepared, secrets, audit)
@@ -1505,6 +1555,7 @@ func (s *Service) commitRuntimeConfigLocked(cfg RuntimeConfig, secrets config.Ma
 	case s.audit != nil:
 		err = s.audit.RecordAuditLog(ctx, audit)
 	}
+	s.mu.Lock()
 	if err != nil {
 		if hookApplied {
 			rollbackErr := hook(oldRuntime, oldEffective)
@@ -1518,10 +1569,12 @@ func (s *Service) commitRuntimeConfigLocked(cfg RuntimeConfig, secrets config.Ma
 	return nil
 }
 
-func (s *Service) AdminUpdateCatalog(actorID string, update AdminPlanUpdate) (plans.Catalog, error) {
+func (s *Service) AdminUpdateCatalogWithContext(ctx context.Context, actorID string, update AdminPlanUpdate) (plans.Catalog, error) {
+	s.configWriteMu.Lock()
+	defer s.configWriteMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.requireAdminLocked(actorID); err != nil {
+	if err := s.requireAdminLocked(ctx, actorID); err != nil {
 		return plans.Catalog{}, err
 	}
 	catalog, err := validateCatalogUpdate(update)
@@ -1530,15 +1583,20 @@ func (s *Service) AdminUpdateCatalog(actorID string, update AdminPlanUpdate) (pl
 	}
 	originalCatalog := cloneCatalog(s.catalog)
 	if writer, ok := s.catalogWriter(); ok {
-		if err := writer.SaveCatalog(context.Background(), catalog); err != nil {
+		s.mu.Unlock()
+		err := writer.SaveCatalog(ctx, catalog)
+		s.mu.Lock()
+		if err != nil {
 			return plans.Catalog{}, err
 		}
 	}
 	s.catalog = cloneCatalog(catalog)
-	if err := s.auditLocked(actorID, "admin.catalog_update", "plans", map[string]any{"plans": len(catalog.Plans), "prices": len(catalog.Prices)}); err != nil {
+	if err := s.auditLocked(ctx, actorID, "admin.catalog_update", "plans", map[string]any{"plans": len(catalog.Plans), "prices": len(catalog.Prices)}); err != nil {
 		var rollbackErr error
 		if writer, ok := s.catalogWriter(); ok {
-			rollbackErr = writer.SaveCatalog(context.Background(), originalCatalog)
+			s.mu.Unlock()
+			rollbackErr = writer.SaveCatalog(ctx, originalCatalog)
+			s.mu.Lock()
 		}
 		s.catalog = originalCatalog
 		return plans.Catalog{}, errors.Join(err, rollbackErr)
@@ -1602,10 +1660,12 @@ func validateCatalogUpdate(update AdminPlanUpdate) (plans.Catalog, error) {
 	return plans.Catalog{Plans: append([]plans.Plan(nil), update.Plans...), Prices: append([]plans.Price(nil), update.Prices...)}, nil
 }
 
-func (s *Service) AdminProviderTest(actorID string, provider string) (RuntimeConfig, error) {
+func (s *Service) AdminProviderTestWithContext(ctx context.Context, actorID string, provider string) (RuntimeConfig, error) {
+	s.configWriteMu.Lock()
+	defer s.configWriteMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.requireAdminLocked(actorID); err != nil {
+	if err := s.requireAdminLocked(ctx, actorID); err != nil {
 		return RuntimeConfig{}, err
 	}
 	provider = normalizeProvider(provider)
@@ -1632,7 +1692,11 @@ func (s *Service) AdminProviderTest(actorID string, provider string) (RuntimeCon
 		if strings.TrimSpace(s.cfg.Telegram.BotToken) == "" || strings.TrimSpace(s.cfg.Telegram.ChatID) == "" {
 			status = "missing_telegram_config"
 		} else if s.alertSender != nil {
-			if err := s.alertSender.SendAlert(context.Background(), "PasteBox Telegram provider test", true); err != nil {
+			sender := s.alertSender
+			s.mu.Unlock()
+			err := sender.SendAlert(ctx, "PasteBox Telegram provider test", true)
+			s.mu.Lock()
+			if err != nil {
 				status = "send_failed"
 			}
 		}
@@ -1657,19 +1721,19 @@ func (s *Service) AdminProviderTest(actorID string, provider string) (RuntimeCon
 		ID: s.newID("aud"), ActorID: actorID, Action: "admin.provider_test", Target: provider,
 		Metadata: map[string]any{"status": status}, CreatedAt: next.UpdatedAt,
 	}
-	if err := s.commitRuntimeConfigLocked(next, s.managedSecrets, audit, false); err != nil {
+	if err := s.commitRuntimeConfigLocked(ctx, next, s.managedSecrets, audit, false); err != nil {
 		return RuntimeConfig{}, err
 	}
 	return cloneRuntimeConfig(s.runtimeConfig), nil
 }
 
-func (s *Service) AdminRuntimePanel(actorID string) (RuntimePanel, error) {
+func (s *Service) AdminRuntimePanelWithContext(ctx context.Context, actorID string) (RuntimePanel, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.requireAdminLocked(actorID); err != nil {
+	if err := s.requireAdminLocked(ctx, actorID); err != nil {
 		return RuntimePanel{}, err
 	}
-	ops, err := s.operationalMetricsLocked(context.Background())
+	ops, err := s.operationalMetricsLocked(ctx)
 	if err != nil {
 		return RuntimePanel{}, err
 	}
@@ -1694,13 +1758,13 @@ func (s *Service) objectStorageUsageLocked() (int64, int) {
 	return total, len(objects)
 }
 
-func (s *Service) AdminManualWorkItems(actorID string) ([]ManualWorkItem, error) {
+func (s *Service) AdminManualWorkItemsWithContext(ctx context.Context, actorID string) ([]ManualWorkItem, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.requireAdminLocked(actorID); err != nil {
+	if err := s.requireAdminLocked(ctx, actorID); err != nil {
 		return nil, err
 	}
-	if err := s.refreshQueueCachesLocked(context.Background()); err != nil {
+	if err := s.refreshQueueCachesLocked(ctx); err != nil {
 		return nil, err
 	}
 	items := []ManualWorkItem{}
@@ -1730,7 +1794,7 @@ func (s *Service) AdminManualWorkItems(actorID string) ([]ManualWorkItem, error)
 		}
 		items = append(items, ManualWorkItem{ID: job.ID, Kind: "scan_failure", TargetID: job.TargetID, Status: job.Status, Risk: job.Error, Summary: job.Kind, CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt})
 	}
-	failedMails, err := s.mailQueueItemsLocked(context.Background(), "failed", 100)
+	failedMails, err := s.mailQueueItemsLocked(ctx, "failed", 100)
 	if err != nil {
 		return nil, err
 	}
@@ -1757,7 +1821,7 @@ func sortManualWorkItems(items []ManualWorkItem) {
 	})
 }
 
-func (s *Service) CreateGuestPaste(input GuestCreatePasteInput) (string, PasteView, error) {
+func (s *Service) CreateGuestPasteWithContext(ctx context.Context, input GuestCreatePasteInput) (string, PasteView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cfg := s.runtimeConfig.GuestUploads
@@ -1765,7 +1829,7 @@ func (s *Service) CreateGuestPaste(input GuestCreatePasteInput) (string, PasteVi
 		return "", PasteView{}, E(http.StatusForbidden, "guest_uploads_disabled", "guest uploads are disabled")
 	}
 	if cfg.RequireTurnstile {
-		if err := s.verifyTurnstileLocked(context.Background(), input.TurnstileToken, input.RemoteIP); err != nil {
+		if err := s.verifyTurnstileLocked(ctx, input.TurnstileToken, input.RemoteIP); err != nil {
 			return "", PasteView{}, err
 		}
 	}
@@ -1773,13 +1837,13 @@ func (s *Service) CreateGuestPaste(input GuestCreatePasteInput) (string, PasteVi
 	if token == "" {
 		token = newToken()
 	}
-	user, err := s.guestUserForTokenLocked(token)
+	user, err := s.guestUserForTokenLocked(ctx, token)
 	if err != nil {
 		return "", PasteView{}, err
 	}
 	plan := guestPlan(cfg)
 	tags := normalizeTags(input.Tags)
-	if err := s.ensureCanCreatePasteLocked(user, plan, PasteInput{Title: input.Title, Text: input.Text, Tags: tags, ExpiresInSeconds: input.ExpiresInSeconds}, 0, 0); err != nil {
+	if err := s.ensureCanCreatePasteLocked(ctx, user, plan, PasteInput{Title: input.Title, Text: input.Text, Tags: tags, ExpiresInSeconds: input.ExpiresInSeconds}, 0, 0); err != nil {
 		return "", PasteView{}, err
 	}
 	now := s.now().UTC()
@@ -1801,27 +1865,34 @@ func (s *Service) CreateGuestPaste(input GuestCreatePasteInput) (string, PasteVi
 	}
 	if textBytes := int64(len([]byte(paste.Text))); textBytes > 0 {
 		if tx, ok := s.transactions.(PasteDailyMetricTransactionStore); ok {
-			if err := tx.CreatePasteWithDailyMetric(context.Background(), *paste, now, textBytes); err != nil {
+			s.mu.Unlock()
+			err := tx.CreatePasteWithDailyMetric(ctx, *paste, now, textBytes)
+			s.mu.Lock()
+			if err != nil {
 				return "", PasteView{}, err
 			}
 			s.cachePasteLocked(*paste)
 			return token, s.viewPasteLocked(paste), nil
 		}
-		if err := s.recordDailyUploadLocked(user.ID, textBytes); err != nil {
+		if err := s.recordDailyUploadLocked(ctx, user.ID, textBytes); err != nil {
 			return "", PasteView{}, err
 		}
 	}
-	if err := s.createPasteLocked(paste); err != nil {
+	if err := s.createPasteLocked(ctx, paste); err != nil {
 		return "", PasteView{}, err
 	}
 	return token, s.viewPasteLocked(paste), nil
 }
 
-func (s *Service) AddGuestAttachment(token string, pasteID string, fileName string, contentType string, content []byte, turnstileToken string, remoteIP string) (AttachmentView, error) {
-	return s.AddGuestAttachmentStream(token, pasteID, fileName, contentType, bytes.NewReader(content), turnstileToken, remoteIP)
+func (s *Service) AddGuestAttachmentWithContext(ctx context.Context, token string, pasteID string, fileName string, contentType string, content []byte, turnstileToken string, remoteIP string) (AttachmentView, error) {
+	return s.AddGuestAttachmentStreamWithContext(ctx, token, pasteID, fileName, contentType, bytes.NewReader(content), turnstileToken, remoteIP)
 }
 
-func (s *Service) CreateGuestShare(token string, pasteID string, input ShareInput) (ShareView, error) {
+func (s *Service) CreateGuestShareWithContext(ctx context.Context, token string, pasteID string, input ShareInput) (ShareView, error) {
+	passwordHash, err := hashSharePassword(input.Password)
+	if err != nil {
+		return ShareView{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cfg := s.runtimeConfig.GuestUploads
@@ -1831,18 +1902,18 @@ func (s *Service) CreateGuestShare(token string, pasteID string, input ShareInpu
 	if input.LoginRequired {
 		return ShareView{}, E(http.StatusBadRequest, "guest_share_login_required", "guest shares cannot require login")
 	}
-	user, err := s.guestUserForTokenLocked(strings.TrimSpace(token))
+	user, err := s.guestUserForTokenLocked(ctx, strings.TrimSpace(token))
 	if err != nil {
 		return ShareView{}, err
 	}
-	paste, err := s.pasteByIDLocked(pasteID)
+	paste, err := s.pasteByIDLocked(ctx, pasteID)
 	if err != nil || paste.UserID != user.ID {
 		return ShareView{}, E(http.StatusNotFound, "paste_not_found", "paste not found")
 	}
 	if !s.isPasteVisibleLocked(paste) {
 		return ShareView{}, E(http.StatusGone, "paste_expired", "paste has expired")
 	}
-	return s.createShareForPasteLocked(user.ID, paste, input)
+	return s.createShareForPasteLocked(ctx, user.ID, paste, input, passwordHash)
 }
 
 func guestPlan(cfg GuestUploadConfig) plans.Plan {
@@ -1862,13 +1933,13 @@ func guestPlan(cfg GuestUploadConfig) plans.Plan {
 	}
 }
 
-func (s *Service) guestUserForTokenLocked(token string) (*User, error) {
+func (s *Service) guestUserForTokenLocked(ctx context.Context, token string) (*User, error) {
 	if strings.TrimSpace(token) == "" {
 		return nil, E(http.StatusUnauthorized, "guest_token_required", "guest token is required")
 	}
 	hash := tokenHash(token)
 	email := "guest+" + hash[:16] + "@" + guestEmailDomain
-	if user, err := s.userByEmailLocked(email); err == nil {
+	if user, err := s.userByEmailLocked(ctx, email); err == nil {
 		return user, nil
 	} else if !isStoreNotFound(err) && !isAppStatus(err, http.StatusNotFound) {
 		return nil, err
@@ -1890,7 +1961,7 @@ func (s *Service) guestUserForTokenLocked(token string) (*User, error) {
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
-	if err := s.createUserLocked(user); err != nil {
+	if err := s.createUserLocked(ctx, user); err != nil {
 		return nil, err
 	}
 	return user, nil
@@ -1910,13 +1981,15 @@ func (s *Service) verifyTurnstileLocked(ctx context.Context, token string, remot
 	if s.turnstileVerifier == nil {
 		return E(http.StatusServiceUnavailable, "turnstile_not_configured", "Turnstile verifier is not configured")
 	}
+	verifier := s.turnstileVerifier
+	s.turnstileTokenHashes[hash] = now
 	s.mu.Unlock()
-	err := s.turnstileVerifier.Verify(ctx, token, remoteIP)
+	err := verifier.Verify(ctx, token, remoteIP)
 	s.mu.Lock()
 	if err != nil {
+		delete(s.turnstileTokenHashes, hash)
 		return err
 	}
-	s.turnstileTokenHashes[hash] = now
 	return nil
 }
 
@@ -2028,7 +2101,7 @@ func (s *Service) EvaluateRuntimeAlerts(ctx context.Context) ([]AlertEvent, erro
 		} else {
 			event.Status = "suppressed"
 		}
-		if err := s.saveAlertEventLocked(event); err != nil {
+		if err := s.saveAlertEventLocked(ctx, event); err != nil {
 			s.mu.Unlock()
 			return nil, err
 		}
@@ -2087,17 +2160,25 @@ func (s *Service) alertInCooldownLocked(fingerprint string, now time.Time, coold
 	return false
 }
 
-func (s *Service) saveAlertEventLocked(event AlertEvent) error {
+func (s *Service) saveAlertEventLocked(ctx context.Context, event AlertEvent) error {
 	if event.UpdatedAt.IsZero() {
 		event.UpdatedAt = s.now().UTC()
 	}
 	if s.alerts != nil {
 		if _, exists := s.alertEventByIDLocked(event.ID); exists {
-			if err := s.alerts.UpdateAlertEvent(context.Background(), event); err != nil {
+			s.mu.Unlock()
+			err := s.alerts.UpdateAlertEvent(ctx, event)
+			s.mu.Lock()
+			if err != nil {
 				return err
 			}
-		} else if err := s.alerts.CreateAlertEvent(context.Background(), event); err != nil {
-			return err
+		} else {
+			s.mu.Unlock()
+			err := s.alerts.CreateAlertEvent(ctx, event)
+			s.mu.Lock()
+			if err != nil {
+				return err
+			}
 		}
 	}
 	s.cacheAlertEventLocked(event)
@@ -2113,9 +2194,9 @@ func (s *Service) alertEventByIDLocked(id string) (*AlertEvent, bool) {
 	return nil, false
 }
 
-func (s *Service) AdminSendTestAlert(actorID string, message string) (AlertEvent, error) {
+func (s *Service) AdminSendTestAlertWithContext(ctx context.Context, actorID string, message string) (AlertEvent, error) {
 	s.mu.Lock()
-	if err := s.requireAdminLocked(actorID); err != nil {
+	if err := s.requireAdminLocked(ctx, actorID); err != nil {
 		s.mu.Unlock()
 		return AlertEvent{}, err
 	}
@@ -2132,7 +2213,7 @@ func (s *Service) AdminSendTestAlert(actorID string, message string) (AlertEvent
 	event := AlertEvent{ID: s.newID("alrt"), Fingerprint: "manual_test", Level: "info", Message: sanitizeAlertMessage(message, managedSecretValues(s.managedSecrets)...), Status: "pending", CreatedAt: now, UpdatedAt: now}
 	s.mu.Unlock()
 
-	err := sender.SendAlert(context.Background(), event.Message, cfg.Silent)
+	err := sender.SendAlert(ctx, event.Message, cfg.Silent)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err != nil {
@@ -2144,10 +2225,10 @@ func (s *Service) AdminSendTestAlert(actorID string, message string) (AlertEvent
 		event.SentAt = &sentAt
 		event.UpdatedAt = sentAt
 	}
-	if saveErr := s.saveAlertEventLocked(event); saveErr != nil {
+	if saveErr := s.saveAlertEventLocked(ctx, event); saveErr != nil {
 		return AlertEvent{}, saveErr
 	}
-	if auditErr := s.auditLocked(actorID, "admin.alert_test", event.ID, map[string]any{"status": event.Status}); auditErr != nil {
+	if auditErr := s.auditLocked(ctx, actorID, "admin.alert_test", event.ID, map[string]any{"status": event.Status}); auditErr != nil {
 		return AlertEvent{}, auditErr
 	}
 	return event, nil
@@ -2187,11 +2268,63 @@ func sanitizeAlertMessage(message string, managedSecrets ...string) string {
 	return message
 }
 
-func (s *Service) AdminAlertEvents(actorID string) ([]AlertEvent, error) {
+func (s *Service) AdminAlertEventsWithContext(ctx context.Context, actorID string) ([]AlertEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.requireAdminLocked(actorID); err != nil {
+	if err := s.requireAdminLocked(ctx, actorID); err != nil {
 		return nil, err
 	}
 	return s.alertEventsNewestLocked(100), nil
+}
+
+func (s *Service) AdminAlertEvents(actorID string) ([]AlertEvent, error) {
+	return s.AdminAlertEventsWithContext(context.Background(), actorID)
+}
+
+func (s *Service) AdminSendTestAlert(actorID string, message string) (AlertEvent, error) {
+	return s.AdminSendTestAlertWithContext(context.Background(), actorID, message)
+}
+
+func (s *Service) CreateGuestShare(token string, pasteID string, input ShareInput) (ShareView, error) {
+	return s.CreateGuestShareWithContext(context.Background(), token, pasteID, input)
+}
+
+func (s *Service) AddGuestAttachment(token string, pasteID string, fileName string, contentType string, content []byte, turnstileToken string, remoteIP string) (AttachmentView, error) {
+	return s.AddGuestAttachmentWithContext(context.Background(), token, pasteID, fileName, contentType, content, turnstileToken, remoteIP)
+}
+
+func (s *Service) CreateGuestPaste(input GuestCreatePasteInput) (string, PasteView, error) {
+	return s.CreateGuestPasteWithContext(context.Background(), input)
+}
+
+func (s *Service) AdminManualWorkItems(actorID string) ([]ManualWorkItem, error) {
+	return s.AdminManualWorkItemsWithContext(context.Background(), actorID)
+}
+
+func (s *Service) AdminRuntimePanel(actorID string) (RuntimePanel, error) {
+	return s.AdminRuntimePanelWithContext(context.Background(), actorID)
+}
+
+func (s *Service) AdminProviderTest(actorID string, provider string) (RuntimeConfig, error) {
+	return s.AdminProviderTestWithContext(context.Background(), actorID, provider)
+}
+
+func (s *Service) AdminUpdateCatalog(actorID string, update AdminPlanUpdate) (plans.Catalog, error) {
+	return s.AdminUpdateCatalogWithContext(context.Background(), actorID, update)
+}
+
+func (s *Service) AdminUpdateRuntimeConfig(actorID string, patch RuntimeConfigPatch) (RuntimeConfig, error) {
+	return s.AdminUpdateRuntimeConfigWithContext(context.Background(), actorID, patch)
+}
+
+func (s *Service) AdminUpdateManagedConfig(actorID string, update ManagedConfigUpdate) (ManagedConfigView, error) {
+	return s.AdminUpdateManagedConfigWithContext(context.Background(), actorID, update)
+}
+
+func (s *Service) AdminManagedConfig(actorID string) (ManagedConfigView, error) {
+	return s.AdminManagedConfigWithContext(context.Background(), actorID)
+}
+
+func (s *Service) AdminRuntimeConfig(actorID string) (RuntimeConfig, error) {
+	return s.AdminRuntimeConfigWithContext(context.Background(), actorID)
 }

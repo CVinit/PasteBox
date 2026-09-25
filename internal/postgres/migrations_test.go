@@ -1,10 +1,83 @@
 package postgres
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func TestIsUndefinedTableMatchesPostgreSQLErrorCode(t *testing.T) {
+	if !isUndefinedTable(&pgconn.PgError{Code: "42P01"}) {
+		t.Fatal("expected undefined-table error code to match")
+	}
+	if isUndefinedTable(&pgconn.PgError{Code: "42P02"}) || isUndefinedTable(fmt.Errorf("not a postgres error")) {
+		t.Fatal("expected unrelated errors not to match")
+	}
+}
+
+func TestMigrationStatusesReportChecksumDrift(t *testing.T) {
+	databaseURL := os.Getenv("PASTEBOX_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set PASTEBOX_TEST_DATABASE_URL to run PostgreSQL migration status integration test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := ApplyMigrations(ctx, databaseURL); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	statuses, err := MigrationStatuses(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("read migration statuses: %v", err)
+	}
+	if len(statuses) == 0 {
+		t.Fatal("expected migration statuses")
+	}
+	for _, status := range statuses {
+		if !status.Applied || status.Dirty {
+			t.Fatalf("expected clean applied migration, got %#v", status)
+		}
+	}
+
+	target := statuses[0].Migration
+	_, err = pool.Exec(ctx, `UPDATE schema_migrations SET checksum = 'drifted' WHERE version = $1`, target.Version)
+	if err != nil {
+		t.Fatalf("simulate migration checksum drift: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		if _, err := pool.Exec(cleanupCtx, `UPDATE schema_migrations SET checksum = $2 WHERE version = $1`, target.Version, target.Checksum); err != nil {
+			t.Errorf("restore migration checksum: %v", err)
+		}
+	})
+
+	statuses, err = MigrationStatuses(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("read drifted migration statuses: %v", err)
+	}
+	for _, status := range statuses {
+		if status.Migration.Version != target.Version {
+			continue
+		}
+		if status.Applied || !status.Dirty {
+			t.Fatalf("expected checksum mismatch to be dirty, got %#v", status)
+		}
+		return
+	}
+	t.Fatalf("drifted migration version %d missing from statuses", target.Version)
+}
 
 func TestLoadMigrationsIncludesInitialProductionSchema(t *testing.T) {
 	migrations, err := LoadMigrations()

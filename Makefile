@@ -63,6 +63,10 @@ test-api:
 test-postgres:
 	sh scripts/check-postgres-integration.sh
 
+.PHONY: test-coverage
+test-coverage:
+	sh scripts/check-postgres-integration.sh --coverage
+
 test-web:
 	$(NPM) run typecheck
 	$(NPM) run build

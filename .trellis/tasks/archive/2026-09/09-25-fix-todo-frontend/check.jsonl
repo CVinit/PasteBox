@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"记录会话入口、分组保存、反馈和响应式浏览器验收约定"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"记录部分目录写入、配置字段选择和事务回滚契约"}

@@ -30,7 +30,7 @@ func TestRuntimeControlStoresPersistConfigRedemptionsAndAlerts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect postgres: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 
 	cleanupRuntimeControlStoreRows(t, pool)
 
@@ -147,6 +147,19 @@ func TestRuntimeControlStoresPersistConfigRedemptionsAndAlerts(t *testing.T) {
 	if len(codes) == 0 || codes[0].RedeemedBy != user.ID || codes[0].RedeemedAt == nil {
 		t.Fatalf("unexpected redemption codes: %#v", codes)
 	}
+
+	if page, err := redemptions.ListRedemptionBatchesPage(ctx, 1, 0); err != nil || len(page) != 1 || page[0].ID != batch.ID {
+		t.Fatalf("batch page: %#v %v", page, err)
+	}
+	if loaded, err := redemptions.RedemptionBatchByID(ctx, batch.ID); err != nil || loaded.RedeemedCount != 1 {
+		t.Fatalf("batch reload: %#v %v", loaded, err)
+	}
+	if codes, err := redemptions.ListRedemptionCodesByBatch(ctx, batch.ID, 1); err != nil || len(codes) != 1 || codes[0].RedeemedBy != user.ID {
+		t.Fatalf("batch codes: %#v %v", codes, err)
+	}
+	if page, err := redemptions.ListRedemptionBatchesPage(ctx, 1, 1); err != nil || len(page) != 0 {
+		t.Fatalf("batch offset: %#v %v", page, err)
+	}
 	records, err := redemptions.ListRedemptionRecords(ctx)
 	if err != nil {
 		t.Fatalf("list redemption records: %v", err)
@@ -198,7 +211,7 @@ func TestRuntimeConfigAuditFailureRollsBackConfigAndSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect postgres: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 	_, _ = pool.Exec(ctx, `DELETE FROM audit_logs WHERE id = 'aud_runtime_atomic_conflict'`)
 	_, _ = pool.Exec(ctx, `DELETE FROM system_configs WHERE id = 'default'`)
 	defer func() {

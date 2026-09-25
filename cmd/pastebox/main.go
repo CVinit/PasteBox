@@ -1274,7 +1274,7 @@ func createAdminInDatabase(ctx context.Context, email string, password string) (
 	if err != nil {
 		return app.UserView{}, err
 	}
-	return service.SeedAdmin(email, password)
+	return service.SeedAdminWithContext(ctx, email, password)
 }
 
 func printUsage(w io.Writer) {

@@ -1350,6 +1350,7 @@ return tx.CreatePasteWithDailyMetric(ctx, paste, now, bytes)
 - Redemption store: `app.RedemptionStore`
 - Alert event store: `app.AlertEventStore`
 - Catalog writer extension: `app.CatalogWriter`
+- Partial catalog writer: `app.CatalogEntryWriter.SaveCatalogEntries`
 - Production wiring: `postgres.NewRuntimeConfigStore`,
   `postgres.NewRedemptionStore`, `postgres.NewAlertEventStore`, and
   `postgres.NewCatalogStore`
@@ -1357,8 +1358,8 @@ return tx.CreatePasteWithDailyMetric(ctx, paste, now, bytes)
 ### 3. Contracts
 
 - `system_configs(id='default')` stores non-sensitive runtime config as JSONB.
-  Provider secrets remain in `PASTEBOX_*` env vars and must only appear as
-  configured/missing status in admin responses.
+  Managed provider secrets use encrypted `system_config_secrets` rows and only
+  appear as configured/missing status in admin responses.
 - `PATCH /api/v1/admin/runtime-config` is field-level partial update
   semantics, not whole-section replacement. Omitted fields inside
   `guestUploads`, `registration`, `rateLimits`, or `alerts` must preserve the
@@ -1373,6 +1374,16 @@ return tx.CreatePasteWithDailyMetric(ctx, paste, now, bytes)
 - `CatalogWriter.SaveCatalog` updates plans/prices so `/api/v1/plans`,
   `/api/v1/billing/prices`, quota checks, and admin edits share one service
   catalog source.
+- `PATCH /api/v1/admin/catalog/entries` updates existing plans/prices by ID.
+  Merge against the current stored catalog for validation, but persist only the
+  submitted entries and their audit record in one transaction. Never delete
+  omitted prices or fall back to complete replacement. The existing
+  `PATCH /api/v1/admin/catalog` complete-catalog API remains compatible.
+- `PUT /api/v1/admin/managed-config` accepts optional `fields` containing the
+  top-level managed config fields to replace. Unselected fields retain their
+  current values. Omitted/empty `fields` keeps legacy full-config semantics.
+  Omitted secret patches retain existing secrets; explicit empty strings clear
+  them. Keep provider target rebinding and activation validation in place.
 - The application alert loop belongs to the API process. Worker processes must
   not start their own Telegram alert loop.
 
@@ -1384,6 +1395,11 @@ return tx.CreatePasteWithDailyMetric(ctx, paste, now, bytes)
   default.
 - Invalid catalog update -> `400 invalid_plan`, `invalid_plan_limits`,
   `invalid_price`, or related validation code.
+- Empty catalog entry update -> `400 catalog_entries_required`; unknown IDs ->
+  `404 plan_not_found` / `price_not_found`; duplicate submitted IDs -> `400`.
+- Unknown managed config field -> `400 invalid_managed_config_field`, with no
+  partial changes applied. Entry/audit persistence failure -> roll back both
+  and retain the previous service cache.
 - Invalid redemption code -> `404 redemption_code_invalid`.
 - Used code -> `409 redemption_code_used`.
 - Disabled/expired batch -> `403 redemption_batch_disabled` or
@@ -1414,6 +1430,10 @@ return tx.CreatePasteWithDailyMetric(ctx, paste, now, bytes)
   provider tests, alert test, and alert history.
 - PostgreSQL tests with `PASTEBOX_TEST_DATABASE_URL` assert runtime config,
   redemption, and alert event rows round-trip through the store APIs.
+- Partial update tests assert unrelated entries/groups and omitted secrets
+  survive, invalid inputs leave state unchanged, and audit failure rolls back
+  catalog upserts. HTTP tests cover authentication, admin permissions, strict
+  JSON decoding, and price-only updates.
 - Run `make test-web` and full `make test` after cross-layer admin contract
   changes.
 

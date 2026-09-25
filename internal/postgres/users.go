@@ -28,7 +28,11 @@ func NewUserStore(pool *pgxpool.Pool) *UserStore {
 }
 
 func (s *UserStore) CreateUser(ctx context.Context, user app.User) error {
-	if _, err := s.pool.Exec(ctx, `
+	return insertUserRecord(ctx, s.pool, user)
+}
+
+func insertUserRecord(ctx context.Context, executor execQuerier, user app.User) error {
+	if _, err := executor.Exec(ctx, `
 INSERT INTO users (
 	id,
 	email,
@@ -139,6 +143,47 @@ ORDER BY created_at DESC, id DESC
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read users: %w", err)
+	}
+	return users, nil
+}
+
+func (s *UserStore) ListUsersPage(ctx context.Context, limit int, offset int) ([]app.User, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT
+	id,
+	email,
+	display_name,
+	language,
+	password_hash,
+	role,
+	email_verified,
+	plan_id,
+	plan_expires_at,
+	frozen,
+	created_at,
+	updated_at,
+	delete_requested_at,
+	delete_scheduled_at,
+	deleted_at
+FROM users
+ORDER BY created_at DESC, id DESC
+LIMIT $1 OFFSET $2
+`, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("query paged users: %w", err)
+	}
+	defer rows.Close()
+
+	users := []app.User{}
+	for rows.Next() {
+		user, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, user)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read paged users: %w", err)
 	}
 	return users, nil
 }

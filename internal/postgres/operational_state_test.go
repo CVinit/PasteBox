@@ -30,7 +30,7 @@ func TestOperationalStateStoresRoundTripBillingSupportJobsAndMail(t *testing.T) 
 	if err != nil {
 		t.Fatalf("connect postgres: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 
 	userID := "usr_operational_state_test"
 	orderID := "ord_operational_state_test"
@@ -38,14 +38,15 @@ func TestOperationalStateStoresRoundTripBillingSupportJobsAndMail(t *testing.T) 
 	duplicateWebhookID := "wh_operational_state_duplicate"
 	reportID := "rpt_operational_state_test"
 	jobID := "job_operational_state_test"
+	queueItemID := "job_operational_state_queue_item_test"
 	mailID := "mail_operational_state_test"
 	workerID := "worker_operational_state_test"
 	idempotencyKey := "operational-state-idempotency-key"
-	cleanupOperationalStateTestRows(ctx, t, pool, userID, orderID, webhookID, duplicateWebhookID, reportID, jobID, mailID, workerID, idempotencyKey)
+	cleanupOperationalStateTestRows(ctx, t, pool, userID, orderID, webhookID, duplicateWebhookID, reportID, jobID, queueItemID, mailID, workerID, idempotencyKey)
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
-		cleanupOperationalStateTestRows(cleanupCtx, t, pool, userID, orderID, webhookID, duplicateWebhookID, reportID, jobID, mailID, workerID, idempotencyKey)
+		cleanupOperationalStateTestRows(cleanupCtx, t, pool, userID, orderID, webhookID, duplicateWebhookID, reportID, jobID, queueItemID, mailID, workerID, idempotencyKey)
 	})
 
 	now := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
@@ -105,6 +106,20 @@ func TestOperationalStateStoresRoundTripBillingSupportJobsAndMail(t *testing.T) 
 	if len(orders) != 1 || orders[0].Status != "paid" || orders[0].TxID != "tx-operational" || orders[0].PaidAt == nil {
 		t.Fatalf("unexpected orders: %#v", orders)
 	}
+	allOrders, err := orderStore.ListOrders(ctx)
+	if err != nil {
+		t.Fatalf("list all orders: %v", err)
+	}
+	foundOrder := false
+	for _, listedOrder := range allOrders {
+		if listedOrder.ID == orderID && listedOrder.Status == "paid" && listedOrder.TxID == "tx-operational" {
+			foundOrder = true
+			break
+		}
+	}
+	if !foundOrder {
+		t.Fatalf("expected updated order in global listing, got %#v", allOrders)
+	}
 	if _, err := orderStore.OrderByID(ctx, "ord_operational_state_missing"); !errors.Is(err, ErrOrderNotFound) {
 		t.Fatalf("expected missing order error, got %v", err)
 	}
@@ -145,6 +160,20 @@ func TestOperationalStateStoresRoundTripBillingSupportJobsAndMail(t *testing.T) 
 	if !processedEvent.Processed {
 		t.Fatalf("expected processed webhook event, got %#v", processedEvent)
 	}
+	allEvents, err := webhookStore.ListWebhookEvents(ctx)
+	if err != nil {
+		t.Fatalf("list all webhook events: %v", err)
+	}
+	foundEvent := false
+	for _, listedEvent := range allEvents {
+		if listedEvent.ID == webhookID && listedEvent.Processed {
+			foundEvent = true
+			break
+		}
+	}
+	if !foundEvent {
+		t.Fatalf("expected processed event in global listing, got %#v", allEvents)
+	}
 	if _, err := webhookStore.WebhookEventByID(ctx, "wh_operational_state_missing"); !errors.Is(err, ErrWebhookEventNotFound) {
 		t.Fatalf("expected missing webhook event error, got %v", err)
 	}
@@ -170,6 +199,20 @@ func TestOperationalStateStoresRoundTripBillingSupportJobsAndMail(t *testing.T) 
 	}
 	if resolvedReport.Status != "resolved" {
 		t.Fatalf("expected resolved report, got %#v", resolvedReport)
+	}
+	allReports, err := reportStore.ListReports(ctx)
+	if err != nil {
+		t.Fatalf("list all reports: %v", err)
+	}
+	foundReport := false
+	for _, listedReport := range allReports {
+		if listedReport.ID == reportID && listedReport.Status == "resolved" {
+			foundReport = true
+			break
+		}
+	}
+	if !foundReport {
+		t.Fatalf("expected resolved report in global listing, got %#v", allReports)
 	}
 	if _, err := reportStore.ReportByID(ctx, "rpt_operational_state_missing"); !errors.Is(err, ErrReportNotFound) {
 		t.Fatalf("expected missing report error, got %v", err)
@@ -213,6 +256,58 @@ func TestOperationalStateStoresRoundTripBillingSupportJobsAndMail(t *testing.T) 
 	}
 	if _, err := jobStore.JobByID(ctx, "job_operational_state_missing"); !errors.Is(err, ErrJobNotFound) {
 		t.Fatalf("expected missing job error, got %v", err)
+	}
+	queueItem := app.QueueItem{
+		ID:        queueItemID,
+		Kind:      "scan",
+		TargetID:  "att-operational-queue-item",
+		Status:    "",
+		Error:     "retry after fixture repair",
+		Attempts:  2,
+		CreatedAt: now.Add(2 * time.Hour),
+	}
+	if err := jobStore.CreateQueueItem(ctx, queueItem); err != nil {
+		t.Fatalf("create queue item: %v", err)
+	}
+	failedQueueItems, err := jobStore.ListQueueItemsByStatus(ctx, "failed", 10)
+	if err != nil {
+		t.Fatalf("list failed queue items: %v", err)
+	}
+	var loadedQueueItem *app.QueueItem
+	for i := range failedQueueItems {
+		if failedQueueItems[i].ID == queueItemID {
+			loadedQueueItem = &failedQueueItems[i]
+			break
+		}
+	}
+	if loadedQueueItem == nil || loadedQueueItem.Status != "failed" || loadedQueueItem.Error != queueItem.Error || loadedQueueItem.Attempts != queueItem.Attempts || !loadedQueueItem.RunAfter.Equal(queueItem.CreatedAt) {
+		t.Fatalf("unexpected queue item fallback mapping: %#v", loadedQueueItem)
+	}
+	itemsByKind, err := jobStore.ListQueueItemsByKind(ctx, "scan")
+	if err != nil {
+		t.Fatalf("list queue items by kind: %v", err)
+	}
+	foundQueueItem := false
+	for _, item := range itemsByKind {
+		if item.ID == queueItemID {
+			foundQueueItem = true
+			break
+		}
+	}
+	if !foundQueueItem {
+		t.Fatalf("expected queue item by kind, got %#v", itemsByKind)
+	}
+	if err := jobStore.DeleteQueueItemsByKindTarget(ctx, queueItem.Kind, queueItem.TargetID); err != nil {
+		t.Fatalf("delete queue item by kind and target: %v", err)
+	}
+	remainingItems, err := jobStore.ListQueueItemsByStatus(ctx, "failed", 10)
+	if err != nil {
+		t.Fatalf("list failed queue items after deletion: %v", err)
+	}
+	for _, item := range remainingItems {
+		if item.ID == queueItemID {
+			t.Fatalf("queue item still exists after targeted deletion: %#v", item)
+		}
 	}
 
 	mailStore := NewMailStore(pool)
@@ -336,7 +431,7 @@ func TestQueueClaimsAreAtomicRecoverExpiredLeasesAndRejectStaleWorkers(t *testin
 	if err != nil {
 		t.Fatalf("connect postgres: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 	cleanup := func(cleanupCtx context.Context) {
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM jobs WHERE id LIKE 'job_queue_claim_test_%'`)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM mails WHERE id LIKE 'mail_queue_claim_test_%'`)
@@ -531,12 +626,12 @@ func TestQueueClaimsAreAtomicRecoverExpiredLeasesAndRejectStaleWorkers(t *testin
 	}
 }
 
-func cleanupOperationalStateTestRows(ctx context.Context, t *testing.T, pool *pgxpool.Pool, userID string, orderID string, webhookID string, duplicateWebhookID string, reportID string, jobID string, mailID string, workerID string, idempotencyKey string) {
+func cleanupOperationalStateTestRows(ctx context.Context, t *testing.T, pool *pgxpool.Pool, userID string, orderID string, webhookID string, duplicateWebhookID string, reportID string, jobID string, queueItemID string, mailID string, workerID string, idempotencyKey string) {
 	t.Helper()
 	_, _ = pool.Exec(ctx, `DELETE FROM webhook_events WHERE id IN ($1, $2) OR idempotency_key = $3`, webhookID, duplicateWebhookID, idempotencyKey)
 	_, _ = pool.Exec(ctx, `DELETE FROM orders WHERE id = $1`, orderID)
 	_, _ = pool.Exec(ctx, `DELETE FROM reports WHERE id = $1`, reportID)
-	_, _ = pool.Exec(ctx, `DELETE FROM jobs WHERE id = $1`, jobID)
+	_, _ = pool.Exec(ctx, `DELETE FROM jobs WHERE id IN ($1, $2)`, jobID, queueItemID)
 	_, _ = pool.Exec(ctx, `DELETE FROM mails WHERE id = $1`, mailID)
 	_, _ = pool.Exec(ctx, `DELETE FROM worker_heartbeats WHERE worker_id = $1`, workerID)
 	_, _ = pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, userID)

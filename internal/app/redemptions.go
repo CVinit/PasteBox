@@ -79,6 +79,16 @@ func (s *Service) loadRedemptionCaches(ctx context.Context) error {
 	if s.redemptions == nil {
 		return nil
 	}
+	if store, ok := s.redemptions.(PagedRedemptionStore); ok {
+		batches, err := store.ListRedemptionBatchesPage(ctx, initialContentCacheLimit, 0)
+		if err != nil {
+			return err
+		}
+		for _, batch := range batches {
+			s.cacheRedemptionBatchLocked(batch)
+		}
+		return nil
+	}
 	batches, err := s.redemptions.ListRedemptionBatches(ctx)
 	if err != nil {
 		return fmt.Errorf("load redemption batches: %w", err)
@@ -106,10 +116,10 @@ func (s *Service) loadRedemptionCaches(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) AdminCreateRedemptionBatch(actorID string, input RedemptionBatchInput) (RedemptionBatchView, error) {
+func (s *Service) AdminCreateRedemptionBatchWithContext(ctx context.Context, actorID string, input RedemptionBatchInput) (RedemptionBatchView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.requireAdminLocked(actorID); err != nil {
+	if err := s.requireAdminLocked(ctx, actorID); err != nil {
 		return RedemptionBatchView{}, err
 	}
 	batch, codes, err := s.buildRedemptionBatchLocked(input)
@@ -117,7 +127,10 @@ func (s *Service) AdminCreateRedemptionBatch(actorID string, input RedemptionBat
 		return RedemptionBatchView{}, err
 	}
 	if s.redemptions != nil {
-		if err := s.redemptions.CreateRedemptionBatch(context.Background(), batch, codes); err != nil {
+		s.mu.Unlock()
+		err := s.redemptions.CreateRedemptionBatch(ctx, batch, codes)
+		s.mu.Lock()
+		if err != nil {
 			return RedemptionBatchView{}, err
 		}
 	}
@@ -125,7 +138,7 @@ func (s *Service) AdminCreateRedemptionBatch(actorID string, input RedemptionBat
 	for _, code := range codes {
 		s.cacheRedemptionCodeLocked(code)
 	}
-	if err := s.auditLocked(actorID, "admin.redemption_batch_create", batch.ID, map[string]any{
+	if err := s.auditLocked(ctx, actorID, "admin.redemption_batch_create", batch.ID, map[string]any{
 		"planId":       batch.PlanID,
 		"quantity":     batch.Quantity,
 		"durationDays": batch.DurationDays,
@@ -135,11 +148,28 @@ func (s *Service) AdminCreateRedemptionBatch(actorID string, input RedemptionBat
 	return RedemptionBatchView{RedemptionBatch: batch, Codes: codes}, nil
 }
 
-func (s *Service) AdminListRedemptionBatches(actorID string) ([]RedemptionBatchView, error) {
+func (s *Service) AdminListRedemptionBatchesWithContext(ctx context.Context, actorID string) ([]RedemptionBatchView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.requireAdminLocked(actorID); err != nil {
+	if err := s.requireAdminLocked(ctx, actorID); err != nil {
 		return nil, err
+	}
+	if store, ok := s.redemptions.(PagedRedemptionStore); ok {
+		s.mu.Unlock()
+		defer s.mu.Lock()
+		batches, err := store.ListRedemptionBatchesPage(ctx, initialContentCacheLimit, 0)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]RedemptionBatchView, 0, len(batches))
+		for _, batch := range batches {
+			codes, err := store.ListRedemptionCodesByBatch(ctx, batch.ID, initialContentCacheLimit)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, RedemptionBatchView{RedemptionBatch: batch, Codes: codes})
+		}
+		return out, nil
 	}
 	out := make([]RedemptionBatchView, 0, len(s.redemptionBatches))
 	for _, batch := range s.redemptionBatches {
@@ -160,32 +190,48 @@ func (s *Service) AdminListRedemptionBatches(actorID string) ([]RedemptionBatchV
 	return out, nil
 }
 
-func (s *Service) AdminUpdateRedemptionBatch(actorID string, batchID string, disabled bool, note string) (RedemptionBatchView, error) {
+func (s *Service) AdminUpdateRedemptionBatchWithContext(ctx context.Context, actorID string, batchID string, disabled bool, note string) (RedemptionBatchView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.requireAdminLocked(actorID); err != nil {
+	if err := s.requireAdminLocked(ctx, actorID); err != nil {
 		return RedemptionBatchView{}, err
+	}
+	if store, ok := s.redemptions.(PagedRedemptionStore); ok {
+		s.mu.Unlock()
+		batch, err := store.RedemptionBatchByID(ctx, strings.TrimSpace(batchID))
+		s.mu.Lock()
+		if err != nil {
+			return RedemptionBatchView{}, err
+		}
+		s.cacheRedemptionBatchLocked(batch)
 	}
 	batch := s.redemptionBatches[strings.TrimSpace(batchID)]
 	if batch == nil {
 		return RedemptionBatchView{}, E(http.StatusNotFound, "redemption_batch_not_found", "redemption batch not found")
 	}
 	originalBatch := cloneRedemptionBatch(*batch)
+	snapshot := cloneRedemptionBatch(*batch)
+	batch = &snapshot
 	batch.Disabled = disabled
 	if strings.TrimSpace(note) != "" {
 		batch.Note = strings.TrimSpace(note)
 	}
 	batch.UpdatedAt = s.now().UTC()
 	if s.redemptions != nil {
-		if err := s.redemptions.UpdateRedemptionBatch(context.Background(), *batch); err != nil {
+		s.mu.Unlock()
+		err := s.redemptions.UpdateRedemptionBatch(ctx, *batch)
+		s.mu.Lock()
+		if err != nil {
 			return RedemptionBatchView{}, err
 		}
 	}
 	s.cacheRedemptionBatchLocked(*batch)
-	if err := s.auditLocked(actorID, "admin.redemption_batch_update", batch.ID, map[string]any{"disabled": disabled}); err != nil {
+	if err := s.auditLocked(ctx, actorID, "admin.redemption_batch_update", batch.ID, map[string]any{"disabled": disabled}); err != nil {
 		var rollbackErr error
 		if s.redemptions != nil {
-			rollbackErr = s.redemptions.UpdateRedemptionBatch(context.Background(), originalBatch)
+			s.mu.Unlock()
+			rollbackErr = s.redemptions.UpdateRedemptionBatch(ctx, originalBatch)
+			s.mu.Lock()
 		}
 		s.cacheRedemptionBatchLocked(originalBatch)
 		return RedemptionBatchView{}, errors.Join(err, rollbackErr)
@@ -193,10 +239,10 @@ func (s *Service) AdminUpdateRedemptionBatch(actorID string, batchID string, dis
 	return RedemptionBatchView{RedemptionBatch: cloneRedemptionBatch(*batch)}, nil
 }
 
-func (s *Service) RedeemCode(userID string, rawCode string) (UserView, error) {
+func (s *Service) RedeemCodeWithContext(ctx context.Context, userID string, rawCode string) (UserView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	user, err := s.activeUserLocked(userID)
+	user, err := s.activeUserLocked(ctx, userID)
 	if err != nil {
 		return UserView{}, err
 	}
@@ -209,7 +255,9 @@ func (s *Service) RedeemCode(userID string, rawCode string) (UserView, error) {
 		RedeemedAt: s.now().UTC(),
 	}
 	if s.transactions != nil {
-		result, err := s.transactions.RedeemCode(context.Background(), input)
+		s.mu.Unlock()
+		result, err := s.transactions.RedeemCode(ctx, input)
+		s.mu.Lock()
 		if err != nil {
 			return UserView{}, err
 		}
@@ -218,7 +266,7 @@ func (s *Service) RedeemCode(userID string, rawCode string) (UserView, error) {
 		s.cacheRedemptionBatchLocked(result.Batch)
 		s.cacheRedemptionRecordLocked(result.Record)
 		s.cacheAuditLogLocked(result.Audit)
-		return s.viewUserLocked(cachedUser)
+		return s.viewUserLocked(ctx, cachedUser)
 	}
 
 	code := s.redemptionCodesByHash[codeHash]
@@ -235,23 +283,23 @@ func (s *Service) RedeemCode(userID string, rawCode string) (UserView, error) {
 		return UserView{}, err
 	}
 	if s.redemptions != nil {
-		if err := s.redemptions.UpdateRedemptionCode(context.Background(), result.Code); err != nil {
+		if err := s.redemptions.UpdateRedemptionCode(ctx, result.Code); err != nil {
 			return UserView{}, err
 		}
-		if err := s.redemptions.UpdateRedemptionBatch(context.Background(), result.Batch); err != nil {
+		if err := s.redemptions.UpdateRedemptionBatch(ctx, result.Batch); err != nil {
 			return UserView{}, err
 		}
-		if err := s.redemptions.CreateRedemptionRecord(context.Background(), result.Record); err != nil {
+		if err := s.redemptions.CreateRedemptionRecord(ctx, result.Record); err != nil {
 			return UserView{}, err
 		}
 	}
 	if s.auth.Users != nil {
-		if err := s.auth.Users.UpdateUser(context.Background(), result.User); err != nil {
+		if err := s.auth.Users.UpdateUser(ctx, result.User); err != nil {
 			return UserView{}, err
 		}
 	}
 	if s.audit != nil {
-		if err := s.audit.RecordAuditLog(context.Background(), result.Audit); err != nil {
+		if err := s.audit.RecordAuditLog(ctx, result.Audit); err != nil {
 			return UserView{}, err
 		}
 	}
@@ -260,7 +308,7 @@ func (s *Service) RedeemCode(userID string, rawCode string) (UserView, error) {
 	s.cacheRedemptionBatchLocked(result.Batch)
 	s.cacheRedemptionRecordLocked(result.Record)
 	s.cacheAuditLogLocked(result.Audit)
-	return s.viewUserLocked(cachedUser)
+	return s.viewUserLocked(ctx, cachedUser)
 }
 
 func (s *Service) redemptionCountForUserLocked(batchID string, userID string) int {
@@ -397,4 +445,26 @@ func emailDomain(email string) string {
 		return ""
 	}
 	return domain
+}
+
+func (s *Service) RedeemCode(userID string, rawCode string) (UserView, error) {
+	return s.RedeemCodeWithContext(context.Background(), userID, rawCode)
+}
+
+func (s *Service) AdminUpdateRedemptionBatch(actorID string, batchID string, disabled bool, note string) (RedemptionBatchView, error) {
+	return s.AdminUpdateRedemptionBatchWithContext(context.Background(), actorID, batchID, disabled, note)
+}
+
+func (s *Service) AdminListRedemptionBatches(actorID string) ([]RedemptionBatchView, error) {
+	return s.AdminListRedemptionBatchesWithContext(context.Background(), actorID)
+}
+
+func (s *Service) AdminCreateRedemptionBatch(actorID string, input RedemptionBatchInput) (RedemptionBatchView, error) {
+	return s.AdminCreateRedemptionBatchWithContext(context.Background(), actorID, input)
+}
+
+type PagedRedemptionStore interface {
+	ListRedemptionBatchesPage(context.Context, int, int) ([]RedemptionBatch, error)
+	RedemptionBatchByID(context.Context, string) (RedemptionBatch, error)
+	ListRedemptionCodesByBatch(context.Context, string, int) ([]RedemptionCode, error)
 }

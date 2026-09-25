@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 15
-- **Last Active**: 2026-09-11
+- **Total Sessions**: 17
+- **Last Active**: 2026-09-25
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~538 | Active |
+| `journal-1.md` | ~605 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,8 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 17 | 2026-09-25 | 完成 TODO 前端与分组保存修复 | `978a3e9`, `12074ad` | `feat/preflight-allow-latest-override` |
+| 16 | 2026-09-25 | 完成后端审查修复 | `c3498ba` | `feat/preflight-allow-latest-override` |
 | 15 | 2026-09-11 | 简化 PostgreSQL Redis PasteBox 部署文档 | `4e4cf34` | `main` |
 | 14 | 2026-09-11 | Continue shared-pg-redis deployment guide check | `3c052c4` | `main` |
 | 13 | 2026-08-18 | 后端一致性审查与事务化修复 | `2544014` | `main` |

@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"pastebox/internal/app"
 	"pastebox/internal/plans"
 )
 
@@ -114,6 +115,15 @@ ORDER BY
 }
 
 func (s *CatalogStore) SaveCatalog(ctx context.Context, catalog plans.Catalog) error {
+	return s.saveCatalog(ctx, catalog, true, nil)
+}
+
+// SaveCatalogEntries updates only submitted entries; other prices stay intact.
+func (s *CatalogStore) SaveCatalogEntries(ctx context.Context, catalog plans.Catalog, audit app.AuditLog) error {
+	return s.saveCatalog(ctx, catalog, false, &audit)
+}
+
+func (s *CatalogStore) saveCatalog(ctx context.Context, catalog plans.Catalog, replace bool, audit *app.AuditLog) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin save catalog: %w", err)
@@ -177,16 +187,23 @@ ON CONFLICT (id) DO UPDATE SET
 			return fmt.Errorf("upsert price %s: %w", price.ID, err)
 		}
 	}
-	priceIDs := make([]string, 0, len(catalog.Prices))
-	for _, price := range catalog.Prices {
-		priceIDs = append(priceIDs, price.ID)
-	}
-	if len(priceIDs) == 0 {
-		if _, err := tx.Exec(ctx, `DELETE FROM prices`); err != nil {
+	if replace {
+		priceIDs := make([]string, 0, len(catalog.Prices))
+		for _, price := range catalog.Prices {
+			priceIDs = append(priceIDs, price.ID)
+		}
+		if len(priceIDs) == 0 {
+			if _, err := tx.Exec(ctx, `DELETE FROM prices`); err != nil {
+				return fmt.Errorf("delete removed prices: %w", err)
+			}
+		} else if _, err := tx.Exec(ctx, `DELETE FROM prices WHERE NOT (id = ANY($1))`, priceIDs); err != nil {
 			return fmt.Errorf("delete removed prices: %w", err)
 		}
-	} else if _, err := tx.Exec(ctx, `DELETE FROM prices WHERE NOT (id = ANY($1))`, priceIDs); err != nil {
-		return fmt.Errorf("delete removed prices: %w", err)
+	}
+	if audit != nil {
+		if err := insertAuditLog(ctx, tx, *audit); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit save catalog: %w", err)

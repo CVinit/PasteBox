@@ -219,3 +219,68 @@ func readClamAVStream(reader io.Reader) ([]byte, error) {
 	}
 	return content.Bytes(), nil
 }
+
+func TestDynamicScannerReloadAndCancellation(t *testing.T) {
+	dynamic := NewDynamic()
+	if result, err := dynamic.Scan(context.Background(), "file.exe", "application/octet-stream", nil); err != nil || result.Status != "malicious" {
+		t.Fatalf("default scanner: %#v %v", result, err)
+	}
+	if err := dynamic.Update(config.ScannerConfig{Provider: "invalid"}); err == nil {
+		t.Fatal("invalid reload accepted")
+	}
+	if result, err := dynamic.ScanStream(context.Background(), "file.exe", "application/octet-stream", bytes.NewReader(nil), 0); err != nil || result.Status != "malicious" {
+		t.Fatalf("reload lost previous scanner: %#v %v", result, err)
+	}
+	addr, captured := startFakeClamAV(t, "stream: OK\n")
+	cfg := config.ScannerConfig{Provider: "clamav"}
+	cfg.ClamAV.Addr = addr
+	cfg.ClamAV.Timeout = 2
+	if err := dynamic.Update(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := dynamic.ScanStream(context.Background(), "file.txt", "text/plain", bytes.NewBufferString("stream"), 6); err != nil || result.Status != "clean" {
+		t.Fatalf("stream scan: %#v %v", result, err)
+	}
+	if got := <-captured; string(got.content) != "stream" || got.err != nil {
+		t.Fatalf("content lost: %#v", got)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan struct{})
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		close(accepted)
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := (ClamAV{Addr: listener.Addr().String(), Timeout: 30 * time.Second}).ScanStream(ctx, "file.txt", "text/plain", bytes.NewReader(nil), 0)
+		done <- err
+	}()
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("scanner not connected")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("canceled scan succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancel did not interrupt scanner")
+	}
+	<-serverDone
+}

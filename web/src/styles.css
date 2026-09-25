@@ -4574,3 +4574,100 @@ code {
     justify-self: start;
   }
 }
+
+/* Task-local feedback and settings navigation. */
+.session-loading {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  color: var(--body);
+}
+.landing-user {
+  max-width: 320px;
+  gap: 8px;
+}
+.landing-user span:first-of-type {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.paste-card .card-actions {
+  grid-column: 1 / -1;
+  justify-content: flex-start;
+}
+.paste-card .card-actions .icon-button {
+  display: inline-flex;
+  align-items: center;
+  width: auto;
+  height: auto;
+  min-height: 44px;
+  padding: 8px 12px;
+  gap: 6px;
+}
+.paste-card .card-actions span {
+  color: inherit;
+  font-size: 12px;
+}
+.save-feedback {
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  border: 1px solid #a9cbb6;
+  border-radius: var(--radius-sm);
+  color: #245c3b;
+  background: #eef8f0;
+  overflow-wrap: anywhere;
+}
+.save-feedback--error {
+  color: #962f28;
+  border-color: #e5b4ac;
+  background: #fff1ed;
+}
+.catalog-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.catalog-tabs button[aria-selected="true"] {
+  color: white;
+  background: var(--ink);
+}
+.config-section-select {
+  display: grid;
+  gap: 8px;
+  width: min(100%, 420px);
+  margin: 12px 0 20px;
+}
+.managed-config-editor .managed-config-grid {
+  display: grid;
+  columns: auto;
+  grid-template-columns: minmax(0, 1fr);
+}
+.managed-config-grid > article[hidden] {
+  display: none;
+}
+.public-footer a,
+.workspace-footer a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+}
+.public-footer a:hover,
+.workspace-footer a:hover {
+  text-decoration-thickness: 2px;
+}
+.public-footer a:focus-visible,
+.workspace-footer a:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+@media (max-width: 600px) {
+  .landing-user {
+    max-width: 210px;
+  }
+  .landing-user span:last-child {
+    display: none;
+  }
+}

@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "参数化 SQL、业务事务、advisory lock、Store 边界约定"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "并发/锁/Context 传递与禁止模式"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "app.E 错误码与 HTTP 映射"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "slog 结构化日志与敏感信息禁令"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "internal/app 按职责拆分文件的目录约定"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "HTTP→Service→Store 跨层数据流检查"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "优先复用已有 Store/事务模式"}

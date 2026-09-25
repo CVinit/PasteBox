@@ -7,8 +7,9 @@ import (
 )
 
 var (
-	ErrStoreNotFound = errors.New("store record not found")
-	ErrStoreConflict = errors.New("store record conflict")
+	ErrStoreNotFound         = errors.New("store record not found")
+	ErrStoreConflict         = errors.New("store record conflict")
+	ErrOAuthIdentityConflict = errors.Join(errors.New("oauth identity conflict"), ErrStoreConflict)
 )
 
 type AuthStores struct {
@@ -31,6 +32,10 @@ type UserStore interface {
 	UpdateUser(ctx context.Context, user User) error
 }
 
+type PagedUserStore interface {
+	ListUsersPage(ctx context.Context, limit int, offset int) ([]User, error)
+}
+
 type SessionStore interface {
 	CreateSession(ctx context.Context, session Session) error
 	SessionByID(ctx context.Context, id string) (Session, error)
@@ -41,13 +46,17 @@ type SessionStore interface {
 type AuthTokenStore interface {
 	CreateAuthToken(ctx context.Context, kind string, token AuthToken) error
 	AuthToken(ctx context.Context, kind string, hash string) (AuthToken, error)
-	MarkAuthTokenUsed(ctx context.Context, kind string, hash string, usedAt time.Time) error
+	ConsumeAuthToken(ctx context.Context, kind string, hash string, usedAt time.Time) (AuthToken, error)
 }
 
 type LoginFailureStore interface {
 	LoginFailure(ctx context.Context, email string) (LoginFailure, error)
 	SaveLoginFailure(ctx context.Context, email string, failure LoginFailure) error
 	DeleteLoginFailure(ctx context.Context, email string) error
+}
+
+type AtomicLoginFailureStore interface {
+	RecordLoginFailure(ctx context.Context, key string, now time.Time) (LoginFailure, error)
 }
 
 type OAuthIdentityStore interface {
