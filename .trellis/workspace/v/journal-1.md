@@ -603,3 +603,36 @@ Resume after e6a2a884 API failures. Verified split compose rendering, path overr
 ### Next Steps
 
 - None - task complete
+
+
+## Session 18: 归档未完成任务并补齐服务与 HTTP 测试覆盖
+
+**Date**: 2026-09-28
+**Task**: 归档未完成任务并补齐服务与 HTTP 测试覆盖
+**Branch**: `main`
+
+### Summary
+
+逐项核对 10 个 in_progress 任务的范围与完成状态，补齐兑换码批次邮箱/总量限制、无效与受限码、人工处理附件、游客附件预检、附件下载、告警发送失败记录等 service 与 HTTP 测试，更新验收勾选与 verification 记录，并归档全部 10 个任务（保留 00-bootstrap-guidelines 与另一会话新建的 09-26-ui）。make test、make test-coverage（76.2%）、git diff --check 通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b0c6ea7` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
