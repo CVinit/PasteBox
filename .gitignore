@@ -27,3 +27,6 @@ web/tsconfig.tsbuildinfo
 
 # Docker/local data
 .data/
+
+# 本地调研文档，不纳入版本控制
+docs/online-clipboard-file-transfer-ui-research.zh-CN.md
