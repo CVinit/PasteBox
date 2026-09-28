@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1198,6 +1199,11 @@ func TestAuthPasteUploadShareAndQuotaHTTPContracts(t *testing.T) {
 	if attachment.ID == "" || attachment.PasteID != paste.ID || attachment.Size != int64(len("attachment")) || attachment.SHA256 != hex.EncodeToString(wantSHA[:]) {
 		t.Fatalf("unexpected attachment body: %#v", attachment)
 	}
+	userDownload := client.do(httptest.NewRequest(http.MethodGet, "/api/v1/attachments/"+attachment.ID+"/download", nil))
+	assertStatus(t, userDownload, http.StatusOK)
+	if got := userDownload.Body.String(); got != "attachment" {
+		t.Fatalf("expected user attachment download body, got %q", got)
+	}
 	if err := service.RunAttachmentScan(staticHTTPScanner{result: app.ScanResult{Status: "clean"}}, attachment.ID); err != nil {
 		t.Fatalf("run clean scan: %v", err)
 	}
@@ -1478,6 +1484,36 @@ func TestAdminRuntimeGuestRedemptionAndAlertHTTPContracts(t *testing.T) {
 		t.Fatalf("expected redeemed plus plan, got %#v", redeemed)
 	}
 
+	limitedBatchResponse := admin.json(http.MethodPost, "/api/v1/admin/redemption-batches", `{"planId":"plus","durationDays":30,"quantity":2,"maxTotalRedemptions":1,"maxRedemptionsPerUser":1,"allowedEmails":["eligible@example.com"]}`)
+	assertStatus(t, limitedBatchResponse, http.StatusCreated)
+	var limitedBatch app.RedemptionBatchView
+	decodeResponse(t, limitedBatchResponse, &limitedBatch)
+	if len(limitedBatch.Codes) != 2 || limitedBatch.MaxTotalRedemptions != 1 {
+		t.Fatalf("unexpected limited batch: %#v", limitedBatch)
+	}
+	deniedUser := newHTTPTestClient(t, handler)
+	registerHTTPUser(t, deniedUser, "denied-redeemer@example.com", "Denied Redeemer")
+	deniedRedemption := deniedUser.json(http.MethodPost, "/api/v1/redemptions/redeem", `{"code":"`+limitedBatch.Codes[0].Code+`"}`)
+	assertStatus(t, deniedRedemption, http.StatusForbidden)
+	var deniedRedemptionBody map[string]string
+	decodeResponse(t, deniedRedemption, &deniedRedemptionBody)
+	if deniedRedemptionBody["error"] != "redemption_email_not_allowed" {
+		t.Fatalf("expected email restriction error, got %#v", deniedRedemptionBody)
+	}
+	eligibleUser := newHTTPTestClient(t, handler)
+	registerHTTPUser(t, eligibleUser, "eligible@example.com", "Eligible Redeemer")
+	eligibleRedemption := eligibleUser.json(http.MethodPost, "/api/v1/redemptions/redeem", `{"code":"`+limitedBatch.Codes[0].Code+`"}`)
+	assertStatus(t, eligibleRedemption, http.StatusOK)
+	secondRedeemer := newHTTPTestClient(t, handler)
+	registerHTTPUser(t, secondRedeemer, "second-redeemer@example.com", "Second Redeemer")
+	limitedRedemption := secondRedeemer.json(http.MethodPost, "/api/v1/redemptions/redeem", `{"code":"`+limitedBatch.Codes[1].Code+`"}`)
+	assertStatus(t, limitedRedemption, http.StatusConflict)
+	var limitedRedemptionBody map[string]string
+	decodeResponse(t, limitedRedemption, &limitedRedemptionBody)
+	if limitedRedemptionBody["error"] != "redemption_batch_limit" {
+		t.Fatalf("expected batch total limit error, got %#v", limitedRedemptionBody)
+	}
+
 	guest := newHTTPTestClient(t, handler)
 	guestPaste := guest.json(http.MethodPost, "/api/v1/guest/pastes", `{"title":"Guest","text":"hello","tags":[],"expiresInSeconds":600}`)
 	assertStatus(t, guestPaste, http.StatusCreated)
@@ -1496,6 +1532,9 @@ func TestAdminRuntimeGuestRedemptionAndAlertHTTPContracts(t *testing.T) {
 	if guestAttachment.PasteID != guestBody.Paste.ID {
 		t.Fatalf("expected guest attachment on paste, got %#v", guestAttachment)
 	}
+	if err := service.RunAttachmentScan(staticHTTPScanner{result: app.ScanResult{Status: "clean"}}, guestAttachment.ID); err != nil {
+		t.Fatalf("mark guest attachment clean: %v", err)
+	}
 	guestShare := guest.json(http.MethodPost, "/api/v1/guest/pastes/"+guestBody.Paste.ID+"/shares", `{"guestToken":"`+guestBody.GuestToken+`","expiresInSeconds":600}`)
 	assertStatus(t, guestShare, http.StatusCreated)
 	var guestShareBody app.ShareView
@@ -1505,6 +1544,11 @@ func TestAdminRuntimeGuestRedemptionAndAlertHTTPContracts(t *testing.T) {
 	}
 	guestShareAccess := guest.json(http.MethodPost, "/api/v1/shares/"+guestShareBody.Token+"/access", `{}`)
 	assertStatus(t, guestShareAccess, http.StatusOK)
+	guestDownload := guest.do(httptest.NewRequest(http.MethodGet, "/api/v1/shares/"+guestShareBody.Token+"/attachments/"+guestAttachment.ID+"/download", nil))
+	assertStatus(t, guestDownload, http.StatusOK)
+	if got := guestDownload.Body.String(); got != "guest file" {
+		t.Fatalf("expected shared guest attachment download body, got %q", got)
+	}
 
 	freeze := admin.json(http.MethodPatch, "/api/v1/admin/attachments/"+guestAttachment.ID+"/freeze", `{"frozen":true}`)
 	assertStatus(t, freeze, http.StatusOK)
@@ -1540,13 +1584,21 @@ func TestAdminRuntimeGuestRedemptionAndAlertHTTPContracts(t *testing.T) {
 	if alertEvent.Status != "sent" || alertSender.calls != 1 {
 		t.Fatalf("expected sent alert event, got event=%#v calls=%d", alertEvent, alertSender.calls)
 	}
+	alertSender.err = errors.New("telegram unavailable")
+	failedAlert := admin.json(http.MethodPost, "/api/v1/admin/alerts/test", `{"message":"HTTP failure"}`)
+	assertStatus(t, failedAlert, http.StatusOK)
+	var failedAlertEvent app.AlertEvent
+	decodeResponse(t, failedAlert, &failedAlertEvent)
+	if failedAlertEvent.Status != "failed" || !strings.Contains(failedAlertEvent.LastError, "telegram unavailable") || alertSender.calls != 2 {
+		t.Fatalf("expected failed alert to be recorded, got event=%#v calls=%d", failedAlertEvent, alertSender.calls)
+	}
 	alerts := admin.json(http.MethodGet, "/api/v1/admin/alerts", "")
 	assertStatus(t, alerts, http.StatusOK)
 	var alertsBody struct {
 		Alerts []app.AlertEvent `json:"alerts"`
 	}
 	decodeResponse(t, alerts, &alertsBody)
-	if len(alertsBody.Alerts) == 0 {
+	if len(alertsBody.Alerts) < 2 {
 		t.Fatalf("expected alert history, got %#v", alertsBody)
 	}
 	auditLogs := admin.json(http.MethodGet, "/api/v1/admin/audit-logs", "")
@@ -1566,6 +1618,70 @@ func TestAdminRuntimeGuestRedemptionAndAlertHTTPContracts(t *testing.T) {
 			t.Fatalf("expected audit action %s, got %#v", action, auditBody.AuditLogs)
 		}
 	}
+}
+
+func TestRedemptionHTTPRejectsInvalidAndRestrictedCodes(t *testing.T) {
+	cfg := config.FromEnv()
+	cfg.BootstrapAdminEmail = ""
+	cfg.BootstrapAdminPassword = ""
+	cfg.DevAuthTokens = true
+	service := app.New(cfg)
+	if _, err := service.SeedAdmin("redemption-http-admin@example.com", "password123"); err != nil {
+		t.Fatalf("seed admin: %v", err)
+	}
+	handler := NewWithService(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), service)
+	admin := newHTTPTestClient(t, handler)
+	login := admin.json(http.MethodPost, "/api/v1/auth/login", `{"email":"redemption-http-admin@example.com","password":"password123"}`)
+	assertStatus(t, login, http.StatusOK)
+
+	createBatch := func(body string) app.RedemptionBatchView {
+		t.Helper()
+		res := admin.json(http.MethodPost, "/api/v1/admin/redemption-batches", body)
+		assertStatus(t, res, http.StatusCreated)
+		var batch app.RedemptionBatchView
+		decodeResponse(t, res, &batch)
+		if len(batch.Codes) == 0 {
+			t.Fatalf("expected generated redemption code, got %#v", batch)
+		}
+		return batch
+	}
+	newUser := func(email string) *httpTestClient {
+		t.Helper()
+		client := newHTTPTestClient(t, handler)
+		registerHTTPUser(t, client, email, "Redemption User")
+		return client
+	}
+	redeemError := func(client *httpTestClient, code string, status int, errorCode string) {
+		t.Helper()
+		res := client.json(http.MethodPost, "/api/v1/redemptions/redeem", `{"code":"`+code+`"}`)
+		assertStatus(t, res, status)
+		var body map[string]string
+		decodeResponse(t, res, &body)
+		if body["error"] != errorCode {
+			t.Fatalf("expected %s, got %#v", errorCode, body)
+		}
+	}
+
+	user := newUser("redemption-http-user@example.com")
+	redeemError(user, "invalid-code", http.StatusNotFound, "redemption_code_invalid")
+
+	usedBatch := createBatch(`{"planId":"plus","durationDays":30,"quantity":1}`)
+	usedCode := usedBatch.Codes[0].Code
+	assertStatus(t, user.json(http.MethodPost, "/api/v1/redemptions/redeem", `{"code":"`+usedCode+`"}`), http.StatusOK)
+	redeemError(user, usedCode, http.StatusConflict, "redemption_code_used")
+
+	expiredBatch := createBatch(`{"planId":"plus","durationDays":30,"quantity":1,"expiresAt":"2020-01-01T00:00:00Z"}`)
+	redeemError(user, expiredBatch.Codes[0].Code, http.StatusGone, "redemption_batch_expired")
+
+	disabledBatch := createBatch(`{"planId":"plus","durationDays":30,"quantity":1,"disabled":true}`)
+	redeemError(user, disabledBatch.Codes[0].Code, http.StatusForbidden, "redemption_batch_disabled")
+
+	perUserBatch := createBatch(`{"planId":"plus","durationDays":30,"quantity":2,"maxRedemptionsPerUser":1}`)
+	assertStatus(t, user.json(http.MethodPost, "/api/v1/redemptions/redeem", `{"code":"`+perUserBatch.Codes[0].Code+`"}`), http.StatusOK)
+	redeemError(user, perUserBatch.Codes[1].Code, http.StatusConflict, "redemption_user_limit")
+
+	domainBatch := createBatch(`{"planId":"plus","durationDays":30,"quantity":1,"allowedDomains":["allowed.example"]}`)
+	redeemError(user, domainBatch.Codes[0].Code, http.StatusForbidden, "redemption_domain_not_allowed")
 }
 
 func TestOAuthWebhookReplayAndReportHTTPContracts(t *testing.T) {
@@ -1838,11 +1954,12 @@ type httpTestClient struct {
 
 type fakeHTTPAlertSender struct {
 	calls int
+	err   error
 }
 
 func (s *fakeHTTPAlertSender) SendAlert(_ context.Context, _ string, _ bool) error {
 	s.calls++
-	return nil
+	return s.err
 }
 
 type staticHTTPScanner struct {

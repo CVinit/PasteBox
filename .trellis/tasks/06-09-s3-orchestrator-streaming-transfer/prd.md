@@ -37,12 +37,12 @@
 
 ## Acceptance Criteria
 
-* [ ] PasteBox 可以通过 S3 env 指向 s3-orchestrator，并通过 readiness 的 HeadBucket 检查。
-* [ ] 用户附件上传成功后可以下载，下载内容和上传内容一致。
-* [ ] 游客附件上传成功后可以通过分享下载，下载内容和上传内容一致。
-* [ ] 上传链路不再使用整文件 `io.ReadAll` 作为主路径。
-* [ ] S3 下载链路不再使用整对象 `io.ReadAll` 作为主路径。
-* [ ] 相关 Go 测试通过，至少覆盖对象存储和 HTTP 上传下载关键路径。
+* [x] PasteBox 可以通过 S3 env 指向 s3-orchestrator，并通过 readiness 的 HeadBucket 检查。
+* [x] 用户附件上传成功后可以下载，下载内容和上传内容一致。
+* [x] 游客附件上传成功后可以通过分享下载，下载内容和上传内容一致。
+* [x] 上传链路不再使用整文件 `io.ReadAll` 作为主路径。
+* [x] S3 下载链路不再使用整对象 `io.ReadAll` 作为主路径。
+* [x] 相关 Go 测试通过，至少覆盖对象存储和 HTTP 上传下载关键路径。
 
 ## Definition of Done
 

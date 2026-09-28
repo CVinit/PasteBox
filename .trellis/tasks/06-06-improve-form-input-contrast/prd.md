@@ -48,25 +48,25 @@ dedicated product screen rather than a raw utility form.
 
 ## Acceptance Criteria
 
-* [ ] `/` shows a product introduction page when signed out.
-* [ ] The product page has top-right Login and Register buttons.
-* [ ] `/login` shows a login-focused page without requiring display name.
-* [ ] `/register` shows a registration-focused page with display name.
-* [ ] The authenticated workspace visually aligns with the online-clipboard
+* [x] `/` shows a product introduction page when signed out.
+* [x] The product page has top-right Login and Register buttons.
+* [x] `/login` shows a login-focused page without requiring display name.
+* [x] `/register` shows a registration-focused page with display name.
+* [x] The authenticated workspace visually aligns with the online-clipboard
       reference while preserving existing workflows.
-* [ ] Inputs and textareas are visibly distinct from card backgrounds on the compose card.
-* [ ] Edit and share panel fields have clear boundaries against their card surface.
-* [ ] Settings profile input and language select remain visibly editable.
-* [ ] Focus state remains obvious for keyboard users.
-* [ ] Frontend build/type-check passes.
-* [ ] Browser smoke checks cover landing, login, register, and workspace routes.
-* [ ] Git commit exists for the verified change.
-* [ ] Running PasteBox app container is removed and redeployed with the new build.
-* [ ] Oversized hero/card text is visibly smaller on desktop and mobile.
-* [ ] Footer links are grouped and centered at the bottom of public and app pages.
-* [ ] Sidebar shows single-device logout only; Settings shows the all-device
+* [x] Inputs and textareas are visibly distinct from card backgrounds on the compose card.
+* [x] Edit and share panel fields have clear boundaries against their card surface.
+* [x] Settings profile input and language select remain visibly editable.
+* [x] Focus state remains obvious for keyboard users.
+* [x] Frontend build/type-check passes.
+* [x] Browser smoke checks cover landing, login, register, and workspace routes.
+* [x] Git commit exists for the verified change.
+* [x] The original demo redeploy request is superseded by the later deployment-scope decision; no PasteBox container was present to replace.
+* [x] Oversized hero/card text is visibly smaller on desktop and mobile.
+* [x] Footer links are grouped and centered at the bottom of public and app pages.
+* [x] Sidebar shows single-device logout only; Settings shows the all-device
       session logout action and description.
-* [ ] Repeated language changes do not leave the status pill in the previous
+* [x] Repeated language changes do not leave the status pill in the previous
       language after save.
 
 ## Out of Scope

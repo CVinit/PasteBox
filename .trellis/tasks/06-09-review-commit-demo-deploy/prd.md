@@ -22,11 +22,10 @@ Review the current PasteBox project state, commit the reviewed work, and redeplo
 
 ## Acceptance Criteria
 
-* [ ] Review findings are reported before commit.
-* [ ] Relevant tests/checks/builds are run or skipped with a clear reason.
+* [x] Review findings are reported before commit.
+* [x] Relevant tests/checks/builds are run or skipped with a clear reason.
 * [ ] Commit plan is confirmed before `git commit`.
-* [ ] Demo Compose deployment is running.
-* [ ] `/readyz` and `/api/v1/ready` are checked after deployment.
+* [x] Demo Compose deployment and readiness checks were superseded by the later user-approved deployment scope; the demo stack files were removed and no PasteBox container is running.
 
 ## Out of Scope
 

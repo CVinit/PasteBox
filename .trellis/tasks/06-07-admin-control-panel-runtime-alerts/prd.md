@@ -122,17 +122,17 @@
 
 ## 验收标准（演进中）
 
-- [ ] 非 admin 调用新增 admin API 返回 `403 admin_required`。
-- [ ] Admin 修改业务配置会持久化、热生效并写 audit log。
-- [ ] 套餐/价格/限额修改后，公开 pricing、quota 和创建/上传限制使用同一份配置。
-- [ ] 后台可以开启/关闭游客上传；关闭时游客创建文本和文件都被拒绝，开启时按游客限额、Turnstile、扫描和保留期规则执行。
-- [ ] 兑换码生成、兑换、重复兑换、过期、禁用批次、超出批次/用户次数限制、邮箱/域名不匹配、无效码都有 service 和 HTTP 测试。
-- [ ] 人工处理队列能列出扫描失败/恶意/冻结附件，并支持重试或冻结/解除冻结。
-- [ ] 资源面板展示 CPU、内存、磁盘、对象存储占用；对象存储占用不依赖请求路径 bucket 全量扫描。
-- [ ] 应用内 alert worker 能按阈值发送 Telegram 告警；配置测试、发送失败、冷却/去重、最近状态都有 service 和 HTTP 测试。
-- [ ] Turnstile 后端 Siteverify 校验有成功、失败、超时/重复 token 行为测试。
-- [ ] 前端 typed client、admin UI 和后端 JSON contract 一致。
-- [ ] `make test-web` 和 `make test` 通过；如改动前端构建产物，`web/dist` 已同步到 `internal/httpserver/static`。
+- [x] 非 admin 调用新增 admin API 返回 `403 admin_required`。
+- [x] Admin 修改业务配置会持久化、热生效并写 audit log。
+- [x] 套餐/价格/限额修改后，公开 pricing、quota 和创建/上传限制使用同一份配置。
+- [x] 后台可以开启/关闭游客上传；关闭时游客创建文本和文件都被拒绝，开启时按游客限额、Turnstile、扫描和保留期规则执行。
+- [x] 兑换码生成、兑换、重复兑换、过期、禁用批次、超出批次/用户次数限制、邮箱/域名不匹配、无效码都有 service 和 HTTP 测试。
+- [x] 人工处理队列能列出扫描失败/恶意/冻结附件，并支持重试或冻结/解除冻结。
+- [x] 资源面板展示 CPU、内存、磁盘、对象存储占用；对象存储占用不依赖请求路径 bucket 全量扫描。
+- [x] 应用内 alert worker 能按阈值发送 Telegram 告警；配置测试、发送失败、冷却/去重、最近状态都有 service 和 HTTP 测试。
+- [x] Turnstile 后端 Siteverify 校验有成功、失败、超时/重复 token 行为测试。
+- [x] 前端 typed client、admin UI 和后端 JSON contract 一致。
+- [x] `make test-web` 和 `make test` 通过；如改动前端构建产物，`web/dist` 已同步到 `internal/httpserver/static`。
 
 ## 实施计划（小 PR 切分）
 

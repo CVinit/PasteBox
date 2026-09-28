@@ -49,18 +49,18 @@
 
 ## Acceptance Criteria (evolving)
 
-* [ ] `free`、`plus`、`pro` 能配置不同 tag 上限。
-* [ ] 默认 catalog 中 `free` 的每条内容 tag 上限为 0，`plus` 为 5，`pro` 为 20。
-* [ ] Plan API/前端类型/管理后台都包含每条内容 Tag 上限字段。
-* [ ] 创建 paste 时超过当前套餐 tag 上限会被拒绝。
-* [ ] 编辑 paste 时超过当前套餐 tag 上限会被拒绝。
-* [ ] 同一账号可以在多条内容中复用相同 tag，不受账号级唯一 Tag 数限制。
-* [ ] 列表搜索可按 tag 精确筛选。
-* [ ] 内容卡片显示已有 Tag chip，点击 chip 后列表按该 Tag 筛选。
-* [ ] 免费用户看到禁用的 Tag 输入入口和升级提示，不能提交新 Tag。
-* [ ] 降级/过期用户的已有 Tag 仍展示和可搜索，但保存 Tag 修改会被禁止。
-* [ ] 后端单元测试覆盖套餐 tag 上限。
-* [ ] 如涉及 PostgreSQL schema，迁移和 catalog 读写测试更新。
+* [x] `free`、`plus`、`pro` 能配置不同 tag 上限。
+* [x] 默认 catalog 中 `free` 的每条内容 tag 上限为 0，`plus` 为 5，`pro` 为 20。
+* [x] Plan API/前端类型/管理后台都包含每条内容 Tag 上限字段。
+* [x] 创建 paste 时超过当前套餐 tag 上限会被拒绝。
+* [x] 编辑 paste 时超过当前套餐 tag 上限会被拒绝。
+* [x] 同一账号可以在多条内容中复用相同 tag，不受账号级唯一 Tag 数限制。
+* [x] 列表搜索可按 tag 精确筛选。
+* [x] 内容卡片显示已有 Tag chip，点击 chip 后列表按该 Tag 筛选。
+* [x] 免费用户看到禁用的 Tag 输入入口和升级提示，不能提交新 Tag。
+* [x] 降级/过期用户的已有 Tag 仍展示和可搜索，但保存 Tag 修改会被禁止。
+* [x] 后端单元测试覆盖套餐 tag 上限。
+* [x] 如涉及 PostgreSQL schema，迁移和 catalog 读写测试更新。
 
 ## Technical Approach
 

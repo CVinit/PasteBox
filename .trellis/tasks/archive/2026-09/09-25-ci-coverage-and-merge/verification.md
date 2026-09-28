@@ -8,7 +8,7 @@
 - The merged feature commit `611883307bc94102a76fccf97c06b9c453cb73b6` is an
   ancestor of remote and local `main`; local `main` is at `d210fe7` and matches
   `origin/main`.
-- A local rerun of `make test-coverage` could not start because the Docker
-  daemon socket `/Users/v/.orbstack/run/docker.sock` was unavailable. The
-  remote production-readiness gate provides the required coverage result.
+- After starting OrbStack, a local `make test-coverage` rerun passed at
+  `76.1%`. The initial attempt before OrbStack was started could not connect to
+  `/Users/v/.orbstack/run/docker.sock`.
 - Existing untracked workspace files remain uncommitted and untouched.

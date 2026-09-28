@@ -2676,6 +2676,9 @@ func TestGuestUploadsRespectRuntimeConfigAndTurnstile(t *testing.T) {
 	if _, _, err := svc.CreateGuestPaste(GuestCreatePasteInput{Title: "closed", Text: "x", TurnstileToken: "closed-token"}); !hasAppCode(err, "guest_uploads_disabled") {
 		t.Fatalf("expected guest uploads disabled, got %v", err)
 	}
+	if _, err := svc.PreflightGuestAttachmentUpload(context.Background(), defaultToken, defaultPaste.ID, "", "127.0.0.1"); !hasAppCode(err, "guest_uploads_disabled") {
+		t.Fatalf("expected guest attachment preflight to reject disabled uploads, got %v", err)
+	}
 
 	if _, err := svc.AdminUpdateRuntimeConfig(admin.ID, RuntimeConfigPatch{GuestUploads: &GuestUploadConfigPatch{Enabled: ptr(true), RequireTurnstile: ptr(true)}}); err != nil {
 		t.Fatalf("enable guest uploads: %v", err)
@@ -3394,6 +3397,38 @@ func TestRedemptionCodesValidateBatchRulesAndUserLimits(t *testing.T) {
 	}
 }
 
+func TestRedemptionBatchesEnforceAllowedEmailsAndTotalLimit(t *testing.T) {
+	now := time.Date(2026, 6, 7, 11, 30, 0, 0, time.UTC)
+	svc := newTestService(t, &now)
+	admin := seedAdminTestUser(t, svc, "redemption-limit-admin@example.com")
+	allowed := registerTestUser(t, svc, "allowed@example.com")
+	denied := registerTestUser(t, svc, "denied@example.com")
+	other := registerTestUser(t, svc, "other@example.com")
+
+	emailBatch, err := svc.AdminCreateRedemptionBatch(admin.ID, RedemptionBatchInput{
+		PlanID: "plus", DurationDays: 30, Quantity: 1, AllowedEmails: []string{"allowed@example.com"},
+	})
+	if err != nil {
+		t.Fatalf("create email-restricted batch: %v", err)
+	}
+	if _, err := svc.RedeemCode(denied.User.ID, emailBatch.Codes[0].Code); !hasAppCode(err, "redemption_email_not_allowed") {
+		t.Fatalf("expected email restriction rejection, got %v", err)
+	}
+
+	totalBatch, err := svc.AdminCreateRedemptionBatch(admin.ID, RedemptionBatchInput{
+		PlanID: "plus", DurationDays: 30, Quantity: 2, MaxTotalRedemptions: 1,
+	})
+	if err != nil {
+		t.Fatalf("create total-limited batch: %v", err)
+	}
+	if _, err := svc.RedeemCode(allowed.User.ID, totalBatch.Codes[0].Code); err != nil {
+		t.Fatalf("redeem first code within batch limit: %v", err)
+	}
+	if _, err := svc.RedeemCode(other.User.ID, totalBatch.Codes[1].Code); !hasAppCode(err, "redemption_batch_limit") {
+		t.Fatalf("expected batch total limit rejection, got %v", err)
+	}
+}
+
 func TestRuntimeAlertsSendRecordFailuresAndRespectCooldown(t *testing.T) {
 	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
 	svc := newTestService(t, &now)
@@ -3447,6 +3482,21 @@ func TestAdminManualWorkItemsIncludeFailedMails(t *testing.T) {
 	now := time.Date(2026, 6, 7, 13, 0, 0, 0, time.UTC)
 	svc := newTestService(t, &now)
 	admin := seedAdminTestUser(t, svc, "manual-mail-admin@example.com")
+	owner := registerTestUser(t, svc, "manual-items-owner@example.com")
+	paste := createTestPaste(t, svc, owner.User.ID, PasteInput{Title: "manual items", Text: "content", ExpiresInSeconds: 3600})
+
+	scanFailed := addTestAttachment(t, svc, owner.User.ID, paste.ID, "scan-failed.txt", []byte("scan failed"))
+	if err := svc.RunAttachmentScan(staticScanner{result: ScanResult{Status: "scan_failed", Risk: "scanner_timeout"}}, scanFailed.ID); err != nil {
+		t.Fatalf("mark attachment scan failed: %v", err)
+	}
+	malicious := addTestAttachment(t, svc, owner.User.ID, paste.ID, "malicious.txt", []byte("malicious"))
+	if err := svc.RunAttachmentScan(staticScanner{result: ScanResult{Status: "malicious", Risk: "test_signature"}}, malicious.ID); err != nil {
+		t.Fatalf("mark attachment malicious: %v", err)
+	}
+	frozen := addTestAttachment(t, svc, owner.User.ID, paste.ID, "frozen.txt", []byte("frozen"))
+	if _, err := svc.AdminFreezeAttachment(admin.ID, frozen.ID, true); err != nil {
+		t.Fatalf("freeze attachment: %v", err)
+	}
 	svc.ops.Mails = manualWorkMailStore{failed: []MailQueueItem{{
 		ID:        "mail_failed_1",
 		To:        "user@example.com",
@@ -3461,6 +3511,17 @@ func TestAdminManualWorkItemsIncludeFailedMails(t *testing.T) {
 	items, err := svc.AdminManualWorkItems(admin.ID)
 	if err != nil {
 		t.Fatalf("manual work items: %v", err)
+	}
+	attachmentTargets := map[string]bool{}
+	for _, item := range items {
+		if item.Kind == "attachment" {
+			attachmentTargets[item.TargetID] = true
+		}
+	}
+	for _, id := range []string{scanFailed.ID, malicious.ID, frozen.ID} {
+		if !attachmentTargets[id] {
+			t.Fatalf("expected attachment %s in manual work items, got %#v", id, items)
+		}
 	}
 	for _, item := range items {
 		if item.Kind == "failed_mail" && item.ID == "mail_failed_1" && item.Risk == "smtp unavailable" {
