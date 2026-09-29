@@ -669,3 +669,44 @@ Resume after e6a2a884 API failures. Verified split compose rendering, path overr
 ### Next Steps
 
 - None - task complete
+
+
+## Session 20: 工单 #8：内联时效与隐私设置
+
+**Date**: 2026-09-30
+**Task**: 工单 #8：内联时效与隐私设置
+**Branch**: `main`
+
+### Summary
+
+实现 GitHub Issue #8：发送区旁内联设置有效期、分享密码与登录限制，链接与取件码执行同一套鉴权。登录工作区与游客工作台共用 SendSettingsFields，有效期档位按方案/游客保留期过滤（free 方案只有 1h/6h/24h），密码与登录限制随传输创建生效，方案降级时草稿收敛到新上限。游客发送的密码同样作用于链接与取件码，文本/图片分享也使用所选设置；游客传 loginRequired 由静默忽略改为 400 guest_share_login_required。新增 internal/httpserver/transfers_access_test.go：22 条权限矩阵、保留期收敛（share 与内容同刻到期、过期后链接 410/取件码 404）、解析取件码不等于授权。首屏参数最多 4 条且只在目录已返回时渲染（来源 /api/v1/plans），新增统一使用边界提示（内容规范/滥用/DMCA/隐私），manifest 与站点描述改为文件中转叙事，门禁脚本新增首屏参数上限、统一文案与禁止调研流量措辞断言。
+
+### Main Changes
+
+- `internal/app/transfers.go`、`internal/app/models.go`、`internal/httpserver/transfers.go`：游客发送拒绝 `loginRequired`（400 `guest_share_login_required`）。
+- `internal/httpserver/transfers_access_test.go`：新增权限矩阵、保留期收敛与「解析不等于授权」测试。
+- `web/src/App.tsx`：新增 `SendSettingsFields`、`expiryOptionsFor`、`clampExpirySeconds`、`landingFacts`、`UsageBoundaryNotice`；登录工作区与游客工作台接入内联设置。
+- `web/src/styles.css`：发送设置分组复用 composer 字段样式，新增首屏参数与使用边界提示样式。
+- `scripts/check-web-launch-surfaces.mjs`：首屏参数上限、统一文案、manifest 叙事与调研流量措辞断言。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `da003af` | (see git log) |
+
+### Testing
+
+- [OK] `go test ./cmd/... ./internal/... -count=1` 与 `-race` 通过
+- [OK] `make test-postgres` 通过（临时 PostgreSQL 17 容器）
+- [OK] `npm --prefix web run typecheck` / `build`、`node scripts/check-web-launch-surfaces.mjs` 通过
+- [OK] 浏览器闭环 43/43（桌面 + 375px；游客/登录、链接/取件码、错密码、需登录、过期）
+- 证据记录：`.trellis/tasks/09-29-file-transfer-first/verification-issue-08.md`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Issue #9（文本/图片模式统一）可基于本票的设置组件继续；#10 依赖 #8 已完成。

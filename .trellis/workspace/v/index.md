@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 19
-- **Last Active**: 2026-09-29
+- **Total Sessions**: 20
+- **Last Active**: 2026-09-30
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~671 | Active |
+| `journal-1.md` | ~729 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 20 | 2026-09-30 | 工单 #8：内联时效与隐私设置 | `da003af` | `main` |
 | 19 | 2026-09-29 | 工单 #6：多文件队列与失败重试 | `c54e822` | `main` |
 | 18 | 2026-09-28 | 归档未完成任务并补齐服务与 HTTP 测试覆盖 | `b0c6ea7` | `main` |
 | 17 | 2026-09-25 | 完成 TODO 前端与分组保存修复 | `978a3e9`, `12074ad` | `feat/preflight-allow-latest-override` |
