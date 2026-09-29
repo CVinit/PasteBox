@@ -32,6 +32,8 @@ export type TransferQueuePhase =
 export type TransferQueueShare = {
   url: string;
   expiresAt: string;
+  // pickupCode lets the success page offer the short code next to the link.
+  pickupCode?: string;
   // pasteId lets an account surface the record a finished send created.
   pasteId?: string;
 };

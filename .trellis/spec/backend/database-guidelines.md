@@ -1467,3 +1467,141 @@ next.GuestUploads = *patch.GuestUploads
 // Only fields present in the patch overwrite current runtime config values.
 next.GuestUploads = applyGuestUploadConfigPatch(next.GuestUploads, *patch.GuestUploads)
 ```
+
+## Scenario: Pickup Code Resolution And Guess Limiting
+
+### 1. Scope / Trigger
+
+- Trigger: Any change to 6-character pickup codes, `POST /api/v1/pickups`,
+  `shares.pickup_code`, `pickup_code_attempts`, or the publish path that mints
+  a share for a transfer.
+
+### 2. Signatures
+
+- App: `app.PickupResolution`, `app.Service.ResolvePickupCodeWithContext(ctx, code, clientKey)`
+- App constants: `app.PickupCodeAlphabet`, `app.PickupCodeLength`
+- Store interfaces: `app.PickupCodeShareStore.ShareByPickupCode`,
+  `app.PickupAttemptStore.PickupAttemptCount`, `app.PickupAttemptStore.RecordPickupFailure`
+- Counter state: `app.PickupAttemptWindow{Start, Count}`
+- PostgreSQL: `postgres.NewShareStore(pool)`, `postgres.NewPickupAttemptStore(pool)`
+- Migration: `internal/postgres/migrations/000011_pickup_codes.sql`
+- HTTP: `POST /api/v1/pickups` with `{"code": "..."}` returning
+  `{"token": "...", "url": "..."}`
+- Errors: `app.ErrSharePickupCodeExists`, `pickup_not_found`,
+  `pickup_rate_limited`, `pickup_code_unavailable`
+
+### 3. Contracts
+
+- A pickup code is 6 characters from `23456789ABCDEFGHJKMNPQRSTUVWXYZ`; input is
+  normalized (trim, drop `-`/`_`, upper-case) before validation.
+- `shares.pickup_code` is unique through the partial index
+  `shares_pickup_code_idx`, including revoked and expired rows: a code is never
+  reassigned, so a code that was handed out cannot resolve to another share.
+- Codes are minted only while publishing a transfer. Shares created through the
+  older share endpoint keep `pickup_code = ''` and stay link-only.
+- Resolution returns the share token; password, login, expiry, revocation and
+  counters stay enforced by the single existing share access path. The response
+  never carries a share or transfer identifier, so a code grants no sender
+  control.
+- `pickup_not_found` (404) is the single answer for malformed, unknown, expired
+  and revoked codes.
+- Failed guesses are counted per client key in `pickup_code_attempts`
+  (`attempt_key`, `window_start`, `attempt_count`) and shared by every API
+  instance; the in-process HTTP limiter is not the source of truth. A
+  successful lookup is not counted, so normal recipients behind one address do
+  not spend each other's budget.
+- Stores only count; the budget (10 failures per runtime rate-limit window)
+  lives in the service, so no store can widen how many guesses a client gets.
+
+### 4. Validation & Error Matrix
+
+- Malformed or unknown code -> `404 pickup_not_found`, no share data.
+- Expired or revoked share behind a valid code -> the same `404 pickup_not_found`.
+- Attempts over budget -> `429 pickup_rate_limited` with `Retry-After`, checked
+  before the lookup so a spent key cannot keep probing or learn that a code was
+  right.
+- Failed lookup (unknown, expired, revoked) -> record one failure, then answer
+  `404 pickup_not_found`.
+- Pickup-code unique violation while publishing -> retry with a fresh code
+  (max 8 attempts), then `500 pickup_code_unavailable`; the transfer stays
+  draft and no share row is committed.
+- Attempt-store failure -> propagate the error; never fail open into unlimited
+  guessing.
+
+### 5. Good/Base/Bad Cases
+
+- Good: two API instances share one failure budget, a burst of successful
+  pickups never spends it, and a published transfer exposes its code only in the
+  sender's transfer view.
+- Base: a single-instance deployment falls back to the in-memory counter, which
+  is explicitly weaker; production wiring passes `PickupAttempts`.
+- Bad: returning the share or transfer ID from the lookup, telling expired codes
+  apart from unknown ones, or logging the code, token, or URL.
+
+### 6. Tests Required
+
+- App tests assert alphabet/length, normalization, and publish retry on a
+  conflicting code.
+- HTTP tests assert code and link resolve the same share, one unified error for
+  unknown/expired/revoked, rate limiting with `Retry-After` after the failure
+  budget is spent, successful pickups not spending it, the shared store being
+  the counter the service consults, guest sends getting codes, password and
+  login rules still applying through a code, legacy shares staying link-only,
+  no sender controls, and no credentials in debug logs.
+- PostgreSQL tests with `PASTEBOX_TEST_DATABASE_URL` assert cross-connection
+  code uniqueness, a shared attempt budget across connections, and a rolled-back
+  publish on a duplicate code.
+- Run `make test-postgres` and the full `make test` after touching pickup codes.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+// Distinguishes expired from unknown and hands back the share row.
+share, err := store.ShareByPickupCode(ctx, code)
+if share.RevokedAt != nil {
+    return nil, E(http.StatusGone, "share_expired", "share is expired")
+}
+return share, nil
+```
+
+#### Correct
+
+```go
+share, err := s.shareByPickupCodeLocked(ctx, normalizePickupCode(code))
+if err != nil || share.RevokedAt != nil || !share.ExpiresAt.After(now) {
+    return PickupResolution{}, pickupNotFoundError()
+}
+return PickupResolution{Token: share.Token, URL: s.shareURLLocked(share.Token)}, nil
+```
+
+#### Wrong
+
+```go
+// Process-local guessing budget: adding API instances multiplies attempts, and
+// counting every attempt locks out real recipients on a busy address.
+if s.pickupAttempts[clientIP] > 10 {
+    return E(http.StatusTooManyRequests, "pickup_rate_limited", "too many attempts")
+}
+s.pickupAttempts[clientIP]++
+```
+
+#### Correct
+
+```go
+attempt, err := s.content.PickupAttempts.PickupAttemptCount(ctx, key, window, now)
+if err != nil {
+    return err
+}
+if attempt.Count >= pickupAttemptLimit {
+    return pickupRateLimitedError(attempt.Start.Add(window).Sub(now))
+}
+resolution, err := s.resolvePickupLocked(ctx, code)
+if err != nil {
+    if isAppStatus(err, http.StatusNotFound) {
+        _, _ = s.content.PickupAttempts.RecordPickupFailure(ctx, key, window, now)
+    }
+    return err
+}
+```

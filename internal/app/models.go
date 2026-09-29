@@ -152,11 +152,15 @@ type AttachmentView struct {
 }
 
 type Share struct {
-	ID                string
-	PasteID           string
-	UserID            string
-	TokenHash         string
-	Token             string
+	ID        string
+	PasteID   string
+	UserID    string
+	TokenHash string
+	Token     string
+	// PickupCode is the 6-character code a recipient can type instead of the
+	// share link. It is empty for shares that were never published as a
+	// transfer, and those shares stay link-only.
+	PickupCode        string
 	PasswordHash      string
 	LoginRequired     bool
 	MaxVisits         int
@@ -232,16 +236,19 @@ type TransferItemView struct {
 }
 
 type TransferView struct {
-	ID          string             `json:"id"`
-	Status      string             `json:"status"`
-	PasteID     string             `json:"pasteId"`
-	Items       []TransferItemView `json:"items"`
-	Share       *ShareView         `json:"share,omitempty"`
-	ExpiresAt   time.Time          `json:"expiresAt"`
-	CreatedAt   time.Time          `json:"createdAt"`
-	UpdatedAt   time.Time          `json:"updatedAt"`
-	PublishedAt *time.Time         `json:"publishedAt,omitempty"`
-	CanceledAt  *time.Time         `json:"canceledAt,omitempty"`
+	ID      string             `json:"id"`
+	Status  string             `json:"status"`
+	PasteID string             `json:"pasteId"`
+	Items   []TransferItemView `json:"items"`
+	Share   *ShareView         `json:"share,omitempty"`
+	// PickupCode is the code for the published share. Transfer views are only
+	// served to the sender, so a recipient never receives the code here.
+	PickupCode  string     `json:"pickupCode,omitempty"`
+	ExpiresAt   time.Time  `json:"expiresAt"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	UpdatedAt   time.Time  `json:"updatedAt"`
+	PublishedAt *time.Time `json:"publishedAt,omitempty"`
+	CanceledAt  *time.Time `json:"canceledAt,omitempty"`
 }
 
 type TransferItemInput struct {

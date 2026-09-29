@@ -281,3 +281,30 @@ func TestLoadMigrationsIncludesQueueLeases(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadMigrationsIncludesPickupCodes(t *testing.T) {
+	migrations, err := LoadMigrations()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	var migration Migration
+	for _, item := range migrations {
+		if item.Version == 11 {
+			migration = item
+			break
+		}
+	}
+	if migration.Name != "pickup_codes" || migration.Filename != "000011_pickup_codes.sql" {
+		t.Fatalf("expected pickup code migration, got %#v", migration)
+	}
+	for _, expected := range []string{
+		"ADD COLUMN IF NOT EXISTS pickup_code",
+		"shares_pickup_code_idx",
+		"CREATE TABLE IF NOT EXISTS pickup_code_attempts",
+		"pickup_code_attempts_window_start_idx",
+	} {
+		if !strings.Contains(migration.SQL, expected) {
+			t.Fatalf("expected pickup code migration to contain %q", expected)
+		}
+	}
+}

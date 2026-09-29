@@ -130,6 +130,9 @@ export type Transfer = {
   pasteId: string;
   items: TransferItem[];
   share?: Share;
+  // pickupCode is only sent to the sender: the success page shows it so a
+  // recipient can type 6 characters instead of pasting a long link.
+  pickupCode?: string;
   expiresAt: string;
   createdAt: string;
   updatedAt: string;
@@ -915,6 +918,13 @@ export const client = {
       `/transfers/${encodeURIComponent(transferId)}/cancel`,
       { method: "POST" },
     ),
+  // resolvePickupCode turns a typed 6-character code into the share token it
+  // belongs to, which the recipient then opens like any other share link.
+  resolvePickupCode: (code: string) =>
+    api<{ token: string; url: string }>("/pickups", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    }),
   createGuestTransfer: (body: {
     guestToken?: string;
     idempotencyKey?: string;

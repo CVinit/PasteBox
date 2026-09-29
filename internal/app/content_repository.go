@@ -392,10 +392,23 @@ func (s *Service) createShareLocked(ctx context.Context, share *Share) error {
 		err := s.content.Shares.CreateShare(ctx, storedShare)
 		s.mu.Lock()
 		if err != nil {
+			if errors.Is(err, ErrSharePickupCodeExists) {
+				return ErrSharePickupCodeExists
+			}
 			if errors.Is(err, ErrStoreConflict) {
 				return E(http.StatusConflict, "share_token_conflict", "share token already exists")
 			}
 			return err
+		}
+		// The store already enforced uniqueness. Re-checking the cache after a
+		// committed insert could reject a row that is already stored and leave
+		// it orphaned.
+		s.cacheShareLocked(*share)
+		return nil
+	}
+	if share.PickupCode != "" {
+		if existing := s.sharesByID[s.shareIDByPickupCode[share.PickupCode]]; existing != nil {
+			return ErrSharePickupCodeExists
 		}
 	}
 	s.cacheShareLocked(*share)
@@ -461,5 +474,8 @@ func (s *Service) cacheShareLocked(share Share) *Share {
 	cached := share
 	s.sharesByID[cached.ID] = &cached
 	s.shareIDByToken[cached.TokenHash] = cached.ID
+	if cached.PickupCode != "" {
+		s.shareIDByPickupCode[cached.PickupCode] = cached.ID
+	}
 	return &cached
 }

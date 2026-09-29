@@ -15,6 +15,10 @@ type ContentStores struct {
 	ObjectRefs  ObjectRefStore
 	Shares      ShareStore
 	Transfers   TransferStore
+	// PickupAttempts is the shared pickup-code guess counter. It is optional:
+	// without it the service keeps a process-local counter, which is only
+	// correct for a single API instance.
+	PickupAttempts PickupAttemptStore
 }
 
 type ObjectStore interface {
@@ -145,6 +149,29 @@ type ShareStore interface {
 
 type PagedShareStore interface {
 	ListSharesPage(ctx context.Context, limit int, offset int) ([]Share, error)
+}
+
+// PickupCodeShareStore resolves the 6-character pickup code of a share. Stores
+// that do not implement it leave pickup codes unresolvable instead of guessing
+// from a stale cache.
+type PickupCodeShareStore interface {
+	ShareByPickupCode(ctx context.Context, code string) (Share, error)
+}
+
+// PickupAttemptWindow is the counter state of one pickup-code client key: when
+// its window started, and how many failed guesses landed in it.
+type PickupAttemptWindow struct {
+	Start time.Time
+	Count int
+}
+
+// PickupAttemptStore counts failed pickup-code guesses per client key and
+// window. The counter must be shared by every API instance, so a guesser cannot
+// multiply their budget by spreading attempts across processes. Stores only
+// count; how many guesses a client gets stays a service-level decision.
+type PickupAttemptStore interface {
+	PickupAttemptCount(ctx context.Context, key string, window time.Duration, now time.Time) (PickupAttemptWindow, error)
+	RecordPickupFailure(ctx context.Context, key string, window time.Duration, now time.Time) (PickupAttemptWindow, error)
 }
 
 type SharesByPasteStore interface {

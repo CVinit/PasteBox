@@ -9,6 +9,9 @@ type Error struct {
 	Status  int    `json:"-"`
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// RetryAfterSeconds is set on rate-limit errors so the HTTP layer can send
+	// the standard Retry-After header. It never reaches the JSON body.
+	RetryAfterSeconds int `json:"-"`
 }
 
 func (e *Error) Error() string {

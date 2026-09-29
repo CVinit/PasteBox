@@ -229,33 +229,8 @@ WHERE items.transfer_id = $1
 		return app.Transfer{}, ErrTransferNotPublishable
 	}
 
-	if _, err := tx.Exec(ctx, `
-INSERT INTO shares (
-	id,
-	paste_id,
-	user_id,
-	token_hash,
-	token_ciphertext,
-	password_hash,
-	login_required,
-	max_visits,
-	max_downloads,
-	visit_count,
-	download_count,
-	expires_at,
-	revoked_at,
-	created_at,
-	last_visited_at,
-	last_downloaded_at,
-	last_access_failure
-) VALUES (
-	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
-)
-`, share.ID, share.PasteID, share.UserID, share.TokenHash, share.Token, share.PasswordHash, share.LoginRequired, share.MaxVisits, share.MaxDownloads, share.VisitCount, share.DownloadCount, share.ExpiresAt, share.RevokedAt, share.CreatedAt, share.LastVisitedAt, share.LastDownloadedAt, share.LastAccessFailure); err != nil {
-		if isUniqueViolation(err, "shares_token_hash_key") {
-			return app.Transfer{}, ErrShareTokenExists
-		}
-		return app.Transfer{}, fmt.Errorf("create transfer share: %w", err)
+	if _, err := tx.Exec(ctx, shareInsert, shareInsertArgs(share)...); err != nil {
+		return app.Transfer{}, shareInsertError("create transfer share", err)
 	}
 
 	updated, err := queryTransfer(ctx, tx, `

@@ -101,6 +101,7 @@ func (s *Service) loadBoundedContentCaches(ctx context.Context) error {
 	}
 	s.sharesByID = map[string]*Share{}
 	s.shareIDByToken = map[string]string{}
+	s.shareIDByPickupCode = map[string]string{}
 	for _, share := range shares {
 		s.cacheShareLocked(share)
 	}
@@ -147,6 +148,7 @@ func (s *Service) refreshContentCachesLocked(ctx context.Context) error {
 		}
 		s.sharesByID = map[string]*Share{}
 		s.shareIDByToken = map[string]string{}
+		s.shareIDByPickupCode = map[string]string{}
 		for _, share := range shares {
 			s.cacheShareLocked(share)
 		}

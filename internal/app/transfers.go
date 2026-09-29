@@ -284,6 +284,7 @@ func (s *Service) viewTransferLocked(ctx context.Context, transfer *Transfer) (T
 		if err == nil && share != nil {
 			shareView := s.viewShareLocked(share)
 			view.Share = &shareView
+			view.PickupCode = share.PickupCode
 		}
 	}
 	return view, nil
@@ -739,45 +740,13 @@ func (s *Service) publishTransferLocked(ctx context.Context, userID string, tran
 	if err := s.ensureTransferCompleteLocked(ctx, transfer, paste); err != nil {
 		return TransferView{}, err
 	}
-	shareToken := newToken()
-	share := &Share{
-		ID:            s.newID("shr"),
-		PasteID:       paste.ID,
-		UserID:        userID,
-		Token:         shareToken,
-		TokenHash:     tokenHash(shareToken),
-		PasswordHash:  transfer.PasswordHash,
-		LoginRequired: transfer.LoginRequired,
-		ExpiresAt:     transfer.ExpiresAt,
-		CreatedAt:     now,
-	}
-	if atomicStore, ok := s.content.Transfers.(AtomicTransferStore); ok {
-		storedShare := *share
-		s.mu.Unlock()
-		updated, publishErr := atomicStore.PublishTransfer(ctx, transfer.ID, storedShare, now)
-		s.mu.Lock()
-		if publishErr != nil {
-			if isStoreNotFound(publishErr) {
-				return TransferView{}, E(http.StatusNotFound, "transfer_not_found", "transfer not found")
-			}
-			if errors.Is(publishErr, ErrTransferStoreCanceled) {
-				return TransferView{}, E(http.StatusGone, "transfer_canceled", "transfer was canceled")
-			}
-			if errors.Is(publishErr, ErrStoreConflict) {
-				return TransferView{}, E(http.StatusConflict, "transfer_incomplete", "every file must finish uploading before the transfer can be published")
-			}
-			return TransferView{}, publishErr
-		}
-		transfer = s.cacheTransferLocked(updated)
-		// Only a committed share may enter the cache: a publish retry returns
-		// the stored row without inserting this request's fresh credentials.
-		if updated.ShareID != "" {
-			_, _ = s.shareByIDLocked(ctx, updated.ShareID)
-		}
-		return s.viewTransferLocked(ctx, transfer)
-	}
-	if err := s.createShareLocked(ctx, share); err != nil {
+	share, published, err := s.publishTransferShareLocked(ctx, transfer, paste, userID, now)
+	if err != nil {
 		return TransferView{}, err
+	}
+	if published {
+		// The store published the transfer itself and already cached the row.
+		return s.viewTransferLocked(ctx, transfer)
 	}
 	transfer.Status = TransferStatusPublished
 	transfer.ShareID = share.ID
@@ -787,6 +756,72 @@ func (s *Service) publishTransferLocked(ctx context.Context, userID string, tran
 		return TransferView{}, err
 	}
 	return s.viewTransferLocked(ctx, transfer)
+}
+
+// publishTransferShareLocked mints the share credentials for a transfer. The
+// pickup code must be unique among every stored code, so a collision is retried
+// with a fresh code rather than failing a publish whose files already landed.
+//
+// published reports that an atomic transfer store published the transfer and
+// cached the stored row on the caller's behalf, so no share is returned.
+func (s *Service) publishTransferShareLocked(ctx context.Context, transfer *Transfer, paste *Paste, userID string, now time.Time) (*Share, bool, error) {
+	atomicStore, atomic := s.content.Transfers.(AtomicTransferStore)
+	for attempt := 0; attempt < maxPickupCodeAttempts; attempt++ {
+		code, err := newPickupCode()
+		if err != nil {
+			return nil, false, err
+		}
+		shareToken := newToken()
+		share := &Share{
+			ID:            s.newID("shr"),
+			PasteID:       paste.ID,
+			UserID:        userID,
+			Token:         shareToken,
+			TokenHash:     tokenHash(shareToken),
+			PickupCode:    code,
+			PasswordHash:  transfer.PasswordHash,
+			LoginRequired: transfer.LoginRequired,
+			ExpiresAt:     transfer.ExpiresAt,
+			CreatedAt:     now,
+		}
+		if atomic {
+			storedShare := *share
+			s.mu.Unlock()
+			updated, publishErr := atomicStore.PublishTransfer(ctx, transfer.ID, storedShare, now)
+			s.mu.Lock()
+			if publishErr == nil {
+				*transfer = *s.cacheTransferLocked(updated)
+				// Only a committed share may enter the cache: a publish retry
+				// returns the stored row without inserting this request's fresh
+				// credentials.
+				if updated.ShareID != "" {
+					_, _ = s.shareByIDLocked(ctx, updated.ShareID)
+				}
+				return nil, true, nil
+			}
+			if errors.Is(publishErr, ErrSharePickupCodeExists) {
+				continue
+			}
+			if isStoreNotFound(publishErr) {
+				return nil, false, E(http.StatusNotFound, "transfer_not_found", "transfer not found")
+			}
+			if errors.Is(publishErr, ErrTransferStoreCanceled) {
+				return nil, false, E(http.StatusGone, "transfer_canceled", "transfer was canceled")
+			}
+			if errors.Is(publishErr, ErrStoreConflict) {
+				return nil, false, E(http.StatusConflict, "transfer_incomplete", "every file must finish uploading before the transfer can be published")
+			}
+			return nil, false, publishErr
+		}
+		if err := s.createShareLocked(ctx, share); err != nil {
+			if errors.Is(err, ErrSharePickupCodeExists) {
+				continue
+			}
+			return nil, false, err
+		}
+		return share, false, nil
+	}
+	return nil, false, E(http.StatusInternalServerError, "pickup_code_unavailable", "could not allocate a pickup code for this transfer")
 }
 
 func (s *Service) ensureTransferCompleteLocked(ctx context.Context, transfer *Transfer, paste *Paste) error {

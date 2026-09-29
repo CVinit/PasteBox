@@ -3,9 +3,10 @@ package app
 import (
 	"context"
 	"net/http"
-	"pastebox/internal/plans"
 	"strings"
 	"time"
+
+	"pastebox/internal/plans"
 )
 
 func (s *Service) ownerPasteLocked(ctx context.Context, userID string, id string) (*Paste, error) {
@@ -210,12 +211,18 @@ func (s *Service) attachmentsForPasteLocked(paste *Paste) []*Attachment {
 	return out
 }
 
+// shareURLLocked is the one place a share URL is built, so a pickup code and a
+// link always describe the same address.
+func (s *Service) shareURLLocked(token string) string {
+	return strings.TrimRight(s.cfg.PublicURL, "/") + "/s/" + token
+}
+
 func (s *Service) viewShareLocked(share *Share) ShareView {
 	return ShareView{
 		ID:               share.ID,
 		PasteID:          share.PasteID,
 		Token:            share.Token,
-		URL:              strings.TrimRight(s.cfg.PublicURL, "/") + "/s/" + share.Token,
+		URL:              s.shareURLLocked(share.Token),
 		HasPassword:      share.PasswordHash != "",
 		LoginRequired:    share.LoginRequired,
 		MaxVisits:        share.MaxVisits,

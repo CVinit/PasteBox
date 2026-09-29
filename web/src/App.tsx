@@ -4208,6 +4208,7 @@ function App() {
           url: published.transfer.share?.url ?? "",
           expiresAt:
             published.transfer.share?.expiresAt ?? published.transfer.expiresAt,
+          pickupCode: published.transfer.pickupCode,
           pasteId: published.transfer.pasteId,
         };
       },
@@ -5704,6 +5705,12 @@ function App() {
                       {t("copy")}
                     </button>
                   </div>
+                  <PickupCodeRow
+                    code={sendQueue.share.pickupCode ?? ""}
+                    labelClassName="status-line"
+                    labels={transferLabels}
+                    onCopy={(code) => void navigator.clipboard?.writeText(code)}
+                  />
                   <p className="status-line">
                     {transferLabels.validUntil}{" "}
                     {new Date(sendQueue.share.expiresAt).toLocaleString()}
@@ -8083,6 +8090,10 @@ type TransferCopy = {
   pickupPlaceholder: string;
   pickupOpen: string;
   pickupInvalid: string;
+  pickupCodeLabel: string;
+  copyCode: string;
+  pickupCodeCopied: string;
+  pickupRateLimited: string;
   dropFilesHint: string;
   chooseFiles: string;
   filesStaged: string;
@@ -8115,10 +8126,14 @@ const transferCopy: Record<Locale, TransferCopy> = {
     cancelSend: "Cancel this send",
     canceled: "The send was canceled and its content will be cleaned up.",
     pickupTitle: "Get files",
-    pickupHint: "Open a share link someone sent you.",
-    pickupPlaceholder: "Paste the share link",
-    pickupOpen: "Open link",
-    pickupInvalid: "Enter a valid PasteBox share link.",
+    pickupHint: "Open a share link or type the 6-character code you were sent.",
+    pickupPlaceholder: "Share link or 6-character code",
+    pickupOpen: "Open",
+    pickupInvalid: "That link or pickup code is invalid or has expired.",
+    pickupCodeLabel: "Pickup code",
+    copyCode: "Copy code",
+    pickupCodeCopied: "Pickup code copied.",
+    pickupRateLimited: "Too many pickup code attempts. Try again shortly.",
     dropFilesHint: "Drop files here or choose several at once",
     chooseFiles: "Choose files",
     filesStaged: "{count} files ready to send",
@@ -8149,10 +8164,14 @@ const transferCopy: Record<Locale, TransferCopy> = {
     cancelSend: "取消这次发送",
     canceled: "已取消这次发送，内容会进入后台清理。",
     pickupTitle: "取文件",
-    pickupHint: "打开别人发来的分享链接。",
-    pickupPlaceholder: "粘贴分享链接",
-    pickupOpen: "打开链接",
-    pickupInvalid: "请输入有效的 PasteBox 分享链接。",
+    pickupHint: "打开分享链接，或输入收到的 6 位取件码。",
+    pickupPlaceholder: "分享链接或 6 位取件码",
+    pickupOpen: "打开",
+    pickupInvalid: "链接或取件码无效，或已过期。",
+    pickupCodeLabel: "取件码",
+    copyCode: "复制取件码",
+    pickupCodeCopied: "取件码已复制。",
+    pickupRateLimited: "取件码尝试次数过多，请稍后再试。",
     dropFilesHint: "拖入文件，或一次选择多个文件",
     chooseFiles: "选择文件",
     filesStaged: "已选 {count} 个文件",
@@ -8183,10 +8202,14 @@ const transferCopy: Record<Locale, TransferCopy> = {
     cancelSend: "取消這次傳送",
     canceled: "已取消這次傳送，內容會進入背景清理。",
     pickupTitle: "取檔案",
-    pickupHint: "開啟別人傳來的分享連結。",
-    pickupPlaceholder: "貼上分享連結",
-    pickupOpen: "開啟連結",
-    pickupInvalid: "請輸入有效的 PasteBox 分享連結。",
+    pickupHint: "開啟分享連結，或輸入收到的 6 位取件碼。",
+    pickupPlaceholder: "分享連結或 6 位取件碼",
+    pickupOpen: "開啟",
+    pickupInvalid: "連結或取件碼無效，或已過期。",
+    pickupCodeLabel: "取件碼",
+    copyCode: "複製取件碼",
+    pickupCodeCopied: "取件碼已複製。",
+    pickupRateLimited: "取件碼嘗試次數過多，請稍後再試。",
     dropFilesHint: "拖入檔案，或一次選擇多個檔案",
     chooseFiles: "選擇檔案",
     filesStaged: "已選 {count} 個檔案",
@@ -8217,10 +8240,16 @@ const transferCopy: Record<Locale, TransferCopy> = {
     cancelSend: "Cancelar este envío",
     canceled: "Envío cancelado; su contenido se limpiará en segundo plano.",
     pickupTitle: "Recibir archivos",
-    pickupHint: "Abre un enlace que te hayan enviado.",
-    pickupPlaceholder: "Pega el enlace",
-    pickupOpen: "Abrir enlace",
-    pickupInvalid: "Introduce un enlace de PasteBox válido.",
+    pickupHint:
+      "Abre un enlace o escribe el código de 6 caracteres que te enviaron.",
+    pickupPlaceholder: "Enlace o código de 6 caracteres",
+    pickupOpen: "Abrir",
+    pickupInvalid: "El enlace o el código no es válido o ha caducado.",
+    pickupCodeLabel: "Código de recogida",
+    copyCode: "Copiar código",
+    pickupCodeCopied: "Código copiado.",
+    pickupRateLimited:
+      "Demasiados intentos de código. Inténtalo en un momento.",
     dropFilesHint: "Arrastra archivos o elige varios a la vez",
     chooseFiles: "Elegir archivos",
     filesStaged: "{count} archivos listos para enviar",
@@ -8393,18 +8422,82 @@ function shareTokenFromShareLink(value: string): string {
   return "";
 }
 
+// A typed pickup code is 6 alphanumerics, with the separators people add by
+// hand removed. The server owns the exact alphabet (it rejects characters that
+// are easy to confuse) and the access rules, so this only screens out input
+// that cannot be a code at all.
+function pickupCodeFromInput(value: string): string {
+  const code = value
+    .trim()
+    .replace(/[\s_-]+/g, "")
+    .toUpperCase();
+  return /^[A-Z0-9]{6}$/.test(code) ? code : "";
+}
+
+// PickupCodeRow shows the short code beside the share link on both success
+// pages, so a sender can hand over 6 characters instead of a long URL. Each
+// page supplies its own copy confirmation.
+function PickupCodeRow({
+  code,
+  labelClassName,
+  labels,
+  onCopy,
+}: {
+  code: string;
+  labelClassName: string;
+  labels: TransferCopy;
+  onCopy: (code: string) => void;
+}) {
+  if (!code) return null;
+  return (
+    <>
+      <p className={labelClassName}>{labels.pickupCodeLabel}</p>
+      <div className="guest-share-result">
+        <input aria-label={labels.pickupCodeLabel} readOnly value={code} />
+        <button type="button" onClick={() => onCopy(code)}>
+          <ClipboardCopy size={16} aria-hidden="true" />
+          {labels.copyCode}
+        </button>
+      </div>
+    </>
+  );
+}
+
 function PickupEntry({ locale }: { locale: Locale }) {
   const labels = transferCopyFor(locale);
   const [value, setValue] = useState("");
   const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
 
-  function openLink() {
+  // A pasted link already carries its token, so only a typed code needs a
+  // lookup. Both end up on the same share page with the same password and
+  // login rules.
+  async function openEntry() {
     const token = shareTokenFromShareLink(value);
-    if (!token) {
+    if (token) {
+      window.location.href = `/s/${encodeURIComponent(token)}`;
+      return;
+    }
+    const code = pickupCodeFromInput(value);
+    if (!code) {
       setMessage(labels.pickupInvalid);
       return;
     }
-    window.location.href = `/s/${encodeURIComponent(token)}`;
+    setBusy(true);
+    setMessage("");
+    try {
+      const resolved = await client.resolvePickupCode(code);
+      window.location.href = `/s/${encodeURIComponent(resolved.token)}`;
+    } catch (error) {
+      const apiError = error as ApiError;
+      setMessage(
+        apiError.status === 429
+          ? labels.pickupRateLimited
+          : labels.pickupInvalid,
+      );
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -8412,7 +8505,7 @@ function PickupEntry({ locale }: { locale: Locale }) {
       className="pickup-entry"
       onSubmit={(event) => {
         event.preventDefault();
-        openLink();
+        void openEntry();
       }}
     >
       <div className="pickup-entry-heading">
@@ -8429,7 +8522,7 @@ function PickupEntry({ locale }: { locale: Locale }) {
             setMessage("");
           }}
         />
-        <button type="submit">
+        <button disabled={busy} type="submit">
           <Link2 size={16} aria-hidden="true" />
           {labels.pickupOpen}
         </button>
@@ -8762,6 +8855,7 @@ function GuestWorkbench({
           url: published.transfer.share?.url ?? "",
           expiresAt:
             published.transfer.share?.expiresAt ?? published.transfer.expiresAt,
+          pickupCode: published.transfer.pickupCode,
         };
       },
       cancel: async (transferId) => {
@@ -8920,13 +9014,13 @@ function GuestWorkbench({
     transferLabels,
   );
 
-  async function copyShareLink(url: string) {
-    if (!url) return;
+  async function copyGuestText(value: string, message = labels.copied) {
+    if (!value) return;
     try {
-      await navigator.clipboard?.writeText(url);
-      setStatus(labels.copied);
+      await navigator.clipboard?.writeText(value);
+      setStatus(message);
     } catch {
-      setStatus(url);
+      setStatus(value);
     }
   }
 
@@ -9152,12 +9246,20 @@ function GuestWorkbench({
             <input readOnly value={guestQueue.share.url} />
             <button
               type="button"
-              onClick={() => void copyShareLink(guestQueue.share?.url ?? "")}
+              onClick={() => void copyGuestText(guestQueue.share?.url ?? "")}
             >
               <ClipboardCopy size={16} aria-hidden="true" />
               {labels.copyLink}
             </button>
           </div>
+          <PickupCodeRow
+            code={guestQueue.share.pickupCode ?? ""}
+            labelClassName="guest-status"
+            labels={transferLabels}
+            onCopy={(code) =>
+              void copyGuestText(code, transferLabels.pickupCodeCopied)
+            }
+          />
           <p className="guest-status">
             {transferLabels.validUntil}{" "}
             {new Date(guestQueue.share.expiresAt).toLocaleString()}
@@ -9167,7 +9269,7 @@ function GuestWorkbench({
       {shareUrl ? (
         <div className="guest-share-result">
           <input readOnly value={shareUrl} />
-          <button type="button" onClick={() => void copyShareLink(shareUrl)}>
+          <button type="button" onClick={() => void copyGuestText(shareUrl)}>
             <ClipboardCopy size={16} aria-hidden="true" />
             {labels.copyLink}
           </button>

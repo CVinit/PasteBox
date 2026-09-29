@@ -14,6 +14,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -243,6 +244,10 @@ func (s *Server) routes() http.Handler {
 		})
 
 		r.Get("/attachments/{attachmentID}/download", s.downloadAttachment)
+
+		// A pickup code is a public credential, so resolving it sits beside the
+		// other credential entry points instead of behind a session.
+		r.Post("/pickups", s.resolvePickupCode)
 
 		r.Route("/shares", func(r chi.Router) {
 			r.Get("/", s.listShares)
@@ -2084,6 +2089,8 @@ func (s *Server) rateLimitRule(r *http.Request) (rateLimitRule, bool) {
 		return rateLimitRule{Category: "auth", Limit: cfg.LoginLimit, Window: window}, cfg.LoginLimit > 0
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "/api/v1/shares/") && strings.HasSuffix(path, "/access"):
 		return rateLimitRule{Category: "share_access", Limit: cfg.ShareAccessLimit, Window: window}, cfg.ShareAccessLimit > 0
+	case r.Method == http.MethodPost && path == "/api/v1/pickups":
+		return rateLimitRule{Category: "pickup", Limit: cfg.ShareAccessLimit, Window: window}, cfg.ShareAccessLimit > 0
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/download"):
 		return rateLimitRule{Category: "download", Limit: cfg.DownloadLimit, Window: window}, cfg.DownloadLimit > 0
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "/api/v1/pastes/") && strings.HasSuffix(path, "/attachments"):
@@ -3189,6 +3196,10 @@ func (s *Server) secureSessionCookie(r *http.Request) bool {
 func (s *Server) handleErr(w http.ResponseWriter, err error) bool {
 	if err == nil {
 		return false
+	}
+	var appErr *app.Error
+	if errors.As(err, &appErr) && appErr.RetryAfterSeconds > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(appErr.RetryAfterSeconds))
 	}
 	status, payload := app.ErrorResponse(err)
 	writeJSON(w, status, payload)

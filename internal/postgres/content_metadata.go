@@ -22,7 +22,39 @@ var (
 	ErrObjectRefNotFound  = errors.Join(errors.New("postgres object ref not found"), app.ErrStoreNotFound)
 	ErrShareNotFound      = errors.Join(errors.New("postgres share not found"), app.ErrStoreNotFound)
 	ErrShareTokenExists   = errors.Join(errors.New("postgres share token exists"), app.ErrStoreConflict)
+	// ErrSharePickupCodeExists reports a pickup-code collision so publishing can
+	// retry with a fresh code.
+	ErrSharePickupCodeExists = errors.Join(errors.New("postgres share pickup code exists"), app.ErrSharePickupCodeExists)
 )
+
+// shareColumns lists the share row columns in the order scanShare reads them.
+const shareColumns = `id, paste_id, user_id, token_hash, token_ciphertext, pickup_code, password_hash, login_required, max_visits, max_downloads, visit_count, download_count, expires_at, revoked_at, created_at, last_visited_at, last_downloaded_at, last_access_failure`
+
+// shareInsert is the one INSERT for a share row: the plain share store and the
+// transfer publish transaction write the same shape.
+const shareInsert = `INSERT INTO shares (` + shareColumns + `)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`
+
+func shareInsertArgs(share app.Share) []any {
+	return []any{
+		share.ID, share.PasteID, share.UserID, share.TokenHash, share.Token, share.PickupCode,
+		share.PasswordHash, share.LoginRequired, share.MaxVisits, share.MaxDownloads,
+		share.VisitCount, share.DownloadCount, share.ExpiresAt, share.RevokedAt, share.CreatedAt,
+		share.LastVisitedAt, share.LastDownloadedAt, share.LastAccessFailure,
+	}
+}
+
+// shareInsertError maps the share uniqueness constraints onto the sentinels
+// callers retry on, and wraps anything else with the operation that failed.
+func shareInsertError(operation string, err error) error {
+	if isUniqueViolation(err, "shares_token_hash_key") {
+		return ErrShareTokenExists
+	}
+	if isUniqueViolation(err, "shares_pickup_code_idx") {
+		return ErrSharePickupCodeExists
+	}
+	return fmt.Errorf("%s: %w", operation, err)
+}
 
 type ObjectRef = app.ObjectRef
 
@@ -682,40 +714,15 @@ func NewShareStore(pool *pgxpool.Pool) *ShareStore {
 }
 
 func (s *ShareStore) CreateShare(ctx context.Context, share app.Share) error {
-	if _, err := s.pool.Exec(ctx, `
-INSERT INTO shares (
-	id,
-	paste_id,
-	user_id,
-	token_hash,
-	token_ciphertext,
-	password_hash,
-	login_required,
-	max_visits,
-	max_downloads,
-	visit_count,
-	download_count,
-	expires_at,
-	revoked_at,
-	created_at,
-	last_visited_at,
-	last_downloaded_at,
-	last_access_failure
-) VALUES (
-	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
-)
-`, share.ID, share.PasteID, share.UserID, share.TokenHash, share.Token, share.PasswordHash, share.LoginRequired, share.MaxVisits, share.MaxDownloads, share.VisitCount, share.DownloadCount, share.ExpiresAt, share.RevokedAt, share.CreatedAt, share.LastVisitedAt, share.LastDownloadedAt, share.LastAccessFailure); err != nil {
-		if isUniqueViolation(err, "shares_token_hash_key") {
-			return ErrShareTokenExists
-		}
-		return fmt.Errorf("create share: %w", err)
+	if _, err := s.pool.Exec(ctx, shareInsert, shareInsertArgs(share)...); err != nil {
+		return shareInsertError("create share", err)
 	}
 	return nil
 }
 
 func (s *ShareStore) ShareByID(ctx context.Context, id string) (app.Share, error) {
 	return s.queryShare(ctx, `
-SELECT id, paste_id, user_id, token_hash, token_ciphertext, password_hash, login_required, max_visits, max_downloads, visit_count, download_count, expires_at, revoked_at, created_at, last_visited_at, last_downloaded_at, last_access_failure
+SELECT `+shareColumns+`
 FROM shares
 WHERE id = $1
 `, id)
@@ -723,15 +730,25 @@ WHERE id = $1
 
 func (s *ShareStore) ShareByTokenHash(ctx context.Context, tokenHash string) (app.Share, error) {
 	return s.queryShare(ctx, `
-SELECT id, paste_id, user_id, token_hash, token_ciphertext, password_hash, login_required, max_visits, max_downloads, visit_count, download_count, expires_at, revoked_at, created_at, last_visited_at, last_downloaded_at, last_access_failure
+SELECT `+shareColumns+`
 FROM shares
 WHERE token_hash = $1
 `, tokenHash)
 }
 
+// ShareByPickupCode resolves the 6-character code a recipient typed. Codes are
+// unique across every stored share, so at most one row matches.
+func (s *ShareStore) ShareByPickupCode(ctx context.Context, code string) (app.Share, error) {
+	return s.queryShare(ctx, `
+SELECT `+shareColumns+`
+FROM shares
+WHERE pickup_code = $1
+`, code)
+}
+
 func (s *ShareStore) ListSharesByUser(ctx context.Context, userID string) ([]app.Share, error) {
 	rows, err := s.pool.Query(ctx, `
-SELECT id, paste_id, user_id, token_hash, token_ciphertext, password_hash, login_required, max_visits, max_downloads, visit_count, download_count, expires_at, revoked_at, created_at, last_visited_at, last_downloaded_at, last_access_failure
+SELECT `+shareColumns+`
 FROM shares
 WHERE user_id = $1
 ORDER BY created_at DESC, id DESC
@@ -756,7 +773,7 @@ ORDER BY created_at DESC, id DESC
 
 func (s *ShareStore) ListSharesByPaste(ctx context.Context, pasteID string) ([]app.Share, error) {
 	rows, err := s.pool.Query(ctx, `
-SELECT id, paste_id, user_id, token_hash, token_ciphertext, password_hash, login_required, max_visits, max_downloads, visit_count, download_count, expires_at, revoked_at, created_at, last_visited_at, last_downloaded_at, last_access_failure
+SELECT `+shareColumns+`
 FROM shares
 WHERE paste_id = $1
 ORDER BY created_at DESC, id DESC
@@ -781,7 +798,7 @@ ORDER BY created_at DESC, id DESC
 
 func (s *ShareStore) ListShares(ctx context.Context) ([]app.Share, error) {
 	rows, err := s.pool.Query(ctx, `
-SELECT id, paste_id, user_id, token_hash, token_ciphertext, password_hash, login_required, max_visits, max_downloads, visit_count, download_count, expires_at, revoked_at, created_at, last_visited_at, last_downloaded_at, last_access_failure
+SELECT `+shareColumns+`
 FROM shares
 ORDER BY created_at DESC, id DESC
 `)
@@ -805,7 +822,7 @@ ORDER BY created_at DESC, id DESC
 
 func (s *ShareStore) ListSharesPage(ctx context.Context, limit int, offset int) ([]app.Share, error) {
 	rows, err := s.pool.Query(ctx, `
-SELECT id, paste_id, user_id, token_hash, token_ciphertext, password_hash, login_required, max_visits, max_downloads, visit_count, download_count, expires_at, revoked_at, created_at, last_visited_at, last_downloaded_at, last_access_failure
+SELECT `+shareColumns+`
 FROM shares
 ORDER BY created_at DESC, id DESC
 LIMIT $1 OFFSET $2
@@ -868,7 +885,7 @@ func (s *ShareStore) ConsumeShareVisit(ctx context.Context, shareID string, now 
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	share, err := scanShare(tx.QueryRow(ctx, `
-SELECT id, paste_id, user_id, token_hash, token_ciphertext, password_hash, login_required, max_visits, max_downloads, visit_count, download_count, expires_at, revoked_at, created_at, last_visited_at, last_downloaded_at, last_access_failure
+SELECT `+shareColumns+`
 FROM shares
 WHERE id = $1
 FOR UPDATE
@@ -911,7 +928,7 @@ func (s *ShareStore) ConsumeShareDownload(ctx context.Context, shareID string, a
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	share, err := scanShare(tx.QueryRow(ctx, `
-SELECT id, paste_id, user_id, token_hash, token_ciphertext, password_hash, login_required, max_visits, max_downloads, visit_count, download_count, expires_at, revoked_at, created_at, last_visited_at, last_downloaded_at, last_access_failure
+SELECT `+shareColumns+`
 FROM shares
 WHERE id = $1
 FOR UPDATE
@@ -1076,6 +1093,7 @@ func scanShare(row rowScanner) (app.Share, error) {
 		&share.UserID,
 		&share.TokenHash,
 		&share.Token,
+		&share.PickupCode,
 		&share.PasswordHash,
 		&share.LoginRequired,
 		&share.MaxVisits,

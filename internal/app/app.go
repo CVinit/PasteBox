@@ -51,6 +51,8 @@ type Service struct {
 	dailyMetrics            DailyMetricStore
 	sharesByID              map[string]*Share
 	shareIDByToken          map[string]string
+	shareIDByPickupCode     map[string]string
+	pickupAttempts          map[string]memoryPickupAttempt
 	transfersByID           map[string]*Transfer
 	transferIDByIdemKey     map[string]string
 	transferItems           map[string]*TransferItem
@@ -137,6 +139,8 @@ func NewWithStorage(ctx context.Context, cfg config.Config, stores Stores) (*Ser
 		dailyMetrics:          newMemoryDailyMetricStore(),
 		sharesByID:            map[string]*Share{},
 		shareIDByToken:        map[string]string{},
+		shareIDByPickupCode:   map[string]string{},
+		pickupAttempts:        map[string]memoryPickupAttempt{},
 		transfersByID:         map[string]*Transfer{},
 		transferIDByIdemKey:   map[string]string{},
 		transferItems:         map[string]*TransferItem{},
