@@ -14,6 +14,7 @@ type ContentStores struct {
 	Attachments AttachmentStore
 	ObjectRefs  ObjectRefStore
 	Shares      ShareStore
+	Transfers   TransferStore
 }
 
 type ObjectStore interface {
@@ -153,4 +154,29 @@ type SharesByPasteStore interface {
 type AtomicShareStore interface {
 	ConsumeShareVisit(ctx context.Context, shareID string, now time.Time) (Share, error)
 	ConsumeShareDownload(ctx context.Context, shareID string, attachmentID string, userID string, dailyLimit int64, now time.Time) (Share, Attachment, error)
+}
+
+// ErrTransferStoreCanceled lets a store report that a publish lost to a
+// concurrent cancel. It also satisfies ErrStoreConflict so callers that only
+// care about the conflict still match it.
+var ErrTransferStoreCanceled = errors.Join(errors.New("transfer was canceled"), ErrStoreConflict)
+
+type TransferStore interface {
+	CreateTransfer(ctx context.Context, transfer Transfer) error
+	TransferByID(ctx context.Context, id string) (Transfer, error)
+	TransferByIdempotencyKey(ctx context.Context, userID string, key string) (Transfer, error)
+	ListTransfersByUser(ctx context.Context, userID string) ([]Transfer, error)
+	UpdateTransfer(ctx context.Context, transfer Transfer) error
+
+	CreateTransferItem(ctx context.Context, item TransferItem) error
+	TransferItem(ctx context.Context, transferID string, itemID string) (TransferItem, error)
+	ListTransferItems(ctx context.Context, transferID string) ([]TransferItem, error)
+	UpdateTransferItem(ctx context.Context, item TransferItem) error
+}
+
+// AtomicTransferStore publishes a transfer and its share in a single
+// transaction. Concurrent publish retries must not mint two shares for the
+// same transfer, and a transfer with unfinished items must never be published.
+type AtomicTransferStore interface {
+	PublishTransfer(ctx context.Context, transferID string, share Share, now time.Time) (Transfer, error)
 }

@@ -328,6 +328,7 @@ func newProductionService(ctx context.Context, cfg config.Config) (*app.Service,
 			Attachments: attachmentStore,
 			ObjectRefs:  attachmentStore,
 			Shares:      postgres.NewShareStore(pool),
+			Transfers:   postgres.NewTransferStore(pool),
 		},
 		Objects: objects,
 		Operational: app.OperationalStores{

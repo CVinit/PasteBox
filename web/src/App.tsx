@@ -114,6 +114,12 @@ type ShareDraft = {
   expiresInSeconds: number;
 };
 
+type SendState =
+  | { phase: "idle" }
+  | { phase: "sending"; transferId: string; fileName: string }
+  | { phase: "sent"; transferId: string; url: string; expiresAt: string }
+  | { phase: "failed"; transferId: string; message: string };
+
 type RedemptionDraft = {
   planId: string;
   durationDays: number;
@@ -843,7 +849,7 @@ function moveToWorkspacePath() {
 
 const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
   en: {
-    privateCloudClipboard: "Private cloud clipboard",
+    privateCloudClipboard: "File transfer · cross-device",
     sharedPaste: "Shared paste",
     email: "Email",
     password: "Password",
@@ -1263,7 +1269,7 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     unitRequests: "requests",
   },
   "zh-CN": {
-    privateCloudClipboard: "私有云剪切板",
+    privateCloudClipboard: "文件中转 · 跨设备传文件",
     sharedPaste: "分享内容",
     email: "邮箱",
     password: "密码",
@@ -1686,7 +1692,7 @@ const copy: Record<Locale, Record<string, string>> = {
   "zh-CN": baseCopy["zh-CN"],
   "zh-TW": {
     ...baseCopy["zh-CN"],
-    privateCloudClipboard: "私有雲剪貼簿",
+    privateCloudClipboard: "檔案中轉 · 跨裝置傳檔案",
     sharedPaste: "分享內容",
     email: "電子郵件",
     password: "密碼",
@@ -2053,7 +2059,7 @@ const copy: Record<Locale, Record<string, string>> = {
   },
   es: {
     ...baseCopy.en,
-    privateCloudClipboard: "Portapapeles privado en la nube",
+    privateCloudClipboard: "Transferencia de archivos",
     sharedPaste: "Paste compartido",
     email: "Correo",
     password: "Contraseña",
@@ -3433,10 +3439,10 @@ function landingContentFor(locale: Locale): LandingContent {
       navProduct: "產品",
       navSecurity: "安全",
       navPricing: "方案",
-      eyebrow: "跨裝置 · 線上剪貼簿",
-      title: "隨手一存，換裝置秒接著用。",
+      eyebrow: "跨裝置 · 檔案中轉",
+      title: "傳檔案、取檔案，換個裝置接著用。",
       subtitle:
-        "免安裝、打開就用。貼上文字、圖片或檔案，產生可設密碼、可撤銷、會自動到期的分享連結，登入後還能保留歷史和更大容量。",
+        "打開就能傳檔案：選擇或拖入檔案，上傳完成後產生分享連結，接收方打開連結即可下載。文字和圖片分享照舊，登入後還有歷史記錄和更大容量。",
       primaryCta: "免費註冊",
       secondaryCta: "登入",
       workspaceLabel: "PasteBox 工作台",
@@ -3460,11 +3466,11 @@ function landingContentFor(locale: Locale): LandingContent {
         },
       ],
       steps: [
-        { title: "貼上", body: "保存文字、連結、憑證片段或交付說明。" },
-        { title: "附加檔案", body: "把圖片或檔案拖到同一條內容，上下文不丟。" },
-        { title: "分享", body: "產生限時連結，發出去之後還能隨時撤銷。" },
+        { title: "選檔案", body: "預設檔案模式，選擇或拖入要傳送的檔案。" },
+        { title: "產生連結", body: "全部檔案上傳成功後產生分享連結和有效期。" },
+        { title: "對方取件", body: "接收方打開連結查看檔案清單並逐個下載。" },
       ],
-      ctaTitle: "現在就把第一條內容存進來。",
+      ctaTitle: "現在就把第一個檔案傳出去。",
       ctaBody: "免費註冊，立刻拿到歷史記錄、更大容量和完整的分享控制。",
       ctaBadges: ["免費開始", "免安裝", "可隨時撤銷", "附件已掃描"],
     };
@@ -3475,10 +3481,10 @@ function landingContentFor(locale: Locale): LandingContent {
       navProduct: "产品",
       navSecurity: "安全",
       navPricing: "套餐",
-      eyebrow: "跨设备 · 在线剪切板",
-      title: "随手一存，换设备秒接着用。",
+      eyebrow: "跨设备 · 文件中转",
+      title: "发文件、取文件，换个设备接着用。",
       subtitle:
-        "免安装、打开就用。粘贴文字、图片或文件，生成可设密码、可撤销、会自动到期的分享链接，登录后还能保留历史和更大容量。",
+        "打开就能发文件：选择或拖入文件，上传完成后生成分享链接，接收方打开链接即可下载。文本和图片分享照旧，登录后还有历史记录和更大容量。",
       primaryCta: "免费注册",
       secondaryCta: "登录",
       workspaceLabel: "PasteBox 工作台",
@@ -3502,11 +3508,11 @@ function landingContentFor(locale: Locale): LandingContent {
         },
       ],
       steps: [
-        { title: "粘贴", body: "保存文本、链接、凭据片段或交付说明。" },
-        { title: "附加文件", body: "把图片或文件拖到同一条内容，上下文不丢。" },
-        { title: "分享", body: "生成限时链接，发出去之后还能随时撤销。" },
+        { title: "选文件", body: "默认文件模式，选择或拖入要发送的文件。" },
+        { title: "生成链接", body: "全部文件上传成功后生成分享链接和有效期。" },
+        { title: "对方取件", body: "接收方打开链接查看文件清单并逐个下载。" },
       ],
-      ctaTitle: "现在就把第一条内容存进来。",
+      ctaTitle: "现在就把第一个文件发出去。",
       ctaBody: "免费注册，立刻拿到历史记录、更大容量和完整的分享控制。",
       ctaBadges: ["免费开始", "免安装", "可随时撤销", "附件已扫描"],
     };
@@ -3517,10 +3523,10 @@ function landingContentFor(locale: Locale): LandingContent {
       navProduct: "Producto",
       navSecurity: "Seguridad",
       navPricing: "Planes",
-      eyebrow: "Portapapeles online entre dispositivos",
-      title: "Guárdalo aquí y retómalo en otro dispositivo al instante.",
+      eyebrow: "Transferencia de archivos entre dispositivos",
+      title: "Envía un archivo y recógelo en otro dispositivo.",
       subtitle:
-        "Sin instalar nada: abre y pega texto, imágenes o archivos. Crea enlaces con contraseña, revocables y con caducidad automática, e inicia sesión cuando quieras historial y más capacidad.",
+        "Abre y envía: elige o arrastra un archivo y el enlace de descarga aparece cuando termina la subida. El texto y las imágenes siguen funcionando igual, y al iniciar sesión tienes historial y más capacidad.",
       primaryCta: "Registrarse gratis",
       secondaryCta: "Iniciar sesión",
       workspaceLabel: "Escritorio PasteBox",
@@ -3546,19 +3552,19 @@ function landingContentFor(locale: Locale): LandingContent {
       ],
       steps: [
         {
-          title: "Pega",
-          body: "Guarda texto, enlaces, credenciales o notas de entrega.",
+          title: "Elige",
+          body: "Modo archivo por defecto: elige o arrastra lo que quieres enviar.",
         },
         {
-          title: "Adjunta",
-          body: "Suelta imágenes o archivos en el mismo contenido y conserva el contexto.",
+          title: "Enlace",
+          body: "Cuando todas las subidas terminan se crean el enlace y su caducidad.",
         },
         {
-          title: "Comparte",
-          body: "Crea enlaces temporales y revócalos cuando quieras.",
+          title: "Recoge",
+          body: "Quien lo recibe abre el enlace, revisa la lista y descarga cada archivo.",
         },
       ],
-      ctaTitle: "Guarda tu primer contenido ahora.",
+      ctaTitle: "Envía tu primer archivo ahora.",
       ctaBody:
         "Regístrate gratis y obtén historial, más capacidad y control total de enlaces al instante.",
       ctaBadges: [
@@ -3574,10 +3580,10 @@ function landingContentFor(locale: Locale): LandingContent {
     navProduct: "Product",
     navSecurity: "Security",
     navPricing: "Pricing",
-    eyebrow: "Cross-device online clipboard",
-    title: "Drop it here, pick it up on any device.",
+    eyebrow: "Cross-device file transfer",
+    title: "Send a file here, pick it up anywhere.",
     subtitle:
-      "No install, no setup. Paste text, images, or files and get a link you can password-protect, revoke, and set to expire on its own. Sign in when you want history and bigger limits.",
+      "Open and send: choose or drop a file and the download link appears once every upload finishes. Text and image sharing still work as before, and signing in adds history and bigger limits.",
     primaryCta: "Register free",
     secondaryCta: "Login",
     workspaceLabel: "PasteBox workspace",
@@ -3602,19 +3608,19 @@ function landingContentFor(locale: Locale): LandingContent {
     ],
     steps: [
       {
-        title: "Paste",
-        body: "Save text, links, credential snippets, or handoff notes.",
+        title: "Choose",
+        body: "File mode is the default: pick or drop the file you want to send.",
       },
       {
-        title: "Attach",
-        body: "Drop images or files into the same paste and keep context together.",
+        title: "Link",
+        body: "Once every upload finishes, the share link and its expiry appear.",
       },
       {
-        title: "Share",
-        body: "Create an expiring link and revoke it anytime after.",
+        title: "Pick up",
+        body: "The recipient opens the link, checks the list, and downloads each file.",
       },
     ],
-    ctaTitle: "Save your first thing right now.",
+    ctaTitle: "Send your first file right now.",
     ctaBody:
       "Register free and get history, bigger limits, and full link control instantly.",
     ctaBadges: ["Free to start", "No install", "Revocable", "Scanned uploads"],
@@ -3932,6 +3938,12 @@ function App() {
     tags: "",
   });
   const [shareDraft, setShareDraft] = useState<ShareDraft>(defaultShareDraft);
+  const [sendState, setSendState] = useState<SendState>({ phase: "idle" });
+  const sendAttempt = useRef<{
+    key: string;
+    fileName: string;
+    size: number;
+  } | null>(null);
   const [shareToken, setShareToken] = useState("");
   const [publicShareToken, setPublicShareToken] = useState(shareTokenFromPath);
   const [publicSharePassword, setPublicSharePassword] = useState("");
@@ -3939,6 +3951,7 @@ function App() {
     paste: Paste;
     share: Share;
   } | null>(null);
+  const shareStatusRefresh = useRef({ token: "", attempts: 0 });
   const [authLink, setAuthLink] = useState<AuthLink | null>(() =>
     authLinkFromLocation(),
   );
@@ -3956,6 +3969,7 @@ function App() {
     turnstileToken: "",
   });
   const attachmentInputId = useId();
+  const attachInputId = useId();
   const [resetToken, setResetToken] = useState("");
   const [profileDraft, setProfileDraft] = useState({
     displayName: "",
@@ -3973,9 +3987,35 @@ function App() {
     [requestLocale, user?.language],
   );
   const t = useMemo(() => copyFor(locale), [locale]);
+  const transferLabels = useMemo(() => transferCopyFor(locale), [locale]);
   useEffect(() => {
     document.documentElement.lang = locale;
   }, [locale]);
+  // A published file stays unavailable to recipients until the virus scan
+  // finishes, so re-read the share while anything is still pending. Status
+  // refreshes consume a visit, so only unlimited-visit shares (the transfer
+  // default) are refreshed here; a non-consuming status channel is tracked
+  // separately.
+  useEffect(() => {
+    if (!shareAccess || shareAccess.share.maxVisits > 0) return;
+    const share = shareAccess.share;
+    const pending = shareAccess.paste.attachments.some(
+      (attachment) => attachment.scanStatus === "pending",
+    );
+    if (!pending) return;
+    if (shareStatusRefresh.current.token !== share.token) {
+      shareStatusRefresh.current = { token: share.token, attempts: 0 };
+    }
+    if (shareStatusRefresh.current.attempts >= 20) return;
+    shareStatusRefresh.current.attempts += 1;
+    const timer = window.setTimeout(() => {
+      void client
+        .accessShare(share.token, publicSharePassword)
+        .then((result) => setShareAccess(result))
+        .catch(() => undefined);
+    }, 3000);
+    return () => window.clearTimeout(timer);
+  }, [shareAccess, publicSharePassword]);
   const publicPage = useMemo(
     () =>
       typeof window !== "undefined"
@@ -3989,9 +4029,9 @@ function App() {
   const workspaceRoute = isWorkspacePath(currentPath);
   const shouldProbeSession = Boolean(
     authLink?.kind === "email-verification" ||
-    workspaceRoute ||
-    authRoute ||
-    currentPath === "/",
+      workspaceRoute ||
+      authRoute ||
+      currentPath === "/",
   );
 
   useEffect(() => {
@@ -4512,7 +4552,88 @@ function App() {
     }
   }
 
+  // A failed send keeps its idempotency key, so retrying the same file reuses
+  // the draft the server already created instead of minting a second transfer
+  // and charging the quota twice.
+  function sendKeyFor(file: File): string {
+    const pending = sendAttempt.current;
+    if (
+      pending &&
+      pending.fileName === file.name &&
+      pending.size === file.size
+    ) {
+      return pending.key;
+    }
+    const key = newClientId("send");
+    sendAttempt.current = { key, fileName: file.name, size: file.size };
+    return key;
+  }
+
   async function uploadFile(file: File) {
+    const labels = transferCopyFor(locale);
+    const itemId = newClientId("itm");
+    setSendState({ phase: "sending", transferId: "", fileName: file.name });
+    let transferId = "";
+    try {
+      // Sending a file always starts a new transfer with its own record, so an
+      // upload can never land on the record that happens to be selected.
+      const created = await client.createTransfer({
+        idempotencyKey: sendKeyFor(file),
+        expiresInSeconds: draft.expiresInSeconds,
+        items: [
+          {
+            itemId,
+            fileName: file.name,
+            contentType: file.type,
+            size: file.size,
+          },
+        ],
+      });
+      transferId = created.transfer.id;
+      setSendState({ phase: "sending", transferId, fileName: file.name });
+      await client.uploadTransferItem(transferId, itemId, file);
+      const published = await client.publishTransfer(transferId);
+      const share = published.transfer.share;
+      setSendState({
+        phase: "sent",
+        transferId,
+        url: share?.url ?? "",
+        expiresAt: share?.expiresAt ?? published.transfer.expiresAt,
+      });
+      setSelectedPasteId(published.transfer.pasteId);
+      sendAttempt.current = null;
+      await refreshAuthed();
+    } catch (error) {
+      const apiError = error as ApiError;
+      setSendState({
+        phase: "failed",
+        transferId,
+        message: apiError.message || labels.failed,
+      });
+    }
+  }
+
+  async function cancelSend() {
+    const labels = transferCopyFor(locale);
+    const transferId = sendState.phase === "idle" ? "" : sendState.transferId;
+    if (!transferId) {
+      setSendState({ phase: "idle" });
+      return;
+    }
+    try {
+      await client.cancelTransfer(transferId);
+      sendAttempt.current = null;
+      setMessage(labels.canceled);
+    } catch (error) {
+      const apiError = error as ApiError;
+      setMessage(apiError.message || labels.failed);
+    }
+    setSendState({ phase: "idle" });
+  }
+
+  // Attaching a file to an existing record stays an explicit action, so the
+  // file-first entry point cannot silently modify a historical note.
+  async function attachFile(file: File) {
     let targetPaste = selectedPaste;
     if (!targetPaste) {
       const createdPaste = await run(
@@ -5497,13 +5618,76 @@ function App() {
                   className="visually-hidden-file-input"
                   id={attachmentInputId}
                   type="file"
-                  onChange={(event) =>
-                    event.target.files?.[0] &&
-                    void uploadFile(event.target.files[0])
-                  }
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    if (file) void uploadFile(file);
+                  }}
                 />
-                {t("dropOrChooseFile")}
+                {transferLabels.sendFile} · {t("dropOrChooseFile")}
               </label>
+              <div className="button-row compact">
+                <button
+                  type="button"
+                  onClick={() =>
+                    document.getElementById(attachInputId)?.click()
+                  }
+                >
+                  <Link2 size={16} aria-hidden="true" />
+                  {transferLabels.attachToSelected}
+                </button>
+                <input
+                  className="visually-hidden-file-input"
+                  id={attachInputId}
+                  type="file"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    if (file) void attachFile(file);
+                  }}
+                />
+              </div>
+              {sendState.phase !== "idle" ? (
+                <div className="send-status">
+                  {sendState.phase === "sending" ? (
+                    <p className="status-line">
+                      {transferLabels.sending} {sendState.fileName}
+                    </p>
+                  ) : null}
+                  {sendState.phase === "sent" ? (
+                    <>
+                      <p className="status-line">{transferLabels.linkReady}</p>
+                      <div className="guest-share-result">
+                        <input readOnly value={sendState.url} />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void navigator.clipboard?.writeText(sendState.url)
+                          }
+                        >
+                          <ClipboardCopy size={16} aria-hidden="true" />
+                          {t("copy")}
+                        </button>
+                      </div>
+                      <p className="status-line">
+                        {transferLabels.validUntil}{" "}
+                        {new Date(sendState.expiresAt).toLocaleString()}
+                      </p>
+                    </>
+                  ) : null}
+                  {sendState.phase === "failed" ? (
+                    <>
+                      <p className="status-line">{sendState.message}</p>
+                      {sendState.transferId ? (
+                        <button type="button" onClick={() => void cancelSend()}>
+                          <Ban size={16} aria-hidden="true" />
+                          {transferLabels.cancelSend}
+                        </button>
+                      ) : null}
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
             </section>
 
             <section className="content-grid">
@@ -7853,6 +8037,160 @@ function byteSize(value: string): number {
   return new Blob([value]).size;
 }
 
+type TransferCopy = {
+  sendFile: string;
+  sending: string;
+  attachToSelected: string;
+  linkReady: string;
+  validUntil: string;
+  failed: string;
+  cancelSend: string;
+  canceled: string;
+  pickupTitle: string;
+  pickupHint: string;
+  pickupPlaceholder: string;
+  pickupOpen: string;
+  pickupInvalid: string;
+};
+
+const transferCopy: Record<Locale, TransferCopy> = {
+  en: {
+    sendFile: "Send a file",
+    sending: "Sending...",
+    attachToSelected: "Attach to selected record",
+    linkReady: "Share link is ready.",
+    validUntil: "Valid until",
+    failed: "The file could not be sent.",
+    cancelSend: "Cancel this send",
+    canceled: "The send was canceled and its content will be cleaned up.",
+    pickupTitle: "Get files",
+    pickupHint: "Open a share link someone sent you.",
+    pickupPlaceholder: "Paste the share link",
+    pickupOpen: "Open link",
+    pickupInvalid: "Enter a valid PasteBox share link.",
+  },
+  "zh-CN": {
+    sendFile: "发送文件",
+    sending: "发送中...",
+    attachToSelected: "附加到当前记录",
+    linkReady: "分享链接已生成。",
+    validUntil: "有效期至",
+    failed: "文件发送失败。",
+    cancelSend: "取消这次发送",
+    canceled: "已取消这次发送，内容会进入后台清理。",
+    pickupTitle: "取文件",
+    pickupHint: "打开别人发来的分享链接。",
+    pickupPlaceholder: "粘贴分享链接",
+    pickupOpen: "打开链接",
+    pickupInvalid: "请输入有效的 PasteBox 分享链接。",
+  },
+  "zh-TW": {
+    sendFile: "傳送檔案",
+    sending: "傳送中...",
+    attachToSelected: "附加到目前記錄",
+    linkReady: "分享連結已產生。",
+    validUntil: "有效期至",
+    failed: "檔案傳送失敗。",
+    cancelSend: "取消這次傳送",
+    canceled: "已取消這次傳送，內容會進入背景清理。",
+    pickupTitle: "取檔案",
+    pickupHint: "開啟別人傳來的分享連結。",
+    pickupPlaceholder: "貼上分享連結",
+    pickupOpen: "開啟連結",
+    pickupInvalid: "請輸入有效的 PasteBox 分享連結。",
+  },
+  es: {
+    sendFile: "Enviar archivo",
+    sending: "Enviando...",
+    attachToSelected: "Adjuntar al registro seleccionado",
+    linkReady: "Enlace listo.",
+    validUntil: "Válido hasta",
+    failed: "No se pudo enviar el archivo.",
+    cancelSend: "Cancelar este envío",
+    canceled: "Envío cancelado; su contenido se limpiará en segundo plano.",
+    pickupTitle: "Recibir archivos",
+    pickupHint: "Abre un enlace que te hayan enviado.",
+    pickupPlaceholder: "Pega el enlace",
+    pickupOpen: "Abrir enlace",
+    pickupInvalid: "Introduce un enlace de PasteBox válido.",
+  },
+};
+
+function newClientId(prefix: string): string {
+  const random =
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${prefix}-${random}`;
+}
+
+function transferCopyFor(locale: Locale): TransferCopy {
+  return transferCopy[locale] ?? transferCopy.en;
+}
+
+// shareTokenFromShareLink accepts a full URL, a "/s/<token>" path or a bare
+// token so the pickup entry can take whatever the sender copied.
+function shareTokenFromShareLink(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  try {
+    const url = new URL(trimmed, window.location.origin);
+    const match = url.pathname.match(/^\/s\/([^/?#]+)/);
+    if (match) return decodeURIComponent(match[1]);
+  } catch {
+    // Fall through to the path/token heuristics below.
+  }
+  const pathMatch = trimmed.match(/(?:^|\/)s\/([^/?#\s]+)/);
+  if (pathMatch) return pathMatch[1];
+  if (/^[A-Za-z0-9_-]{16,}$/.test(trimmed)) return trimmed;
+  return "";
+}
+
+function PickupEntry({ locale }: { locale: Locale }) {
+  const labels = transferCopyFor(locale);
+  const [value, setValue] = useState("");
+  const [message, setMessage] = useState("");
+
+  function openLink() {
+    const token = shareTokenFromShareLink(value);
+    if (!token) {
+      setMessage(labels.pickupInvalid);
+      return;
+    }
+    window.location.href = `/s/${encodeURIComponent(token)}`;
+  }
+
+  return (
+    <form
+      className="pickup-entry"
+      onSubmit={(event) => {
+        event.preventDefault();
+        openLink();
+      }}
+    >
+      <div className="pickup-entry-heading">
+        <strong>{labels.pickupTitle}</strong>
+        <span>{labels.pickupHint}</span>
+      </div>
+      <div className="pickup-entry-row">
+        <input
+          aria-label={labels.pickupPlaceholder}
+          placeholder={labels.pickupPlaceholder}
+          value={value}
+          onChange={(event) => {
+            setValue(event.target.value);
+            setMessage("");
+          }}
+        />
+        <button type="submit">
+          <Link2 size={16} aria-hidden="true" />
+          {labels.pickupOpen}
+        </button>
+      </div>
+      {message ? <p className="guest-status">{message}</p> : null}
+    </form>
+  );
+}
+
 function LandingPage({
   catalog,
   locale,
@@ -7948,6 +8286,7 @@ function LandingPage({
               {user ? user.displayName || user.email : content.secondaryCta}
             </a>
           </div>
+          <PickupEntry locale={locale} />
         </div>
 
         <div className="landing-hero-art">
@@ -8059,15 +8398,23 @@ function GuestWorkbench({
   locale: Locale;
 }) {
   const labels = guestWorkbenchCopy[locale] ?? guestWorkbenchCopy.en;
-  const [mode, setMode] = useState<GuestWorkbenchMode>("text");
+  const transferLabels = transferCopyFor(locale);
+  const [mode, setMode] = useState<GuestWorkbenchMode>("file");
   const [title, setTitle] = useState("");
   const [text, setText] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [guestToken, setGuestToken] = useState("");
   const [shareUrl, setShareUrl] = useState("");
+  const [shareExpiresAt, setShareExpiresAt] = useState("");
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [limitMessage, setLimitMessage] = useState("");
+  const [pendingTransferId, setPendingTransferId] = useState("");
+  const guestSendAttempt = useRef<{
+    key: string;
+    fileName: string;
+    size: number;
+  } | null>(null);
   const uploadInputId = useId();
   const textBytes = byteSize(text);
   const fileBytes = file?.size ?? 0;
@@ -8078,9 +8425,9 @@ function GuestWorkbench({
     label: string;
     icon: ReactNode;
   }> = [
-    { mode: "text", label: labels.modeText, icon: <FileText size={16} /> },
-    { mode: "image", label: labels.modeImage, icon: <ImageIcon size={16} /> },
     { mode: "file", label: labels.modeFile, icon: <FileUp size={16} /> },
+    { mode: "image", label: labels.modeImage, icon: <ImageIcon size={16} /> },
+    { mode: "text", label: labels.modeText, icon: <FileText size={16} /> },
   ];
 
   function switchMode(nextMode: GuestWorkbenchMode) {
@@ -8090,6 +8437,7 @@ function GuestWorkbench({
       setText("");
     }
     setShareUrl("");
+    setShareExpiresAt("");
     setStatus("");
   }
 
@@ -8134,7 +8482,47 @@ function GuestWorkbench({
     setBusy(true);
     setStatus("");
     setShareUrl("");
+    setShareExpiresAt("");
     try {
+      if (mode === "file" && file) {
+        // A file send is its own transfer: the record, the upload and the
+        // share credentials are created server-side, and the link only exists
+        // after every declared file finished uploading.
+        const itemId = newClientId("itm");
+        const created = await client.createGuestTransfer({
+          guestToken: guestToken || undefined,
+          idempotencyKey: guestSendKeyFor(file),
+          expiresInSeconds: config.retentionSeconds,
+          items: [
+            {
+              itemId,
+              fileName: file.name,
+              contentType: file.type,
+              size: file.size,
+            },
+          ],
+        });
+        const token = created.guestToken;
+        setGuestToken(token);
+        setPendingTransferId(created.transfer.id);
+        await client.uploadGuestTransferItem(
+          created.transfer.id,
+          itemId,
+          file,
+          token,
+        );
+        const published = await client.publishGuestTransfer(
+          created.transfer.id,
+          token,
+        );
+        const share = published.transfer.share;
+        setShareUrl(share?.url ?? "");
+        setShareExpiresAt(share?.expiresAt ?? published.transfer.expiresAt);
+        setStatus(transferLabels.linkReady);
+        setPendingTransferId("");
+        guestSendAttempt.current = null;
+        return;
+      }
       const nextTitle = title.trim() || file?.name || labels.modeText;
       const pasteResult = await client.createGuestPaste({
         guestToken: guestToken || undefined,
@@ -8152,7 +8540,38 @@ function GuestWorkbench({
         expiresInSeconds: config.retentionSeconds,
       });
       setShareUrl(share.url);
+      setShareExpiresAt(share.expiresAt);
       setStatus(labels.linkReady);
+    } catch (error) {
+      const apiError = error as ApiError;
+      setStatus(apiError.message || labels.disabled);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function guestSendKeyFor(file: File): string {
+    const pending = guestSendAttempt.current;
+    if (
+      pending &&
+      pending.fileName === file.name &&
+      pending.size === file.size
+    ) {
+      return pending.key;
+    }
+    const key = newClientId("send");
+    guestSendAttempt.current = { key, fileName: file.name, size: file.size };
+    return key;
+  }
+
+  async function cancelGuestSend() {
+    if (!pendingTransferId) return;
+    setBusy(true);
+    try {
+      await client.cancelGuestTransfer(pendingTransferId, guestToken);
+      setPendingTransferId("");
+      guestSendAttempt.current = null;
+      setStatus(transferLabels.canceled);
     } catch (error) {
       const apiError = error as ApiError;
       setStatus(apiError.message || labels.disabled);
@@ -8324,6 +8743,25 @@ function GuestWorkbench({
         </div>
       ) : null}
       {status ? <p className="guest-status">{status}</p> : null}
+      {pendingTransferId ? (
+        <div className="guest-workbench-actions">
+          <span>{labels.hint}</span>
+          <button
+            type="button"
+            onClick={() => void cancelGuestSend()}
+            disabled={busy}
+          >
+            <Ban size={16} aria-hidden="true" />
+            {transferLabels.cancelSend}
+          </button>
+        </div>
+      ) : null}
+      {shareUrl && shareExpiresAt ? (
+        <p className="guest-status">
+          {transferLabels.validUntil}{" "}
+          {new Date(shareExpiresAt).toLocaleString()}
+        </p>
+      ) : null}
       {limitMessage ? (
         <div className="guest-limit-backdrop" role="presentation">
           <section

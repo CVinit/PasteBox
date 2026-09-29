@@ -51,6 +51,9 @@ type Service struct {
 	dailyMetrics            DailyMetricStore
 	sharesByID              map[string]*Share
 	shareIDByToken          map[string]string
+	transfersByID           map[string]*Transfer
+	transferIDByIdemKey     map[string]string
+	transferItems           map[string]*TransferItem
 	ordersByID              map[string]*Order
 	webhookEventKeys        map[string]string
 	webhookEvents           []*WebhookEvent
@@ -134,6 +137,9 @@ func NewWithStorage(ctx context.Context, cfg config.Config, stores Stores) (*Ser
 		dailyMetrics:          newMemoryDailyMetricStore(),
 		sharesByID:            map[string]*Share{},
 		shareIDByToken:        map[string]string{},
+		transfersByID:         map[string]*Transfer{},
+		transferIDByIdemKey:   map[string]string{},
+		transferItems:         map[string]*TransferItem{},
 		ordersByID:            map[string]*Order{},
 		webhookEventKeys:      map[string]string{},
 		runtimeConfig:         initialRuntimeConfig,

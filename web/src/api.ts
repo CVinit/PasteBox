@@ -114,6 +114,36 @@ export type Share = {
   lastDownloadedAt?: string;
 };
 
+export type TransferItem = {
+  itemId: string;
+  fileName: string;
+  contentType: string;
+  size: number;
+  status: string;
+  attachmentId?: string;
+  scanStatus?: string;
+};
+
+export type Transfer = {
+  id: string;
+  status: string;
+  pasteId: string;
+  items: TransferItem[];
+  share?: Share;
+  expiresAt: string;
+  createdAt: string;
+  updatedAt: string;
+  publishedAt?: string;
+  canceledAt?: string;
+};
+
+export type TransferItemInput = {
+  itemId: string;
+  fileName: string;
+  contentType?: string;
+  size?: number;
+};
+
 export type Quota = {
   plan: Plan;
   activePasteCount: number;
@@ -722,6 +752,75 @@ export const client = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  createTransfer: (body: {
+    idempotencyKey?: string;
+    expiresInSeconds: number;
+    password?: string;
+    loginRequired?: boolean;
+    items: TransferItemInput[];
+  }) =>
+    api<{ transfer: Transfer }>("/transfers", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  uploadTransferItem: (transferId: string, itemId: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return api<{ transfer: Transfer; attachment: Attachment }>(
+      `/transfers/${encodeURIComponent(transferId)}/items/${encodeURIComponent(itemId)}`,
+      { method: "POST", body: form },
+    );
+  },
+  publishTransfer: (transferId: string) =>
+    api<{ transfer: Transfer }>(
+      `/transfers/${encodeURIComponent(transferId)}/publish`,
+      { method: "POST" },
+    ),
+  cancelTransfer: (transferId: string) =>
+    api<{ transfer: Transfer }>(
+      `/transfers/${encodeURIComponent(transferId)}/cancel`,
+      { method: "POST" },
+    ),
+  createGuestTransfer: (body: {
+    guestToken?: string;
+    idempotencyKey?: string;
+    expiresInSeconds: number;
+    password?: string;
+    items: TransferItemInput[];
+    turnstileToken?: string;
+  }) =>
+    api<{ guestToken: string; transfer: Transfer }>("/guest/transfers", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  uploadGuestTransferItem: (
+    transferId: string,
+    itemId: string,
+    file: File,
+    guestToken: string,
+    turnstileToken = "",
+  ) => {
+    const form = new FormData();
+    form.append("file", file);
+    const headers = new Headers({ "X-PasteBox-Guest-Token": guestToken });
+    if (turnstileToken) {
+      headers.set("X-PasteBox-Turnstile-Token", turnstileToken);
+    }
+    return api<{ transfer: Transfer; attachment: Attachment }>(
+      `/guest/transfers/${encodeURIComponent(transferId)}/items/${encodeURIComponent(itemId)}`,
+      { method: "POST", body: form, headers },
+    );
+  },
+  publishGuestTransfer: (transferId: string, guestToken: string) =>
+    api<{ transfer: Transfer }>(
+      `/guest/transfers/${encodeURIComponent(transferId)}/publish`,
+      { method: "POST", body: JSON.stringify({ guestToken }) },
+    ),
+  cancelGuestTransfer: (transferId: string, guestToken: string) =>
+    api<{ transfer: Transfer }>(
+      `/guest/transfers/${encodeURIComponent(transferId)}/cancel`,
+      { method: "POST", body: JSON.stringify({ guestToken }) },
+    ),
   revokeShare: (id: string) =>
     api<{ status: string }>(`/shares/${id}`, { method: "DELETE" }),
   accessShare: (token: string, password: string) =>

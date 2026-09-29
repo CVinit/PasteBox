@@ -4344,6 +4344,79 @@ code {
   line-height: 1.45;
 }
 
+.pickup-entry {
+  display: grid;
+  gap: 10px;
+  margin-top: 22px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 250, 240, 0.7);
+}
+
+.pickup-entry-heading {
+  display: grid;
+  gap: 2px;
+}
+
+.pickup-entry-heading strong {
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.pickup-entry-heading span {
+  color: var(--body);
+  font-size: 13px;
+}
+
+.pickup-entry-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.pickup-entry-row input {
+  width: 100%;
+  min-width: 0;
+  min-height: 46px;
+  padding: 0 14px;
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-md);
+  color: var(--ink);
+  background: var(--canvas);
+  outline: 0;
+}
+
+.pickup-entry-row input:focus {
+  border-color: var(--ink);
+  box-shadow: 0 0 0 3px rgba(10, 10, 10, 0.08);
+}
+
+.pickup-entry-row button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 46px;
+  padding: 0 16px;
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.send-status {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 250, 240, 0.7);
+}
+
 .guest-workbench-actions button,
 .guest-share-result button,
 .guest-limit-modal a,
@@ -4560,6 +4633,10 @@ code {
 
   .guest-workbench-actions,
   .guest-share-result {
+    grid-template-columns: 1fr;
+  }
+
+  .pickup-entry-row {
     grid-template-columns: 1fr;
   }
 

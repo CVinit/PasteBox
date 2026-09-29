@@ -197,6 +197,10 @@ func (s *Server) routes() http.Handler {
 			r.Post("/pastes", s.createGuestPaste)
 			r.Post("/pastes/{pasteID}/attachments", s.uploadGuestAttachment)
 			r.Post("/pastes/{pasteID}/shares", s.createGuestShare)
+			r.Post("/transfers", s.createGuestTransfer)
+			r.Post("/transfers/{transferID}/items/{itemID}", s.uploadGuestTransferItem)
+			r.Post("/transfers/{transferID}/publish", s.publishGuestTransfer)
+			r.Post("/transfers/{transferID}/cancel", s.cancelGuestTransfer)
 		})
 
 		r.Route("/auth", func(r chi.Router) {
@@ -245,6 +249,15 @@ func (s *Server) routes() http.Handler {
 			r.Delete("/{shareID}", s.revokeShare)
 			r.Post("/{token}/access", s.accessShare)
 			r.Get("/{token}/attachments/{attachmentID}/download", s.downloadSharedAttachment)
+		})
+
+		r.Route("/transfers", func(r chi.Router) {
+			r.Get("/", s.listTransfers)
+			r.Post("/", s.createTransfer)
+			r.Get("/{transferID}", s.getTransfer)
+			r.Post("/{transferID}/items/{itemID}", s.uploadTransferItem)
+			r.Post("/{transferID}/publish", s.publishTransfer)
+			r.Post("/{transferID}/cancel", s.cancelTransfer)
 		})
 
 		r.Route("/billing", func(r chi.Router) {
@@ -1147,41 +1160,14 @@ func (s *Server) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) uploadGuestAttachment(w http.ResponseWriter, r *http.Request) {
 	pasteID := chi.URLParam(r, "pasteID")
-	headerToken := guestTokenFromRequest(r)
-	headerTurnstileToken := turnstileTokenFromRequest(r)
 	var preflight app.AttachmentUploadPreflight
-	preflightReady := false
-	if headerToken != "" {
-		var err error
-		preflight, err = s.app.PreflightGuestAttachmentUpload(r.Context(), headerToken, pasteID, headerTurnstileToken, s.clientIP(r))
-		if err == nil {
-			preflightReady = true
-		} else if appErr, ok := err.(*app.Error); !ok || appErr.Code != "turnstile_required" || headerTurnstileToken != "" {
-			if s.handleErr(w, err) {
-				return
-			}
-			return
+	upload, err := guestUploadMultipart(r, func(token string, turnstileToken string) (int64, error) {
+		resolved, resolveErr := s.app.PreflightGuestAttachmentUpload(r.Context(), token, pasteID, turnstileToken, s.clientIP(r))
+		if resolveErr != nil {
+			return 0, resolveErr
 		}
-	}
-	upload, _, err := readAttachmentMultipartWithPreflight(r, func(fields map[string]string) (int64, error) {
-		if preflightReady {
-			return preflight.MaxBytes, nil
-		}
-		token := firstNonEmpty(headerToken, fields["guestToken"])
-		if token == "" {
-			return 0, app.E(http.StatusBadRequest, "guest_upload_credentials_before_file", "guest token must be sent in X-PasteBox-Guest-Token or a multipart field before the file")
-		}
-		turnstileToken := firstNonEmpty(headerTurnstileToken, fields["turnstileToken"])
-		var preflightErr error
-		preflight, preflightErr = s.app.PreflightGuestAttachmentUpload(r.Context(), token, pasteID, turnstileToken, s.clientIP(r))
-		if appErr, ok := preflightErr.(*app.Error); ok && appErr.Code == "turnstile_required" && turnstileToken == "" {
-			return 0, app.E(http.StatusBadRequest, "guest_upload_credentials_before_file", "Turnstile token must be sent in X-PasteBox-Turnstile-Token or a multipart field before the file")
-		}
-		if preflightErr != nil {
-			return 0, preflightErr
-		}
-		preflightReady = true
-		return preflight.MaxBytes, nil
+		preflight = resolved
+		return resolved.MaxBytes, nil
 	})
 	if err != nil {
 		if s.handleErr(w, err) {
@@ -2108,6 +2094,10 @@ func (s *Server) rateLimitRule(r *http.Request) (rateLimitRule, bool) {
 		return rateLimitRule{Category: "share_create", Limit: cfg.ShareCreateLimit, Window: window}, cfg.ShareCreateLimit > 0
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "/api/v1/guest/pastes/") && strings.HasSuffix(path, "/shares"):
 		return rateLimitRule{Category: "share_create", Limit: cfg.ShareCreateLimit, Window: window}, cfg.ShareCreateLimit > 0
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/api/v1/transfers/") && strings.Contains(path, "/items/"):
+		return rateLimitRule{Category: "upload", Limit: cfg.UploadLimit, Window: window}, cfg.UploadLimit > 0
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/api/v1/guest/transfers/") && strings.Contains(path, "/items/"):
+		return rateLimitRule{Category: "upload", Limit: cfg.UploadLimit, Window: window}, cfg.UploadLimit > 0
 	case requiresCSRF(r):
 		return rateLimitRule{Category: "write", Limit: cfg.WriteLimit, Window: window}, cfg.WriteLimit > 0
 	default:
@@ -3220,6 +3210,49 @@ func (s *Server) writeDownloadStream(w http.ResponseWriter, download app.Attachm
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, download.Body)
+}
+
+// guestUploadMultipart runs the guest credential handshake shared by guest
+// attachment and guest transfer-item uploads. Credentials may arrive as headers
+// or as multipart fields written before the file part, so resolve runs before
+// any file bytes are read and the caller keeps the resolved preflight.
+func guestUploadMultipart(r *http.Request, resolve func(token string, turnstileToken string) (int64, error)) (*app.PreparedAttachmentUpload, error) {
+	headerToken := guestTokenFromRequest(r)
+	headerTurnstileToken := turnstileTokenFromRequest(r)
+	preflightReady := false
+	var maxBytes int64
+	if headerToken != "" {
+		limit, err := resolve(headerToken, headerTurnstileToken)
+		if err == nil {
+			maxBytes, preflightReady = limit, true
+		} else if appErr, ok := err.(*app.Error); !ok || appErr.Code != "turnstile_required" || headerTurnstileToken != "" {
+			return nil, err
+		}
+	}
+	upload, _, err := readAttachmentMultipartWithPreflight(r, func(fields map[string]string) (int64, error) {
+		if preflightReady {
+			return maxBytes, nil
+		}
+		token := firstNonEmpty(headerToken, fields["guestToken"])
+		if token == "" {
+			return 0, app.E(http.StatusBadRequest, "guest_upload_credentials_before_file", "guest token must be sent in X-PasteBox-Guest-Token or a multipart field before the file")
+		}
+		turnstileToken := firstNonEmpty(headerTurnstileToken, fields["turnstileToken"])
+		limit, resolveErr := resolve(token, turnstileToken)
+		if appErr, ok := resolveErr.(*app.Error); ok && appErr.Code == "turnstile_required" && turnstileToken == "" {
+			return 0, app.E(http.StatusBadRequest, "guest_upload_credentials_before_file", "Turnstile token must be sent in X-PasteBox-Turnstile-Token or a multipart field before the file")
+		}
+		if resolveErr != nil {
+			return 0, resolveErr
+		}
+		preflightReady = true
+		maxBytes = limit
+		return maxBytes, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return upload, nil
 }
 
 func readAttachmentMultipart(r *http.Request, maxBytes int64) (*app.PreparedAttachmentUpload, map[string]string, error) {

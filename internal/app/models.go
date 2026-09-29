@@ -189,6 +189,86 @@ type ShareView struct {
 	LastDownloadedAt *time.Time `json:"lastDownloadedAt,omitempty"`
 }
 
+// Transfer is one send: a batch of files that share a single share link and
+// expiry. The files themselves live in the dedicated paste referenced by
+// PasteID, so quota, scanning and object-reference accounting stay in the
+// existing content modules.
+type Transfer struct {
+	ID             string
+	UserID         string
+	PasteID        string
+	Status         string
+	IdempotencyKey string
+	ShareID        string
+	PasswordHash   string
+	LoginRequired  bool
+	ExpiresAt      time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	PublishedAt    *time.Time
+	CanceledAt     *time.Time
+}
+
+type TransferItem struct {
+	TransferID   string
+	ItemID       string
+	FileName     string
+	ContentType  string
+	Size         int64
+	AttachmentID string
+	Status       string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+type TransferItemView struct {
+	ItemID       string `json:"itemId"`
+	FileName     string `json:"fileName"`
+	ContentType  string `json:"contentType"`
+	Size         int64  `json:"size"`
+	Status       string `json:"status"`
+	AttachmentID string `json:"attachmentId,omitempty"`
+	ScanStatus   string `json:"scanStatus,omitempty"`
+}
+
+type TransferView struct {
+	ID          string             `json:"id"`
+	Status      string             `json:"status"`
+	PasteID     string             `json:"pasteId"`
+	Items       []TransferItemView `json:"items"`
+	Share       *ShareView         `json:"share,omitempty"`
+	ExpiresAt   time.Time          `json:"expiresAt"`
+	CreatedAt   time.Time          `json:"createdAt"`
+	UpdatedAt   time.Time          `json:"updatedAt"`
+	PublishedAt *time.Time         `json:"publishedAt,omitempty"`
+	CanceledAt  *time.Time         `json:"canceledAt,omitempty"`
+}
+
+type TransferItemInput struct {
+	ItemID      string `json:"itemId"`
+	FileName    string `json:"fileName"`
+	ContentType string `json:"contentType"`
+	Size        int64  `json:"size"`
+}
+
+type TransferInput struct {
+	IdempotencyKey   string
+	ExpiresInSeconds int64
+	Password         string
+	LoginRequired    bool
+	Items            []TransferItemInput
+}
+
+type GuestCreateTransferInput struct {
+	Token            string
+	TurnstileToken   string
+	RemoteIP         string
+	IdempotencyKey   string
+	ExpiresInSeconds int64
+	Password         string
+	Items            []TransferItemInput
+}
+
 type Order struct {
 	ID          string     `json:"id"`
 	UserID      string     `json:"userId"`
