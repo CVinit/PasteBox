@@ -44,6 +44,7 @@ func (s *Server) createGuestTransfer(w http.ResponseWriter, r *http.Request) {
 		IdempotencyKey   string                  `json:"idempotencyKey"`
 		ExpiresInSeconds int64                   `json:"expiresInSeconds"`
 		Password         string                  `json:"password"`
+		LoginRequired    bool                    `json:"loginRequired"`
 		Items            []app.TransferItemInput `json:"items"`
 	}
 	if !s.decode(w, r, &req) {
@@ -56,6 +57,7 @@ func (s *Server) createGuestTransfer(w http.ResponseWriter, r *http.Request) {
 		IdempotencyKey:   req.IdempotencyKey,
 		ExpiresInSeconds: req.ExpiresInSeconds,
 		Password:         req.Password,
+		LoginRequired:    req.LoginRequired,
 		Items:            req.Items,
 	})
 	if s.handleErr(w, err) {

@@ -363,6 +363,11 @@ func (s *Service) CreateGuestTransferWithContext(ctx context.Context, input Gues
 	if !cfg.Enabled {
 		return "", TransferView{}, E(http.StatusForbidden, "guest_uploads_disabled", "guest uploads are disabled")
 	}
+	// A guest send must not accept a login requirement it cannot enforce, so
+	// the sender is told instead of being handed a share that ignores it.
+	if input.LoginRequired {
+		return "", TransferView{}, E(http.StatusBadRequest, "guest_share_login_required", "guest shares cannot require login")
+	}
 	if cfg.RequireTurnstile {
 		if err := s.verifyTurnstileLocked(ctx, input.TurnstileToken, input.RemoteIP); err != nil {
 			return "", TransferView{}, err

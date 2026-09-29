@@ -1,7 +1,7 @@
 {
   "name": "PasteBox",
   "short_name": "PasteBox",
-  "description": "Private cloud clipboard and temporary file transfer workspace.",
+  "description": "PasteBox file transfer workspace: send a file, share a link, and pick it up on another device.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#f9fafb",

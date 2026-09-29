@@ -120,6 +120,13 @@ type ShareDraft = {
   expiresInSeconds: number;
 };
 
+// SendSettings are the expiry and privacy choices of one file send. They are
+// read when the transfer is created, so they apply to every file in the batch.
+type SendSettings = {
+  password: string;
+  loginRequired: boolean;
+};
+
 type RedemptionDraft = {
   planId: string;
   durationDays: number;
@@ -243,6 +250,13 @@ const defaultShareDraft: ShareDraft = {
   maxVisits: 5,
   maxDownloads: 5,
   expiresInSeconds: 24 * 60 * 60,
+};
+
+// The existing policy default: a send keeps the record's expiry and starts
+// without a password, so nothing is protected until the sender asks for it.
+const defaultSendSettings: SendSettings = {
+  password: "",
+  loginRequired: false,
 };
 
 const defaultRedemptionDraft: RedemptionDraft = {
@@ -915,6 +929,8 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
       "Paste text, notes, credentials, or transfer context here.",
     tagsSeparatedByComma: "tags separated by comma",
     dropOrChooseFile: "Drop or choose a file",
+    duration1Hour: "1 hour",
+    duration6Hours: "6 hours",
     duration24Hours: "24 hours",
     duration7Days: "7 days",
     duration30Days: "30 days",
@@ -947,6 +963,13 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     legalHub: "Legal hub",
     terms: "Terms",
     refund: "Refund",
+    contentRules: "Do not upload illegal, malicious, or infringing content.",
+    factCapacity: "Capacity",
+    factRetention: "Retention",
+    factFileLimit: "Per file",
+    factSignup: "Sign-in",
+    factSignupNotRequired: "Not required",
+    factSignupRequired: "Required",
     abuseDmca: "Abuse/DMCA",
     cookies: "Cookies",
     status: "Status",
@@ -1334,6 +1357,8 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     pasteTextPlaceholder: "在此粘贴文本、备注、凭据或传输上下文。",
     tagsSeparatedByComma: "用英文逗号分隔标签",
     dropOrChooseFile: "拖放或选择文件",
+    duration1Hour: "1 小时",
+    duration6Hours: "6 小时",
     duration24Hours: "24 小时",
     duration7Days: "7 天",
     duration30Days: "30 天",
@@ -1366,6 +1391,13 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     legalHub: "法律中心",
     terms: "条款",
     refund: "退款",
+    contentRules: "禁止上传违法、恶意或侵权内容。",
+    factCapacity: "单次容量",
+    factRetention: "保留期",
+    factFileLimit: "单文件上限",
+    factSignup: "注册要求",
+    factSignupNotRequired: "无需注册",
+    factSignupRequired: "需注册",
     abuseDmca: "滥用/DMCA",
     cookies: "Cookie",
     status: "状态",
@@ -1748,6 +1780,8 @@ const copy: Record<Locale, Record<string, string>> = {
     pasteTextPlaceholder: "在此貼上文字、備註、憑證或傳輸上下文。",
     tagsSeparatedByComma: "用英文逗號分隔標籤",
     dropOrChooseFile: "拖放或選擇檔案",
+    duration1Hour: "1 小時",
+    duration6Hours: "6 小時",
     duration24Hours: "24 小時",
     duration7Days: "7 天",
     duration30Days: "30 天",
@@ -1774,6 +1808,13 @@ const copy: Record<Locale, Record<string, string>> = {
     legalHub: "法律中心",
     terms: "條款",
     refund: "退款",
+    contentRules: "禁止上傳違法、惡意或侵權內容。",
+    factCapacity: "單次容量",
+    factRetention: "保留期",
+    factFileLimit: "單一檔案上限",
+    factSignup: "註冊要求",
+    factSignupNotRequired: "無需註冊",
+    factSignupRequired: "需註冊",
     abuseDmca: "濫用/DMCA",
     cookies: "Cookie",
     status: "狀態",
@@ -2117,6 +2158,8 @@ const copy: Record<Locale, Record<string, string>> = {
       "Pega texto, notas, credenciales o contexto de transferencia aquí.",
     tagsSeparatedByComma: "etiquetas separadas por coma",
     dropOrChooseFile: "Arrastra o elige un archivo",
+    duration1Hour: "1 hora",
+    duration6Hours: "6 horas",
     duration24Hours: "24 horas",
     duration7Days: "7 días",
     duration30Days: "30 días",
@@ -2148,6 +2191,14 @@ const copy: Record<Locale, Record<string, string>> = {
     legalHub: "Centro legal",
     terms: "Términos",
     refund: "Reembolso",
+    contentRules:
+      "No subas contenido ilegal, malicioso o que infrinja derechos.",
+    factCapacity: "Capacidad por envío",
+    factRetention: "Retención",
+    factFileLimit: "Por archivo",
+    factSignup: "Registro",
+    factSignupNotRequired: "No hace falta",
+    factSignupRequired: "Necesario",
     abuseDmca: "Abuso/DMCA",
     cookies: "Cookies",
     status: "Estado",
@@ -3938,6 +3989,10 @@ function App() {
     tags: "",
   });
   const [shareDraft, setShareDraft] = useState<ShareDraft>(defaultShareDraft);
+  // The send settings are the privacy knobs of one file send: they are read when
+  // the transfer is created, so they apply to the whole batch.
+  const [sendSettings, setSendSettings] =
+    useState<SendSettings>(defaultSendSettings);
   const [shareToken, setShareToken] = useState("");
   const [publicShareToken, setPublicShareToken] = useState(shareTokenFromPath);
   const [publicSharePassword, setPublicSharePassword] = useState("");
@@ -4181,6 +4236,28 @@ function App() {
     if (orderResult.status === "fulfilled") setOrders(orderResult.value.orders);
   }, [filter, query, selectedPasteId, tagFilter]);
 
+  // The lifetime a send may promise comes from the active plan, so the composer
+  // cannot offer a duration the service would shorten.
+  const sendRetentionSeconds = activePlan?.maxRetentionSeconds ?? 0;
+  const sendExpiryOptions = useMemo(
+    () => expiryOptionsFor(sendRetentionSeconds, draft.expiresInSeconds, t),
+    [sendRetentionSeconds, draft.expiresInSeconds, t],
+  );
+  // A plan change must not leave the composer promising a lifetime the plan no
+  // longer allows.
+  useEffect(() => {
+    if (sendRetentionSeconds <= 0) return;
+    setDraft((current) => {
+      const clamped = clampExpirySeconds(
+        current.expiresInSeconds,
+        sendRetentionSeconds,
+      );
+      return clamped === current.expiresInSeconds
+        ? current
+        : { ...current, expiresInSeconds: clamped };
+    });
+  }, [sendRetentionSeconds]);
+
   // One send is a queue of files that share a single transfer, so the account
   // entry point and the guest workbench behave the same way.
   const sendAdapter = useMemo<TransferQueueAdapter>(
@@ -4189,6 +4266,8 @@ function App() {
         const created = await client.createTransfer({
           idempotencyKey,
           expiresInSeconds: draft.expiresInSeconds,
+          password: sendSettings.password,
+          loginRequired: sendSettings.loginRequired,
           items: manifest,
         });
         return created.transfer.id;
@@ -4216,19 +4295,17 @@ function App() {
         await client.cancelTransfer(transferId);
       },
     }),
-    [draft.expiresInSeconds],
+    [draft.expiresInSeconds, sendSettings.loginRequired, sendSettings.password],
   );
   const sendQueue = useTransferQueue(sendAdapter);
-  const sendLimits = useMemo(() => {
-    const plan = catalog?.plans.find(
-      (entry) => entry.id === (user?.planId ?? "free"),
-    );
-    return {
-      singleFileBytes: plan?.singleFileBytes ?? 0,
-      singlePasteBytes: plan?.singlePasteBytes ?? 0,
-      attachmentsPerPasteLimit: plan?.attachmentsPerPasteLimit ?? 0,
-    };
-  }, [catalog, user?.planId]);
+  const sendLimits = useMemo(
+    () => ({
+      singleFileBytes: activePlan?.singleFileBytes ?? 0,
+      singlePasteBytes: activePlan?.singlePasteBytes ?? 0,
+      attachmentsPerPasteLimit: activePlan?.attachmentsPerPasteLimit ?? 0,
+    }),
+    [activePlan],
+  );
   // A finished send is a new record, so surface it in the workspace and refresh
   // the quota and record list the send just changed.
   useEffect(() => {
@@ -5557,29 +5634,6 @@ function App() {
                 placeholder={t("pasteTextPlaceholder")}
               />
               <div className="composer-controls">
-                <label>
-                  <Clock3 size={16} aria-hidden="true" />
-                  <select
-                    value={draft.expiresInSeconds}
-                    onChange={(event) =>
-                      setDraft({
-                        ...draft,
-                        expiresInSeconds: Number(event.target.value),
-                      })
-                    }
-                  >
-                    <option value={24 * 60 * 60}>{t("duration24Hours")}</option>
-                    <option value={7 * 24 * 60 * 60}>
-                      {t("duration7Days")}
-                    </option>
-                    <option value={30 * 24 * 60 * 60}>
-                      {t("duration30Days")}
-                    </option>
-                    <option value={180 * 24 * 60 * 60}>
-                      {t("duration180Days")}
-                    </option>
-                  </select>
-                </label>
                 <label className="tag-input-wrap">
                   <Tags size={16} aria-hidden="true" />
                   <input
@@ -5605,6 +5659,22 @@ function App() {
                   {t("create")}
                 </button>
               </div>
+              <SendSettingsFields
+                expiresInSeconds={draft.expiresInSeconds}
+                expiryOptions={sendExpiryOptions}
+                labels={transferLabels}
+                loginRequired={sendSettings.loginRequired}
+                onExpiry={(seconds) =>
+                  setDraft({ ...draft, expiresInSeconds: seconds })
+                }
+                onLoginRequired={(value) =>
+                  setSendSettings({ ...sendSettings, loginRequired: value })
+                }
+                onPassword={(value) =>
+                  setSendSettings({ ...sendSettings, password: value })
+                }
+                password={sendSettings.password}
+              />
               <label
                 aria-disabled={!sendQueue.canStage}
                 className={`drop-zone ${sendQueue.canStage ? "" : "drop-zone--locked"}`}
@@ -8114,6 +8184,11 @@ type TransferCopy = {
   overFileLimit: string;
   overTotalLimit: string;
   overCountLimit: string;
+  settingsLabel: string;
+  expiryLabel: string;
+  passwordLabel: string;
+  passwordPlaceholder: string;
+  loginRequired: string;
 };
 
 const transferCopy: Record<Locale, TransferCopy> = {
@@ -8154,6 +8229,11 @@ const transferCopy: Record<Locale, TransferCopy> = {
     overFileLimit: "A file is over the per-file size limit.",
     overTotalLimit: "The chosen files are over the total size limit for one send.",
     overCountLimit: "Too many files for one send.",
+    settingsLabel: "Send settings",
+    expiryLabel: "Expiry",
+    passwordLabel: "Share password",
+    passwordPlaceholder: "Password (optional)",
+    loginRequired: "Require sign-in",
   },
   "zh-CN": {
     sendFile: "发送文件",
@@ -8192,6 +8272,11 @@ const transferCopy: Record<Locale, TransferCopy> = {
     overFileLimit: "有文件超过单个文件大小上限。",
     overTotalLimit: "所选文件合计超过一次发送的大小上限。",
     overCountLimit: "所选文件数量超过一次发送的上限。",
+    settingsLabel: "发送设置",
+    expiryLabel: "有效期",
+    passwordLabel: "分享密码",
+    passwordPlaceholder: "密码（可选）",
+    loginRequired: "需要登录",
   },
   "zh-TW": {
     sendFile: "傳送檔案",
@@ -8230,6 +8315,11 @@ const transferCopy: Record<Locale, TransferCopy> = {
     overFileLimit: "有檔案超過單一檔案大小上限。",
     overTotalLimit: "所選檔案合計超過一次傳送的大小上限。",
     overCountLimit: "所選檔案數量超過一次傳送的上限。",
+    settingsLabel: "傳送設定",
+    expiryLabel: "有效期",
+    passwordLabel: "分享密碼",
+    passwordPlaceholder: "密碼（可選）",
+    loginRequired: "需要登入",
   },
   es: {
     sendFile: "Enviar archivo",
@@ -8271,6 +8361,11 @@ const transferCopy: Record<Locale, TransferCopy> = {
     overTotalLimit:
       "Los archivos elegidos superan el tamaño total de un envío.",
     overCountLimit: "Demasiados archivos para un envío.",
+    settingsLabel: "Ajustes de envío",
+    expiryLabel: "Caducidad",
+    passwordLabel: "Contraseña del enlace",
+    passwordPlaceholder: "Contraseña (opcional)",
+    loginRequired: "Requerir sesión",
   },
 };
 
@@ -8434,6 +8529,53 @@ function pickupCodeFromInput(value: string): string {
   return /^[A-Z0-9]{6}$/.test(code) ? code : "";
 }
 
+// The expiry ladder the send area offers. Choices above the sender's retention
+// are never rendered, because the service would shorten them: the send form
+// only promises lifetimes the configured policy actually supports.
+const expiryChoices: Array<{ seconds: number; labelKey?: string }> = [
+  { seconds: 60 * 60, labelKey: "duration1Hour" },
+  { seconds: 6 * 60 * 60, labelKey: "duration6Hours" },
+  { seconds: 24 * 60 * 60, labelKey: "duration24Hours" },
+  { seconds: 7 * 24 * 60 * 60, labelKey: "duration7Days" },
+  { seconds: 30 * 24 * 60 * 60, labelKey: "duration30Days" },
+  { seconds: 180 * 24 * 60 * 60, labelKey: "duration180Days" },
+];
+
+// expiryOptionsFor returns the lifetimes a sender may choose under the given
+// retention ceiling. A ceiling that is not on the ladder is added so the sender
+// can always pick the policy maximum; an unknown ceiling (0, catalog not loaded
+// yet) offers the current value only instead of inventing a limit.
+function expiryOptionsFor(
+  maxSeconds: number,
+  currentSeconds: number,
+  t: Translate,
+): Array<{ seconds: number; label: string }> {
+  if (maxSeconds <= 0) {
+    return [{ seconds: currentSeconds, label: formatDuration(currentSeconds) }];
+  }
+  const allowed = expiryChoices.filter(
+    (choice) => choice.seconds <= maxSeconds,
+  );
+  if (!allowed.some((choice) => choice.seconds === maxSeconds)) {
+    allowed.push({ seconds: maxSeconds });
+  }
+  return allowed.map((choice) => ({
+    seconds: choice.seconds,
+    label: choice.labelKey
+      ? t(choice.labelKey)
+      : formatDuration(choice.seconds),
+  }));
+}
+
+// clampExpirySeconds keeps a chosen lifetime inside the retention that applies
+// to the sender, matching the service rule that a share never outlives the
+// content it points at.
+function clampExpirySeconds(seconds: number, maxSeconds: number): number {
+  if (maxSeconds <= 0) return seconds;
+  if (seconds <= 0 || seconds > maxSeconds) return maxSeconds;
+  return seconds;
+}
+
 // PickupCodeRow shows the short code beside the share link on both success
 // pages, so a sender can hand over 6 characters instead of a long URL. Each
 // page supplies its own copy confirmation.
@@ -8460,6 +8602,94 @@ function PickupCodeRow({
         </button>
       </div>
     </>
+  );
+}
+
+// SendSettingsFields is the inline expiry and privacy group shared by the
+// account composer and the guest workbench: both send flows offer the same
+// settings next to the files, so nobody has to leave the send flow to protect a
+// transfer. The sign-in requirement is account-only, so it renders only when
+// the surface can enforce it.
+function SendSettingsFields({
+  expiresInSeconds,
+  expiryOptions,
+  labels,
+  loginRequired = false,
+  onExpiry,
+  onLoginRequired,
+  onPassword,
+  password,
+}: {
+  expiresInSeconds: number;
+  expiryOptions: Array<{ seconds: number; label: string }>;
+  labels: TransferCopy;
+  loginRequired?: boolean;
+  onExpiry: (seconds: number) => void;
+  onLoginRequired?: (value: boolean) => void;
+  onPassword: (value: string) => void;
+  password: string;
+}) {
+  const labelId = useId();
+  return (
+    <div className="send-settings-group">
+      {/* The group is named on screen, so a password typed here cannot be
+          mistaken for a setting of the record the composer also creates. */}
+      <span className="send-settings-label" id={labelId}>
+        {labels.settingsLabel}
+      </span>
+      <div aria-labelledby={labelId} className="send-settings" role="group">
+        <label>
+          <Clock3 size={16} aria-hidden="true" />
+          <select
+            aria-label={labels.expiryLabel}
+            disabled={expiryOptions.length < 2}
+            value={expiresInSeconds}
+            onChange={(event) => onExpiry(Number(event.target.value))}
+          >
+            {expiryOptions.map((option) => (
+              <option key={option.seconds} value={option.seconds}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <KeyRound size={16} aria-hidden="true" />
+          <input
+            aria-label={labels.passwordLabel}
+            autoComplete="new-password"
+            onChange={(event) => onPassword(event.target.value)}
+            placeholder={labels.passwordPlaceholder}
+            type="password"
+            value={password}
+          />
+        </label>
+        {onLoginRequired ? (
+          <label className="send-settings-toggle">
+            <input
+              checked={loginRequired}
+              onChange={(event) => onLoginRequired(event.target.checked)}
+              type="checkbox"
+            />
+            <span>{labels.loginRequired}</span>
+          </label>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+// UsageBoundaryNotice states the content rules and points at the same abuse and
+// privacy pages the footer links use, so the wording for content norms,
+// reporting and privacy stays identical wherever it appears.
+function UsageBoundaryNotice({ locale }: { locale: Locale }) {
+  const t = copyFor(locale);
+  return (
+    <p className="usage-boundary">
+      <span>{t("contentRules")}</span>
+      <a href="/legal/abuse">{t("abuseDmca")}</a>
+      <a href="/legal/privacy">{t("privacy")}</a>
+    </p>
   );
 }
 
@@ -8532,6 +8762,43 @@ function PickupEntry({ locale }: { locale: Locale }) {
   );
 }
 
+// landingFacts states at most four real numbers from the published
+// configuration: capacity per send, retention, per-file ceiling and the sign-in
+// requirement. With no catalog there is nothing the server has promised, so the
+// first screen states nothing rather than falling back to local numbers.
+function landingFacts(
+  catalog: PlanCatalog | null,
+  t: Translate,
+): Array<{ label: string; value: string }> {
+  if (!catalog) return [];
+  const guest = catalog.guestUploads;
+  const freePlan =
+    catalog.plans.find((plan) => plan.id === "free") ?? catalog.plans[0];
+  // Describe what the visitor can do right now: the guest allowance while guest
+  // sending is open, the free plan once it is not.
+  const allowance =
+    guest?.enabled || !freePlan
+      ? {
+          capacity: guest?.singlePasteBytes ?? 0,
+          retention: guest?.retentionSeconds ?? 0,
+          fileLimit: guest?.singleFileBytes ?? 0,
+          signup: t("factSignupNotRequired"),
+        }
+      : {
+          capacity: freePlan.singlePasteBytes,
+          retention: freePlan.maxRetentionSeconds,
+          fileLimit: freePlan.singleFileBytes,
+          signup: t("factSignupRequired"),
+        };
+  const facts = [
+    { label: t("factCapacity"), value: formatBytes(allowance.capacity) },
+    { label: t("factRetention"), value: formatDuration(allowance.retention) },
+    { label: t("factFileLimit"), value: formatBytes(allowance.fileLimit) },
+    { label: t("factSignup"), value: allowance.signup },
+  ];
+  return facts.slice(0, 4);
+}
+
 function LandingPage({
   catalog,
   locale,
@@ -8560,6 +8827,7 @@ function LandingPage({
   const showPricing = visiblePaidPlanIds.size > 0 && priceCards.length > 0;
   const showcasePlan = priceCards[0];
   const guestUploads = catalog?.guestUploads ?? fallbackGuestUploads;
+  const facts = landingFacts(catalog, t);
 
   return (
     <main className="landing-page">
@@ -8628,6 +8896,16 @@ function LandingPage({
             </a>
           </div>
           <PickupEntry locale={locale} />
+          {facts.length > 0 ? (
+            <ul className="landing-facts">
+              {facts.map((fact) => (
+                <li key={fact.label}>
+                  <strong>{fact.value}</strong>
+                  <span>{fact.label}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </div>
 
         <div className="landing-hero-art">
@@ -8810,6 +9088,22 @@ function GuestWorkbench({
 }) {
   const labels = guestWorkbenchCopy[locale] ?? guestWorkbenchCopy.en;
   const transferLabels = transferCopyFor(locale);
+  const t = useMemo(() => copyFor(locale), [locale]);
+  // The guest send settings live next to the files: expiry stays inside the
+  // guest retention and the optional password protects whatever gets sent.
+  const [sendExpirySeconds, setSendExpirySeconds] = useState(
+    config.retentionSeconds,
+  );
+  const [sendPassword, setSendPassword] = useState("");
+  useEffect(() => {
+    setSendExpirySeconds((current) =>
+      clampExpirySeconds(current, config.retentionSeconds),
+    );
+  }, [config.retentionSeconds]);
+  const expiryOptions = useMemo(
+    () => expiryOptionsFor(config.retentionSeconds, sendExpirySeconds, t),
+    [config.retentionSeconds, sendExpirySeconds, t],
+  );
   const [mode, setMode] = useState<GuestWorkbenchMode>("file");
   const [title, setTitle] = useState("");
   const [text, setText] = useState("");
@@ -8830,7 +9124,8 @@ function GuestWorkbench({
         const created = await client.createGuestTransfer({
           guestToken: guestTokenRef.current || undefined,
           idempotencyKey,
-          expiresInSeconds: config.retentionSeconds,
+          expiresInSeconds: sendExpirySeconds,
+          password: sendPassword,
           items: manifest,
         });
         guestTokenRef.current = created.guestToken;
@@ -8862,7 +9157,7 @@ function GuestWorkbench({
         await client.cancelGuestTransfer(transferId, guestTokenRef.current);
       },
     }),
-    [config.retentionSeconds],
+    [sendExpirySeconds, sendPassword],
   );
   const guestQueue = useTransferQueue(guestQueueAdapter);
   const guestLimits = useMemo<SendLimits>(
@@ -8953,7 +9248,7 @@ function GuestWorkbench({
         title: nextTitle,
         text: mode === "text" ? text : "",
         tags: [],
-        expiresInSeconds: config.retentionSeconds,
+        expiresInSeconds: sendExpirySeconds,
       });
       const token = pasteResult.guestToken;
       guestTokenRef.current = token;
@@ -8961,7 +9256,8 @@ function GuestWorkbench({
         await client.uploadGuestAttachment(pasteResult.paste.id, file, token);
       }
       const share = await client.createGuestShare(pasteResult.paste.id, token, {
-        expiresInSeconds: config.retentionSeconds,
+        expiresInSeconds: sendExpirySeconds,
+        password: sendPassword,
       });
       setShareUrl(share.url);
       setShareExpiresAt(share.expiresAt);
@@ -9185,6 +9481,14 @@ function GuestWorkbench({
             />
           </>
         )}
+        <SendSettingsFields
+          expiresInSeconds={sendExpirySeconds}
+          expiryOptions={expiryOptions}
+          labels={transferLabels}
+          onExpiry={setSendExpirySeconds}
+          onPassword={setSendPassword}
+          password={sendPassword}
+        />
       </div>
       <div className="guest-workbench-actions">
         <span>
@@ -9861,6 +10165,7 @@ function WorkspaceFooter({ locale }: { locale: Locale }) {
   const groups = footerGroupsFor(locale);
   return (
     <footer className="workspace-footer">
+      <UsageBoundaryNotice locale={locale} />
       <nav aria-label={t("legalNavigation")}>
         {groups.map((group) => (
           <section className="workspace-footer-group" key={group.title}>
@@ -9896,6 +10201,7 @@ function PublicFooter({
         className="clay-footer-art"
         src={clayFooterAsset}
       />
+      <UsageBoundaryNotice locale={locale} />
       <nav aria-label={t("legalNavigation")}>
         {groups.map((group) => (
           <section className="public-footer-group" key={group.title}>

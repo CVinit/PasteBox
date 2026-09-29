@@ -273,7 +273,11 @@ type GuestCreateTransferInput struct {
 	IdempotencyKey   string
 	ExpiresInSeconds int64
 	Password         string
-	Items            []TransferItemInput
+	// LoginRequired is refused for guests, matching guest shares: a guest send
+	// has no account to check against, so accepting it would promise a privacy
+	// setting the service cannot enforce.
+	LoginRequired bool
+	Items         []TransferItemInput
 }
 
 type Order struct {

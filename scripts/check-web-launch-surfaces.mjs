@@ -118,6 +118,37 @@ for (const link of criticalLinks) {
   requireIncludes("web/src/App.tsx product links", appSource, link);
 }
 
+// The first screen states at most four real numbers from the published config,
+// and content rules, abuse reporting and privacy share one wording instead of
+// drifting per surface. The research traffic estimate is directional evidence,
+// never a product promise, so no visible copy may restate it.
+const manifestPath = join(repoRoot, "web/public/manifest.webmanifest");
+const manifest = requireFile(manifestPath);
+requireIncludes("web/public/manifest.webmanifest description", manifest, "file transfer workspace");
+if (manifest.includes("Private cloud clipboard")) {
+  fail("web/public/manifest.webmanifest still leads with the clipboard framing");
+}
+
+requireIncludes("web/src/App.tsx first-screen facts", appSource, "landingFacts(catalog, t)");
+requireIncludes("web/src/App.tsx first-screen fact cap", appSource, "return facts.slice(0, 4);");
+for (const key of ["factCapacity", "factRetention", "factFileLimit", "factSignup"]) {
+  requireIncludes("web/src/App.tsx first-screen fact copy", appSource, key);
+}
+
+requireIncludes("web/src/App.tsx shared usage boundary notice", appSource, 'className="usage-boundary"');
+for (const copy of [
+  "Do not upload illegal, malicious, or infringing content.",
+  "禁止上传违法、恶意或侵权内容。",
+]) {
+  requireIncludes("web/src/App.tsx usage boundary copy", appSource, copy);
+  requireIncludes("production JS bundle usage boundary copy", bundle, copy);
+}
+for (const claim of ["数量级", "order of magnitude", "search traffic estimate"]) {
+  if (bundle.includes(claim)) {
+    fail(`production JS bundle restates the research traffic estimate (${claim})`);
+  }
+}
+
 requireIncludes("web/src/api.ts support contact client", apiSource, 'supportContacts: () => api<SupportContacts>("/support/contacts")');
 requireIncludes("web/src/App.tsx support contacts load", appSource, "client.supportContacts()");
 requireIncludes("web/src/App.tsx supported locale type", appSource, 'type Locale = "en" | "zh-CN" | "zh-TW" | "es"');

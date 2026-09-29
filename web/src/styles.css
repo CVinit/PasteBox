@@ -1409,14 +1409,15 @@ textarea:disabled {
 
 .composer-controls {
   display: grid;
-  grid-template-columns: 170px minmax(140px, 1fr) auto;
+  grid-template-columns: minmax(140px, 1fr) auto;
   gap: 10px;
   align-items: center;
 }
 
 .composer-controls label,
 .composer-controls input,
-.composer-controls button {
+.composer-controls button,
+.send-settings label {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1448,19 +1449,28 @@ textarea:disabled {
   column-gap: 8px;
 }
 
-.composer-controls .tag-input-wrap:focus-within {
+.composer-controls .tag-input-wrap:focus-within,
+.send-settings label:focus-within {
   border-color: var(--field-border-strong);
   box-shadow:
     0 0 0 4px rgba(99, 102, 241, 0.14),
     var(--field-shadow);
 }
 
-.composer-controls .tag-input-wrap input {
+/* The real control inside a wrapper carries no chrome of its own; the wrapper
+   provides the field boundary and the focus treatment. */
+.composer-controls .tag-input-wrap input,
+.send-settings select,
+.send-settings input[type="password"] {
+  width: 100%;
+  min-width: 0;
   min-height: auto;
   padding: 0;
   border: 0;
+  color: var(--ink);
   background: transparent;
   box-shadow: none;
+  outline: 0;
 }
 
 .composer-controls .tag-input-wrap input:disabled,
@@ -4921,4 +4931,105 @@ code {
   .landing-user span:last-child {
     display: none;
   }
+}
+
+/* Send settings: the inline expiry and privacy group shared by the account
+   composer and the guest workbench. Its field chrome comes from the shared
+   composer-controls rules; the columns may shrink below their content so the
+   group never widens the surface that hosts it. */
+.send-settings-group {
+  display: grid;
+  gap: 6px;
+}
+
+.send-settings-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+  letter-spacing: 0.04em;
+}
+
+.send-settings {
+  display: grid;
+  grid-template-columns: minmax(0, 170px) minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+/* The sign-in requirement is a toggle rather than a field, so it keeps the
+   group height without pretending to be text entry. */
+.send-settings label.send-settings-toggle {
+  gap: 9px;
+  color: var(--muted-strong);
+  background: var(--canvas-warm);
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.send-settings label.send-settings-toggle input {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  margin: 0;
+  accent-color: var(--brand);
+}
+
+@media (max-width: 680px) {
+  .send-settings {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* First-screen facts: at most four real numbers from the published config. */
+.landing-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 22px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.landing-facts li {
+  display: grid;
+  gap: 2px;
+}
+
+.landing-facts strong {
+  color: var(--ink-strong);
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.landing-facts span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+  letter-spacing: 0.04em;
+}
+
+/* One wording for content rules, abuse reporting and privacy, reused by both
+   footers so the notice cannot drift between surfaces. */
+.usage-boundary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px 12px;
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.public-footer .usage-boundary a,
+.workspace-footer .usage-boundary a {
+  display: inline;
+  padding: 0;
+  color: var(--brand-strong);
+  font-weight: 800;
 }
