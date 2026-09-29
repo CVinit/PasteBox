@@ -636,3 +636,36 @@ Resume after e6a2a884 API failures. Verified split compose rendering, path overr
 ### Next Steps
 
 - None - task complete
+
+
+## Session 19: 工单 #6：多文件队列与失败重试
+
+**Date**: 2026-09-29
+**Task**: 工单 #6：多文件队列与失败重试
+**Branch**: `main`
+
+### Summary
+
+实现 GitHub Issue #6：发送区先声明清单再上传，点击与拖拽均支持多选，全部文件共用一条分享链接与有效期；逐文件真实字节进度（XHR），失败项单独重试、已成功项不重传，发布失败也能不重传恢复。抽出共享队列 web/src/transferQueue.ts，登录工作区与游客工作台行为一致。后端把超配额错误改为命名实际生效的限制（发送总量 413、日流量与存储 403），单文件路径不变。新增 HTTP 集成测试覆盖部分失败恢复、并发同项上传单附件、发布竞争、超配额原因、未完成清单隔离、重名与记录归组；浏览器闭环 33/33（含拖拽与发布重试）。make test-postgres、race、typecheck、build、gofmt、go vet 均通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c54e822` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -1,0 +1,39 @@
+{
+  "id": "file-transfer-first",
+  "name": "file-transfer-first",
+  "title": "文件中转优先的界面与分享能力升级",
+  "description": "",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "v",
+  "assignee": "v",
+  "createdAt": "2026-09-29",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "issue_url": "https://github.com/CVinit/PasteBox/issues/4",
+    "issue_number": 4,
+    "ticket_urls": [
+      "https://github.com/CVinit/PasteBox/issues/5",
+      "https://github.com/CVinit/PasteBox/issues/6",
+      "https://github.com/CVinit/PasteBox/issues/7",
+      "https://github.com/CVinit/PasteBox/issues/8",
+      "https://github.com/CVinit/PasteBox/issues/9",
+      "https://github.com/CVinit/PasteBox/issues/10",
+      "https://github.com/CVinit/PasteBox/issues/11",
+      "https://github.com/CVinit/PasteBox/issues/12"
+    ]
+  }
+}
