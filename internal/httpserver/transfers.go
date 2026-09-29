@@ -102,7 +102,7 @@ func (s *Server) uploadTransferItem(w http.ResponseWriter, r *http.Request) {
 	}
 	upload, _, err := readAttachmentMultipart(r, preflight.MaxBytes)
 	if err != nil {
-		if s.handleErr(w, err) {
+		if s.handleErr(w, explainUploadLimit(preflight.LimitExceeded, err)) {
 			return
 		}
 		return
@@ -129,7 +129,7 @@ func (s *Server) uploadGuestTransferItem(w http.ResponseWriter, r *http.Request)
 		return resolved.MaxBytes, nil
 	})
 	if err != nil {
-		if s.handleErr(w, err) {
+		if s.handleErr(w, explainUploadLimit(preflight.LimitExceeded, err)) {
 			return
 		}
 		return

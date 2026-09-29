@@ -29,6 +29,10 @@ const (
 // between the streaming preflight and the prepared-upload step.
 type TransferItemUploadPreflight struct {
 	MaxBytes int64
+	// LimitExceeded is the error to report when this upload is refused for size
+	// or quota reasons, so a multi-file send names the limit that actually
+	// applied instead of always blaming the file size.
+	LimitExceeded *Error
 
 	transferID string
 	itemID     string
@@ -568,17 +572,18 @@ func (s *Service) preflightTransferItemUploadLocked(ctx context.Context, transfe
 	if paste.UserID != transfer.UserID {
 		return TransferItemUploadPreflight{}, E(http.StatusNotFound, "transfer_not_found", "transfer not found")
 	}
-	maxBytes, err := s.attachmentUploadLimitLocked(ctx, user, paste, plan)
+	limit, err := s.attachmentUploadLimitLocked(ctx, user, paste, plan)
 	if err != nil {
 		return TransferItemUploadPreflight{}, err
 	}
 	return TransferItemUploadPreflight{
-		MaxBytes:   maxBytes,
-		transferID: transfer.ID,
-		itemID:     itemID,
-		userID:     user.ID,
-		pasteID:    paste.ID,
-		guestToken: guestToken,
+		MaxBytes:      limit.maxBytes,
+		LimitExceeded: limit.exceeded,
+		transferID:    transfer.ID,
+		itemID:        itemID,
+		userID:        user.ID,
+		pasteID:       paste.ID,
+		guestToken:    guestToken,
 	}, nil
 }
 

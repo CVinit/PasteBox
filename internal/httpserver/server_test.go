@@ -2030,27 +2030,35 @@ func (c *httpTestClient) multipart(path string, fieldName string, fileName strin
 
 func (c *httpTestClient) multipartWithFields(path string, fieldName string, fileName string, content []byte, fields map[string]string) *httptest.ResponseRecorder {
 	c.t.Helper()
+	body, contentType := multipartPayload(c.t, fieldName, fileName, content, fields)
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Accept", "application/json")
+	return c.do(req)
+}
+
+// multipartPayload builds the body and content type of a one-file form, so
+// tests that need the raw request (concurrency, retries) reuse the same shape.
+func multipartPayload(t *testing.T, fieldName string, fileName string, content []byte, fields map[string]string) ([]byte, string) {
+	t.Helper()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	for key, value := range fields {
 		if err := writer.WriteField(key, value); err != nil {
-			c.t.Fatalf("write multipart field %s: %v", key, err)
+			t.Fatalf("write multipart field %s: %v", key, err)
 		}
 	}
 	part, err := writer.CreateFormFile(fieldName, fileName)
 	if err != nil {
-		c.t.Fatalf("create multipart field: %v", err)
+		t.Fatalf("create multipart field: %v", err)
 	}
 	if _, err := part.Write(content); err != nil {
-		c.t.Fatalf("write multipart field: %v", err)
+		t.Fatalf("write multipart field: %v", err)
 	}
 	if err := writer.Close(); err != nil {
-		c.t.Fatalf("close multipart writer: %v", err)
+		t.Fatalf("close multipart writer: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodPost, path, &body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("Accept", "application/json")
-	return c.do(req)
+	return body.Bytes(), writer.FormDataContentType()
 }
 
 func (c *httpTestClient) do(req *http.Request) *httptest.ResponseRecorder {

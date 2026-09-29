@@ -111,11 +111,11 @@ func (s *Service) PreflightAttachmentUploadWithContext(ctx context.Context, user
 	}
 	user := s.usersByID[userID]
 	plan, _ := s.planForUserLocked(user)
-	maxBytes, err := s.attachmentUploadLimitLocked(ctx, user, paste, plan)
+	limit, err := s.attachmentUploadLimitLocked(ctx, user, paste, plan)
 	if err != nil {
 		return AttachmentUploadPreflight{}, err
 	}
-	return AttachmentUploadPreflight{MaxBytes: maxBytes, pasteID: pasteID}, nil
+	return AttachmentUploadPreflight{MaxBytes: limit.maxBytes, pasteID: pasteID}, nil
 }
 
 func (s *Service) PreflightGuestAttachmentUpload(ctx context.Context, token string, pasteID string, turnstileToken string, remoteIP string) (AttachmentUploadPreflight, error) {
@@ -143,11 +143,11 @@ func (s *Service) PreflightGuestAttachmentUpload(ctx context.Context, token stri
 	if err != nil || paste.UserID != user.ID {
 		return AttachmentUploadPreflight{}, E(http.StatusNotFound, "paste_not_found", "paste not found")
 	}
-	maxBytes, err := s.attachmentUploadLimitLocked(ctx, user, paste, guestPlan(cfg))
+	limit, err := s.attachmentUploadLimitLocked(ctx, user, paste, guestPlan(cfg))
 	if err != nil {
 		return AttachmentUploadPreflight{}, err
 	}
-	return AttachmentUploadPreflight{MaxBytes: maxBytes, guestToken: token, pasteID: pasteID}, nil
+	return AttachmentUploadPreflight{MaxBytes: limit.maxBytes, guestToken: token, pasteID: pasteID}, nil
 }
 
 func (u *PreparedAttachmentUpload) Close() error {
@@ -351,29 +351,44 @@ func (s *Service) preflightPreparedGuestAttachment(ctx context.Context, token st
 	return preparedAttachmentObjectKey(user.ID, upload), nil
 }
 
-func (s *Service) attachmentUploadLimitLocked(ctx context.Context, user *User, paste *Paste, plan plans.Plan) (int64, error) {
+// uploadLimit is the smallest size limit that applies to one upload, together
+// with the error to report when the upload exceeds it.
+type uploadLimit struct {
+	maxBytes int64
+	exceeded *Error
+}
+
+// attachmentUploadLimitLocked resolves how many bytes one upload may still use.
+// A multi-file send makes several limits bind at once, so the limit carries the
+// error for whichever one applied: a send that runs out of total size must not
+// be reported as a single oversized file. Each error reuses the code, status
+// and message of the single-upload path that enforces the same limit.
+func (s *Service) attachmentUploadLimitLocked(ctx context.Context, user *User, paste *Paste, plan plans.Plan) (uploadLimit, error) {
 	if err := s.validatePreparedAttachmentLocked(ctx, user, paste, plan, &PreparedAttachmentUpload{}); err != nil {
-		return 0, err
+		return uploadLimit{}, err
 	}
 	quota, err := s.quotaLocked(ctx, user.ID, plan)
 	if err != nil {
-		return 0, err
+		return uploadLimit{}, err
 	}
-	maxBytes := maxAttachmentUploadBytes
-	for _, available := range []int64{
-		plan.SingleFileBytes,
-		plan.SinglePasteBytes - s.pasteSizeLocked(paste),
-		plan.ActiveStorageBytes - quota.ActiveStorageBytes,
-		plan.DailyUploadBytes - quota.DailyUploadBytes,
+	limit := uploadLimit{
+		maxBytes: maxAttachmentUploadBytes,
+		exceeded: E(http.StatusRequestEntityTooLarge, "file_too_large", "file exceeds maximum upload limit"),
+	}
+	for _, candidate := range []uploadLimit{
+		{maxBytes: plan.SingleFileBytes, exceeded: E(http.StatusRequestEntityTooLarge, "file_too_large", "file exceeds plan limit")},
+		{maxBytes: plan.SinglePasteBytes - s.pasteSizeLocked(paste), exceeded: E(http.StatusRequestEntityTooLarge, "paste_too_large", "paste exceeds plan total size")},
+		{maxBytes: plan.ActiveStorageBytes - quota.ActiveStorageBytes, exceeded: E(http.StatusForbidden, "storage_limit", "active storage exceeds plan limit")},
+		{maxBytes: plan.DailyUploadBytes - quota.DailyUploadBytes, exceeded: E(http.StatusForbidden, "daily_upload_limit", "daily upload traffic exceeds plan limit")},
 	} {
-		if available < maxBytes {
-			maxBytes = available
+		if candidate.maxBytes < limit.maxBytes {
+			limit = candidate
 		}
 	}
-	if maxBytes < 0 {
-		maxBytes = 0
+	if limit.maxBytes < 0 {
+		limit.maxBytes = 0
 	}
-	return maxBytes, nil
+	return limit, nil
 }
 
 func (s *Service) finalizePreparedAttachment(ctx context.Context, userID string, pasteID string, upload *PreparedAttachmentUpload, stored preparedObjectStorage) (AttachmentView, error) {

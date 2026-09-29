@@ -1508,6 +1508,19 @@ textarea:disabled {
   box-shadow: 0 0 0 4px rgba(13, 111, 93, 0.08);
 }
 
+/* A send in flight or already finished takes no new files, so the drop zone
+   stops looking like it accepts them. */
+.drop-zone[aria-disabled="true"],
+.drop-zone[aria-disabled="true"]:hover,
+.drop-zone[aria-disabled="true"]:focus-within {
+  border-style: solid;
+  border-color: var(--line);
+  color: var(--muted);
+  background: var(--canvas-warm);
+  box-shadow: none;
+  cursor: default;
+}
+
 .button-row {
   display: flex;
   flex-wrap: wrap;
@@ -2194,6 +2207,20 @@ code {
   color: inherit;
   text-align: left;
   background: transparent;
+}
+
+/* One send stays one record, so its card names the files it grouped. */
+.paste-file-summary {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .card-actions {
@@ -4322,6 +4349,14 @@ code {
   box-shadow: 0 0 0 4px rgba(10, 10, 10, 0.08);
 }
 
+.guest-upload-box[aria-disabled="true"],
+.guest-upload-box[aria-disabled="true"]:hover,
+.guest-upload-box[aria-disabled="true"]:focus-within {
+  border-style: solid;
+  box-shadow: none;
+  cursor: default;
+}
+
 .guest-limit-note {
   justify-self: end;
   color: var(--muted);
@@ -4415,6 +4450,145 @@ code {
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: rgba(255, 250, 240, 0.7);
+}
+
+/* One send is a queue of files sharing a single transfer, so each file shows
+   its own real progress and its own retry state. */
+.send-queue {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.send-queue-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 13px;
+}
+
+.send-queue-head strong {
+  color: var(--ink-strong);
+}
+
+.send-queue-head span {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.send-queue-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.send-queue-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--panel-solid);
+}
+
+.send-queue-main {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.send-queue-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.send-queue-size {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.send-queue-bar {
+  grid-column: 1;
+  grid-row: 2;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--canvas-warm);
+}
+
+.send-queue-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--brand);
+  transition: width 160ms ease-out;
+}
+
+.send-queue-state {
+  grid-column: 2;
+  grid-row: 1;
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.send-queue-remove {
+  grid-column: 2;
+  grid-row: 2;
+  justify-self: end;
+  padding: 0;
+  border: 0;
+  color: var(--brand-strong);
+  background: none;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.send-queue-error {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  color: var(--coral);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.send-queue-item--uploaded .send-queue-bar > span {
+  background: var(--brand-strong);
+}
+
+.send-queue-item--failed {
+  border-color: color-mix(in srgb, var(--coral) 45%, transparent);
+  background: var(--coral-soft);
+}
+
+.send-queue-item--failed .send-queue-bar > span {
+  background: var(--coral);
+}
+
+.send-queue-item--failed .send-queue-state {
+  color: var(--coral);
 }
 
 .guest-workbench-actions button,

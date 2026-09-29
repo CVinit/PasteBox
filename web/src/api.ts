@@ -520,6 +520,133 @@ async function fetchCsrfToken(): Promise<string> {
   return payload.csrfToken;
 }
 
+export type UploadProgress = (loaded: number, total: number) => void;
+
+// uploadWithProgress posts a multipart form through XMLHttpRequest because
+// fetch cannot report upload progress, and a multi-file send needs real
+// per-file byte progress instead of a timer-driven guess.
+export function uploadWithProgress<T>(
+  path: string,
+  form: FormData,
+  onProgress: UploadProgress,
+  options: { headers?: Record<string, string>; signal?: AbortSignal } = {},
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let request: XMLHttpRequest | null = null;
+    let settled = false;
+
+    const settle = (finish: () => void) => {
+      if (settled) return;
+      settled = true;
+      options.signal?.removeEventListener("abort", abort);
+      finish();
+    };
+    const abort = () => {
+      request?.abort();
+    };
+    const fail = (error: unknown) => settle(() => reject(error));
+    const succeed = (value: T) => settle(() => resolve(value));
+
+    const attempt = (token: string, isRetry: boolean) => {
+      const xhr = new XMLHttpRequest();
+      request = xhr;
+      xhr.open("POST", `/api/v1${path}`);
+      xhr.withCredentials = true;
+      xhr.setRequestHeader("Accept", "application/json");
+      xhr.setRequestHeader("X-CSRF-Token", token);
+      for (const [name, value] of Object.entries(options.headers ?? {})) {
+        xhr.setRequestHeader(name, value);
+      }
+      xhr.upload.addEventListener("progress", (event) => {
+        if (event.lengthComputable) onProgress(event.loaded, event.total);
+      });
+      xhr.addEventListener("load", () => {
+        const payload = parseJSONBody(xhr.responseText);
+        if (xhr.status >= 200 && xhr.status < 300) {
+          succeed(payload as T);
+          return;
+        }
+        const error = apiError(xhr.status, xhr.statusText, payload);
+        // A cached token can rotate while a queue is uploading, so refresh it
+        // once and resend rather than failing every remaining file.
+        if (error.code === "csrf_required" && !isRetry) {
+          void (async () => {
+            try {
+              attempt(await fetchCsrfToken(), true);
+            } catch (refreshError) {
+              fail(refreshError);
+            }
+          })();
+          return;
+        }
+        fail(error);
+      });
+      xhr.addEventListener("error", () =>
+        fail(new Error("The upload failed before it finished.")),
+      );
+      xhr.addEventListener("abort", () => fail(abortError()));
+      xhr.send(form);
+    };
+
+    void (async () => {
+      let token = csrfToken;
+      if (!token) {
+        try {
+          token = await fetchCsrfToken();
+        } catch (error) {
+          fail(error);
+          return;
+        }
+      }
+      if (options.signal?.aborted) {
+        fail(abortError());
+        return;
+      }
+      options.signal?.addEventListener("abort", abort, { once: true });
+      attempt(token, false);
+    })();
+  });
+}
+
+function parseJSONBody(text: string): unknown {
+  if (!text) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+// apiError builds the same error shape for both the fetch helper and the
+// progress-reporting uploader, so callers read one error contract.
+function apiError(
+  status: number,
+  statusText: string,
+  payload: unknown,
+): ApiError {
+  const body = (payload ?? {}) as { error?: string; message?: string };
+  const error = new Error(
+    body.message || statusText || "request_failed",
+  ) as ApiError;
+  error.status = status;
+  error.code = body.error ?? "request_failed";
+  return error;
+}
+
+function abortError(): ApiError {
+  const error = new Error("The upload was canceled.") as ApiError;
+  error.code = "upload_aborted";
+  return error;
+}
+
+export function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: string }).code === "upload_aborted"
+  );
+}
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   const isForm = init.body instanceof FormData;
@@ -556,22 +683,11 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   if (!response.ok) {
-    let message = response.statusText;
-    let code = "request_failed";
-    try {
-      const payload = (await response.json()) as {
-        error?: string;
-        message?: string;
-      };
-      message = payload.message ?? message;
-      code = payload.error ?? code;
-    } catch {
-      // Keep the HTTP status text.
-    }
-    const error = new Error(message) as ApiError;
-    error.status = response.status;
-    error.code = code;
-    throw error;
+    throw apiError(
+      response.status,
+      response.statusText,
+      await parseJSONResponse(response),
+    );
   }
 
   if (response.status === 204) {
@@ -579,6 +695,14 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   return (await response.json()) as T;
+}
+
+async function parseJSONResponse(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return undefined;
+  }
 }
 
 export const client = {
@@ -763,12 +887,22 @@ export const client = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  uploadTransferItem: (transferId: string, itemId: string, file: File) => {
+  // Uploads report real byte progress, so the helper streams through
+  // XMLHttpRequest rather than fetch.
+  uploadTransferItem: (
+    transferId: string,
+    itemId: string,
+    file: File,
+    onProgress: UploadProgress,
+    signal?: AbortSignal,
+  ) => {
     const form = new FormData();
     form.append("file", file);
-    return api<{ transfer: Transfer; attachment: Attachment }>(
+    return uploadWithProgress<{ transfer: Transfer; attachment: Attachment }>(
       `/transfers/${encodeURIComponent(transferId)}/items/${encodeURIComponent(itemId)}`,
-      { method: "POST", body: form },
+      form,
+      onProgress,
+      { signal },
     );
   },
   publishTransfer: (transferId: string) =>
@@ -798,17 +932,22 @@ export const client = {
     itemId: string,
     file: File,
     guestToken: string,
-    turnstileToken = "",
+    onProgress: UploadProgress,
+    options: { turnstileToken?: string; signal?: AbortSignal } = {},
   ) => {
     const form = new FormData();
     form.append("file", file);
-    const headers = new Headers({ "X-PasteBox-Guest-Token": guestToken });
-    if (turnstileToken) {
-      headers.set("X-PasteBox-Turnstile-Token", turnstileToken);
+    const headers: Record<string, string> = {
+      "X-PasteBox-Guest-Token": guestToken,
+    };
+    if (options.turnstileToken) {
+      headers["X-PasteBox-Turnstile-Token"] = options.turnstileToken;
     }
-    return api<{ transfer: Transfer; attachment: Attachment }>(
+    return uploadWithProgress<{ transfer: Transfer; attachment: Attachment }>(
       `/guest/transfers/${encodeURIComponent(transferId)}/items/${encodeURIComponent(itemId)}`,
-      { method: "POST", body: form, headers },
+      form,
+      onProgress,
+      { headers, signal: options.signal },
     );
   },
   publishGuestTransfer: (transferId: string, guestToken: string) =>

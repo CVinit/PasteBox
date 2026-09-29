@@ -3261,6 +3261,17 @@ func readAttachmentMultipart(r *http.Request, maxBytes int64) (*app.PreparedAtta
 	})
 }
 
+// explainUploadLimit rewrites the streaming reader's generic size error into
+// the limit that actually produced the byte budget, so a multi-file send that
+// runs out of total size is not reported as a single oversized file.
+func explainUploadLimit(limitExceeded *app.Error, err error) error {
+	appErr, ok := err.(*app.Error)
+	if !ok || appErr.Code != "file_too_large" || limitExceeded == nil || limitExceeded.Code == "file_too_large" {
+		return err
+	}
+	return limitExceeded
+}
+
 func readAttachmentMultipartWithPreflight(r *http.Request, preflight func(map[string]string) (int64, error)) (*app.PreparedAttachmentUpload, map[string]string, error) {
 	reader, err := r.MultipartReader()
 	if err != nil {

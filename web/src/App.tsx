@@ -79,6 +79,12 @@ import {
   type User,
   type WebhookEvent,
 } from "./api";
+import {
+  useTransferQueue,
+  type TransferQueueAdapter,
+  type TransferQueueItem,
+  type TransferQueuePhase,
+} from "./transferQueue";
 import "./styles.css";
 
 type View = "inbox" | "shared" | "billing" | "settings" | "admin";
@@ -113,12 +119,6 @@ type ShareDraft = {
   maxDownloads: number;
   expiresInSeconds: number;
 };
-
-type SendState =
-  | { phase: "idle" }
-  | { phase: "sending"; transferId: string; fileName: string }
-  | { phase: "sent"; transferId: string; url: string; expiresAt: string }
-  | { phase: "failed"; transferId: string; message: string };
 
 type RedemptionDraft = {
   planId: string;
@@ -3938,12 +3938,6 @@ function App() {
     tags: "",
   });
   const [shareDraft, setShareDraft] = useState<ShareDraft>(defaultShareDraft);
-  const [sendState, setSendState] = useState<SendState>({ phase: "idle" });
-  const sendAttempt = useRef<{
-    key: string;
-    fileName: string;
-    size: number;
-  } | null>(null);
   const [shareToken, setShareToken] = useState("");
   const [publicShareToken, setPublicShareToken] = useState(shareTokenFromPath);
   const [publicSharePassword, setPublicSharePassword] = useState("");
@@ -4186,6 +4180,61 @@ function App() {
     if (shareResult.status === "fulfilled") setShares(shareResult.value.shares);
     if (orderResult.status === "fulfilled") setOrders(orderResult.value.orders);
   }, [filter, query, selectedPasteId, tagFilter]);
+
+  // One send is a queue of files that share a single transfer, so the account
+  // entry point and the guest workbench behave the same way.
+  const sendAdapter = useMemo<TransferQueueAdapter>(
+    () => ({
+      create: async (manifest, idempotencyKey) => {
+        const created = await client.createTransfer({
+          idempotencyKey,
+          expiresInSeconds: draft.expiresInSeconds,
+          items: manifest,
+        });
+        return created.transfer.id;
+      },
+      upload: async (transferId, itemId, file, onProgress, signal) => {
+        await client.uploadTransferItem(
+          transferId,
+          itemId,
+          file,
+          onProgress,
+          signal,
+        );
+      },
+      publish: async (transferId) => {
+        const published = await client.publishTransfer(transferId);
+        return {
+          url: published.transfer.share?.url ?? "",
+          expiresAt:
+            published.transfer.share?.expiresAt ?? published.transfer.expiresAt,
+          pasteId: published.transfer.pasteId,
+        };
+      },
+      cancel: async (transferId) => {
+        await client.cancelTransfer(transferId);
+      },
+    }),
+    [draft.expiresInSeconds],
+  );
+  const sendQueue = useTransferQueue(sendAdapter);
+  const sendLimits = useMemo(() => {
+    const plan = catalog?.plans.find(
+      (entry) => entry.id === (user?.planId ?? "free"),
+    );
+    return {
+      singleFileBytes: plan?.singleFileBytes ?? 0,
+      singlePasteBytes: plan?.singlePasteBytes ?? 0,
+      attachmentsPerPasteLimit: plan?.attachmentsPerPasteLimit ?? 0,
+    };
+  }, [catalog, user?.planId]);
+  // A finished send is a new record, so surface it in the workspace and refresh
+  // the quota and record list the send just changed.
+  useEffect(() => {
+    if (sendQueue.phase !== "published") return;
+    if (sendQueue.share?.pasteId) setSelectedPasteId(sendQueue.share.pasteId);
+    void refreshAuthed();
+  }, [refreshAuthed, sendQueue.phase, sendQueue.share]);
 
   const refreshAdmin = useCallback(async () => {
     if (user?.role !== "admin") return;
@@ -4552,83 +4601,36 @@ function App() {
     }
   }
 
-  // A failed send keeps its idempotency key, so retrying the same file reuses
-  // the draft the server already created instead of minting a second transfer
-  // and charging the quota twice.
-  function sendKeyFor(file: File): string {
-    const pending = sendAttempt.current;
-    if (
-      pending &&
-      pending.fileName === file.name &&
-      pending.size === file.size
-    ) {
-      return pending.key;
-    }
-    const key = newClientId("send");
-    sendAttempt.current = { key, fileName: file.name, size: file.size };
-    return key;
-  }
-
-  async function uploadFile(file: File) {
+  // The send area declares every file before anything is uploaded, because the
+  // server publishes one share for the whole manifest only once all of it has
+  // landed. Files can only join a send that has not started yet.
+  function stageSendFiles(files: File[]) {
+    if (files.length === 0) return;
     const labels = transferCopyFor(locale);
-    const itemId = newClientId("itm");
-    setSendState({ phase: "sending", transferId: "", fileName: file.name });
-    let transferId = "";
-    try {
-      // Sending a file always starts a new transfer with its own record, so an
-      // upload can never land on the record that happens to be selected.
-      const created = await client.createTransfer({
-        idempotencyKey: sendKeyFor(file),
-        expiresInSeconds: draft.expiresInSeconds,
-        items: [
-          {
-            itemId,
-            fileName: file.name,
-            contentType: file.type,
-            size: file.size,
-          },
-        ],
-      });
-      transferId = created.transfer.id;
-      setSendState({ phase: "sending", transferId, fileName: file.name });
-      await client.uploadTransferItem(transferId, itemId, file);
-      const published = await client.publishTransfer(transferId);
-      const share = published.transfer.share;
-      setSendState({
-        phase: "sent",
-        transferId,
-        url: share?.url ?? "",
-        expiresAt: share?.expiresAt ?? published.transfer.expiresAt,
-      });
-      setSelectedPasteId(published.transfer.pasteId);
-      sendAttempt.current = null;
-      await refreshAuthed();
-    } catch (error) {
-      const apiError = error as ApiError;
-      setSendState({
-        phase: "failed",
-        transferId,
-        message: apiError.message || labels.failed,
-      });
-    }
-  }
-
-  async function cancelSend() {
-    const labels = transferCopyFor(locale);
-    const transferId = sendState.phase === "idle" ? "" : sendState.transferId;
-    if (!transferId) {
-      setSendState({ phase: "idle" });
+    const violation = checkSendLimits(sendQueue.items, files, sendLimits);
+    if (violation) {
+      setMessage(sendLimitCopy(violation, labels));
       return;
     }
-    try {
-      await client.cancelTransfer(transferId);
-      sendAttempt.current = null;
-      setMessage(labels.canceled);
-    } catch (error) {
-      const apiError = error as ApiError;
-      setMessage(apiError.message || labels.failed);
+    if (!sendQueue.addFiles(files)) {
+      setMessage(labels.manifestFrozen);
+      return;
     }
-    setSendState({ phase: "idle" });
+    setMessage("");
+  }
+
+  const sendStatusText = sendQueueStatus(
+    sendQueue.phase,
+    sendQueue.counts,
+    sendQueue.error,
+    transferLabels,
+  );
+
+  // A cancel only claims success when the server confirmed it dropped the draft.
+  async function cancelSend() {
+    const labels = transferCopyFor(locale);
+    const canceled = await sendQueue.cancel();
+    setMessage(canceled ? labels.canceled : labels.failed);
   }
 
   // Attaching a file to an existing record stays an explicit action, so the
@@ -5549,8 +5551,7 @@ function App() {
                   setDraft({ ...draft, text: event.target.value })
                 }
                 onPaste={(event) => {
-                  const file = event.clipboardData.files.item(0);
-                  if (file) void uploadFile(file);
+                  stageSendFiles(Array.from(event.clipboardData.files));
                 }}
                 placeholder={t("pasteTextPlaceholder")}
               />
@@ -5604,13 +5605,13 @@ function App() {
                 </button>
               </div>
               <label
-                className="drop-zone"
+                aria-disabled={!sendQueue.canStage}
+                className={`drop-zone ${sendQueue.canStage ? "" : "drop-zone--locked"}`}
                 htmlFor={attachmentInputId}
                 onDragOver={(event) => event.preventDefault()}
                 onDrop={(event) => {
                   event.preventDefault();
-                  const file = event.dataTransfer.files.item(0);
-                  if (file) void uploadFile(file);
+                  stageSendFiles(Array.from(event.dataTransfer.files));
                 }}
               >
                 <UploadCloud size={20} aria-hidden="true" />
@@ -5618,14 +5619,24 @@ function App() {
                   className="visually-hidden-file-input"
                   id={attachmentInputId}
                   type="file"
+                  multiple
+                  disabled={!sendQueue.canStage}
                   onChange={(event) => {
-                    const file = event.target.files?.[0];
+                    const files = Array.from(event.target.files ?? []);
                     event.target.value = "";
-                    if (file) void uploadFile(file);
+                    stageSendFiles(files);
                   }}
                 />
-                {transferLabels.sendFile} · {t("dropOrChooseFile")}
+                {sendQueue.canStage
+                  ? `${transferLabels.sendFile} · ${transferLabels.dropFilesHint}`
+                  : sendZoneLabel(sendQueue.phase, transferLabels)}
               </label>
+              <SendQueueList
+                canRemove={sendQueue.canStage}
+                items={sendQueue.items}
+                labels={transferLabels}
+                onRemove={sendQueue.removeFile}
+              />
               <div className="button-row compact">
                 <button
                   type="button"
@@ -5646,46 +5657,60 @@ function App() {
                     if (file) void attachFile(file);
                   }}
                 />
+                {sendQueue.canSend ? (
+                  <button type="button" onClick={sendQueue.start}>
+                    <UploadCloud size={16} aria-hidden="true" />
+                    {fillCopy(transferLabels.sendFiles, {
+                      count: sendQueue.items.length,
+                    })}
+                  </button>
+                ) : null}
+                {sendQueue.phase === "failed" ? (
+                  <button type="button" onClick={sendQueue.retry}>
+                    <RotateCcw size={16} aria-hidden="true" />
+                    {sendQueue.counts.failed > 0
+                      ? transferLabels.retryFailed
+                      : transferLabels.retrySend}
+                  </button>
+                ) : null}
+                {sendQueue.phase === "uploading" ||
+                sendQueue.phase === "publishing" ||
+                sendQueue.phase === "failed" ? (
+                  <button type="button" onClick={() => void cancelSend()}>
+                    <Ban size={16} aria-hidden="true" />
+                    {transferLabels.cancelSend}
+                  </button>
+                ) : null}
               </div>
-              {sendState.phase !== "idle" ? (
+              {sendStatusText ? (
                 <div className="send-status">
-                  {sendState.phase === "sending" ? (
-                    <p className="status-line">
-                      {transferLabels.sending} {sendState.fileName}
-                    </p>
-                  ) : null}
-                  {sendState.phase === "sent" ? (
-                    <>
-                      <p className="status-line">{transferLabels.linkReady}</p>
-                      <div className="guest-share-result">
-                        <input readOnly value={sendState.url} />
-                        <button
-                          type="button"
-                          onClick={() =>
-                            void navigator.clipboard?.writeText(sendState.url)
-                          }
-                        >
-                          <ClipboardCopy size={16} aria-hidden="true" />
-                          {t("copy")}
-                        </button>
-                      </div>
-                      <p className="status-line">
-                        {transferLabels.validUntil}{" "}
-                        {new Date(sendState.expiresAt).toLocaleString()}
-                      </p>
-                    </>
-                  ) : null}
-                  {sendState.phase === "failed" ? (
-                    <>
-                      <p className="status-line">{sendState.message}</p>
-                      {sendState.transferId ? (
-                        <button type="button" onClick={() => void cancelSend()}>
-                          <Ban size={16} aria-hidden="true" />
-                          {transferLabels.cancelSend}
-                        </button>
-                      ) : null}
-                    </>
-                  ) : null}
+                  <p className="status-line">{sendStatusText}</p>
+                </div>
+              ) : null}
+              {sendQueue.phase === "published" && sendQueue.share ? (
+                <div className="send-status">
+                  <p className="status-line">{transferLabels.linkReady}</p>
+                  <div className="guest-share-result">
+                    <input readOnly value={sendQueue.share.url} />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void navigator.clipboard?.writeText(
+                          sendQueue.share?.url ?? "",
+                        )
+                      }
+                    >
+                      <ClipboardCopy size={16} aria-hidden="true" />
+                      {t("copy")}
+                    </button>
+                  </div>
+                  <p className="status-line">
+                    {transferLabels.validUntil}{" "}
+                    {new Date(sendQueue.share.expiresAt).toLocaleString()}
+                  </p>
+                  <button type="button" onClick={sendQueue.reset}>
+                    {transferLabels.newSend}
+                  </button>
                 </div>
               ) : null}
             </section>
@@ -7768,6 +7793,14 @@ function PasteList({
               {paste.textPreview ||
                 `${paste.attachments.length} ${t("attachmentsCount")}`}
             </p>
+            {paste.attachments.length > 0 ? (
+              // One send is one record, so the card lists the files that send
+              // grouped together instead of hiding them behind a count.
+              <span className="paste-file-summary">
+                <FileUp size={13} aria-hidden="true" />
+                {pasteFileSummary(paste.attachments)}
+              </span>
+            ) : null}
             <span>
               {formatBytes(paste.sizeBytes)} ·{" "}
               {formatDuration(paste.secondsToLive)} · {paste.scanStatus}
@@ -8039,7 +8072,6 @@ function byteSize(value: string): number {
 
 type TransferCopy = {
   sendFile: string;
-  sending: string;
   attachToSelected: string;
   linkReady: string;
   validUntil: string;
@@ -8051,12 +8083,31 @@ type TransferCopy = {
   pickupPlaceholder: string;
   pickupOpen: string;
   pickupInvalid: string;
+  dropFilesHint: string;
+  chooseFiles: string;
+  filesStaged: string;
+  removeFile: string;
+  sendFiles: string;
+  queued: string;
+  uploading: string;
+  uploaded: string;
+  uploadFailed: string;
+  publishing: string;
+  partialFailed: string;
+  retryFailed: string;
+  retrySend: string;
+  totalSize: string;
+  newSend: string;
+  manifestFrozen: string;
+  sendLocked: string;
+  overFileLimit: string;
+  overTotalLimit: string;
+  overCountLimit: string;
 };
 
 const transferCopy: Record<Locale, TransferCopy> = {
   en: {
     sendFile: "Send a file",
-    sending: "Sending...",
     attachToSelected: "Attach to selected record",
     linkReady: "Share link is ready.",
     validUntil: "Valid until",
@@ -8068,10 +8119,29 @@ const transferCopy: Record<Locale, TransferCopy> = {
     pickupPlaceholder: "Paste the share link",
     pickupOpen: "Open link",
     pickupInvalid: "Enter a valid PasteBox share link.",
+    dropFilesHint: "Drop files here or choose several at once",
+    chooseFiles: "Choose files",
+    filesStaged: "{count} files ready to send",
+    removeFile: "Remove",
+    sendFiles: "Send {count} files",
+    queued: "Waiting",
+    uploading: "Uploading",
+    uploaded: "Uploaded",
+    uploadFailed: "Upload failed",
+    publishing: "Creating the share link...",
+    partialFailed: "Some files did not upload.",
+    retryFailed: "Retry failed files",
+    retrySend: "Retry this send",
+    totalSize: "Total",
+    newSend: "Send another",
+    manifestFrozen: "This send has already started.",
+    sendLocked: "This send is finished.",
+    overFileLimit: "A file is over the per-file size limit.",
+    overTotalLimit: "The chosen files are over the total size limit for one send.",
+    overCountLimit: "Too many files for one send.",
   },
   "zh-CN": {
     sendFile: "发送文件",
-    sending: "发送中...",
     attachToSelected: "附加到当前记录",
     linkReady: "分享链接已生成。",
     validUntil: "有效期至",
@@ -8083,10 +8153,29 @@ const transferCopy: Record<Locale, TransferCopy> = {
     pickupPlaceholder: "粘贴分享链接",
     pickupOpen: "打开链接",
     pickupInvalid: "请输入有效的 PasteBox 分享链接。",
+    dropFilesHint: "拖入文件，或一次选择多个文件",
+    chooseFiles: "选择文件",
+    filesStaged: "已选 {count} 个文件",
+    removeFile: "移除",
+    sendFiles: "发送 {count} 个文件",
+    queued: "等待上传",
+    uploading: "上传中",
+    uploaded: "已上传",
+    uploadFailed: "上传失败",
+    publishing: "正在生成分享链接…",
+    partialFailed: "有文件未上传成功。",
+    retryFailed: "重试失败项",
+    retrySend: "重试这次发送",
+    totalSize: "合计",
+    newSend: "再发一次",
+    manifestFrozen: "本次发送已开始。",
+    sendLocked: "本次发送已完成。",
+    overFileLimit: "有文件超过单个文件大小上限。",
+    overTotalLimit: "所选文件合计超过一次发送的大小上限。",
+    overCountLimit: "所选文件数量超过一次发送的上限。",
   },
   "zh-TW": {
     sendFile: "傳送檔案",
-    sending: "傳送中...",
     attachToSelected: "附加到目前記錄",
     linkReady: "分享連結已產生。",
     validUntil: "有效期至",
@@ -8098,10 +8187,29 @@ const transferCopy: Record<Locale, TransferCopy> = {
     pickupPlaceholder: "貼上分享連結",
     pickupOpen: "開啟連結",
     pickupInvalid: "請輸入有效的 PasteBox 分享連結。",
+    dropFilesHint: "拖入檔案，或一次選擇多個檔案",
+    chooseFiles: "選擇檔案",
+    filesStaged: "已選 {count} 個檔案",
+    removeFile: "移除",
+    sendFiles: "傳送 {count} 個檔案",
+    queued: "等待上傳",
+    uploading: "上傳中",
+    uploaded: "已上傳",
+    uploadFailed: "上傳失敗",
+    publishing: "正在產生分享連結…",
+    partialFailed: "有檔案未上傳成功。",
+    retryFailed: "重試失敗項",
+    retrySend: "重試這次傳送",
+    totalSize: "合計",
+    newSend: "再傳一次",
+    manifestFrozen: "本次傳送已開始。",
+    sendLocked: "本次傳送已完成。",
+    overFileLimit: "有檔案超過單一檔案大小上限。",
+    overTotalLimit: "所選檔案合計超過一次傳送的大小上限。",
+    overCountLimit: "所選檔案數量超過一次傳送的上限。",
   },
   es: {
     sendFile: "Enviar archivo",
-    sending: "Enviando...",
     attachToSelected: "Adjuntar al registro seleccionado",
     linkReady: "Enlace listo.",
     validUntil: "Válido hasta",
@@ -8113,18 +8221,158 @@ const transferCopy: Record<Locale, TransferCopy> = {
     pickupPlaceholder: "Pega el enlace",
     pickupOpen: "Abrir enlace",
     pickupInvalid: "Introduce un enlace de PasteBox válido.",
+    dropFilesHint: "Arrastra archivos o elige varios a la vez",
+    chooseFiles: "Elegir archivos",
+    filesStaged: "{count} archivos listos para enviar",
+    removeFile: "Quitar",
+    sendFiles: "Enviar {count} archivos",
+    queued: "En espera",
+    uploading: "Subiendo",
+    uploaded: "Subido",
+    uploadFailed: "Error al subir",
+    publishing: "Creando el enlace...",
+    partialFailed: "Algunos archivos no se subieron.",
+    retryFailed: "Reintentar archivos fallidos",
+    retrySend: "Reintentar este envío",
+    totalSize: "Total",
+    newSend: "Enviar otro",
+    manifestFrozen: "Este envío ya empezó.",
+    sendLocked: "Este envío ya terminó.",
+    overFileLimit: "Un archivo supera el límite de tamaño por archivo.",
+    overTotalLimit:
+      "Los archivos elegidos superan el tamaño total de un envío.",
+    overCountLimit: "Demasiados archivos para un envío.",
   },
 };
 
-function newClientId(prefix: string): string {
-  const random =
-    globalThis.crypto?.randomUUID?.() ??
-    `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  return `${prefix}-${random}`;
-}
-
 function transferCopyFor(locale: Locale): TransferCopy {
   return transferCopy[locale] ?? transferCopy.en;
+}
+
+// fillCopy renders a copy template such as "Send {count} files" without
+// splitting the sentence into fragments that other languages would reorder.
+function fillCopy(
+  template: string,
+  values: Record<string, string | number>,
+): string {
+  return template.replace(/\{(\w+)\}/g, (match, key: string) =>
+    key in values ? String(values[key]) : match,
+  );
+}
+
+// sendQueuePercent is the real byte progress of one queued file, not a timer.
+function sendQueuePercent(item: TransferQueueItem): number {
+  if (item.status === "uploaded") return 100;
+  if (item.total <= 0) return item.status === "uploading" ? 100 : 0;
+  return Math.min(100, Math.round((item.loaded / item.total) * 100));
+}
+
+function sendQueueStateLabel(
+  item: TransferQueueItem,
+  labels: TransferCopy,
+): string {
+  switch (item.status) {
+    case "uploading":
+      return `${labels.uploading} ${sendQueuePercent(item)}%`;
+    case "uploaded":
+      return labels.uploaded;
+    case "failed":
+      return labels.uploadFailed;
+    default:
+      return labels.queued;
+  }
+}
+
+// SendLimits are the per-send bounds of whichever plan or guest allowance
+// applies to the sender.
+type SendLimits = {
+  singleFileBytes: number;
+  singlePasteBytes: number;
+  attachmentsPerPasteLimit: number;
+};
+
+type SendLimitViolation = "file" | "total" | "count";
+
+// checkSendLimits reports which limit the chosen files would break, so both
+// send areas refuse the same batch for the same reason.
+function checkSendLimits(
+  staged: TransferQueueItem[],
+  files: File[],
+  limits: SendLimits,
+): SendLimitViolation | "" {
+  if (files.length === 0) return "";
+  if (
+    limits.singleFileBytes > 0 &&
+    files.some((file) => file.size > limits.singleFileBytes)
+  ) {
+    return "file";
+  }
+  const nextTotal =
+    staged.reduce((sum, item) => sum + item.file.size, 0) +
+    files.reduce((sum, file) => sum + file.size, 0);
+  if (limits.singlePasteBytes > 0 && nextTotal > limits.singlePasteBytes) {
+    return "total";
+  }
+  if (
+    limits.attachmentsPerPasteLimit > 0 &&
+    staged.length + files.length > limits.attachmentsPerPasteLimit
+  ) {
+    return "count";
+  }
+  return "";
+}
+
+function sendLimitCopy(
+  violation: SendLimitViolation,
+  labels: TransferCopy,
+): string {
+  switch (violation) {
+    case "file":
+      return labels.overFileLimit;
+    case "total":
+      return labels.overTotalLimit;
+    default:
+      return labels.overCountLimit;
+  }
+}
+
+// pasteFileSummary names the files one send grouped, staying short for large
+// sends so a record card cannot grow with the file count.
+function pasteFileSummary(attachments: Attachment[]): string {
+  const names = attachments
+    .slice(0, 3)
+    .map((attachment) => attachment.fileName);
+  const hidden = attachments.length - names.length;
+  return hidden > 0 ? `${names.join(" · ")} +${hidden}` : names.join(" · ");
+}
+
+// sendQueueStatus is the single line describing a send: how far it got, or why
+// it stopped.
+function sendQueueStatus(
+  phase: TransferQueuePhase,
+  counts: { uploaded: number; total: number; failed: number },
+  error: string,
+  labels: TransferCopy,
+): string {
+  switch (phase) {
+    case "uploading":
+      return `${labels.uploading} ${counts.uploaded}/${counts.total}`;
+    case "publishing":
+      return labels.publishing;
+    case "failed":
+      return counts.failed > 0 ? labels.partialFailed : error || labels.failed;
+    default:
+      return "";
+  }
+}
+
+// A drop zone is inert once a send starts, so it says so instead of looking
+// like it still accepts files.
+function sendZoneLabel(
+  phase: TransferQueuePhase,
+  labels: TransferCopy,
+): string {
+  return phase === "published" ? labels.sendLocked : labels.manifestFrozen;
 }
 
 // shareTokenFromShareLink accepts a full URL, a "/s/<token>" path or a bare
@@ -8390,6 +8638,76 @@ function LandingPage({
   );
 }
 
+// SendQueueList renders the files of one send with their real upload progress.
+// Both the account composer and the guest workbench share it so a queue looks
+// and behaves the same wherever a file is sent from.
+function SendQueueList({
+  items,
+  labels,
+  canRemove,
+  onRemove,
+}: {
+  items: TransferQueueItem[];
+  labels: TransferCopy;
+  canRemove: boolean;
+  onRemove: (id: string) => void;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <div className="send-queue">
+      <div className="send-queue-head">
+        <strong>
+          {fillCopy(labels.filesStaged, { count: items.length })}
+        </strong>
+        <span>
+          {labels.totalSize}{" "}
+          {formatBytes(items.reduce((sum, item) => sum + item.file.size, 0))}
+        </span>
+      </div>
+      <ul className="send-queue-list">
+        {items.map((item) => (
+          <li
+            className={`send-queue-item send-queue-item--${item.status}`}
+            key={item.id}
+          >
+            <div className="send-queue-main">
+              <FileUp size={15} aria-hidden="true" />
+              <span className="send-queue-name">{item.file.name}</span>
+              <span className="send-queue-size">
+                {formatBytes(item.file.size)}
+              </span>
+            </div>
+            <div
+              aria-valuemax={100}
+              aria-valuemin={0}
+              aria-valuenow={sendQueuePercent(item)}
+              className="send-queue-bar"
+              role="progressbar"
+            >
+              <span style={{ width: `${sendQueuePercent(item)}%` }} />
+            </div>
+            <span className="send-queue-state">
+              {sendQueueStateLabel(item, labels)}
+            </span>
+            {item.status === "failed" && item.message ? (
+              <span className="send-queue-error">{item.message}</span>
+            ) : null}
+            {canRemove ? (
+              <button
+                className="send-queue-remove"
+                type="button"
+                onClick={() => onRemove(item.id)}
+              >
+                {labels.removeFile}
+              </button>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function GuestWorkbench({
   config,
   locale,
@@ -8403,23 +8721,71 @@ function GuestWorkbench({
   const [title, setTitle] = useState("");
   const [text, setText] = useState("");
   const [file, setFile] = useState<File | null>(null);
-  const [guestToken, setGuestToken] = useState("");
+  const guestTokenRef = useRef("");
   const [shareUrl, setShareUrl] = useState("");
   const [shareExpiresAt, setShareExpiresAt] = useState("");
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [limitMessage, setLimitMessage] = useState("");
-  const [pendingTransferId, setPendingTransferId] = useState("");
-  const guestSendAttempt = useRef<{
-    key: string;
-    fileName: string;
-    size: number;
-  } | null>(null);
   const uploadInputId = useId();
+  // A guest file send is the same queue as the account entry point, so both
+  // surfaces share one behaviour for progress, retry and publish. The guest
+  // token lives in a ref because one send spans several requests.
+  const guestQueueAdapter = useMemo<TransferQueueAdapter>(
+    () => ({
+      create: async (manifest, idempotencyKey) => {
+        const created = await client.createGuestTransfer({
+          guestToken: guestTokenRef.current || undefined,
+          idempotencyKey,
+          expiresInSeconds: config.retentionSeconds,
+          items: manifest,
+        });
+        guestTokenRef.current = created.guestToken;
+        return created.transfer.id;
+      },
+      upload: async (transferId, itemId, queuedFile, onProgress, signal) => {
+        await client.uploadGuestTransferItem(
+          transferId,
+          itemId,
+          queuedFile,
+          guestTokenRef.current,
+          onProgress,
+          { signal },
+        );
+      },
+      publish: async (transferId) => {
+        const published = await client.publishGuestTransfer(
+          transferId,
+          guestTokenRef.current,
+        );
+        return {
+          url: published.transfer.share?.url ?? "",
+          expiresAt:
+            published.transfer.share?.expiresAt ?? published.transfer.expiresAt,
+        };
+      },
+      cancel: async (transferId) => {
+        await client.cancelGuestTransfer(transferId, guestTokenRef.current);
+      },
+    }),
+    [config.retentionSeconds],
+  );
+  const guestQueue = useTransferQueue(guestQueueAdapter);
+  const guestLimits = useMemo<SendLimits>(
+    () => ({
+      singleFileBytes: config.singleFileBytes,
+      singlePasteBytes: config.singlePasteBytes,
+      attachmentsPerPasteLimit: config.attachmentsPerPasteLimit,
+    }),
+    [
+      config.singleFileBytes,
+      config.singlePasteBytes,
+      config.attachmentsPerPasteLimit,
+    ],
+  );
   const textBytes = byteSize(text);
   const fileBytes = file?.size ?? 0;
   const totalBytes = textBytes + fileBytes;
-  const isUploadMode = mode === "image" || mode === "file";
   const modeLabels: Array<{
     mode: GuestWorkbenchMode;
     label: string;
@@ -8436,6 +8802,7 @@ function GuestWorkbench({
     if (nextMode !== "text") {
       setText("");
     }
+    guestQueue.reset();
     setShareUrl("");
     setShareExpiresAt("");
     setStatus("");
@@ -8454,7 +8821,7 @@ function GuestWorkbench({
       setStatus(labels.missingText);
       return false;
     }
-    if (isUploadMode && !file) {
+    if (mode === "image" && !file) {
       setStatus(labels.missingFile);
       return false;
     }
@@ -8477,6 +8844,8 @@ function GuestWorkbench({
     return true;
   }
 
+  // Text and image sends stay one record with one attachment; only the file
+  // mode uses the multi-file queue.
   async function createGuestShare() {
     if (!validateDraft()) return;
     setBusy(true);
@@ -8484,55 +8853,16 @@ function GuestWorkbench({
     setShareUrl("");
     setShareExpiresAt("");
     try {
-      if (mode === "file" && file) {
-        // A file send is its own transfer: the record, the upload and the
-        // share credentials are created server-side, and the link only exists
-        // after every declared file finished uploading.
-        const itemId = newClientId("itm");
-        const created = await client.createGuestTransfer({
-          guestToken: guestToken || undefined,
-          idempotencyKey: guestSendKeyFor(file),
-          expiresInSeconds: config.retentionSeconds,
-          items: [
-            {
-              itemId,
-              fileName: file.name,
-              contentType: file.type,
-              size: file.size,
-            },
-          ],
-        });
-        const token = created.guestToken;
-        setGuestToken(token);
-        setPendingTransferId(created.transfer.id);
-        await client.uploadGuestTransferItem(
-          created.transfer.id,
-          itemId,
-          file,
-          token,
-        );
-        const published = await client.publishGuestTransfer(
-          created.transfer.id,
-          token,
-        );
-        const share = published.transfer.share;
-        setShareUrl(share?.url ?? "");
-        setShareExpiresAt(share?.expiresAt ?? published.transfer.expiresAt);
-        setStatus(transferLabels.linkReady);
-        setPendingTransferId("");
-        guestSendAttempt.current = null;
-        return;
-      }
       const nextTitle = title.trim() || file?.name || labels.modeText;
       const pasteResult = await client.createGuestPaste({
-        guestToken: guestToken || undefined,
+        guestToken: guestTokenRef.current || undefined,
         title: nextTitle,
         text: mode === "text" ? text : "",
         tags: [],
         expiresInSeconds: config.retentionSeconds,
       });
       const token = pasteResult.guestToken;
-      setGuestToken(token);
+      guestTokenRef.current = token;
       if (file) {
         await client.uploadGuestAttachment(pasteResult.paste.id, file, token);
       }
@@ -8550,43 +8880,53 @@ function GuestWorkbench({
     }
   }
 
-  function guestSendKeyFor(file: File): string {
-    const pending = guestSendAttempt.current;
-    if (
-      pending &&
-      pending.fileName === file.name &&
-      pending.size === file.size
-    ) {
-      return pending.key;
+  // The guest file queue declares every file up front, so the share only
+  // appears once the whole manifest landed.
+  function stageGuestFiles(files: File[]) {
+    if (files.length === 0) return;
+    if (!config.enabled) {
+      setStatus(labels.disabled);
+      return;
     }
-    const key = newClientId("send");
-    guestSendAttempt.current = { key, fileName: file.name, size: file.size };
-    return key;
+    const violation = checkSendLimits(guestQueue.items, files, guestLimits);
+    if (violation) {
+      const message = sendLimitCopy(violation, transferLabels);
+      // Running out of room is the guest upgrade prompt; too many files is a
+      // plain status, because signing in is not the fix for it.
+      if (violation === "count") {
+        setStatus(message);
+      } else {
+        showLimit(message);
+      }
+      return;
+    }
+    if (!guestQueue.addFiles(files)) {
+      setStatus(transferLabels.manifestFrozen);
+      return;
+    }
+    setStatus("");
   }
 
+  // A cancel only claims success when the server confirmed it dropped the draft.
   async function cancelGuestSend() {
-    if (!pendingTransferId) return;
-    setBusy(true);
-    try {
-      await client.cancelGuestTransfer(pendingTransferId, guestToken);
-      setPendingTransferId("");
-      guestSendAttempt.current = null;
-      setStatus(transferLabels.canceled);
-    } catch (error) {
-      const apiError = error as ApiError;
-      setStatus(apiError.message || labels.disabled);
-    } finally {
-      setBusy(false);
-    }
+    const canceled = await guestQueue.cancel();
+    setStatus(canceled ? transferLabels.canceled : transferLabels.failed);
   }
 
-  async function copyShareLink() {
-    if (!shareUrl) return;
+  const guestStatusText = sendQueueStatus(
+    guestQueue.phase,
+    guestQueue.counts,
+    guestQueue.error,
+    transferLabels,
+  );
+
+  async function copyShareLink(url: string) {
+    if (!url) return;
     try {
-      await navigator.clipboard?.writeText(shareUrl);
+      await navigator.clipboard?.writeText(url);
       setStatus(labels.copied);
     } catch {
-      setStatus(shareUrl);
+      setStatus(url);
     }
   }
 
@@ -8659,14 +8999,16 @@ function GuestWorkbench({
         id={activePanelId}
         role="tabpanel"
       >
-        <label className="guest-field">
-          <span>{labels.titlePlaceholder}</span>
-          <input
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            placeholder={labels.titlePlaceholder}
-          />
-        </label>
+        {mode !== "file" ? (
+          <label className="guest-field">
+            <span>{labels.titlePlaceholder}</span>
+            <input
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              placeholder={labels.titlePlaceholder}
+            />
+          </label>
+        ) : null}
         {mode === "text" ? (
           <label className="guest-field guest-field--text">
             <span>{labels.modeText}</span>
@@ -8679,32 +9021,21 @@ function GuestWorkbench({
               {labels.textLimit}: {formatBytes(config.singleTextBytes)}
             </small>
           </label>
-        ) : (
+        ) : mode === "image" ? (
           <label className="guest-upload-box" htmlFor={uploadInputId}>
             <UploadCloud size={22} aria-hidden="true" />
-            <strong>
-              {file?.name ??
-                (mode === "image" ? labels.chooseImage : labels.chooseFile)}
-            </strong>
+            <strong>{file?.name ?? labels.chooseImage}</strong>
             <span>
-              {file
-                ? formatBytes(file.size)
-                : mode === "image"
-                  ? labels.imageOnly
-                  : labels.chooseFile}
+              {file ? formatBytes(file.size) : labels.imageOnly}
             </span>
             <input
-              accept={mode === "image" ? "image/*" : undefined}
+              accept="image/*"
               className="visually-hidden-file-input"
               id={uploadInputId}
               type="file"
               onChange={(event) => {
                 const nextFile = event.target.files?.[0] ?? null;
-                if (
-                  mode === "image" &&
-                  nextFile &&
-                  !nextFile.type.startsWith("image/")
-                ) {
+                if (nextFile && !nextFile.type.startsWith("image/")) {
                   setFile(null);
                   setStatus(labels.imageTypeError);
                   return;
@@ -8717,45 +9048,132 @@ function GuestWorkbench({
               {labels.fileLimit}: {formatBytes(config.singleFileBytes)}
             </small>
           </label>
+        ) : (
+          <>
+            <label
+              aria-disabled={!guestQueue.canStage}
+              className={`guest-upload-box ${guestQueue.canStage ? "" : "guest-upload-box--locked"}`}
+              htmlFor={uploadInputId}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => {
+                event.preventDefault();
+                stageGuestFiles(Array.from(event.dataTransfer.files));
+              }}
+            >
+              <UploadCloud size={22} aria-hidden="true" />
+              <strong>{transferLabels.chooseFiles}</strong>
+              <span>
+                {guestQueue.canStage
+                  ? transferLabels.dropFilesHint
+                  : sendZoneLabel(guestQueue.phase, transferLabels)}
+              </span>
+              <input
+                className="visually-hidden-file-input"
+                disabled={!guestQueue.canStage}
+                id={uploadInputId}
+                multiple
+                type="file"
+                onChange={(event) => {
+                  const files = Array.from(event.target.files ?? []);
+                  event.target.value = "";
+                  stageGuestFiles(files);
+                }}
+              />
+              <small className="guest-limit-note">
+                {labels.fileLimit}: {formatBytes(config.singleFileBytes)}
+              </small>
+            </label>
+            <SendQueueList
+              canRemove={guestQueue.canStage}
+              items={guestQueue.items}
+              labels={transferLabels}
+              onRemove={guestQueue.removeFile}
+            />
+          </>
         )}
       </div>
       <div className="guest-workbench-actions">
         <span>
-          {labels.hint} · {formatBytes(totalBytes)} /{" "}
-          {formatBytes(config.singlePasteBytes)}
+          {labels.hint} ·{" "}
+          {formatBytes(
+            mode === "file"
+              ? guestQueue.items.reduce(
+                  (sum, item) => sum + item.file.size,
+                  0,
+                )
+              : totalBytes,
+          )}{" "}
+          / {formatBytes(config.singlePasteBytes)}
         </span>
-        <button
-          type="button"
-          onClick={() => void createGuestShare()}
-          disabled={busy}
-        >
-          <Link2 size={16} aria-hidden="true" />
-          {busy ? labels.creating : labels.create}
-        </button>
+        {mode === "file" ? (
+          <>
+            {guestQueue.canSend ? (
+              <button type="button" onClick={guestQueue.start}>
+                <UploadCloud size={16} aria-hidden="true" />
+                {fillCopy(transferLabels.sendFiles, {
+                  count: guestQueue.items.length,
+                })}
+              </button>
+            ) : null}
+            {guestQueue.phase === "failed" ? (
+              <button type="button" onClick={guestQueue.retry}>
+                <RotateCcw size={16} aria-hidden="true" />
+                {guestQueue.counts.failed > 0
+                  ? transferLabels.retryFailed
+                  : transferLabels.retrySend}
+              </button>
+            ) : null}
+            {guestQueue.phase === "uploading" ||
+            guestQueue.phase === "publishing" ||
+            guestQueue.phase === "failed" ? (
+              <button type="button" onClick={() => void cancelGuestSend()}>
+                <Ban size={16} aria-hidden="true" />
+                {transferLabels.cancelSend}
+              </button>
+            ) : null}
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => void createGuestShare()}
+            disabled={busy}
+          >
+            <Link2 size={16} aria-hidden="true" />
+            {busy ? labels.creating : labels.create}
+          </button>
+        )}
       </div>
+      {mode === "file" && guestStatusText ? (
+        <p className="guest-status">{guestStatusText}</p>
+      ) : null}
+      {mode === "file" && guestQueue.share ? (
+        <>
+          <div className="guest-share-result">
+            <input readOnly value={guestQueue.share.url} />
+            <button
+              type="button"
+              onClick={() => void copyShareLink(guestQueue.share?.url ?? "")}
+            >
+              <ClipboardCopy size={16} aria-hidden="true" />
+              {labels.copyLink}
+            </button>
+          </div>
+          <p className="guest-status">
+            {transferLabels.validUntil}{" "}
+            {new Date(guestQueue.share.expiresAt).toLocaleString()}
+          </p>
+        </>
+      ) : null}
       {shareUrl ? (
         <div className="guest-share-result">
           <input readOnly value={shareUrl} />
-          <button type="button" onClick={() => void copyShareLink()}>
+          <button type="button" onClick={() => void copyShareLink(shareUrl)}>
             <ClipboardCopy size={16} aria-hidden="true" />
             {labels.copyLink}
           </button>
         </div>
       ) : null}
       {status ? <p className="guest-status">{status}</p> : null}
-      {pendingTransferId ? (
-        <div className="guest-workbench-actions">
-          <span>{labels.hint}</span>
-          <button
-            type="button"
-            onClick={() => void cancelGuestSend()}
-            disabled={busy}
-          >
-            <Ban size={16} aria-hidden="true" />
-            {transferLabels.cancelSend}
-          </button>
-        </div>
-      ) : null}
       {shareUrl && shareExpiresAt ? (
         <p className="guest-status">
           {transferLabels.validUntil}{" "}
