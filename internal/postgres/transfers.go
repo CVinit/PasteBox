@@ -20,7 +20,7 @@ var (
 	// ErrTransferCanceled is returned when a canceled transfer is published.
 	ErrTransferCanceled = errors.Join(errors.New("postgres transfer canceled"), app.ErrTransferStoreCanceled)
 	// ErrTransferNotPublishable covers transfers whose file items have not all
-	// finished uploading.
+	// finished uploading, and transfers that carry neither files nor text.
 	ErrTransferNotPublishable = errors.Join(errors.New("postgres transfer not publishable"), app.ErrStoreConflict)
 )
 
@@ -178,7 +178,7 @@ WHERE transfer_id = $1 AND item_id = $2
 // uploaded, stores the share and flips the transfer to published in one
 // transaction. A retry of an already published transfer returns the stored row
 // instead of minting a second share.
-func (s *TransferStore) PublishTransfer(ctx context.Context, transferID string, share app.Share, now time.Time) (app.Transfer, error) {
+func (s *TransferStore) PublishTransfer(ctx context.Context, transferID string, share app.Share, now time.Time, allowNoItems bool) (app.Transfer, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return app.Transfer{}, fmt.Errorf("begin publish transfer: %w", err)
@@ -208,7 +208,9 @@ FOR UPDATE
 
 	// Every declared item must be uploaded and its attachment must still belong
 	// to this transfer's paste, checked under the same row lock that guards the
-	// publish so the check cannot be raced.
+	// publish so the check cannot be raced. A transfer with no declared items is
+	// only publishable when the caller says its record carries content, because
+	// what counts as content is the service's rule.
 	var total int
 	var pending int
 	if err := tx.QueryRow(ctx, `
@@ -225,7 +227,7 @@ WHERE items.transfer_id = $1
 `, transferID, transfer.PasteID).Scan(&total, &pending); err != nil {
 		return app.Transfer{}, fmt.Errorf("check transfer items: %w", err)
 	}
-	if total == 0 || pending > 0 {
+	if pending > 0 || (total == 0 && !allowNoItems) {
 		return app.Transfer{}, ErrTransferNotPublishable
 	}
 

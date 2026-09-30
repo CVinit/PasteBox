@@ -204,6 +204,10 @@ type TransferStore interface {
 // AtomicTransferStore publishes a transfer and its share in a single
 // transaction. Concurrent publish retries must not mint two shares for the
 // same transfer, and a transfer with unfinished items must never be published.
+//
+// allowNoItems carries the service's decision that this transfer has content
+// even though it declares no items (a text send), so the rule about what counts
+// as content stays in the service instead of being re-implemented here.
 type AtomicTransferStore interface {
-	PublishTransfer(ctx context.Context, transferID string, share Share, now time.Time) (Transfer, error)
+	PublishTransfer(ctx context.Context, transferID string, share Share, now time.Time, allowNoItems bool) (Transfer, error)
 }

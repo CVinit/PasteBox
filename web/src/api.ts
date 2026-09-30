@@ -884,6 +884,11 @@ export const client = {
     expiresInSeconds: number;
     password?: string;
     loginRequired?: boolean;
+    // title, text and tags describe the record the send creates: a file send
+    // declares items, a text send sends text and no items.
+    title?: string;
+    text?: string;
+    tags?: string[];
     items: TransferItemInput[];
   }) =>
     api<{ transfer: Transfer }>("/transfers", {
@@ -930,6 +935,8 @@ export const client = {
     idempotencyKey?: string;
     expiresInSeconds: number;
     password?: string;
+    title?: string;
+    text?: string;
     items: TransferItemInput[];
     turnstileToken?: string;
   }) =>

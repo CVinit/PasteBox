@@ -118,7 +118,7 @@ func TestTransferStorePersistsAndPublishesOnce(t *testing.T) {
 		TokenHash: id + "_hash_unfinished", Token: id + "_token_unfinished",
 		ExpiresAt: now.Add(time.Hour), CreatedAt: now,
 	}
-	if _, err := store.PublishTransfer(ctx, transfer.ID, unfinished, now); !errors.Is(err, app.ErrStoreConflict) {
+	if _, err := store.PublishTransfer(ctx, transfer.ID, unfinished, now, false); !errors.Is(err, app.ErrStoreConflict) {
 		t.Fatalf("expected an unfinished transfer to be rejected, got %v", err)
 	}
 
@@ -149,7 +149,7 @@ func TestTransferStorePersistsAndPublishesOnce(t *testing.T) {
 				ExpiresAt: now.Add(time.Hour),
 				CreatedAt: now,
 			}
-			results[i], errs[i] = store.PublishTransfer(ctx, transfer.ID, share, time.Now().UTC())
+			results[i], errs[i] = store.PublishTransfer(ctx, transfer.ID, share, time.Now().UTC(), false)
 		}()
 	}
 	close(start)
@@ -181,5 +181,100 @@ func TestTransferStorePersistsAndPublishesOnce(t *testing.T) {
 	}
 	if itemCount != 1 {
 		t.Fatalf("expected exactly one transfer item, got %d", itemCount)
+	}
+}
+
+// TestTransferStorePublishesTextOnlyTransfer covers the text send: a transfer
+// that declares no items publishes when the caller says its record carries
+// content, and is refused when the caller says it does not. The store enforces
+// the item rule; deciding what counts as content belongs to the service, so
+// this is checked against the real database rather than only in memory.
+func TestTransferStorePublishesTextOnlyTransfer(t *testing.T) {
+	dsn := os.Getenv("PASTEBOX_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("PostgreSQL integration database required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if _, err := ApplyMigrations(ctx, dsn); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	now := time.Now().UTC()
+	id := fmt.Sprintf("texttransfer_%d", now.UnixNano())
+	user := app.User{
+		ID: id, Email: id + "@example.com", DisplayName: "Text Send", Language: "en",
+		PasswordHash: "hash", Role: "user", PlanID: "free", EmailVerified: true,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := NewUserStore(pool).CreateUser(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		if _, err := pool.Exec(cleanupCtx, `DELETE FROM users WHERE id = $1`, user.ID); err != nil {
+			t.Errorf("cleanup user: %v", err)
+		}
+	})
+
+	store := NewTransferStore(pool)
+	pasteStore := NewPasteStore(pool)
+
+	// A record with a body publishes without any declared file.
+	textPaste := app.Paste{
+		ID: id + "_paste", UserID: user.ID, Title: "Release notes", Text: "deploy at 09:00",
+		Status: "active", ScanStatus: "clean", ExpiresAt: now.Add(time.Hour), CreatedAt: now, UpdatedAt: now,
+	}
+	if err := pasteStore.CreatePaste(ctx, textPaste); err != nil {
+		t.Fatalf("create text paste: %v", err)
+	}
+	textTransfer := app.Transfer{
+		ID: id + "_transfer", UserID: user.ID, PasteID: textPaste.ID, Status: app.TransferStatusDraft,
+		ExpiresAt: now.Add(time.Hour), CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateTransfer(ctx, textTransfer); err != nil {
+		t.Fatalf("create text transfer: %v", err)
+	}
+	textShare := app.Share{
+		ID: id + "_share", PasteID: textPaste.ID, UserID: user.ID,
+		TokenHash: id + "_hash", Token: id + "_token", PickupCode: "ABC123",
+		ExpiresAt: now.Add(time.Hour), CreatedAt: now,
+	}
+	published, err := store.PublishTransfer(ctx, textTransfer.ID, textShare, now, true)
+	if err != nil {
+		t.Fatalf("publish text transfer: %v", err)
+	}
+	if published.Status != app.TransferStatusPublished || published.ShareID != textShare.ID || published.PublishedAt == nil {
+		t.Fatalf("unexpected published text transfer: %#v", published)
+	}
+	reloaded, err := NewPasteStore(pool).PasteByID(ctx, textPaste.ID)
+	if err != nil {
+		t.Fatalf("reload text record: %v", err)
+	}
+	if reloaded.Text != "deploy at 09:00" {
+		t.Fatalf("expected the published text record to keep its body, got %q", reloaded.Text)
+	}
+
+	// A send with no declared items and no content stays unpublishable: the
+	// store trusts the caller's decision, so a caller that reports no content
+	// cannot slip a contentless send through.
+	emptyTransfer := textTransfer
+	emptyTransfer.ID = id + "_empty_transfer"
+	if err := store.CreateTransfer(ctx, emptyTransfer); err != nil {
+		t.Fatalf("create empty transfer: %v", err)
+	}
+	emptyShare := textShare
+	emptyShare.ID = id + "_empty_share"
+	emptyShare.Token = id + "_empty_token"
+	emptyShare.TokenHash = id + "_empty_hash"
+	emptyShare.PickupCode = "ABC124"
+	if _, err := store.PublishTransfer(ctx, emptyTransfer.ID, emptyShare, now, false); !errors.Is(err, app.ErrStoreConflict) {
+		t.Fatalf("expected a send without content to be refused, got %v", err)
 	}
 }

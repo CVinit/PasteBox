@@ -263,7 +263,13 @@ type TransferInput struct {
 	ExpiresInSeconds int64
 	Password         string
 	LoginRequired    bool
-	Items            []TransferItemInput
+	// Title, Text and Tags describe what the send carries. A send with items is
+	// a file send and its title falls back to the declared file names; a send
+	// with text and no items is a text send.
+	Title string
+	Text  string
+	Tags  []string
+	Items []TransferItemInput
 }
 
 type GuestCreateTransferInput struct {
@@ -277,6 +283,8 @@ type GuestCreateTransferInput struct {
 	// has no account to check against, so accepting it would promise a privacy
 	// setting the service cannot enforce.
 	LoginRequired bool
+	Title         string
+	Text          string
 	Items         []TransferItemInput
 }
 

@@ -18,6 +18,9 @@ func (s *Server) createTransfer(w http.ResponseWriter, r *http.Request) {
 		ExpiresInSeconds int64                   `json:"expiresInSeconds"`
 		Password         string                  `json:"password"`
 		LoginRequired    bool                    `json:"loginRequired"`
+		Title            string                  `json:"title"`
+		Text             string                  `json:"text"`
+		Tags             []string                `json:"tags"`
 		Items            []app.TransferItemInput `json:"items"`
 	}
 	if !s.decode(w, r, &req) {
@@ -28,6 +31,9 @@ func (s *Server) createTransfer(w http.ResponseWriter, r *http.Request) {
 		ExpiresInSeconds: req.ExpiresInSeconds,
 		Password:         req.Password,
 		LoginRequired:    req.LoginRequired,
+		Title:            req.Title,
+		Text:             req.Text,
+		Tags:             req.Tags,
 		Items:            req.Items,
 	})
 	if s.handleErr(w, err) {
@@ -45,6 +51,8 @@ func (s *Server) createGuestTransfer(w http.ResponseWriter, r *http.Request) {
 		ExpiresInSeconds int64                   `json:"expiresInSeconds"`
 		Password         string                  `json:"password"`
 		LoginRequired    bool                    `json:"loginRequired"`
+		Title            string                  `json:"title"`
+		Text             string                  `json:"text"`
 		Items            []app.TransferItemInput `json:"items"`
 	}
 	if !s.decode(w, r, &req) {
@@ -58,6 +66,8 @@ func (s *Server) createGuestTransfer(w http.ResponseWriter, r *http.Request) {
 		ExpiresInSeconds: req.ExpiresInSeconds,
 		Password:         req.Password,
 		LoginRequired:    req.LoginRequired,
+		Title:            req.Title,
+		Text:             req.Text,
 		Items:            req.Items,
 	})
 	if s.handleErr(w, err) {

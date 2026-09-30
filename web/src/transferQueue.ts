@@ -88,6 +88,9 @@ export function useTransferQueue(adapter: TransferQueueAdapter) {
   // The queue is driven by async code, so the ref is the authoritative copy and
   // the state above is only what React renders.
   const itemsRef = useRef<TransferQueueItem[]>([]);
+  // phase is mirrored for the same reason: a handler that resets a queue and
+  // stages into it in one tick must not read the phase it just replaced.
+  const phaseRef = useRef<TransferQueuePhase>("staged");
   const transferRef = useRef("");
   const keyRef = useRef<{ signature: string; key: string } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -97,6 +100,11 @@ export function useTransferQueue(adapter: TransferQueueAdapter) {
   const commit = useCallback((next: TransferQueueItem[]) => {
     itemsRef.current = next;
     setItems(next);
+  }, []);
+
+  const commitPhase = useCallback((next: TransferQueuePhase) => {
+    phaseRef.current = next;
+    setPhase(next);
   }, []);
 
   const patchItem = useCallback(
@@ -127,19 +135,19 @@ export function useTransferQueue(adapter: TransferQueueAdapter) {
       if (files.length === 0) return false;
       // The manifest is fixed once a transfer exists, so files can only join a
       // send that has not started yet.
-      if (phase !== "staged") return false;
+      if (phaseRef.current !== "staged") return false;
       commit([...itemsRef.current, ...files.map(stagedItem)]);
       return true;
     },
-    [commit, phase],
+    [commit],
   );
 
   const removeFile = useCallback(
     (id: string) => {
-      if (phase !== "staged") return;
+      if (phaseRef.current !== "staged") return;
       commit(itemsRef.current.filter((item) => item.id !== id));
     },
-    [commit, phase],
+    [commit],
   );
 
   const idempotencyKeyFor = useCallback((ids: string[]): string => {
@@ -157,12 +165,12 @@ export function useTransferQueue(adapter: TransferQueueAdapter) {
       const controller = new AbortController();
       abortRef.current = controller;
       setError("");
-      setPhase("uploading");
+      commitPhase("uploading");
       let transferId = transferRef.current;
       try {
         if (!transferId) {
           if (itemsRef.current.length === 0) {
-            setPhase("staged");
+            commitPhase("staged");
             return;
           }
           const manifest: TransferItemInput[] = itemsRef.current.map(
@@ -233,26 +241,26 @@ export function useTransferQueue(adapter: TransferQueueAdapter) {
         if (
           !itemsRef.current.every((item) => item.status === "uploaded")
         ) {
-          setPhase("failed");
+          commitPhase("failed");
           return;
         }
-        setPhase("publishing");
+        commitPhase("publishing");
         const published = await adapter.publish(transferId);
         if (abandoned()) {
           await discard(adapter, transferId);
           return;
         }
         setShare(published);
-        setPhase("published");
+        commitPhase("published");
       } catch (runError) {
         if (isAbortError(runError)) return;
         setError(messageFor(runError));
-        setPhase("failed");
+        commitPhase("failed");
       } finally {
         if (abortRef.current === controller) abortRef.current = null;
       }
     },
-    [adapter, idempotencyKeyFor, patchItem],
+    [adapter, commitPhase, idempotencyKeyFor, patchItem],
   );
 
   const start = useCallback(() => {
@@ -280,7 +288,7 @@ export function useTransferQueue(adapter: TransferQueueAdapter) {
     transferRef.current = "";
     keyRef.current = null;
     resetItemProgress();
-    setPhase("staged");
+    commitPhase("staged");
     setShare(null);
     setError("");
     if (!transferId) return true;
@@ -291,7 +299,7 @@ export function useTransferQueue(adapter: TransferQueueAdapter) {
       // The unpublished draft still expires with the retention window.
       return false;
     }
-  }, [adapter, resetItemProgress]);
+  }, [adapter, commitPhase, resetItemProgress]);
 
   const reset = useCallback(() => {
     runRef.current += 1;
@@ -300,10 +308,10 @@ export function useTransferQueue(adapter: TransferQueueAdapter) {
     transferRef.current = "";
     keyRef.current = null;
     commit([]);
-    setPhase("staged");
+    commitPhase("staged");
     setShare(null);
     setError("");
-  }, [commit]);
+  }, [commit, commitPhase]);
 
   const counts = useMemo(() => {
     let uploaded = 0;
@@ -340,4 +348,70 @@ async function discard(adapter: TransferQueueAdapter, transferId: string) {
   } catch {
     // The draft still expires with the retention window.
   }
+}
+
+export type TransferQueue = ReturnType<typeof useTransferQueue>;
+
+// A text send has no files to upload: it creates the transfer and publishes it
+// in one go. Retrying an unchanged draft reuses the same idempotency key and
+// transfer, so a failed publish cannot mint a second send.
+export type TextSendAdapter = {
+  create: (idempotencyKey: string) => Promise<string>;
+  publish: (transferId: string) => Promise<TransferQueueShare>;
+};
+
+export type TextSendPhase = "idle" | "sending" | "sent" | "failed";
+
+export function useTextSend(adapter: TextSendAdapter) {
+  const [phase, setPhase] = useState<TextSendPhase>("idle");
+  const [share, setShare] = useState<TransferQueueShare | null>(null);
+  const [error, setError] = useState("");
+  const draftRef = useRef<{
+    signature: string;
+    key: string;
+    transferId: string;
+  } | null>(null);
+  const runRef = useRef(0);
+
+  const send = useCallback(
+    async (signature: string) => {
+      // Editing the draft starts a new send; retrying an unchanged draft keeps
+      // the key, so the server returns the transfer it already created.
+      if (!draftRef.current || draftRef.current.signature !== signature) {
+        draftRef.current = {
+          signature,
+          key: newClientId("text"),
+          transferId: "",
+        };
+      }
+      const draft = draftRef.current;
+      const runId = ++runRef.current;
+      setError("");
+      setPhase("sending");
+      try {
+        if (!draft.transferId) {
+          draft.transferId = await adapter.create(draft.key);
+        }
+        const published = await adapter.publish(draft.transferId);
+        if (runRef.current !== runId) return;
+        setShare(published);
+        setPhase("sent");
+      } catch (sendError) {
+        if (runRef.current !== runId) return;
+        setError(messageFor(sendError));
+        setPhase("failed");
+      }
+    },
+    [adapter],
+  );
+
+  const reset = useCallback(() => {
+    runRef.current += 1;
+    draftRef.current = null;
+    setShare(null);
+    setError("");
+    setPhase("idle");
+  }, []);
+
+  return { phase, share, error, send, reset };
 }

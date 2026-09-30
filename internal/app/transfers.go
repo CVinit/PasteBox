@@ -290,8 +290,14 @@ func (s *Service) viewTransferLocked(ctx context.Context, transfer *Transfer) (T
 	return view, nil
 }
 
-func normalizeTransferItems(plan plans.Plan, input []TransferItemInput) ([]TransferItem, error) {
+// normalizeTransferItems validates the declared file manifest. A send that
+// carries text may declare no files at all, so callers pass allowEmpty for a
+// text send; a file send still has to name at least one file.
+func normalizeTransferItems(plan plans.Plan, input []TransferItemInput, allowEmpty bool) ([]TransferItem, error) {
 	if len(input) == 0 {
+		if allowEmpty {
+			return []TransferItem{}, nil
+		}
 		return nil, E(http.StatusBadRequest, "transfer_items_required", "at least one file is required")
 	}
 	if len(input) > maxTransferItems {
@@ -322,7 +328,13 @@ func normalizeTransferItems(plan plans.Plan, input []TransferItemInput) ([]Trans
 	return items, nil
 }
 
-func transferPasteTitle(items []TransferItem) string {
+// transferPasteTitle names the record a send creates. An explicit title wins;
+// otherwise a file send is named after its files and a text send keeps no
+// title, which the reading surfaces already fall back from.
+func transferPasteTitle(items []TransferItem, requested string) string {
+	if title := strings.TrimSpace(requested); title != "" {
+		return title
+	}
 	if len(items) == 0 {
 		return ""
 	}
@@ -389,6 +401,8 @@ func (s *Service) CreateGuestTransferWithContext(ctx context.Context, input Gues
 	view, err := s.createTransferForUserLocked(ctx, user, guestPlan(cfg), TransferInput{
 		IdempotencyKey: input.IdempotencyKey,
 		Password:       input.Password,
+		Title:          input.Title,
+		Text:           input.Text,
 		Items:          input.Items,
 	}, now.Add(time.Duration(expiresSeconds)*time.Second))
 	if err != nil {
@@ -406,11 +420,21 @@ func (s *Service) createTransferForUserLocked(ctx context.Context, user *User, p
 	if existing != nil {
 		return s.viewTransferLocked(ctx, existing)
 	}
-	items, err := normalizeTransferItems(plan, input.Items)
+	title := strings.TrimSpace(input.Title)
+	text := input.Text
+	tags := normalizeTags(input.Tags)
+	// A send carries text, files, or both; only one with neither has nothing to
+	// publish, so it is refused before any content is stored. Whitespace is not
+	// content here, so this rule and the publish check agree on the same body.
+	hasText := strings.TrimSpace(text) != ""
+	if !hasText && len(input.Items) == 0 {
+		return TransferView{}, E(http.StatusBadRequest, "transfer_content_required", "a transfer needs text or at least one file")
+	}
+	items, err := normalizeTransferItems(plan, input.Items, hasText)
 	if err != nil {
 		return TransferView{}, err
 	}
-	if err := s.ensureCanCreatePasteLocked(ctx, user, plan, PasteInput{}, 0, 0); err != nil {
+	if err := s.ensureCanCreatePasteLocked(ctx, user, plan, PasteInput{Title: title, Text: text, Tags: tags}, 0, 0); err != nil {
 		return TransferView{}, err
 	}
 	passwordHash, err := hashSharePassword(input.Password)
@@ -421,7 +445,9 @@ func (s *Service) createTransferForUserLocked(ctx context.Context, user *User, p
 	paste := &Paste{
 		ID:         s.newID("pst"),
 		UserID:     user.ID,
-		Title:      transferPasteTitle(items),
+		Title:      transferPasteTitle(items, title),
+		Text:       text,
+		Tags:       tags,
 		Status:     "active",
 		ScanStatus: "clean",
 		ExpiresAt:  expiresAt,
@@ -430,6 +456,16 @@ func (s *Service) createTransferForUserLocked(ctx context.Context, user *User, p
 	}
 	if err := s.createPasteLocked(ctx, paste); err != nil {
 		return TransferView{}, err
+	}
+	// Text counts against the daily upload quota like any other body, so a text
+	// send cannot bypass the limit by not going through the paste endpoint.
+	if textBytes := int64(len([]byte(text))); textBytes > 0 {
+		if err := s.recordDailyUploadLocked(ctx, user.ID, textBytes); err != nil {
+			if discardErr := s.discardTransferPasteLocked(ctx, paste, now); discardErr != nil {
+				return TransferView{}, errors.Join(err, discardErr)
+			}
+			return TransferView{}, err
+		}
 	}
 	transfer := &Transfer{
 		ID:             s.newID("trf"),
@@ -742,10 +778,11 @@ func (s *Service) publishTransferLocked(ctx context.Context, userID string, tran
 	if !s.isPasteVisibleLocked(paste) {
 		return TransferView{}, E(http.StatusGone, "transfer_expired", "transfer has expired")
 	}
-	if err := s.ensureTransferCompleteLocked(ctx, transfer, paste); err != nil {
+	allowNoItems, err := s.ensureTransferCompleteLocked(ctx, transfer, paste)
+	if err != nil {
 		return TransferView{}, err
 	}
-	share, published, err := s.publishTransferShareLocked(ctx, transfer, paste, userID, now)
+	share, published, err := s.publishTransferShareLocked(ctx, transfer, paste, userID, now, allowNoItems)
 	if err != nil {
 		return TransferView{}, err
 	}
@@ -769,7 +806,9 @@ func (s *Service) publishTransferLocked(ctx context.Context, userID string, tran
 //
 // published reports that an atomic transfer store published the transfer and
 // cached the stored row on the caller's behalf, so no share is returned.
-func (s *Service) publishTransferShareLocked(ctx context.Context, transfer *Transfer, paste *Paste, userID string, now time.Time) (*Share, bool, error) {
+// allowNoItems carries the service's decision that this transfer has content
+// even without declared files, so the store does not have to re-decide it.
+func (s *Service) publishTransferShareLocked(ctx context.Context, transfer *Transfer, paste *Paste, userID string, now time.Time, allowNoItems bool) (*Share, bool, error) {
 	atomicStore, atomic := s.content.Transfers.(AtomicTransferStore)
 	for attempt := 0; attempt < maxPickupCodeAttempts; attempt++ {
 		code, err := newPickupCode()
@@ -792,7 +831,7 @@ func (s *Service) publishTransferShareLocked(ctx context.Context, transfer *Tran
 		if atomic {
 			storedShare := *share
 			s.mu.Unlock()
-			updated, publishErr := atomicStore.PublishTransfer(ctx, transfer.ID, storedShare, now)
+			updated, publishErr := atomicStore.PublishTransfer(ctx, transfer.ID, storedShare, now, allowNoItems)
 			s.mu.Lock()
 			if publishErr == nil {
 				*transfer = *s.cacheTransferLocked(updated)
@@ -829,28 +868,36 @@ func (s *Service) publishTransferShareLocked(ctx context.Context, transfer *Tran
 	return nil, false, E(http.StatusInternalServerError, "pickup_code_unavailable", "could not allocate a pickup code for this transfer")
 }
 
-func (s *Service) ensureTransferCompleteLocked(ctx context.Context, transfer *Transfer, paste *Paste) error {
+// ensureTransferCompleteLocked reports whether the transfer may be published
+// with no declared items, which is how a text send is published. It is the only
+// place that decides what counts as content, so the in-memory path and the
+// atomic store agree on the rule.
+func (s *Service) ensureTransferCompleteLocked(ctx context.Context, transfer *Transfer, paste *Paste) (bool, error) {
 	items, err := s.transferItemsLocked(ctx, transfer.ID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	incomplete := E(http.StatusConflict, "transfer_incomplete", "every file must finish uploading before the transfer can be published")
 	if len(items) == 0 {
-		return incomplete
+		// A text send declares no files, so its body is the whole content.
+		if strings.TrimSpace(paste.Text) == "" {
+			return false, incomplete
+		}
+		return true, nil
 	}
 	for _, item := range items {
 		if item.Status != TransferItemUploaded || item.AttachmentID == "" {
-			return incomplete
+			return false, incomplete
 		}
 		attachment, err := s.attachmentByIDLocked(ctx, item.AttachmentID)
 		if err != nil || attachment == nil || attachment.PasteID != paste.ID || attachment.Status != "active" {
-			return incomplete
+			return false, incomplete
 		}
 		if attachment.ScanStatus == "malicious" {
-			return E(http.StatusForbidden, "malicious_file", "known malicious files cannot be shared")
+			return false, E(http.StatusForbidden, "malicious_file", "known malicious files cannot be shared")
 		}
 	}
-	return nil
+	return false, nil
 }
 
 func (s *Service) CancelTransferWithContext(ctx context.Context, userID string, transferID string) (TransferView, error) {

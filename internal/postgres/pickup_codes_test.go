@@ -239,7 +239,7 @@ func TestPublishTransferRejectsADuplicatePickupCode(t *testing.T) {
 		TokenHash: id + "_hash_published", Token: id + "_token_published", PickupCode: "CD2345",
 		ExpiresAt: now.Add(time.Hour), CreatedAt: now,
 	}
-	if _, err := store.PublishTransfer(ctx, transfer.ID, colliding, now); !errors.Is(err, app.ErrSharePickupCodeExists) {
+	if _, err := store.PublishTransfer(ctx, transfer.ID, colliding, now, false); !errors.Is(err, app.ErrSharePickupCodeExists) {
 		t.Fatalf("expected publishing to report a pickup code conflict, got %v", err)
 	}
 
@@ -258,7 +258,7 @@ func TestPublishTransferRejectsADuplicatePickupCode(t *testing.T) {
 	fresh.TokenHash = id + "_hash_retry"
 	fresh.Token = id + "_token_retry"
 	fresh.PickupCode = "EF2345"
-	published, err := NewTransferStore(second).PublishTransfer(ctx, transfer.ID, fresh, now)
+	published, err := NewTransferStore(second).PublishTransfer(ctx, transfer.ID, fresh, now, false)
 	if err != nil {
 		t.Fatalf("publish with a fresh code: %v", err)
 	}
