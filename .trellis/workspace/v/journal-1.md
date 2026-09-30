@@ -774,3 +774,36 @@ Resume after e6a2a884 API failures. Verified split compose rendering, path overr
 ### Next Steps
 
 - None - task complete
+
+
+## Session 22: 工单 #10：匿名领取名额与领取会话
+
+**Date**: 2026-09-30
+**Task**: 工单 #10：匿名领取名额与领取会话
+**Branch**: `main`
+
+### Summary
+
+实现 GitHub Issue #10：发送者设置 1 或 N 个匿名领取名额，接收者主动领取才扣一次；一次文件会话覆盖同批文件下载与失败重试。新增 transfer_claims 持久化与 claim_quota/claimed_count，分配在事务内锁传输行完成，跨连接/跨实例不超领，同 operationId 幂等；打开页面不占名额也不返回正文，文本 2 分钟有界重放，文件会话 min(30 分钟, 分享有效期)，claim cookie 独立于 15 分钟访问 Cookie，老分享语义不变；名额领完只拒绝新领取，本票不销毁内容（#11）。发送设置新增「可领取次数」并说明匿名口径，公开目录发布 transfers.maxClaimQuota，接收页显示可领取/已领完/已失效。新增 HTTP 领取矩阵、PostgreSQL 跨连接并发与幂等测试、混合传输正文回归，浏览器闭环 21/21。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9d3b946` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
