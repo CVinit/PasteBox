@@ -19,6 +19,7 @@ func (s *Server) createTransfer(w http.ResponseWriter, r *http.Request) {
 		Password         string                  `json:"password"`
 		LoginRequired    bool                    `json:"loginRequired"`
 		ClaimQuota       int                     `json:"claimQuota"`
+		BurnAfterReading bool                    `json:"burnAfterReading"`
 		Title            string                  `json:"title"`
 		Text             string                  `json:"text"`
 		Tags             []string                `json:"tags"`
@@ -33,6 +34,7 @@ func (s *Server) createTransfer(w http.ResponseWriter, r *http.Request) {
 		Password:         req.Password,
 		LoginRequired:    req.LoginRequired,
 		ClaimQuota:       req.ClaimQuota,
+		BurnAfterReading: req.BurnAfterReading,
 		Title:            req.Title,
 		Text:             req.Text,
 		Tags:             req.Tags,
@@ -54,6 +56,7 @@ func (s *Server) createGuestTransfer(w http.ResponseWriter, r *http.Request) {
 		Password         string                  `json:"password"`
 		LoginRequired    bool                    `json:"loginRequired"`
 		ClaimQuota       int                     `json:"claimQuota"`
+		BurnAfterReading bool                    `json:"burnAfterReading"`
 		Title            string                  `json:"title"`
 		Text             string                  `json:"text"`
 		Items            []app.TransferItemInput `json:"items"`
@@ -70,6 +73,7 @@ func (s *Server) createGuestTransfer(w http.ResponseWriter, r *http.Request) {
 		Password:         req.Password,
 		LoginRequired:    req.LoginRequired,
 		ClaimQuota:       req.ClaimQuota,
+		BurnAfterReading: req.BurnAfterReading,
 		Title:            req.Title,
 		Text:             req.Text,
 		Items:            req.Items,

@@ -213,11 +213,22 @@ type Transfer struct {
 	// ClaimedCount is how many slots have been spent. It is maintained together
 	// with the claim rows so concurrent claims cannot oversell the quota.
 	ClaimedCount int
-	ExpiresAt    time.Time
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	PublishedAt  *time.Time
-	CanceledAt   *time.Time
+	// BurnAfterReading destroys this send's content once nobody can be handed
+	// it any more: every claim slot was spent and every session ended, or the
+	// share lifetime is over. It is off by default and is only chosen at send
+	// time, so an older send never starts destroying itself.
+	BurnAfterReading bool
+	ExpiresAt        time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	PublishedAt      *time.Time
+	CanceledAt       *time.Time
+	// DestroyedAt is when the send entered its terminal state. Access is
+	// already refused at that point; the bytes are released afterwards.
+	DestroyedAt *time.Time
+	// DestroyReason names what ended the send, so the sender's view can say
+	// whether the claims ran out or the lifetime did.
+	DestroyReason string
 }
 
 // TransferClaim is one anonymous claim of a published transfer. Claiming spends
@@ -271,13 +282,22 @@ type TransferView struct {
 	PickupCode string `json:"pickupCode,omitempty"`
 	// ClaimQuota and ClaimedCount let the sender see how many anonymous claims
 	// the transfer allows and how many have been spent.
-	ClaimQuota   int        `json:"claimQuota"`
-	ClaimedCount int        `json:"claimedCount"`
-	ExpiresAt    time.Time  `json:"expiresAt"`
-	CreatedAt    time.Time  `json:"createdAt"`
-	UpdatedAt    time.Time  `json:"updatedAt"`
-	PublishedAt  *time.Time `json:"publishedAt,omitempty"`
-	CanceledAt   *time.Time `json:"canceledAt,omitempty"`
+	ClaimQuota   int `json:"claimQuota"`
+	ClaimedCount int `json:"claimedCount"`
+	// BurnAfterReading tells the sender whether this send destroys itself, and
+	// DestroyedAt/DestroyReason report the terminal state once it has.
+	BurnAfterReading bool       `json:"burnAfterReading"`
+	DestroyedAt      *time.Time `json:"destroyedAt,omitempty"`
+	DestroyReason    string     `json:"destroyReason,omitempty"`
+	// CleanupStatus is how far the background cleanup has got: the content is
+	// marked for deletion first, so access is already gone while the bytes are
+	// still being released.
+	CleanupStatus string     `json:"cleanupStatus,omitempty"`
+	ExpiresAt     time.Time  `json:"expiresAt"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	UpdatedAt     time.Time  `json:"updatedAt"`
+	PublishedAt   *time.Time `json:"publishedAt,omitempty"`
+	CanceledAt    *time.Time `json:"canceledAt,omitempty"`
 }
 
 // TransferClaimView is the claim state a recipient sees. It never carries
@@ -332,6 +352,10 @@ type TransferInput struct {
 	// ClaimQuota is how many anonymous claims the send grants. Zero means the
 	// default of one, so a send is never left without a way to be claimed.
 	ClaimQuota int
+	// BurnAfterReading asks the service to destroy this send once it can no
+	// longer be handed to anybody. False keeps the ordinary expiry-only
+	// lifetime, which is what every older send keeps.
+	BurnAfterReading bool
 	// Title, Text and Tags describe what the send carries. A send with items is
 	// a file send and its title falls back to the declared file names; a send
 	// with text and no items is a text send.
@@ -353,9 +377,14 @@ type GuestCreateTransferInput struct {
 	// setting the service cannot enforce.
 	LoginRequired bool
 	ClaimQuota    int
-	Title         string
-	Text          string
-	Items         []TransferItemInput
+	// BurnAfterReading is the same destructive switch an account send offers.
+	// A guest send is destroyed on the same conditions; the switch never turns
+	// itself on, so a guest who does not ask for it keeps the ordinary
+	// retention window.
+	BurnAfterReading bool
+	Title            string
+	Text             string
+	Items            []TransferItemInput
 }
 
 type Order struct {

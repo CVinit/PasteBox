@@ -144,6 +144,13 @@ export type Transfer = {
   // how many have been spent. Both are only reported to the sender.
   claimQuota: number;
   claimedCount: number;
+  // burnAfterReading is the destructive switch the sender chose. destroyedAt
+  // and destroyReason report the terminal state, and cleanupStatus says how far
+  // the background release of the bytes has got.
+  burnAfterReading: boolean;
+  destroyedAt?: string;
+  destroyReason?: string;
+  cleanupStatus?: string;
   expiresAt: string;
   createdAt: string;
   updatedAt: string;
@@ -930,6 +937,9 @@ export const client = {
     // claimQuota is how many anonymous claims the send grants. Zero or absent
     // means the server default of one.
     claimQuota?: number;
+    // burnAfterReading asks the server to destroy this send once nobody can be
+    // handed it any more. Absent keeps the ordinary expiry-only lifetime.
+    burnAfterReading?: boolean;
     // title, text and tags describe the record the send creates: a file send
     // declares items, a text send sends text and no items.
     title?: string;
@@ -982,6 +992,7 @@ export const client = {
     expiresInSeconds: number;
     password?: string;
     claimQuota?: number;
+    burnAfterReading?: boolean;
     title?: string;
     text?: string;
     items: TransferItemInput[];

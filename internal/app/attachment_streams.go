@@ -554,6 +554,14 @@ func (s *Service) openSharedAttachment(ctx context.Context, token string, passwo
 		passwordVerified = verified
 	}
 	s.mu.Lock()
+	// A destroyed send is refused with its own code before the share and
+	// content checks, so a download of burned content is answered with the
+	// terminal state instead of the generic expiry its deleted record would
+	// produce.
+	if err := s.refuseDestroyedByTokenLocked(ctx, token); err != nil {
+		s.mu.Unlock()
+		return AttachmentDownload{}, err
+	}
 	share, paste, err := s.validShareAccessLocked(ctx, token, password, viewerUserID, true, passwordVerified)
 	if err != nil {
 		s.mu.Unlock()
@@ -608,7 +616,7 @@ func (s *Service) openSharedAttachment(ctx context.Context, token string, passwo
 		defer s.mu.Unlock()
 		share = s.cacheShareLocked(consumed)
 		attachment = s.cacheAttachmentLocked(updatedAttachment)
-		return AttachmentDownload{Attachment: viewAttachment(attachment), Body: object.Body, Size: attachment.Size}, nil
+		return AttachmentDownload{Attachment: viewAttachment(attachment), Body: s.sharedDownloadBody(ctx, transfer, token, auth.claimToken, viewerUserID, object.Body), Size: attachment.Size}, nil
 	}
 	downloadBytes, err := s.dailyMetricLocked(ctx, share.UserID, "share_download")
 	if err != nil {
@@ -653,7 +661,18 @@ func (s *Service) openSharedAttachment(ctx context.Context, token string, passwo
 		_ = object.Body.Close()
 		return AttachmentDownload{}, err
 	}
-	return AttachmentDownload{Attachment: viewAttachment(attachment), Body: object.Body, Size: attachment.Size}, nil
+	return AttachmentDownload{Attachment: viewAttachment(attachment), Body: s.sharedDownloadBody(ctx, transfer, token, auth.claimToken, viewerUserID, object.Body), Size: attachment.Size}, nil
+}
+
+// sharedDownloadBody wraps the bytes of a transfer-backed download so the
+// stream stops at the next checkpoint once the claim session, the share or the
+// send stops being valid. A legacy share has no session to lose, so its body is
+// handed over untouched.
+func (s *Service) sharedDownloadBody(ctx context.Context, transfer *Transfer, token string, claimToken string, viewerUserID string, body io.ReadCloser) io.ReadCloser {
+	if transfer == nil {
+		return body
+	}
+	return s.guardTransferStream(ctx, token, claimToken, viewerUserID, body)
 }
 
 func (s *Service) validatePreparedAttachmentLocked(ctx context.Context, user *User, paste *Paste, plan plans.Plan, upload *PreparedAttachmentUpload) error {

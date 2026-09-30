@@ -222,6 +222,15 @@ type TransferStore interface {
 	AllocateTransferClaim(ctx context.Context, claim TransferClaim) (TransferClaim, bool, error)
 	TransferClaimByTokenHash(ctx context.Context, tokenHash string) (TransferClaim, error)
 	CompleteTransferClaim(ctx context.Context, id string, now time.Time) (TransferClaim, error)
+	// CountLiveTransferClaims counts the claim sessions of a transfer that are
+	// still open at now. A burn-after-reading send is only destroyed once this
+	// reaches zero, so ending one session never takes the content away from
+	// another claim that is still valid.
+	CountLiveTransferClaims(ctx context.Context, transferID string, now time.Time) (int, error)
+	// ListBurnableTransfers returns published burn-after-reading transfers that
+	// are due to be destroyed, bounded by limit, so the sweep that keeps
+	// destruction reliable without traffic stays a small query.
+	ListBurnableTransfers(ctx context.Context, now time.Time, limit int) ([]Transfer, error)
 }
 
 // AtomicTransferStore publishes a transfer and its share in a single
@@ -233,4 +242,23 @@ type TransferStore interface {
 // as content stays in the service instead of being re-implemented here.
 type AtomicTransferStore interface {
 	PublishTransfer(ctx context.Context, transferID string, share Share, now time.Time, allowNoItems bool) (Transfer, error)
+}
+
+// AtomicTransferDestroyStore destroys a burn-after-reading send in one
+// transaction: the transfer stops authorizing access, its share is revoked, its
+// content is marked for deletion and the cleanup job is queued. A store that
+// implements it guarantees a send can never be left half-destroyed — access
+// refused but the bytes never scheduled for release — and the reverse order is
+// impossible too, because the terminal state and the cleanup intent commit
+// together.
+type AtomicTransferDestroyStore interface {
+	// DestroyTransfer moves a published transfer to its terminal destroyed
+	// state and reports whether this call performed the transition. An already
+	// destroyed transfer comes back unchanged with destroyed=false, which makes
+	// a retry a no-op instead of a second cleanup.
+	//
+	// cleanupJobID is the identifier the caller wants the queued cleanup job to
+	// have, so the service keeps owning identifier generation the way it does
+	// for every other record it stores.
+	DestroyTransfer(ctx context.Context, transferID string, cleanupJobID string, now time.Time, reason string) (Transfer, bool, error)
 }

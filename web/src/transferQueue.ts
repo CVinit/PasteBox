@@ -39,6 +39,9 @@ export type TransferQueueShare = {
   // claimQuota is how many anonymous claims the published send grants, so the
   // success page can state the count the sender chose.
   claimQuota?: number;
+  // burnAfterReading tells the success page that this send destroys itself, so
+  // the promise is stated where the link is handed over.
+  burnAfterReading?: boolean;
 };
 
 // TransferQueueAdapter hides who is sending: an account session or a guest

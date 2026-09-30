@@ -142,6 +142,14 @@ func (s *Service) AccessShareWithTransferContext(ctx context.Context, token stri
 	}
 
 	s.mu.Lock()
+	// A destroyed send is refused with its own code before the share and
+	// content checks, which would otherwise report its deleted record as a
+	// generic expiry. A send that has just become due is destroyed here, so the
+	// answer does not depend on the worker having swept yet.
+	if err := s.refuseDestroyedByTokenLocked(ctx, token); err != nil {
+		s.mu.Unlock()
+		return PasteView{}, ShareView{}, nil, err
+	}
 	share, paste, err := s.validShareAccessLocked(ctx, token, password, viewerUserID, false, passwordVerified)
 	if err != nil {
 		s.mu.Unlock()

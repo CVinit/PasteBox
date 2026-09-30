@@ -16,6 +16,10 @@ const (
 	TransferStatusDraft     = "draft"
 	TransferStatusPublished = "published"
 	TransferStatusCanceled  = "canceled"
+	// TransferStatusDestroyed is the terminal state of a burn-after-reading
+	// send. Access is refused from the moment this state is committed; the
+	// content itself is released afterwards by the cleanup worker.
+	TransferStatusDestroyed = "destroyed"
 
 	TransferItemPending  = "pending"
 	TransferItemUploaded = "uploaded"
@@ -253,18 +257,30 @@ func (s *Service) viewTransferLocked(ctx context.Context, transfer *Transfer) (T
 		return items[i].ItemID < items[j].ItemID
 	})
 	view := TransferView{
-		ID:           transfer.ID,
-		Status:       transfer.Status,
-		PasteID:      transfer.PasteID,
-		Items:        make([]TransferItemView, 0, len(items)),
-		ClaimQuota:   transfer.ClaimQuota,
-		ClaimedCount: transfer.ClaimedCount,
-		ExpiresAt:    transfer.ExpiresAt,
-		CreatedAt:    transfer.CreatedAt,
-		UpdatedAt:    transfer.UpdatedAt,
-		PublishedAt:  transfer.PublishedAt,
-		CanceledAt:   transfer.CanceledAt,
+		ID:               transfer.ID,
+		Status:           transfer.Status,
+		PasteID:          transfer.PasteID,
+		Items:            make([]TransferItemView, 0, len(items)),
+		ClaimQuota:       transfer.ClaimQuota,
+		ClaimedCount:     transfer.ClaimedCount,
+		BurnAfterReading: transfer.BurnAfterReading,
+		DestroyedAt:      transfer.DestroyedAt,
+		DestroyReason:    transfer.DestroyReason,
+		ExpiresAt:        transfer.ExpiresAt,
+		CreatedAt:        transfer.CreatedAt,
+		UpdatedAt:        transfer.UpdatedAt,
+		PublishedAt:      transfer.PublishedAt,
+		CanceledAt:       transfer.CanceledAt,
 	}
+	// The backing record's status is the cleanup boundary: it turns
+	// pending_delete as soon as access is refused, and deleted once the bytes
+	// are gone, so a sender can tell "destroyed" from "fully cleaned up". A
+	// store failure is reported rather than silently shown as an empty status.
+	paste, err := s.pasteByIDLocked(ctx, transfer.PasteID)
+	if err != nil {
+		return TransferView{}, err
+	}
+	view.CleanupStatus = paste.Status
 	for _, item := range items {
 		itemView := TransferItemView{
 			ItemID:       item.ItemID,
@@ -417,12 +433,13 @@ func (s *Service) CreateGuestTransferWithContext(ctx context.Context, input Gues
 		expiresSeconds = cfg.RetentionSeconds
 	}
 	view, err := s.createTransferForUserLocked(ctx, user, guestPlan(cfg), TransferInput{
-		IdempotencyKey: input.IdempotencyKey,
-		Password:       input.Password,
-		ClaimQuota:     input.ClaimQuota,
-		Title:          input.Title,
-		Text:           input.Text,
-		Items:          input.Items,
+		IdempotencyKey:   input.IdempotencyKey,
+		Password:         input.Password,
+		ClaimQuota:       input.ClaimQuota,
+		BurnAfterReading: input.BurnAfterReading,
+		Title:            input.Title,
+		Text:             input.Text,
+		Items:            input.Items,
 	}, now.Add(time.Duration(expiresSeconds)*time.Second))
 	if err != nil {
 		return "", TransferView{}, err
@@ -491,17 +508,18 @@ func (s *Service) createTransferForUserLocked(ctx context.Context, user *User, p
 		}
 	}
 	transfer := &Transfer{
-		ID:             s.newID("trf"),
-		UserID:         user.ID,
-		PasteID:        paste.ID,
-		Status:         TransferStatusDraft,
-		IdempotencyKey: idempotencyKey,
-		PasswordHash:   passwordHash,
-		LoginRequired:  input.LoginRequired,
-		ClaimQuota:     claimQuota,
-		ExpiresAt:      expiresAt,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:               s.newID("trf"),
+		UserID:           user.ID,
+		PasteID:          paste.ID,
+		Status:           TransferStatusDraft,
+		IdempotencyKey:   idempotencyKey,
+		PasswordHash:     passwordHash,
+		LoginRequired:    input.LoginRequired,
+		ClaimQuota:       claimQuota,
+		BurnAfterReading: input.BurnAfterReading,
+		ExpiresAt:        expiresAt,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 	if err := s.createTransferLocked(ctx, transfer); err != nil {
 		if discardErr := s.discardTransferPasteLocked(ctx, paste, now); discardErr != nil {

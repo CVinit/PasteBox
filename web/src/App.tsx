@@ -137,6 +137,9 @@ type SendSettings = {
   // claimQuota is how many anonymous claims the send grants. It is not a
   // recipient list: the slots are anonymous and never verified as people.
   claimQuota: number;
+  // burnAfterReading destroys the content once nobody can be handed it any
+  // more. It is off by default and only the sender turns it on.
+  burnAfterReading: boolean;
 };
 
 type RedemptionDraft = {
@@ -271,6 +274,7 @@ const defaultSendSettings: SendSettings = {
   password: "",
   loginRequired: false,
   claimQuota: 1,
+  burnAfterReading: false,
 };
 
 const defaultRedemptionDraft: RedemptionDraft = {
@@ -4308,6 +4312,7 @@ function App() {
           password: sendSettings.password,
           loginRequired: sendSettings.loginRequired,
           claimQuota: sendSettings.claimQuota,
+          burnAfterReading: sendSettings.burnAfterReading,
           title: draft.title.trim() || undefined,
           tags: sendTags,
           items: manifest,
@@ -4334,6 +4339,7 @@ function App() {
     [
       draft.expiresInSeconds,
       draft.title,
+      sendSettings.burnAfterReading,
       sendSettings.claimQuota,
       sendSettings.loginRequired,
       sendSettings.password,
@@ -4351,6 +4357,7 @@ function App() {
           password: sendSettings.password,
           loginRequired: sendSettings.loginRequired,
           claimQuota: sendSettings.claimQuota,
+          burnAfterReading: sendSettings.burnAfterReading,
           title: draft.title.trim() || undefined,
           text: draft.text,
           tags: sendTags,
@@ -4367,6 +4374,7 @@ function App() {
       draft.expiresInSeconds,
       draft.text,
       draft.title,
+      sendSettings.burnAfterReading,
       sendSettings.claimQuota,
       sendSettings.loginRequired,
       sendSettings.password,
@@ -4889,12 +4897,31 @@ function App() {
     if (result) setShareAccess(result);
   }
 
+  // A destroyed send is a terminal state rather than a failed request, so the
+  // page says what happened and where the background cleanup stands instead of
+  // echoing the server's wording.
+  function publicShareFailureMessage(error: unknown): string {
+    const apiError = error as ApiError;
+    if (apiError.code === "transfer_destroyed") {
+      return transferCopyFor(locale).burnDestroyed;
+    }
+    return apiError.message || transferCopyFor(locale).claimFailed;
+  }
+
   async function openPublicShare() {
-    const result = await run(
-      () => client.accessShare(publicShareToken, publicSharePassword),
-      t("shareOpened"),
-    );
-    if (result) setShareAccess(result);
+    setBusy(true);
+    setMessage("");
+    try {
+      setShareAccess(
+        await client.accessShare(publicShareToken, publicSharePassword),
+      );
+    } catch (error) {
+      // The content is gone, so the page must not keep showing a stale view.
+      setShareAccess(null);
+      setMessage(publicShareFailureMessage(error));
+    } finally {
+      setBusy(false);
+    }
   }
 
   // claimPublicShare spends one anonymous claim slot and then re-opens the page,
@@ -4912,8 +4939,7 @@ function App() {
       await action();
       await openPublicShare();
     } catch (error) {
-      const apiError = error as ApiError;
-      setMessage(apiError.message || transferCopyFor(locale).claimFailed);
+      setMessage(publicShareFailureMessage(error));
     } finally {
       setClaimBusy(false);
     }
@@ -5861,12 +5887,19 @@ function App() {
                   ) : null}
                 </div>
                 <SendSettingsFields
+                  burnAfterReading={sendSettings.burnAfterReading}
                   claimQuota={sendSettings.claimQuota}
                   expiresInSeconds={draft.expiresInSeconds}
                   expiryOptions={sendExpiryOptions}
                   labels={transferLabels}
                   loginRequired={sendSettings.loginRequired}
                   maxClaimQuota={catalog?.transfers?.maxClaimQuota ?? 0}
+                  onBurnAfterReading={(value) =>
+                    setSendSettings({
+                      ...sendSettings,
+                      burnAfterReading: value,
+                    })
+                  }
                   onExpiry={(seconds) =>
                     setDraft({ ...draft, expiresInSeconds: seconds })
                   }
@@ -8390,6 +8423,13 @@ type TransferCopy = {
   claimComplete: string;
   claimSessionUntil: string;
   claimFailed: string;
+  // The burn-after-reading switch and the states it produces: the sender is
+  // told the scope before turning it on, and the recipient page says when the
+  // content is gone and where the background cleanup stands.
+  burnLabel: string;
+  burnHint: string;
+  burnSummary: string;
+  burnDestroyed: string;
 };
 
 const transferCopy: Record<Locale, TransferCopy> = {
@@ -8456,6 +8496,13 @@ const transferCopy: Record<Locale, TransferCopy> = {
     claimComplete: "Finish claim",
     claimSessionUntil: "Claim session valid until",
     claimFailed: "Could not claim this transfer.",
+    burnLabel: "Burn after reading",
+    burnHint:
+      "Burn after reading destroys the text and files once every claim is used and its session ended, or when the share expires. A copy a recipient already saved cannot be recalled.",
+    burnSummary:
+      "Burn after reading is on: the content is destroyed once every claim is used and its session ended, or when the send expires.",
+    burnDestroyed:
+      "This transfer was destroyed: its text and files are no longer available, and the files are being removed in the background. Copies already saved by a recipient are not affected.",
   },
   "zh-CN": {
     sendFile: "发送文件",
@@ -8520,6 +8567,12 @@ const transferCopy: Record<Locale, TransferCopy> = {
     claimComplete: "完成领取",
     claimSessionUntil: "领取会话有效期至",
     claimFailed: "领取失败，请重试。",
+    burnLabel: "阅后即焚",
+    burnHint:
+      "阅后即焚会在全部名额领取并结束会话后，或分享到期后销毁正文与附件；接收方已保存的副本无法收回。",
+    burnSummary: "阅后即焚已开启：全部名额领取并结束会话后，或到期后销毁内容与附件。",
+    burnDestroyed:
+      "这份传输已销毁：正文与附件已失效，附件正在后台清理。接收方已保存到本地的副本不受影响。",
   },
   "zh-TW": {
     sendFile: "傳送檔案",
@@ -8584,6 +8637,13 @@ const transferCopy: Record<Locale, TransferCopy> = {
     claimComplete: "完成領取",
     claimSessionUntil: "領取工作階段有效期至",
     claimFailed: "領取失敗，請重試。",
+    burnLabel: "閱後即焚",
+    burnHint:
+      "閱後即焚會在全部名額領取並結束工作階段後，或分享到期後銷毀正文與附件；接收方已儲存的副本無法收回。",
+    burnSummary:
+      "閱後即焚已開啟：全部名額領取並結束工作階段後，或到期後銷毀內容與附件。",
+    burnDestroyed:
+      "這份傳輸已銷毀：正文與附件已失效，附件正在背景清理。接收方已儲存到本機的副本不受影響。",
   },
   es: {
     sendFile: "Enviar archivo",
@@ -8651,6 +8711,13 @@ const transferCopy: Record<Locale, TransferCopy> = {
     claimComplete: "Finalizar reclamo",
     claimSessionUntil: "Sesión de reclamo válida hasta",
     claimFailed: "No se pudo reclamar esta transferencia.",
+    burnLabel: "Autodestrucción",
+    burnHint:
+      "La autodestrucción borra el texto y los archivos cuando se usen todos los reclamos y terminen sus sesiones, o al vencer el enlace. Una copia ya guardada por quien los recibió no se puede recuperar.",
+    burnSummary:
+      "La autodestrucción está activada: el contenido se borra cuando se usen todos los reclamos y terminen sus sesiones, o al vencer el envío.",
+    burnDestroyed:
+      "Esta transferencia fue destruida: el texto y los archivos ya no están disponibles y los archivos se eliminan en segundo plano. Las copias ya guardadas no se ven afectadas.",
   },
 };
 
@@ -8965,6 +9032,11 @@ function SendShareResult({
           )}
         </p>
       ) : null}
+      {/* The destructive promise is stated where the link is handed over, not
+          only in the settings the sender has already left. */}
+      {share.burnAfterReading ? (
+        <p className={lineClassName}>{labels.burnSummary}</p>
+      ) : null}
       {onReset && resetLabel ? (
         <button type="button" onClick={onReset}>
           {resetLabel}
@@ -9116,18 +9188,23 @@ function PickupCodeRow({
 // transfer. The sign-in requirement is account-only, so it renders only when
 // the surface can enforce it.
 function SendSettingsFields({
+  burnAfterReading = false,
   claimQuota,
   expiresInSeconds,
   expiryOptions,
   labels,
   loginRequired = false,
   maxClaimQuota,
+  onBurnAfterReading,
   onClaimQuota,
   onExpiry,
   onLoginRequired,
   onPassword,
   password,
 }: {
+  // burnAfterReading is the destructive switch. It is only rendered where the
+  // surface can honour it, which is both send flows.
+  burnAfterReading?: boolean;
   claimQuota: number;
   expiresInSeconds: number;
   expiryOptions: Array<{ seconds: number; label: string }>;
@@ -9135,6 +9212,7 @@ function SendSettingsFields({
   loginRequired?: boolean;
   // maxClaimQuota is the published server bound; 0 means it is not known yet.
   maxClaimQuota: number;
+  onBurnAfterReading?: (value: boolean) => void;
   onClaimQuota: (value: number) => void;
   onExpiry: (seconds: number) => void;
   onLoginRequired?: (value: boolean) => void;
@@ -9204,12 +9282,27 @@ function SendSettingsFields({
             <span>{labels.loginRequired}</span>
           </label>
         ) : null}
+        {onBurnAfterReading ? (
+          <label className="send-settings-toggle">
+            <input
+              checked={burnAfterReading}
+              onChange={(event) => onBurnAfterReading(event.target.checked)}
+              type="checkbox"
+            />
+            <span>{labels.burnLabel}</span>
+          </label>
+        ) : null}
       </div>
       {/* The count is anonymous slots, not a recipient list, so the wording
           says so instead of implying verified people. */}
       <small className="send-settings-hint" id={hintId}>
         {labels.claimQuotaHint}
       </small>
+      {/* The destructive scope is stated before the switch can be turned on, so
+          nobody has to enable it to find out what it destroys. */}
+      {onBurnAfterReading ? (
+        <small className="send-settings-hint">{labels.burnHint}</small>
+      ) : null}
     </div>
   );
 }
@@ -9627,6 +9720,7 @@ function shareFromTransfer(transfer: Transfer): TransferQueueShare {
     pickupCode: transfer.pickupCode,
     pasteId: transfer.pasteId,
     claimQuota: transfer.claimQuota,
+    burnAfterReading: transfer.burnAfterReading,
   };
 }
 
@@ -9638,6 +9732,7 @@ type GuestSendOptions = {
   expiresInSeconds: number;
   password: string;
   claimQuota: number;
+  burnAfterReading: boolean;
   title?: string;
   text?: string;
 };
@@ -9656,6 +9751,7 @@ async function createGuestSend(
     expiresInSeconds: options.expiresInSeconds,
     password: options.password,
     claimQuota: options.claimQuota,
+    burnAfterReading: options.burnAfterReading,
     title: options.title?.trim() || undefined,
     text: options.text,
     items,
@@ -9732,6 +9828,8 @@ function GuestWorkbench({
   // One anonymous claim is granted by default, matching the server, and the
   // count is a slot count rather than a recipient list.
   const [sendClaimQuota, setSendClaimQuota] = useState(1);
+  // Burning is off unless the guest asks for it, exactly like an account send.
+  const [sendBurnAfterReading, setSendBurnAfterReading] = useState(false);
   useEffect(() => {
     setSendExpirySeconds((current) =>
       clampExpirySeconds(current, config.retentionSeconds),
@@ -9759,8 +9857,14 @@ function GuestWorkbench({
         expiresInSeconds: sendExpirySeconds,
         password: sendPassword,
         claimQuota: sendClaimQuota,
+        burnAfterReading: sendBurnAfterReading,
       }),
-    [sendExpirySeconds, sendPassword, sendClaimQuota],
+    [
+      sendExpirySeconds,
+      sendPassword,
+      sendClaimQuota,
+      sendBurnAfterReading,
+    ],
   );
   const guestImageAdapter = useMemo<TransferQueueAdapter>(
     () =>
@@ -9769,9 +9873,16 @@ function GuestWorkbench({
         expiresInSeconds: sendExpirySeconds,
         password: sendPassword,
         claimQuota: sendClaimQuota,
+        burnAfterReading: sendBurnAfterReading,
         title,
       }),
-    [sendExpirySeconds, sendPassword, sendClaimQuota, title],
+    [
+      sendExpirySeconds,
+      sendPassword,
+      sendClaimQuota,
+      sendBurnAfterReading,
+      title,
+    ],
   );
   const guestTextAdapter = useMemo<TextSendAdapter>(
     () =>
@@ -9780,10 +9891,18 @@ function GuestWorkbench({
         expiresInSeconds: sendExpirySeconds,
         password: sendPassword,
         claimQuota: sendClaimQuota,
+        burnAfterReading: sendBurnAfterReading,
         title,
         text,
       }),
-    [sendExpirySeconds, sendPassword, sendClaimQuota, title, text],
+    [
+      sendExpirySeconds,
+      sendPassword,
+      sendClaimQuota,
+      sendBurnAfterReading,
+      title,
+      text,
+    ],
   );
   const guestFileQueue = useTransferQueue(guestFileAdapter);
   const guestImageQueue = useTransferQueue(guestImageAdapter);
@@ -10058,11 +10177,13 @@ function GuestWorkbench({
           </>
         )}
         <SendSettingsFields
+          burnAfterReading={sendBurnAfterReading}
           claimQuota={sendClaimQuota}
           expiresInSeconds={sendExpirySeconds}
           expiryOptions={expiryOptions}
           labels={transferLabels}
           maxClaimQuota={maxClaimQuota}
+          onBurnAfterReading={setSendBurnAfterReading}
           onClaimQuota={setSendClaimQuota}
           onExpiry={setSendExpirySeconds}
           onPassword={setSendPassword}

@@ -191,6 +191,11 @@ func (s *Service) validTransferClaimLocked(ctx context.Context, shareToken strin
 	if transfer == nil {
 		return nil, nil, nil, claimEndedError()
 	}
+	if transfer.Status == TransferStatusDestroyed {
+		// The send already reached its terminal state, so a session that was
+		// still open cannot keep reading content that is on its way out.
+		return nil, nil, nil, transferDestroyedError()
+	}
 	return share, transfer, claim, nil
 }
 
@@ -204,6 +209,9 @@ func (s *Service) sharedAccessViewLocked(ctx context.Context, share *Share, past
 	}
 	if transfer == nil {
 		return s.viewPasteLocked(paste), s.viewShareLocked(share), nil, nil
+	}
+	if transfer.Status == TransferStatusDestroyed {
+		return PasteView{}, ShareView{}, nil, transferDestroyedError()
 	}
 	kind, err := s.transferClaimKindLocked(ctx, transfer)
 	if err != nil {
@@ -336,6 +344,12 @@ func (s *Service) ClaimTransferWithContext(ctx context.Context, token string, pa
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// The terminal state is checked before the share checks, so a send that was
+	// destroyed answers with its own code instead of the generic expiry its
+	// deleted content would produce.
+	if err := s.refuseDestroyedByTokenLocked(ctx, token); err != nil {
+		return TransferClaimResult{}, err
+	}
 	share, paste, err := s.validShareAccessLocked(ctx, token, password, viewerUserID, false, passwordVerified)
 	if err != nil {
 		return TransferClaimResult{}, err
@@ -400,12 +414,20 @@ func (s *Service) CompleteTransferClaimWithContext(ctx context.Context, shareTok
 		return TransferClaimView{}, claimRequiredError()
 	}
 	if claim.Status == TransferClaimStatusCompleted {
-		// Completing twice is a no-op, not a new session or a refunded slot.
+		// Completing twice is a no-op, not a new session or a refunded slot. A
+		// burn-after-reading send still gets its destruction attempt here, so a
+		// failed one is retried by the next request instead of being forgotten.
+		if err := s.maybeDestroyAfterClaimEndedLocked(ctx, claim); err != nil {
+			return TransferClaimView{}, err
+		}
 		return viewTransferClaim(claim), nil
 	}
 	now := s.now().UTC()
 	if !claim.ExpiresAt.After(now) {
 		return TransferClaimView{}, claimEndedError()
+	}
+	if err := s.refuseDestroyedByTokenLocked(ctx, shareToken); err != nil {
+		return TransferClaimView{}, err
 	}
 	share, _, err := s.validShareAccessLocked(ctx, shareToken, "", viewerUserID, false, true)
 	if err != nil {
@@ -427,6 +449,11 @@ func (s *Service) CompleteTransferClaimWithContext(ctx context.Context, shareTok
 			return TransferClaimView{}, err
 		}
 		claim = s.cacheTransferClaimLocked(updated)
+	}
+	// Ending the last session is what lets a burn-after-reading send go: nobody
+	// can be handed its content any more.
+	if err := s.maybeDestroyAfterClaimEndedLocked(ctx, claim); err != nil {
+		return TransferClaimView{}, err
 	}
 	return viewTransferClaim(claim), nil
 }

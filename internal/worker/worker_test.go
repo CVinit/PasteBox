@@ -41,6 +41,54 @@ func TestRunnerCompletesCleanupJob(t *testing.T) {
 	}
 }
 
+// TestRunnerSweepsBurnTransfersOnEveryRun is the reliability half of the
+// burn-after-reading promise: the worker looks for sends that are due even when
+// nobody touched them, so a session that simply expired still ends with the
+// content released.
+func TestRunnerSweepsBurnTransfersOnEveryRun(t *testing.T) {
+	now := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
+	service := &fakeCleanupService{burnDestroyed: 2}
+
+	runner := NewRunner(&fakeJobStore{}, service, Config{Now: func() time.Time { return now }, Logger: slog.Default()})
+	summary, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if service.burnSweepCalls != 1 {
+		t.Fatalf("expected one burn sweep per run, got %d", service.burnSweepCalls)
+	}
+	if summary.Destroyed != 2 {
+		t.Fatalf("expected the sweep count in the summary, got %#v", summary)
+	}
+}
+
+// TestRunnerKeepsWorkingWhenTheBurnSweepFails proves a failing sweep is not
+// fatal: the next poll retries it, and the jobs in the same batch still run.
+func TestRunnerKeepsWorkingWhenTheBurnSweepFails(t *testing.T) {
+	now := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
+	jobs := &fakeJobStore{runnable: []postgres.JobRecord{{
+		ID:        "job_cleanup",
+		Kind:      "cleanup",
+		Status:    "pending",
+		RunAfter:  now.Add(-time.Minute),
+		CreatedAt: now.Add(-time.Minute),
+		UpdatedAt: now.Add(-time.Minute),
+	}}}
+	service := &fakeCleanupService{burnSweepErr: errors.New("postgres unavailable")}
+
+	runner := NewRunner(jobs, service, Config{Now: func() time.Time { return now }, Logger: slog.Default()})
+	summary, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("expected a failed sweep to be reported, not fatal: %v", err)
+	}
+	if summary.Destroyed != 0 || service.burnSweepCalls != 1 {
+		t.Fatalf("expected one failed sweep, got %#v with %d call(s)", summary, service.burnSweepCalls)
+	}
+	if summary.Completed != 1 || service.cleanupCalls != 1 {
+		t.Fatalf("expected the batch to keep running after a failed sweep, got %#v", summary)
+	}
+}
+
 func TestRunnerRecordsWorkerHeartbeat(t *testing.T) {
 	now := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
 	heartbeats := &fakeHeartbeatStore{}
@@ -339,6 +387,17 @@ type fakeCleanupService struct {
 	scanContext         context.Context
 	err                 error
 	scanErr             error
+	burnSweepCalls      int
+	burnDestroyed       int
+	burnSweepErr        error
+}
+
+func (s *fakeCleanupService) RunTransferBurnSweepWithContext(_ context.Context) (int, error) {
+	s.burnSweepCalls++
+	if s.burnSweepErr != nil {
+		return 0, s.burnSweepErr
+	}
+	return s.burnDestroyed, nil
 }
 
 func (s *fakeCleanupService) RunCleanupWithContext(_ context.Context, _ string) (map[string]int, error) {

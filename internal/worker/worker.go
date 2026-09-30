@@ -16,6 +16,11 @@ type Service interface {
 	RunCleanupWithContext(ctx context.Context, actorID string) (map[string]int, error)
 	RunBillingReconciliationWithContext(ctx context.Context, actorID string) (map[string]int, error)
 	RunAttachmentScanWithContext(ctx context.Context, scanner app.Scanner, attachmentID string) error
+	// RunTransferBurnSweepWithContext destroys the burn-after-reading sends
+	// that are due. The worker runs it on every poll, so a send whose last
+	// session expired — or whose lifetime ran out — is still destroyed when
+	// nobody touches it again.
+	RunTransferBurnSweepWithContext(ctx context.Context) (int, error)
 }
 
 type JobStore interface {
@@ -57,6 +62,10 @@ type Summary struct {
 	MailSent    int
 	MailRetried int
 	MailFailed  int
+	// Destroyed counts the burn-after-reading sends this run destroyed. A
+	// failure here is reported on the sweep itself, not as a job failure,
+	// because the next poll retries it.
+	Destroyed int
 }
 
 type Runner struct {
@@ -99,7 +108,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if summary.Seen > 0 || summary.MailSeen > 0 {
+		if summary.Seen > 0 || summary.MailSeen > 0 || summary.Destroyed > 0 {
 			r.cfg.Logger.Info(
 				"worker batch processed",
 				"seen", summary.Seen,
@@ -110,6 +119,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				"mailSent", summary.MailSent,
 				"mailRetried", summary.MailRetried,
 				"mailFailed", summary.MailFailed,
+				"destroyed", summary.Destroyed,
 			)
 		}
 
@@ -128,6 +138,14 @@ func (r *Runner) RunOnce(ctx context.Context) (Summary, error) {
 	if err := r.recordHeartbeat(ctx, now); err != nil {
 		return Summary{}, err
 	}
+	summary := Summary{}
+	// A sweep failure must not stop the worker: the next poll retries it, and
+	// every send it already destroyed stays refused meanwhile.
+	if destroyed, err := r.runTransferBurnSweep(ctx); err != nil {
+		r.cfg.Logger.Warn("transfer burn sweep failed", "error", err)
+	} else {
+		summary.Destroyed = destroyed
+	}
 	workerID := r.workerID()
 	jobs, err := r.jobs.ClaimRunnableJobs(ctx, workerID, r.cfg.BatchSize, now, now.Add(r.cfg.LeaseDuration))
 	if err != nil {
@@ -135,7 +153,7 @@ func (r *Runner) RunOnce(ctx context.Context) (Summary, error) {
 	}
 	r.cfg.Logger.Debug("worker jobs polled", "count", len(jobs), "batch_size", r.cfg.BatchSize)
 
-	summary := Summary{Seen: len(jobs)}
+	summary.Seen = len(jobs)
 	for _, job := range jobs {
 		r.cfg.Logger.Debug("worker job started", "kind", job.Kind, "attempts", job.Attempts)
 		if err := r.handleJob(ctx, job); err != nil {
@@ -216,6 +234,24 @@ func (r *Runner) workerID() string {
 		return "worker"
 	}
 	return workerID
+}
+
+// runTransferBurnSweep destroys the burn-after-reading sends that are due.
+// Running it on every poll is what keeps destruction reliable without traffic:
+// a session that simply expired, or a lifetime that ran out, still ends with
+// the content marked for deletion and its cleanup job queued.
+func (r *Runner) runTransferBurnSweep(ctx context.Context) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	destroyed, err := r.service.RunTransferBurnSweepWithContext(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("transfer burn sweep: %w", err)
+	}
+	if destroyed > 0 {
+		r.cfg.Logger.Info("burn-after-reading transfers destroyed", "count", destroyed)
+	}
+	return destroyed, nil
 }
 
 func (r *Runner) handleJob(ctx context.Context, job postgres.JobRecord) error {
