@@ -19,6 +19,15 @@ type ContentStores struct {
 	// without it the service keeps a process-local counter, which is only
 	// correct for a single API instance.
 	PickupAttempts PickupAttemptStore
+	// AccountStatus reads the compact account snapshot behind the status
+	// stream. It is optional: without it the service answers from its own maps,
+	// which is correct for the single-process in-memory mode.
+	AccountStatus AccountStatusStore
+}
+
+// AccountStatusStore reads the compact account state behind the status stream.
+type AccountStatusStore interface {
+	AccountStatus(ctx context.Context, userID string) (AccountStatus, error)
 }
 
 type ObjectStore interface {

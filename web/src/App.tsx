@@ -47,10 +47,12 @@ import {
 } from "lucide-react";
 
 import {
+  accountStatusStreamPath,
   attachmentDownloadPath,
   client,
   formatBytes,
   formatDuration,
+  shareStatusStreamPath,
   sharedAttachmentDownloadPath,
   type Attachment,
   type AdminAttachment,
@@ -76,13 +78,21 @@ import {
   type RuntimeConfig,
   type RuntimePanel,
   type Share,
+  type AccountStatusSnapshot,
   type SupportContacts,
   type Transfer,
   type TransferAccess,
   type TransferItemInput,
+  type TransferRecord,
+  type TransferStatusSnapshot,
   type User,
   type WebhookEvent,
 } from "./api";
+import {
+  useStatusStream,
+  type SyncConnection,
+  type StatusStream,
+} from "./statusSync";
 import {
   useTextSend,
   useTransferQueue,
@@ -96,7 +106,13 @@ import {
 } from "./transferQueue";
 import "./styles.css";
 
-type View = "inbox" | "shared" | "billing" | "settings" | "admin";
+type View =
+  | "inbox"
+  | "sends"
+  | "shared"
+  | "billing"
+  | "settings"
+  | "admin";
 type PaymentProvider = "stripe" | "epusdt";
 
 type ViewSummary = {
@@ -329,6 +345,12 @@ const viewSummaries: Record<Locale, Record<View, ViewSummary>> = {
       description:
         "Text, images, and files land in one focused workspace, so you can find them, add attachments, and share faster.",
     },
+    sends: {
+      eyebrow: "Send records",
+      title: "Every send, with the claims it has left.",
+      description:
+        "A send is one batch of files or one text. This list follows it across devices and updates when somebody claims it, when it expires, and when a burn send ends.",
+    },
     shared: {
       eyebrow: "Share management",
       title: "Every link is trackable and revocable.",
@@ -360,6 +382,12 @@ const viewSummaries: Record<Locale, Record<View, ViewSummary>> = {
       title: "集中保存内容，随时继续处理。",
       description:
         "文字、图片和文件会进入同一个清爽工作区，方便查找、补充附件并快速生成分享。",
+    },
+    sends: {
+      eyebrow: "发送记录",
+      title: "每次发送与剩余可领取次数。",
+      description:
+        "一次发送是一批文件或一段文本。列表会在多设备间自动更新：有人领取、链接过期或阅后即焚销毁时都会变化。",
     },
     shared: {
       eyebrow: "分享管理",
@@ -393,6 +421,12 @@ const viewSummaries: Record<Locale, Record<View, ViewSummary>> = {
       description:
         "文字、圖片和檔案會進入同一個清爽工作區，方便查找、補充附件並快速產生分享。",
     },
+    sends: {
+      eyebrow: "傳送記錄",
+      title: "每次傳送與剩餘可領取次數。",
+      description:
+        "一次傳送是一批檔案或一段文字。清單會跨裝置自動更新：有人領取、連結過期或閱後即焚銷毀時都會改變。",
+    },
     shared: {
       eyebrow: "分享管理",
       title: "每一條連結都可追蹤、可撤銷。",
@@ -424,6 +458,12 @@ const viewSummaries: Record<Locale, Record<View, ViewSummary>> = {
       title: "Guarda contenido en un lugar y retómalo cuando quieras.",
       description:
         "Texto, imágenes y archivos quedan en un espacio claro para encontrarlos, añadir adjuntos y compartirlos más rápido.",
+    },
+    sends: {
+      eyebrow: "Registro de envíos",
+      title: "Cada envío y los reclamos que le quedan.",
+      description:
+        "Un envío es un lote de archivos o un texto. La lista lo sigue entre dispositivos y se actualiza cuando alguien lo reclama, cuando vence y cuando un envío con autodestrucción termina.",
     },
     shared: {
       eyebrow: "Gestión de enlaces",
@@ -911,6 +951,7 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     backToLogin: "Back to login",
     updatePassword: "Update password",
     inbox: "Inbox",
+    sends: "Sends",
     shares: "Shares",
     billing: "Billing",
     settings: "Settings",
@@ -1342,6 +1383,7 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     backToLogin: "返回登录",
     updatePassword: "更新密码",
     inbox: "收件箱",
+    sends: "发送记录",
     shares: "分享",
     billing: "会员",
     settings: "设置",
@@ -1767,6 +1809,7 @@ const copy: Record<Locale, Record<string, string>> = {
     backToLogin: "返回登入",
     updatePassword: "更新密碼",
     inbox: "收件匣",
+    sends: "傳送記錄",
     shares: "分享",
     billing: "方案",
     settings: "設定",
@@ -2146,6 +2189,7 @@ const copy: Record<Locale, Record<string, string>> = {
     backToLogin: "Volver al inicio",
     updatePassword: "Actualizar contraseña",
     inbox: "Bandeja",
+    sends: "Envíos",
     shares: "Enlaces",
     billing: "Facturación",
     settings: "Ajustes",
@@ -4035,6 +4079,14 @@ function App() {
   const claimOperation = useRef({ token: "", operationId: "" });
   const [claimBusy, setClaimBusy] = useState(false);
   const shareStatusRefresh = useRef({ token: "", attempts: 0 });
+  // The recipient's page watches the same channel the sender's success page
+  // does. It opens only once the page grant exists, so an unopened link never
+  // produces a subscription the server would refuse.
+  const publicShareStatus = useStatusStream<TransferStatusSnapshot>(
+    shareAccess?.transfer
+      ? shareStatusStreamPath(shareAccess.share.token)
+      : null,
+  );
   const [authLink, setAuthLink] = useState<AuthLink | null>(() =>
     authLinkFromLocation(),
   );
@@ -4270,6 +4322,118 @@ function App() {
     if (shareResult.status === "fulfilled") setShares(shareResult.value.shares);
     if (orderResult.status === "fulfilled") setOrders(orderResult.value.orders);
   }, [filter, query, selectedPasteId, tagFilter]);
+
+  // The account channel is the workspace's live link: it reports the sender's
+  // sends and which records changed. It is also what keeps a remote edit from
+  // silently replacing an unsaved draft — the editor only follows the newer
+  // version when the draft holds nothing the user has not saved.
+  const accountStatus = useStatusStream<AccountStatusSnapshot>(
+    user ? accountStatusStreamPath() : null,
+  );
+  const [sendRecords, setSendRecords] = useState<TransferRecord[]>([]);
+  // remoteDraftNotice names the record whose remote version was held back, so
+  // the editor can offer the choice instead of making it for the user.
+  const [remoteDraftNotice, setRemoteDraftNotice] = useState("");
+  const appliedSnapshotAt = useRef(0);
+  const pasteSnapshot = useRef<Map<string, string>>(new Map());
+
+  useEffect(() => {
+    if (!accountStatus.snapshot) return;
+    setSendRecords(accountStatus.snapshot.transfers);
+  }, [accountStatus.snapshot]);
+
+  // draftDirty is the whole protection: a draft that differs from the stored
+  // record is never replaced by a remote version without the user asking.
+  const draftDirty = useMemo(() => {
+    if (!selectedPaste) return false;
+    return (
+      editDraft.title !== selectedPaste.title ||
+      editDraft.text !== selectedPaste.text ||
+      editDraft.tags !== selectedPaste.tags.join(", ")
+    );
+  }, [editDraft, selectedPaste]);
+
+  // followRemotePaste replaces the editor with the version the server now holds.
+  // It is only called when the draft has nothing unsaved in it.
+  const followRemotePaste = useCallback(
+    async (pasteId: string) => {
+      try {
+        const result = await client.pastes(
+          searchParams(query, filter, tagFilter),
+        );
+        setPastes(result.pastes);
+        const fresh = result.pastes.find((item) => item.id === pasteId);
+        if (fresh) {
+          setEditDraft({
+            id: fresh.id,
+            title: fresh.title,
+            text: fresh.text,
+            tags: fresh.tags.join(", "),
+          });
+        }
+        setRemoteDraftNotice("");
+      } catch {
+        // A failed follow-up leaves the draft as it was; the next snapshot or
+        // the user's own refresh brings the newer version in.
+      }
+    },
+    [filter, query, tagFilter],
+  );
+
+  // applyPasteChanges reacts to the record markers the channel reports. A
+  // marker that moved on the server while the local list still shows the old
+  // version is a remote edit; one the local list already shows is this device's
+  // own save, so it costs nothing.
+  useEffect(() => {
+    const snapshot = accountStatus.snapshot;
+    if (!snapshot || accountStatus.receivedAt === 0) return;
+    if (appliedSnapshotAt.current === accountStatus.receivedAt) return;
+    appliedSnapshotAt.current = accountStatus.receivedAt;
+
+    const previous = pasteSnapshot.current;
+    const next = new Map(
+      snapshot.pastes.map((marker) => [
+        marker.id,
+        `${marker.status}|${marker.updatedAt}`,
+      ]),
+    );
+    pasteSnapshot.current = next;
+
+    const local = new Map(
+      pastes.map((paste) => [paste.id, `${paste.status}|${paste.updatedAt}`]),
+    );
+    const stale: string[] = [];
+    for (const [id, key] of next) {
+      if (previous.get(id) === key) continue;
+      if (local.get(id) === key) continue;
+      stale.push(id);
+    }
+    const added = [...next.keys()].some((id) => !previous.has(id));
+    const removed = [...previous.keys()].some((id) => !next.has(id));
+    if (stale.length === 0 && !added && !removed) return;
+
+    if (
+      selectedPasteId &&
+      stale.includes(selectedPasteId) &&
+      draftDirty
+    ) {
+      setRemoteDraftNotice(selectedPasteId);
+      return;
+    }
+    if (selectedPasteId && stale.includes(selectedPasteId)) {
+      void followRemotePaste(selectedPasteId);
+      return;
+    }
+    void refreshAuthed();
+  }, [
+    accountStatus.receivedAt,
+    accountStatus.snapshot,
+    draftDirty,
+    followRemotePaste,
+    pastes,
+    refreshAuthed,
+    selectedPasteId,
+  ]);
 
   // The lifetime a send may promise comes from the active plan, so the composer
   // cannot offer a duration the service would shorten.
@@ -4938,6 +5102,9 @@ function App() {
     try {
       await action();
       await openPublicShare();
+      // The claim credential arrived after the channel opened, so the channel
+      // has to be replaced by one that carries it.
+      publicShareStatus.reconnect();
     } catch (error) {
       setMessage(publicShareFailureMessage(error));
     } finally {
@@ -4992,6 +5159,8 @@ function App() {
       setPastes((items) =>
         items.map((item) => (item.id === updated.id ? updated : item)),
       );
+      // Saving settles the record the notice was about.
+      setRemoteDraftNotice("");
       await refreshAuthed();
     }
   }
@@ -5582,6 +5751,8 @@ function App() {
         onOpen={() => void openPublicShare()}
         onClaim={() => void claimPublicShare()}
         onCompleteClaim={() => void completePublicClaim()}
+        live={publicShareStatus.snapshot}
+        liveConnection={publicShareStatus.connection}
         locale={locale}
       />
     );
@@ -5652,6 +5823,14 @@ function App() {
           >
             <Archive size={18} aria-hidden="true" />
             {t("inbox")}
+          </button>
+          <button
+            className={navClass(view, "sends")}
+            type="button"
+            onClick={() => setView("sends")}
+          >
+            <Send size={18} aria-hidden="true" />
+            {t("sends")}
           </button>
           <button
             className={navClass(view, "shared")}
@@ -6099,6 +6278,11 @@ function App() {
                   tagLimit={tagsPerPasteLimit}
                   canEditTags={canEditSelectedTags}
                   tagsReadOnly={selectedTagsReadOnly}
+                  remoteNotice={remoteDraftNotice === selectedPaste?.id}
+                  onReloadRemote={() => {
+                    if (selectedPaste) void followRemotePaste(selectedPaste.id);
+                  }}
+                  onKeepRemote={() => setRemoteDraftNotice("")}
                   locale={locale}
                 />
                 <ShareBox
@@ -6114,6 +6298,16 @@ function App() {
               </aside>
             </section>
           </>
+        ) : null}
+
+        {view === "sends" ? (
+          <SendRecordsPanel
+            connection={accountStatus.connection}
+            labels={transferLabels}
+            locale={locale}
+            onCopy={(value) => void navigator.clipboard?.writeText(value)}
+            records={sendRecords}
+          />
         ) : null}
 
         {view === "shared" ? (
@@ -8430,6 +8624,33 @@ type TransferCopy = {
   burnHint: string;
   burnSummary: string;
   burnDestroyed: string;
+  // The status channel: the connection state the browser really observes and
+  // the one word each send state renders as.
+  liveConnected: string;
+  liveConnecting: string;
+  liveReconnecting: string;
+  liveDisconnected: string;
+  // The server is at its connection bound: a capacity answer, not a lost
+  // connection, so it gets its own word.
+  liveStreamLimit: string;
+  liveEnded: string;
+  claimProgress: string;
+  stateDraft: string;
+  stateCanceled: string;
+  stateClaimable: string;
+  stateClaimed: string;
+  stateExhausted: string;
+  stateExpired: string;
+  stateRevoked: string;
+  stateDestroyed: string;
+  // The sender's own records list and the remote-update notice.
+  recordsTitle: string;
+  recordsEmpty: string;
+  recordsFiles: string;
+  recordsText: string;
+  remoteUpdated: string;
+  remoteReload: string;
+  remoteKeep: string;
 };
 
 const transferCopy: Record<Locale, TransferCopy> = {
@@ -8503,6 +8724,28 @@ const transferCopy: Record<Locale, TransferCopy> = {
       "Burn after reading is on: the content is destroyed once every claim is used and its session ended, or when the send expires.",
     burnDestroyed:
       "This transfer was destroyed: its text and files are no longer available, and the files are being removed in the background. Copies already saved by a recipient are not affected.",
+    liveConnected: "Live",
+    liveConnecting: "Connecting",
+    liveReconnecting: "Reconnecting",
+    liveDisconnected: "Connection lost",
+    liveEnded: "Reopen to continue",
+    liveStreamLimit: "Too many open connections",
+    claimProgress: "{claimed}/{quota} claimed",
+    stateDraft: "Draft",
+    stateCanceled: "Canceled",
+    stateClaimable: "Claimable",
+    stateClaimed: "Claimed",
+    stateExhausted: "All claims used",
+    stateExpired: "Expired",
+    stateRevoked: "Link revoked",
+    stateDestroyed: "Destroyed",
+    recordsTitle: "Sends",
+    recordsEmpty: "No sends yet.",
+    recordsFiles: "{count} files",
+    recordsText: "Text",
+    remoteUpdated: "This record changed on another device. Your unsaved edits were kept.",
+    remoteReload: "Load the newer version",
+    remoteKeep: "Keep my edits",
   },
   "zh-CN": {
     sendFile: "发送文件",
@@ -8573,6 +8816,28 @@ const transferCopy: Record<Locale, TransferCopy> = {
     burnSummary: "阅后即焚已开启：全部名额领取并结束会话后，或到期后销毁内容与附件。",
     burnDestroyed:
       "这份传输已销毁：正文与附件已失效，附件正在后台清理。接收方已保存到本地的副本不受影响。",
+    liveConnected: "已连接",
+    liveConnecting: "连接中",
+    liveReconnecting: "重连中",
+    liveDisconnected: "连接中断",
+    liveEnded: "请重新打开页面",
+    liveStreamLimit: "连接数已达上限",
+    claimProgress: "已领取 {claimed}/{quota} 次",
+    stateDraft: "草稿",
+    stateCanceled: "已取消",
+    stateClaimable: "可领取",
+    stateClaimed: "已领取",
+    stateExhausted: "名额已领完",
+    stateExpired: "已过期",
+    stateRevoked: "链接已撤销",
+    stateDestroyed: "已销毁",
+    recordsTitle: "发送记录",
+    recordsEmpty: "还没有发送记录。",
+    recordsFiles: "{count} 个文件",
+    recordsText: "文本",
+    remoteUpdated: "这条记录已在另一台设备上更新；本地未保存的修改已保留。",
+    remoteReload: "载入远端版本",
+    remoteKeep: "保留本地修改",
   },
   "zh-TW": {
     sendFile: "傳送檔案",
@@ -8644,6 +8909,28 @@ const transferCopy: Record<Locale, TransferCopy> = {
       "閱後即焚已開啟：全部名額領取並結束工作階段後，或到期後銷毀內容與附件。",
     burnDestroyed:
       "這份傳輸已銷毀：正文與附件已失效，附件正在背景清理。接收方已儲存到本機的副本不受影響。",
+    liveConnected: "已連線",
+    liveConnecting: "連線中",
+    liveReconnecting: "重新連線中",
+    liveDisconnected: "連線中斷",
+    liveEnded: "請重新開啟頁面",
+    liveStreamLimit: "連線數已達上限",
+    claimProgress: "已領取 {claimed}/{quota} 次",
+    stateDraft: "草稿",
+    stateCanceled: "已取消",
+    stateClaimable: "可領取",
+    stateClaimed: "已領取",
+    stateExhausted: "名額已領完",
+    stateExpired: "已過期",
+    stateRevoked: "連結已撤銷",
+    stateDestroyed: "已銷毀",
+    recordsTitle: "傳送記錄",
+    recordsEmpty: "還沒有傳送記錄。",
+    recordsFiles: "{count} 個檔案",
+    recordsText: "文字",
+    remoteUpdated: "這筆記錄已在另一台裝置更新；本機尚未儲存的修改已保留。",
+    remoteReload: "載入遠端版本",
+    remoteKeep: "保留本機修改",
   },
   es: {
     sendFile: "Enviar archivo",
@@ -8718,6 +9005,28 @@ const transferCopy: Record<Locale, TransferCopy> = {
       "La autodestrucción está activada: el contenido se borra cuando se usen todos los reclamos y terminen sus sesiones, o al vencer el envío.",
     burnDestroyed:
       "Esta transferencia fue destruida: el texto y los archivos ya no están disponibles y los archivos se eliminan en segundo plano. Las copias ya guardadas no se ven afectadas.",
+    liveConnected: "Conectado",
+    liveConnecting: "Conectando",
+    liveReconnecting: "Reconectando",
+    liveDisconnected: "Conexión perdida",
+    liveEnded: "Vuelve a abrir la página",
+    liveStreamLimit: "Demasiadas conexiones abiertas",
+    claimProgress: "{claimed}/{quota} reclamados",
+    stateDraft: "Borrador",
+    stateCanceled: "Cancelada",
+    stateClaimable: "Reclamable",
+    stateClaimed: "Reclamada",
+    stateExhausted: "Sin reclamos disponibles",
+    stateExpired: "Vencida",
+    stateRevoked: "Enlace revocado",
+    stateDestroyed: "Destruida",
+    recordsTitle: "Envíos",
+    recordsEmpty: "Todavía no hay envíos.",
+    recordsFiles: "{count} archivos",
+    recordsText: "Texto",
+    remoteUpdated: "Este registro cambió en otro dispositivo. Tus cambios sin guardar se conservaron.",
+    remoteReload: "Cargar la versión más reciente",
+    remoteKeep: "Mantener mis cambios",
   },
 };
 
@@ -8977,6 +9286,95 @@ function SendModeTabs({
   );
 }
 
+// sendStates is the one table behind the send vocabulary: the word a surface
+// renders for a state, and whether that state is one no action can be offered
+// for. Both facts come from the same entry, so a new state cannot be labelled
+// on one surface and forgotten on another.
+const sendStates: Record<
+  string,
+  { label: keyof TransferCopy; terminal: boolean }
+> = {
+  draft: { label: "stateDraft", terminal: false },
+  canceled: { label: "stateCanceled", terminal: true },
+  claimable: { label: "stateClaimable", terminal: false },
+  claimed: { label: "stateClaimed", terminal: false },
+  exhausted: { label: "stateExhausted", terminal: false },
+  expired: { label: "stateExpired", terminal: true },
+  revoked: { label: "stateRevoked", terminal: true },
+  destroyed: { label: "stateDestroyed", terminal: true },
+};
+
+// transferStateLabel renders the one word a status surface shows for a send.
+function transferStateLabel(state: string, labels: TransferCopy): string {
+  const entry = sendStates[state];
+  return entry ? labels[entry.label] : state;
+}
+
+// terminalSendState reports the states a page has to stop offering actions for.
+function terminalSendState(state?: string): boolean {
+  return Boolean(state && sendStates[state]?.terminal);
+}
+
+// claimProgressLine is the one sentence every surface uses for a live send's
+// claim state: how much of the grant is spent, and what is left of it.
+function claimProgressLine(
+  claimed: number,
+  quota: number,
+  remaining: number,
+  labels: TransferCopy,
+): string {
+  const progress = fillCopy(labels.claimProgress, { claimed, quota });
+  const left =
+    remaining > 0
+      ? fillCopy(labels.claimRemaining, { count: remaining })
+      : labels.claimExhausted;
+  return `${progress} · ${left}`;
+}
+
+// connectionLabel names the transport state the browser really observes. It is
+// never derived from navigator.onLine: only a server round trip decides whether
+// the channel is up.
+function connectionLabel(
+  connection: SyncConnection,
+  labels: TransferCopy,
+): string {
+  switch (connection) {
+    case "connecting":
+      return labels.liveConnecting;
+    case "connected":
+      return labels.liveConnected;
+    case "reconnecting":
+      return labels.liveReconnecting;
+    case "disconnected":
+      return labels.liveDisconnected;
+    case "limited":
+      return labels.liveStreamLimit;
+    case "ended":
+      return labels.liveEnded;
+    default:
+      return "";
+  }
+}
+
+// ConnectionBadge is the visible difference between "nothing new" and "we lost
+// the server", which is the whole point of showing the transport state.
+function ConnectionBadge({
+  connection,
+  labels,
+}: {
+  connection: SyncConnection;
+  labels: TransferCopy;
+}) {
+  const label = connectionLabel(connection, labels);
+  if (!label) return null;
+  return (
+    <span className={`connection-badge connection-${connection}`} role="status">
+      <span className="connection-dot" aria-hidden="true" />
+      {label}
+    </span>
+  );
+}
+
 // SendShareResult is the success panel of one published send: the link, the
 // 6-character pickup code and the expiry. Both send areas render it, so a text
 // send and a file send hand over the same credentials in the same shape.
@@ -9003,6 +9401,14 @@ function SendShareResult({
   wrapperClassName: string;
   labels: TransferCopy;
 }) {
+  // The success page watches its own send over the share's status channel: the
+  // same channel a recipient uses, authorized by the page grant publishing
+  // handed the sender. The static quota the sender chose is replaced by the
+  // count the server reports, so the page cannot promise a claim that is gone.
+  const live = useStatusStream<TransferStatusSnapshot>(
+    share.shareToken ? shareStatusStreamPath(share.shareToken) : null,
+  );
+  const liveSend = live.snapshot;
   return (
     <div className={wrapperClassName}>
       {showReadyLine ? (
@@ -9024,7 +9430,16 @@ function SendShareResult({
       <p className={lineClassName}>
         {labels.validUntil} {new Date(share.expiresAt).toLocaleString()}
       </p>
-      {share.claimQuota ? (
+      {liveSend ? (
+        <p className={lineClassName}>
+          {claimProgressLine(
+            liveSend.claimedCount,
+            liveSend.claimQuota,
+            liveSend.claimsRemaining,
+            labels,
+          )}
+        </p>
+      ) : share.claimQuota ? (
         <p className={lineClassName}>
           {labels.claimQuotaSummary.replace(
             "{count}",
@@ -9032,6 +9447,12 @@ function SendShareResult({
           )}
         </p>
       ) : null}
+      {liveSend && terminalSendState(liveSend.state) ? (
+        <p className={lineClassName}>
+          {transferStateLabel(liveSend.state, labels)}
+        </p>
+      ) : null}
+      <ConnectionBadge connection={live.connection} labels={labels} />
       {/* The destructive promise is stated where the link is handed over, not
           only in the settings the sender has already left. */}
       {share.burnAfterReading ? (
@@ -9719,6 +10140,7 @@ function shareFromTransfer(transfer: Transfer): TransferQueueShare {
     expiresAt: transfer.share?.expiresAt ?? transfer.expiresAt,
     pickupCode: transfer.pickupCode,
     pasteId: transfer.pasteId,
+    shareToken: transfer.share?.token,
     claimQuota: transfer.claimQuota,
     burnAfterReading: transfer.burnAfterReading,
   };
@@ -10624,6 +11046,8 @@ function PublicShareScreen({
   onOpen,
   onClaim,
   onCompleteClaim,
+  live,
+  liveConnection,
   locale,
 }: {
   token: string;
@@ -10641,10 +11065,27 @@ function PublicShareScreen({
   onOpen: () => void;
   onClaim: () => void;
   onCompleteClaim: () => void;
+  live: TransferStatusSnapshot | null;
+  liveConnection: SyncConnection;
   locale: Locale;
 }) {
   const t = copyFor(locale);
   const transferLabels = transferCopyFor(locale);
+  // The channel is the authority on what can still be claimed. The page's own
+  // claim stays what the access call reported, because the channel carries the
+  // credential it was opened with and cannot see a claim made after that.
+  const liveTransfer = access?.transfer
+    ? live
+      ? {
+          ...access.transfer,
+          claimQuota: live.claimQuota,
+          claimedCount: live.claimedCount,
+          claimsRemaining: live.claimsRemaining,
+          claimExpiresAt: live.claimExpiresAt ?? access.transfer.claimExpiresAt,
+        }
+      : access.transfer
+    : undefined;
+  const endedState = live && terminalSendState(live.state) ? live.state : "";
   // An image is fetched only when the recipient asks for it: a page that loaded
   // every image on sight would spend a download on shares that limit downloads,
   // and the reading page must not consume the sender's allowance by itself.
@@ -10696,6 +11137,15 @@ function PublicShareScreen({
                   {access.share.visitCount}/{access.share.maxVisits || "∞"}{" "}
                   {t("visits")} · {formatDuration(access.paste.secondsToLive)}
                 </span>
+                {live ? (
+                  <span className="share-live-state">
+                    {transferStateLabel(live.state, transferLabels)}
+                  </span>
+                ) : null}
+                <ConnectionBadge
+                  connection={liveConnection}
+                  labels={transferLabels}
+                />
               </div>
               <button
                 type="button"
@@ -10708,18 +11158,25 @@ function PublicShareScreen({
                 {t("copy")}
               </button>
             </div>
-            {access.transfer ? (
+            {access.transfer && !endedState ? (
               <TransferClaimPanel
                 busy={claimBusy}
                 labels={transferLabels}
                 onClaim={onClaim}
                 onComplete={onCompleteClaim}
-                transfer={access.transfer}
+                transfer={liveTransfer ?? access.transfer}
               />
             ) : null}
-            {access.paste.text ? <pre>{access.paste.text}</pre> : null}
+            {endedState ? (
+              // The send ended while the page was open, so the page says what
+              // happened instead of keeping a stale offer on screen.
+              <p className="status-line">
+                {transferStateLabel(endedState, transferLabels)}
+              </p>
+            ) : null}
+            {!endedState && access.paste.text ? <pre>{access.paste.text}</pre> : null}
             <div className="share-preview">
-              {access.transfer && !access.transfer.claimed ? (
+              {endedState ? null : access.transfer && !access.transfer.claimed ? (
                 // Until the recipient claims, the batch is listed but not
                 // downloadable, so the page cannot spend a slot by itself.
                 <ul className="transfer-file-list">
@@ -11062,6 +11519,9 @@ function PasteEditor({
   tagLimit,
   canEditTags,
   tagsReadOnly,
+  remoteNotice,
+  onReloadRemote,
+  onKeepRemote,
   locale,
 }: {
   paste?: Paste;
@@ -11076,9 +11536,13 @@ function PasteEditor({
   tagLimit: number;
   canEditTags: boolean;
   tagsReadOnly: boolean;
+  remoteNotice: boolean;
+  onReloadRemote: () => void;
+  onKeepRemote: () => void;
   locale: Locale;
 }) {
   const t = copyFor(locale);
+  const transferLabels = transferCopyFor(locale);
   const tagCount = parseTagInput(draft.tags).length;
   const tagNote = canEditTags
     ? `${tagCount}/${tagLimit}`
@@ -11111,6 +11575,22 @@ function PasteEditor({
         />
         <small className="tag-field-note">{tagNote}</small>
       </div>
+      {remoteNotice ? (
+        // A remote edit arrived while this draft holds unsaved changes. The
+        // draft is kept and the user decides, because losing an edit is not
+        // something a page may decide on its own.
+        <div className="remote-draft-notice" role="status">
+          <Clock3 size={16} aria-hidden="true" />
+          <span>{transferLabels.remoteUpdated}</span>
+          <button type="button" onClick={onReloadRemote}>
+            <RotateCcw size={16} aria-hidden="true" />
+            {transferLabels.remoteReload}
+          </button>
+          <button type="button" onClick={onKeepRemote}>
+            {transferLabels.remoteKeep}
+          </button>
+        </div>
+      ) : null}
       <button type="button" onClick={onSave} disabled={!paste}>
         {t("save")}
       </button>
@@ -11304,6 +11784,73 @@ function Panel({
       </div>
       {children}
     </section>
+  );
+}
+
+// SendRecordsPanel is the sender's own records list. It renders what the
+// account status channel last reported, so a claim on another device, an
+// expiry or a destroyed send moves this list without anybody refreshing it.
+function SendRecordsPanel({
+  connection,
+  labels,
+  locale,
+  onCopy,
+  records,
+}: {
+  connection: SyncConnection;
+  labels: TransferCopy;
+  locale: Locale;
+  onCopy: (value: string) => void;
+  records: TransferRecord[];
+}) {
+  const t = copyFor(locale);
+  return (
+    <Panel title={labels.recordsTitle} meta={`${records.length}`}>
+      <div className="panel-toolbar">
+        <ConnectionBadge connection={connection} labels={labels} />
+      </div>
+      {records.length === 0 ? (
+        <p className="status-line">{labels.recordsEmpty}</p>
+      ) : (
+        records.map((record) => (
+          <article className="list-card" key={record.transferId}>
+            <div>
+              <strong>{record.title || labels.recordsText}</strong>
+              <span>
+                {record.itemCount > 0
+                  ? fillCopy(labels.recordsFiles, { count: record.itemCount })
+                  : labels.recordsText}
+                {" · "}
+                {claimProgressLine(
+                  record.claimedCount,
+                  record.claimQuota,
+                  record.claimsRemaining,
+                  labels,
+                )}
+              </span>
+              <span>
+                {transferStateLabel(record.state, labels)}
+                {" · "}
+                {t("expires")} {new Date(record.expiresAt).toLocaleString()}
+              </span>
+              {record.pickupCode ? (
+                <span>
+                  {labels.pickupCodeLabel} {record.pickupCode}
+                </span>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              onClick={() => onCopy(record.shareUrl ?? "")}
+              disabled={!record.shareUrl}
+            >
+              <ClipboardCopy size={16} aria-hidden="true" />
+              {t("copy")}
+            </button>
+          </article>
+        ))
+      )}
+    </Panel>
   );
 }
 

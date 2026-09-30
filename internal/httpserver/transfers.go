@@ -173,6 +173,9 @@ func (s *Server) publishTransfer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Debug("transfer published", "user_id", user.ID, "transfer_id", view.ID)
+	if view.Share != nil {
+		s.grantSenderShareAccess(w, r, *view.Share, user.ID)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"transfer": view})
 }
 
@@ -191,6 +194,9 @@ func (s *Server) publishGuestTransfer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Debug("guest transfer published", "transfer_id", view.ID)
+	if view.Share != nil {
+		s.grantSenderShareAccess(w, r, *view.Share, "")
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"transfer": view})
 }
 

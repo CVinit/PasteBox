@@ -190,6 +190,68 @@ export type TransferClaimResult = {
   text?: string;
 };
 
+// TransferStatusSnapshot is the credential-scoped state one send reports over
+// its status channel. It carries no file names, no attachment identifiers and
+// no content, so watching a send can never reveal more than the page already
+// holds.
+export type TransferStatusSnapshot = {
+  transferId: string;
+  // state is the one word a surface renders: draft, canceled, claimable,
+  // claimed, exhausted, expired, revoked or destroyed.
+  state: string;
+  kind?: string;
+  burnAfterReading: boolean;
+  claimQuota: number;
+  claimedCount: number;
+  claimsRemaining: number;
+  claimed: boolean;
+  claimId?: string;
+  claimExpiresAt?: string;
+  expiresAt: string;
+  destroyedAt?: string;
+  destroyReason?: string;
+  cleanupStatus?: string;
+};
+
+// TransferRecord is one row of the sender's own send records: the shared status
+// plus the link, the pickup code and how many files the send declares.
+export type TransferRecord = {
+  transferId: string;
+  title?: string;
+  state: string;
+  burnAfterReading: boolean;
+  claimQuota: number;
+  claimedCount: number;
+  claimsRemaining: number;
+  itemCount: number;
+  shareToken?: string;
+  shareUrl?: string;
+  pickupCode?: string;
+  expiresAt: string;
+  createdAt: string;
+  updatedAt: string;
+  publishedAt?: string;
+  canceledAt?: string;
+  destroyedAt?: string;
+  destroyReason?: string;
+  cleanupStatus?: string;
+};
+
+// PasteStatusMarker is the change marker of one record. It carries no body: a
+// surface that sees it change re-reads the record through the content API.
+export type PasteStatusMarker = {
+  id: string;
+  status: string;
+  updatedAt: string;
+};
+
+// AccountStatusSnapshot is the whole account snapshot behind the account status
+// channel.
+export type AccountStatusSnapshot = {
+  transfers: TransferRecord[];
+  pastes: PasteStatusMarker[];
+};
+
 export type TransferItemInput = {
   itemId: string;
   fileName: string;
@@ -1206,6 +1268,19 @@ export const client = {
   runCleanup: () =>
     api<Record<string, number>>("/admin/cleanup/run", { method: "POST" }),
 };
+
+// accountStatusStreamPath is the live channel of the signed-in account: its
+// send records, their claim counts and the change markers of its records.
+export function accountStatusStreamPath(): string {
+  return "/api/v1/me/events";
+}
+
+// shareStatusStreamPath is the live channel of one share. The sender's success
+// page and the recipient's page use the same channel, because both hold the
+// page grant the share hands out.
+export function shareStatusStreamPath(token: string): string {
+  return `/api/v1/shares/${encodeURIComponent(token)}/events`;
+}
 
 export function attachmentDownloadPath(id: string): string {
   return `/api/v1/attachments/${encodeURIComponent(id)}/download`;

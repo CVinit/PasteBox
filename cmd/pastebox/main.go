@@ -88,9 +88,10 @@ func runAPI(stdout io.Writer) int {
 		return 1
 	}
 
+	apiHandler := httpserver.NewWithServiceAndReadiness(cfg, logger, service, productionReadinessChecker(cfg, service, pool, objects))
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpserver.NewWithServiceAndReadiness(cfg, logger, service, productionReadinessChecker(cfg, service, pool, objects)),
+		Handler:           apiHandler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       httpServerTimeout(cfg.HTTPReadTimeoutSeconds),
 		WriteTimeout:      httpServerTimeout(cfg.HTTPWriteTimeoutSeconds),
@@ -119,6 +120,9 @@ func runAPI(stdout io.Writer) int {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	// The open status subscriptions end with the process, so a restart does not
+	// wait out the shutdown timeout on a page that is watching a send.
+	apiHandler.ShutdownStatusStreams()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("api server shutdown failed", "error", err)
 		return 1
@@ -330,6 +334,7 @@ func newProductionService(ctx context.Context, cfg config.Config) (*app.Service,
 			Shares:         postgres.NewShareStore(pool),
 			Transfers:      postgres.NewTransferStore(pool),
 			PickupAttempts: postgres.NewPickupAttemptStore(pool),
+			AccountStatus:  postgres.NewAccountStatusStore(pool),
 		},
 		Objects: objects,
 		Operational: app.OperationalStores{

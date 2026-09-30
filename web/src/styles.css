@@ -5122,3 +5122,81 @@ code {
   color: var(--brand-strong);
   font-weight: 800;
 }
+
+/* The status channel. A page shows the transport state it really observes —
+   connected, reconnecting or lost — so "nothing new" and "we lost the server"
+   never look the same, and every surface renders a send state with one word
+   from one table. */
+.connection-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted-strong);
+  background: rgba(255, 250, 240, 0.75);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.connection-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.connection-connected .connection-dot {
+  background: var(--brand-strong);
+}
+
+.connection-connecting .connection-dot,
+.connection-reconnecting .connection-dot {
+  background: var(--gold);
+}
+
+.connection-limited .connection-dot {
+  background: var(--gold);
+}
+
+.connection-disconnected .connection-dot,
+.connection-ended .connection-dot {
+  background: var(--coral);
+}
+
+.share-live-state {
+  color: var(--brand-strong);
+  font-weight: 800;
+}
+
+.panel-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+/* A remote edit that arrived while the draft held unsaved changes: the draft is
+   kept, and the choice is offered rather than made. */
+.remote-draft-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(217, 119, 6, 0.35);
+  border-radius: var(--radius-md);
+  color: var(--ink);
+  background: var(--gold-soft);
+  font-size: 13px;
+}
+
+.remote-draft-notice button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

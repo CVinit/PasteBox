@@ -36,6 +36,10 @@ export type TransferQueueShare = {
   pickupCode?: string;
   // pasteId lets an account surface the record a finished send created.
   pasteId?: string;
+  // shareToken is the share's own credential. The success page watches its send
+  // over the share's status channel, which is the same channel the recipient
+  // uses, so the token has to travel with the result.
+  shareToken?: string;
   // claimQuota is how many anonymous claims the published send grants, so the
   // success page can state the count the sender chose.
   claimQuota?: number;

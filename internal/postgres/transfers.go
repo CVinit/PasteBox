@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -27,6 +28,21 @@ var (
 const transferColumns = `id, user_id, paste_id, status, idempotency_key, share_id, password_hash, login_required, claim_quota, claimed_count, burn_after_reading, expires_at, published_at, canceled_at, destroyed_at, destroy_reason, created_at, updated_at`
 
 const transferItemColumns = `transfer_id, item_id, file_name, content_type, size_bytes, attachment_id, status, created_at, updated_at`
+
+// transferColumnsPrefixed is transferColumns with a table alias, so a query
+// that joins transfers with other rows selects the order scanTransfer reads. It
+// is derived rather than repeated, so the two lists cannot drift apart.
+var transferColumnsPrefixed = aliasColumns("t", transferColumns)
+
+// aliasColumns qualifies every column of a comma-separated list with one table
+// alias.
+func aliasColumns(alias string, columns string) string {
+	parts := strings.Split(columns, ", ")
+	for i, part := range parts {
+		parts[i] = alias + "." + part
+	}
+	return strings.Join(parts, ", ")
+}
 
 type transferQueryer interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)

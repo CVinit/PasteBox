@@ -49,7 +49,15 @@ const (
 	guestTokenHeaderName       = "X-PasteBox-Guest-Token"
 	turnstileTokenHeaderName   = "X-PasteBox-Turnstile-Token"
 	shareAccessCookieTTL       = 15 * time.Minute
-	shareAccessBodyLimitBytes  = 64 << 10
+	// senderShareGrantTTL caps the page grant a sender gets when it publishes,
+	// so a success page can watch its own send over the same status channel a
+	// recipient uses without the grant outliving the page by much.
+	senderShareGrantTTL = time.Hour
+	// senderShareGrantGrace is how long a sender's grant outlives the send
+	// itself, so a short-lived send can still be watched as it ends. The grant
+	// only authorizes status reads, which never hand out content.
+	senderShareGrantGrace     = 15 * time.Minute
+	shareAccessBodyLimitBytes = 64 << 10
 )
 
 type shareAccessGrant struct {
@@ -81,6 +89,35 @@ type Server struct {
 	trustedProxy []netip.Prefix
 	metricsMu    sync.Mutex
 	httpRequests map[httpMetricKey]int64
+	// statusStreams bounds the open status subscriptions, so the live channel
+	// cannot be turned into an unbounded number of goroutines and store reads.
+	statusStreams statusStreamLimiter
+	// router is the built handler. The server serves it itself so the process
+	// can reach the open subscriptions at shutdown.
+	router http.Handler
+	// statusSyncInterval is how often one status subscription re-reads the
+	// store. It is set before the server starts serving, so a test can shorten
+	// it without changing production behaviour.
+	statusSyncInterval time.Duration
+	// streamShutdown is closed once when the process stops listening, so an open
+	// subscription ends instead of holding the shutdown open until it times out.
+	streamShutdown     chan struct{}
+	streamShutdownOnce sync.Once
+}
+
+// ServeHTTP makes the built routes the server's own handler.
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.router.ServeHTTP(w, r)
+}
+
+// ShutdownStatusStreams ends every open status subscription. It is safe to call
+// more than once: a page that is watching a send reconnects on its own and
+// re-reads the authoritative snapshot, which is the same recovery a dropped
+// connection uses.
+func (s *Server) ShutdownStatusStreams() {
+	s.streamShutdownOnce.Do(func() {
+		close(s.streamShutdown)
+	})
 }
 
 type httpMetricKey struct {
@@ -140,15 +177,15 @@ type PublicTransferConfig struct {
 	MaxClaimQuota int `json:"maxClaimQuota"`
 }
 
-func New(cfg config.Config, logger *slog.Logger) http.Handler {
+func New(cfg config.Config, logger *slog.Logger) *Server {
 	return NewWithService(cfg, logger, app.New(cfg))
 }
 
-func NewWithService(cfg config.Config, logger *slog.Logger, service *app.Service) http.Handler {
+func NewWithService(cfg config.Config, logger *slog.Logger, service *app.Service) *Server {
 	return NewWithServiceAndReadiness(cfg, logger, service, nil)
 }
 
-func NewWithServiceAndReadiness(cfg config.Config, logger *slog.Logger, service *app.Service, readiness ReadinessChecker) http.Handler {
+func NewWithServiceAndReadiness(cfg config.Config, logger *slog.Logger, service *app.Service, readiness ReadinessChecker) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -169,8 +206,14 @@ func NewWithServiceAndReadiness(cfg config.Config, logger *slog.Logger, service 
 		rateLimiter:  newRateLimiter(),
 		trustedProxy: trustedProxyPrefixes(cfg.TrustedProxyCIDRs, logger),
 		httpRequests: map[httpMetricKey]int64{},
+		statusStreams: statusStreamLimiter{
+			scopes: map[string]int{},
+		},
+		statusSyncInterval: DefaultStatusSyncInterval,
+		streamShutdown:     make(chan struct{}),
 	}
-	return server.routes()
+	server.router = server.routes()
+	return server
 }
 
 func (s *Server) currentConfig() config.Config {
@@ -228,6 +271,12 @@ func (s *Server) routes() http.Handler {
 			r.Post("/password-reset/finish", s.finishPasswordReset)
 		})
 
+		// The account status stream is the live channel behind the workspace:
+		// send records, claim counts and record changes arrive without the page
+		// polling the content API. It sits with the other routes of the
+		// signed-in account, because that is the scope it answers for.
+		r.Get("/me/events", s.streamAccountStatus)
+
 		r.Get("/me", s.me)
 		r.Patch("/me", s.updateMe)
 		r.Delete("/me/oauth/{provider}", s.unlinkOAuthIdentity)
@@ -260,6 +309,10 @@ func (s *Server) routes() http.Handler {
 			r.Get("/", s.listShares)
 			r.Delete("/{shareID}", s.revokeShare)
 			r.Post("/{token}/access", s.accessShare)
+			// The status stream answers for a share the caller already opened
+			// or holds a live claim on. It never spends a visit or a claim, so
+			// a page that watches a send cannot change it.
+			r.Get("/{token}/events", s.streamShareStatus)
 			// A claim is a recipient action, so it is scoped to the share the
 			// recipient already holds rather than to a transfer they cannot see.
 			r.Post("/{token}/claims", s.claimTransferShare)
@@ -2858,7 +2911,17 @@ func (s *Server) setCSRFCookie(w http.ResponseWriter, r *http.Request, value str
 }
 
 func (s *Server) setShareAccessCookie(w http.ResponseWriter, r *http.Request, token string, viewerID string) {
-	expiresAt := time.Now().UTC().Add(shareAccessCookieTTL)
+	s.setShareAccessCookieUntil(w, r, token, viewerID, time.Now().UTC().Add(shareAccessCookieTTL))
+}
+
+// setShareAccessCookieUntil hands the page grant to a caller that already
+// earned it, with an explicit expiry. The grant proves only that this browser
+// may read the share's state and, for a legacy share, its attachments; it never
+// authorizes a transfer-backed download, which still needs a live claim.
+func (s *Server) setShareAccessCookieUntil(w http.ResponseWriter, r *http.Request, token string, viewerID string, expiresAt time.Time) {
+	if token == "" || !expiresAt.After(time.Now().UTC()) {
+		return
+	}
 	payload, err := json.Marshal(shareAccessGrant{ViewerID: viewerID, ExpiresAt: expiresAt.Unix()})
 	if err != nil {
 		return
@@ -2911,8 +2974,35 @@ func (s *Server) signShareAccessGrant(token string, payload string) string {
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
+// shareAccessCookiePath scopes the page grant to the share it belongs to. The
+// grant covers the share's whole subtree rather than only the download path, so
+// the status stream of the same page is authorized by the grant the page
+// already earned and no second credential has to be introduced.
 func shareAccessCookiePath(token string) string {
-	return "/api/v1/shares/" + url.PathEscape(token) + "/attachments"
+	return "/api/v1/shares/" + url.PathEscape(token)
+}
+
+// grantSenderShareAccess hands a sender the same page grant a recipient earns
+// by opening the link, so the success page watches its own send over the
+// credential-scoped status stream instead of needing a second protocol. The
+// grant is bounded by the send's own lifetime and by senderShareGrantTTL, and
+// it grants nothing a recipient of the same link could not already read.
+func (s *Server) grantSenderShareAccess(w http.ResponseWriter, r *http.Request, share app.ShareView, viewerID string) {
+	grantViewerID := ""
+	if share.LoginRequired {
+		grantViewerID = viewerID
+	}
+	now := time.Now().UTC()
+	expiresAt := now.Add(senderShareGrantTTL)
+	// The grant outlives the send by a bounded grace period, so the sender can
+	// still watch the terminal state of a send whose lifetime just ran out.
+	if grace := share.ExpiresAt.Add(senderShareGrantGrace); grace.Before(expiresAt) {
+		expiresAt = grace
+	}
+	if expiresAt.Before(now) {
+		expiresAt = now
+	}
+	s.setShareAccessCookieUntil(w, r, share.Token, grantViewerID, expiresAt)
 }
 
 func (s *Server) clearGoogleOAuthStateCookie(w http.ResponseWriter, r *http.Request) {

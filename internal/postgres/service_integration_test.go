@@ -248,11 +248,12 @@ func newPostgresBackedService(t *testing.T, ctx context.Context, pool *pgxpool.P
 			OAuthIdentities: NewOAuthIdentityStore(pool),
 		},
 		Content: app.ContentStores{
-			Pastes:      NewPasteStore(pool),
-			Attachments: attachmentStore,
-			ObjectRefs:  attachmentStore,
-			Shares:      NewShareStore(pool),
-			Transfers:   NewTransferStore(pool),
+			Pastes:        NewPasteStore(pool),
+			Attachments:   attachmentStore,
+			ObjectRefs:    attachmentStore,
+			Shares:        NewShareStore(pool),
+			Transfers:     NewTransferStore(pool),
+			AccountStatus: NewAccountStatusStore(pool),
 		},
 		Operational: app.OperationalStores{
 			Orders:        NewOrderStore(pool),

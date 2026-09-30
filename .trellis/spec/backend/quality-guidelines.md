@@ -276,9 +276,23 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
   `/api/v1/attachments/{attachmentID}/download`; share access at
   `/api/v1/shares/{token}/access`; shared download at
   `/api/v1/shares/{token}/attachments/{attachmentID}/download`.
+- Transfers: `GET/POST /api/v1/transfers`, `GET
+  /api/v1/transfers/{transferID}`, `POST /{transferID}/items/{itemID}`,
+  `/publish`, `/cancel`, the same shapes under `/api/v1/guest/transfers`,
+  recipient claims at `/api/v1/shares/{token}/claims` and
+  `/claims/{claimID}/complete`, and pickup-code resolution at
+  `POST /api/v1/pickups`.
+- Status channels: `GET /api/v1/me/events` for the signed-in account's sends
+  and record change markers, and `GET /api/v1/shares/{token}/events` for one
+  share. Both answer `text/event-stream`, are authorized by the session or by
+  the share's page grant or a live claim, and never consume a visit or a claim.
 - Share access grant cookie: `pastebox_share_access`, scoped to
-  `/api/v1/shares/{token}/attachments`, HttpOnly, SameSite=Lax, and signed
-  against the share token plus grant payload.
+  `/api/v1/shares/{token}`, HttpOnly, SameSite=Lax, and signed against the share
+  token plus grant payload. It is issued by `POST /api/v1/shares/{token}/access`
+  for a recipient and by publishing a transfer for the sender, so one page can
+  watch a send without a second credential. It authorizes status reads and, for
+  a legacy share, attachment downloads; a transfer-backed download still
+  requires a live claim.
 - Billing/admin: `/api/v1/billing/prices`, `/billing/orders`, and the
   `/api/v1/admin/...` dashboard, list, mutation, queue, audit, cleanup, and
   manual payment routes.
@@ -305,6 +319,12 @@ if quota.DailyUploadBytes+textBytes+extraBytes > plan.DailyUploadBytes {
 - Production rate limits must stay enabled with positive limits for auth,
   browser write, upload, download, and provider webhook buckets.
 - API errors use `{"error": "<code>", "message": "<human message>"}`.
+- A status channel sends `status` events carrying the authoritative snapshot and
+  one `closed` event carrying `{"reason": "unauthorized" | "stream_limit"}` when
+  the server ends the subscription. A snapshot never contains file bytes, file
+  names, or attachment identifiers, and a refused subscription (the per-scope
+  connection bound) is answered with that `closed` event rather than a status
+  code, because a browser cannot read the status of a failed event stream.
 - `GET /api/v1/plans` returns `plans` and `prices`; `GET
   /api/v1/billing/prices` returns the same catalog plus provider-enabled flags
   on prices.

@@ -21,7 +21,7 @@ type transferUploadResponse struct {
 	Attachment app.AttachmentView `json:"attachment"`
 }
 
-func newTransferTestServer(t *testing.T) (*app.Service, http.Handler) {
+func newTransferTestServer(t *testing.T) (*app.Service, *Server) {
 	t.Helper()
 	cfg := config.FromEnv()
 	cfg.BootstrapAdminEmail = ""
