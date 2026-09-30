@@ -24,7 +24,7 @@ var (
 	ErrTransferNotPublishable = errors.Join(errors.New("postgres transfer not publishable"), app.ErrStoreConflict)
 )
 
-const transferColumns = `id, user_id, paste_id, status, idempotency_key, share_id, password_hash, login_required, expires_at, published_at, canceled_at, created_at, updated_at`
+const transferColumns = `id, user_id, paste_id, status, idempotency_key, share_id, password_hash, login_required, claim_quota, claimed_count, expires_at, published_at, canceled_at, created_at, updated_at`
 
 const transferItemColumns = `transfer_id, item_id, file_name, content_type, size_bytes, attachment_id, status, created_at, updated_at`
 
@@ -45,8 +45,8 @@ func NewTransferStore(pool *pgxpool.Pool) *TransferStore {
 func (s *TransferStore) CreateTransfer(ctx context.Context, transfer app.Transfer) error {
 	if _, err := s.pool.Exec(ctx, `
 INSERT INTO transfers (`+transferColumns+`)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-`, transfer.ID, transfer.UserID, transfer.PasteID, transfer.Status, transfer.IdempotencyKey, transfer.ShareID, transfer.PasswordHash, transfer.LoginRequired, transfer.ExpiresAt, transfer.PublishedAt, transfer.CanceledAt, transfer.CreatedAt, transfer.UpdatedAt); err != nil {
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+`, transfer.ID, transfer.UserID, transfer.PasteID, transfer.Status, transfer.IdempotencyKey, transfer.ShareID, transfer.PasswordHash, transfer.LoginRequired, transfer.ClaimQuota, transfer.ClaimedCount, transfer.ExpiresAt, transfer.PublishedAt, transfer.CanceledAt, transfer.CreatedAt, transfer.UpdatedAt); err != nil {
 		if isUniqueViolation(err, "transfers_user_idempotency_key_idx") || isUniqueViolation(err, "transfers_pkey") {
 			return errors.Join(fmt.Errorf("create transfer: %w", err), app.ErrStoreConflict)
 		}
@@ -69,6 +69,17 @@ SELECT `+transferColumns+`
 FROM transfers
 WHERE user_id = $1 AND idempotency_key = $2
 `, userID, key)
+}
+
+// TransferByShareID finds the transfer a published share belongs to. A share
+// without a transfer is a legacy share and reports not-found, which is how the
+// service tells the two access rules apart.
+func (s *TransferStore) TransferByShareID(ctx context.Context, shareID string) (app.Transfer, error) {
+	return queryTransfer(ctx, s.pool, `
+SELECT `+transferColumns+`
+FROM transfers
+WHERE share_id = $1 AND share_id <> ''
+`, shareID)
 }
 
 func (s *TransferStore) ListTransfersByUser(ctx context.Context, userID string) ([]app.Transfer, error) {
@@ -104,12 +115,14 @@ SET status = $2,
     share_id = $4,
     password_hash = $5,
     login_required = $6,
-    expires_at = $7,
-    published_at = $8,
-    canceled_at = $9,
-    updated_at = $10
+    claim_quota = $7,
+    claimed_count = $8,
+    expires_at = $9,
+    published_at = $10,
+    canceled_at = $11,
+    updated_at = $12
 WHERE id = $1
-`, transfer.ID, transfer.Status, transfer.IdempotencyKey, transfer.ShareID, transfer.PasswordHash, transfer.LoginRequired, transfer.ExpiresAt, transfer.PublishedAt, transfer.CanceledAt, transfer.UpdatedAt); err != nil {
+`, transfer.ID, transfer.Status, transfer.IdempotencyKey, transfer.ShareID, transfer.PasswordHash, transfer.LoginRequired, transfer.ClaimQuota, transfer.ClaimedCount, transfer.ExpiresAt, transfer.PublishedAt, transfer.CanceledAt, transfer.UpdatedAt); err != nil {
 		return fmt.Errorf("update transfer: %w", err)
 	}
 	return nil
@@ -284,6 +297,8 @@ func scanTransfer(row rowScanner) (app.Transfer, error) {
 		&transfer.ShareID,
 		&transfer.PasswordHash,
 		&transfer.LoginRequired,
+		&transfer.ClaimQuota,
+		&transfer.ClaimedCount,
 		&transfer.ExpiresAt,
 		&publishedAt,
 		&canceledAt,

@@ -504,8 +504,23 @@ func (s *Service) OpenAttachmentWithContext(ctx context.Context, userID string, 
 	return AttachmentDownload{Attachment: viewAttachment(attachment), Body: object.Body, Size: attachment.Size}, nil
 }
 
+// sharedDownloadAuth carries how a shared download was authorized. A
+// transfer-backed share needs the claim session it was claimed with; a legacy
+// share keeps its password or its short-lived access grant.
+type sharedDownloadAuth struct {
+	// verifyPassword asks this call to check the share password itself. It is
+	// false when the caller already authorized the request with a grant cookie
+	// or a claim credential.
+	verifyPassword bool
+	// accessGranted reports that the caller validated the short-lived page
+	// access grant, which is what authorizes a legacy share download.
+	accessGranted bool
+	// claimToken is the credential of a claim session.
+	claimToken string
+}
+
 func (s *Service) OpenSharedAttachment(token string, password string, attachmentID string, viewerUserID string) (AttachmentDownload, error) {
-	return s.openSharedAttachment(context.Background(), token, password, attachmentID, viewerUserID, false)
+	return s.openSharedAttachment(context.Background(), token, password, attachmentID, viewerUserID, sharedDownloadAuth{verifyPassword: true})
 }
 
 func (s *Service) OpenSharedAttachmentWithAccessGrant(token string, attachmentID string, viewerUserID string) (AttachmentDownload, error) {
@@ -513,14 +528,25 @@ func (s *Service) OpenSharedAttachmentWithAccessGrant(token string, attachmentID
 }
 
 func (s *Service) OpenSharedAttachmentWithAccessGrantContext(ctx context.Context, token string, attachmentID string, viewerUserID string) (AttachmentDownload, error) {
-	return s.openSharedAttachment(ctx, token, "", attachmentID, viewerUserID, true)
+	return s.openSharedAttachment(ctx, token, "", attachmentID, viewerUserID, sharedDownloadAuth{accessGranted: true})
 }
 
-func (s *Service) openSharedAttachment(ctx context.Context, token string, password string, attachmentID string, viewerUserID string, passwordVerified bool) (AttachmentDownload, error) {
+// OpenSharedAttachmentWithClaimOrAccessGrantContext authorizes one shared
+// download. A transfer-backed share is only served to a live claim session, so
+// the 15-minute page-access grant is not a way around the claim quota; a legacy
+// share keeps the access grant it has always used.
+func (s *Service) OpenSharedAttachmentWithClaimOrAccessGrantContext(ctx context.Context, token string, claimToken string, accessGranted bool, attachmentID string, viewerUserID string) (AttachmentDownload, error) {
+	return s.openSharedAttachment(ctx, token, "", attachmentID, viewerUserID, sharedDownloadAuth{accessGranted: accessGranted, claimToken: claimToken})
+}
+
+func (s *Service) openSharedAttachment(ctx context.Context, token string, password string, attachmentID string, viewerUserID string, auth sharedDownloadAuth) (AttachmentDownload, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if !passwordVerified {
+	// A grant cookie or a claim credential already proved access, so only the
+	// direct password path checks the password here.
+	passwordVerified := !auth.verifyPassword
+	if auth.verifyPassword {
 		verified, err := s.verifySharePasswordForAccess(ctx, token, password)
 		if err != nil {
 			return AttachmentDownload{}, err
@@ -532,6 +558,20 @@ func (s *Service) openSharedAttachment(ctx context.Context, token string, passwo
 	if err != nil {
 		s.mu.Unlock()
 		return AttachmentDownload{}, err
+	}
+	transfer, err := s.transferForShareLocked(ctx, share.ID)
+	if err != nil {
+		s.mu.Unlock()
+		return AttachmentDownload{}, err
+	}
+	if transfer != nil {
+		if _, _, _, err := s.validTransferClaimLocked(ctx, token, auth.claimToken, viewerUserID); err != nil {
+			s.mu.Unlock()
+			return AttachmentDownload{}, err
+		}
+	} else if !auth.accessGranted && !auth.verifyPassword {
+		s.mu.Unlock()
+		return AttachmentDownload{}, E(http.StatusUnauthorized, "share_access_required", "open this share before downloading attachments")
 	}
 	attachment, err := s.attachmentByIDLocked(ctx, attachmentID)
 	if err != nil || attachment.PasteID != paste.ID || attachment.Status != "active" {

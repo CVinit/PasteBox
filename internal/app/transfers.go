@@ -55,6 +55,9 @@ func (s *Service) cacheTransferLocked(transfer Transfer) *Transfer {
 	if cached.IdempotencyKey != "" {
 		s.transferIDByIdemKey[transferIdempotencyKey(cached.UserID, cached.IdempotencyKey)] = cached.ID
 	}
+	if cached.ShareID != "" {
+		s.transferIDByShareID[cached.ShareID] = cached.ID
+	}
 	return &cached
 }
 
@@ -250,15 +253,17 @@ func (s *Service) viewTransferLocked(ctx context.Context, transfer *Transfer) (T
 		return items[i].ItemID < items[j].ItemID
 	})
 	view := TransferView{
-		ID:          transfer.ID,
-		Status:      transfer.Status,
-		PasteID:     transfer.PasteID,
-		Items:       make([]TransferItemView, 0, len(items)),
-		ExpiresAt:   transfer.ExpiresAt,
-		CreatedAt:   transfer.CreatedAt,
-		UpdatedAt:   transfer.UpdatedAt,
-		PublishedAt: transfer.PublishedAt,
-		CanceledAt:  transfer.CanceledAt,
+		ID:           transfer.ID,
+		Status:       transfer.Status,
+		PasteID:      transfer.PasteID,
+		Items:        make([]TransferItemView, 0, len(items)),
+		ClaimQuota:   transfer.ClaimQuota,
+		ClaimedCount: transfer.ClaimedCount,
+		ExpiresAt:    transfer.ExpiresAt,
+		CreatedAt:    transfer.CreatedAt,
+		UpdatedAt:    transfer.UpdatedAt,
+		PublishedAt:  transfer.PublishedAt,
+		CanceledAt:   transfer.CanceledAt,
 	}
 	for _, item := range items {
 		itemView := TransferItemView{
@@ -326,6 +331,19 @@ func normalizeTransferItems(plan plans.Plan, input []TransferItemInput, allowEmp
 		})
 	}
 	return items, nil
+}
+
+// normalizeTransferClaimQuota bounds how many anonymous claim slots one send
+// may grant. Zero means the default of one slot, so a send is never published
+// without a way to be claimed.
+func normalizeTransferClaimQuota(input int) (int, error) {
+	if input == 0 {
+		return DefaultTransferClaimQuota, nil
+	}
+	if input < 1 || input > MaxTransferClaimQuota {
+		return 0, E(http.StatusBadRequest, "invalid_claim_quota", fmt.Sprintf("claim quota must be between 1 and %d", MaxTransferClaimQuota))
+	}
+	return input, nil
 }
 
 // transferPasteTitle names the record a send creates. An explicit title wins;
@@ -401,6 +419,7 @@ func (s *Service) CreateGuestTransferWithContext(ctx context.Context, input Gues
 	view, err := s.createTransferForUserLocked(ctx, user, guestPlan(cfg), TransferInput{
 		IdempotencyKey: input.IdempotencyKey,
 		Password:       input.Password,
+		ClaimQuota:     input.ClaimQuota,
 		Title:          input.Title,
 		Text:           input.Text,
 		Items:          input.Items,
@@ -431,6 +450,10 @@ func (s *Service) createTransferForUserLocked(ctx context.Context, user *User, p
 		return TransferView{}, E(http.StatusBadRequest, "transfer_content_required", "a transfer needs text or at least one file")
 	}
 	items, err := normalizeTransferItems(plan, input.Items, hasText)
+	if err != nil {
+		return TransferView{}, err
+	}
+	claimQuota, err := normalizeTransferClaimQuota(input.ClaimQuota)
 	if err != nil {
 		return TransferView{}, err
 	}
@@ -475,6 +498,7 @@ func (s *Service) createTransferForUserLocked(ctx context.Context, user *User, p
 		IdempotencyKey: idempotencyKey,
 		PasswordHash:   passwordHash,
 		LoginRequired:  input.LoginRequired,
+		ClaimQuota:     claimQuota,
 		ExpiresAt:      expiresAt,
 		CreatedAt:      now,
 		UpdatedAt:      now,

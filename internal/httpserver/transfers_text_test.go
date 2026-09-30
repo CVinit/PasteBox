@@ -65,16 +65,22 @@ func TestTransferTextSendPublishesLinkAndPickupCode(t *testing.T) {
 		t.Fatalf("unexpected text record: %#v", recordBody)
 	}
 
-	// Both entry points read the same text.
+	// Both entry points reach the same text send, and neither hands out the
+	// body: opening the page reports the claim state, and the claim is the only
+	// place the text is read.
 	recipient := newHTTPTestClient(t, handler)
 	link := openShareThroughLink(recipient, published.Share.Token, "")
 	assertStatus(t, link, http.StatusOK)
-	var linkBody struct {
-		Paste app.PasteView `json:"paste"`
-	}
+	var linkBody transferAccessResponse
 	decodeResponse(t, link, &linkBody)
-	if linkBody.Paste.Text != "deploy at 09:00" || linkBody.Paste.ID != transfer.PasteID {
-		t.Fatalf("expected the link to read the sent text, got %#v", linkBody.Paste)
+	if linkBody.Paste.Text != "" || linkBody.Paste.ID != transfer.PasteID {
+		t.Fatalf("expected the link to withhold the text until it is claimed, got %#v", linkBody.Paste)
+	}
+	if linkBody.Transfer == nil || linkBody.Transfer.Kind != app.TransferClaimKindText || linkBody.Transfer.Claimed {
+		t.Fatalf("expected an unclaimed text transfer state, got %#v", linkBody.Transfer)
+	}
+	if linkBody.Transfer.ClaimQuota != 1 || linkBody.Transfer.ClaimsRemaining != 1 {
+		t.Fatalf("expected one anonymous claim by default, got %#v", linkBody.Transfer)
 	}
 
 	code := openShareThroughCode(t, recipient, published.PickupCode, "")
@@ -86,6 +92,17 @@ func TestTransferTextSendPublishesLinkAndPickupCode(t *testing.T) {
 	decodeResponse(t, code, &codeBody)
 	if codeBody.Paste.ID != transfer.PasteID || codeBody.Share.Token != published.Share.Token {
 		t.Fatalf("expected the pickup code to reach the same text share, got %#v", codeBody)
+	}
+
+	claim := claimTransferShare(t, recipient, published.Share.Token, "", "claim-text-read")
+	if claim.Claim.Kind != app.TransferClaimKindText || claim.Text != "deploy at 09:00" {
+		t.Fatalf("expected the claim to hand out the sent text, got %#v", claim)
+	}
+	// Re-opening the page with the claim credential keeps reading the text the
+	// recipient already paid for instead of asking for another claim.
+	reopened := openTransferShare(t, recipient, published.Share.Token, "")
+	if !reopened.Transfer.Claimed || reopened.Paste.Text != "deploy at 09:00" {
+		t.Fatalf("expected a live claim to keep the text readable, got %#v", reopened)
 	}
 }
 
@@ -152,12 +169,18 @@ func TestTransferTextSendKeepsShareProtections(t *testing.T) {
 
 	opened := openShareThroughLink(recipient, published.Share.Token, "hunter2")
 	assertStatus(t, opened, http.StatusOK)
-	var body struct {
-		Paste app.PasteView `json:"paste"`
-	}
+	var body transferAccessResponse
 	decodeResponse(t, opened, &body)
-	if body.Paste.Text != "secret text" {
-		t.Fatalf("expected the password to reveal the sent text, got %q", body.Paste.Text)
+	if body.Paste.Text != "" {
+		t.Fatalf("expected the protected text to stay hidden until it is claimed, got %q", body.Paste.Text)
+	}
+	// The claim is protected by the same password as the page, so neither entry
+	// point can be used to read the text without it.
+	assertStatus(t, claimRequest(recipient, published.Share.Token, "", "claim-text-nopw"), http.StatusUnauthorized)
+	assertStatus(t, claimRequest(recipient, published.Share.Token, "wrong", "claim-text-wrongpw"), http.StatusUnauthorized)
+	claim := claimTransferShare(t, recipient, published.Share.Token, "hunter2", "claim-text-protected")
+	if claim.Text != "secret text" {
+		t.Fatalf("expected the password to reveal the sent text on claim, got %q", claim.Text)
 	}
 }
 
@@ -191,7 +214,8 @@ func TestTransferImageSendKeepsImageContentType(t *testing.T) {
 		t.Fatalf("expected the recipient to see one image attachment, got %#v", accessBody.Paste.Attachments)
 	}
 
-	download := recipient.json(http.MethodGet, "/api/v1/shares/"+published.Share.Token+"/attachments/"+uploaded.Attachment.ID+"/download", "")
+	claimTransferShare(t, recipient, published.Share.Token, "", "claim-image-download")
+	download := downloadSharedAttachment(t, recipient, published.Share.Token, uploaded.Attachment.ID)
 	assertStatus(t, download, http.StatusOK)
 	if got := download.Header().Get("Content-Type"); got != "image/png" {
 		t.Fatalf("expected the shared download to serve image/png, got %q", got)
@@ -276,12 +300,14 @@ func TestGuestTransferTextSendPublishesPickupCode(t *testing.T) {
 	recipient := newHTTPTestClient(t, handler)
 	opened := openShareThroughCode(t, recipient, published.Transfer.PickupCode, "")
 	assertStatus(t, opened, http.StatusOK)
-	var openedBody struct {
-		Paste app.PasteView `json:"paste"`
-	}
+	var openedBody transferAccessResponse
 	decodeResponse(t, opened, &openedBody)
-	if openedBody.Paste.Text != "guest note" {
-		t.Fatalf("expected the guest text send to read back, got %q", openedBody.Paste.Text)
+	if openedBody.Paste.Text != "" {
+		t.Fatalf("expected the guest text send to withhold its body until claimed, got %q", openedBody.Paste.Text)
+	}
+	claim := claimTransferShare(t, recipient, published.Transfer.Share.Token, "", "claim-guest-text-read")
+	if claim.Text != "guest note" {
+		t.Fatalf("expected the guest text send to read back on claim, got %q", claim.Text)
 	}
 
 	// The guest text limit still applies to a text send.

@@ -18,6 +18,7 @@ func (s *Server) createTransfer(w http.ResponseWriter, r *http.Request) {
 		ExpiresInSeconds int64                   `json:"expiresInSeconds"`
 		Password         string                  `json:"password"`
 		LoginRequired    bool                    `json:"loginRequired"`
+		ClaimQuota       int                     `json:"claimQuota"`
 		Title            string                  `json:"title"`
 		Text             string                  `json:"text"`
 		Tags             []string                `json:"tags"`
@@ -31,6 +32,7 @@ func (s *Server) createTransfer(w http.ResponseWriter, r *http.Request) {
 		ExpiresInSeconds: req.ExpiresInSeconds,
 		Password:         req.Password,
 		LoginRequired:    req.LoginRequired,
+		ClaimQuota:       req.ClaimQuota,
 		Title:            req.Title,
 		Text:             req.Text,
 		Tags:             req.Tags,
@@ -51,6 +53,7 @@ func (s *Server) createGuestTransfer(w http.ResponseWriter, r *http.Request) {
 		ExpiresInSeconds int64                   `json:"expiresInSeconds"`
 		Password         string                  `json:"password"`
 		LoginRequired    bool                    `json:"loginRequired"`
+		ClaimQuota       int                     `json:"claimQuota"`
 		Title            string                  `json:"title"`
 		Text             string                  `json:"text"`
 		Items            []app.TransferItemInput `json:"items"`
@@ -66,6 +69,7 @@ func (s *Server) createGuestTransfer(w http.ResponseWriter, r *http.Request) {
 		ExpiresInSeconds: req.ExpiresInSeconds,
 		Password:         req.Password,
 		LoginRequired:    req.LoginRequired,
+		ClaimQuota:       req.ClaimQuota,
 		Title:            req.Title,
 		Text:             req.Text,
 		Items:            req.Items,

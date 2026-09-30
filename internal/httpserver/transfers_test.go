@@ -191,11 +191,12 @@ func TestTransferSendPublishAndDownloadHTTPContract(t *testing.T) {
 		t.Fatalf("expected the transfer record in /pastes, got %#v", recordsBody.Pastes)
 	}
 
-	// The recipient opens the link and downloads the single file.
+	// The recipient opens the link, claims it, and downloads the single file.
 	recipient := newHTTPTestClient(t, handler)
 	access := recipient.json(http.MethodPost, "/api/v1/shares/"+published.Share.Token+"/access", `{"password":""}`)
 	assertStatus(t, access, http.StatusOK)
-	download := recipient.json(http.MethodGet, "/api/v1/shares/"+published.Share.Token+"/attachments/"+uploaded.Attachment.ID+"/download", "")
+	claimTransferShare(t, recipient, published.Share.Token, "", "claim-transfer-download")
+	download := downloadSharedAttachment(t, recipient, published.Share.Token, uploaded.Attachment.ID)
 	assertStatus(t, download, http.StatusOK)
 	if got := download.Body.String(); got != "transfer-body" {
 		t.Fatalf("expected the shared download body, got %q", got)
@@ -394,7 +395,8 @@ func TestGuestTransferPublishAndDownloadHTTPContract(t *testing.T) {
 	recipient := newHTTPTestClient(t, handler)
 	access := recipient.json(http.MethodPost, "/api/v1/shares/"+published.Transfer.Share.Token+"/access", `{"password":""}`)
 	assertStatus(t, access, http.StatusOK)
-	download := recipient.json(http.MethodGet, "/api/v1/shares/"+published.Transfer.Share.Token+"/attachments/"+uploaded.Attachment.ID+"/download", "")
+	claimTransferShare(t, recipient, published.Transfer.Share.Token, "", "claim-guest-download")
+	download := downloadSharedAttachment(t, recipient, published.Transfer.Share.Token, uploaded.Attachment.ID)
 	assertStatus(t, download, http.StatusOK)
 	if got := download.Body.String(); got != "guest-body" {
 		t.Fatalf("expected the guest shared download body, got %q", got)

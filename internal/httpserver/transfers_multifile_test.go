@@ -176,8 +176,11 @@ func TestGuestMultiFileTransferPartialFailureRetryAndPublish(t *testing.T) {
 	if len(accessBody.Paste.Attachments) != 3 {
 		t.Fatalf("expected the shared record to expose three files, got %#v", accessBody.Paste.Attachments)
 	}
+	// One claim covers every file of the batch, so the recipient downloads the
+	// whole list inside a single session.
+	claimTransferShare(t, recipient, published.Transfer.Share.Token, "", "claim-multifile-recovery")
 	for _, attachment := range accessBody.Paste.Attachments {
-		download := recipient.json(http.MethodGet, "/api/v1/shares/"+published.Transfer.Share.Token+"/attachments/"+attachment.ID+"/download", "")
+		download := downloadSharedAttachment(t, recipient, published.Transfer.Share.Token, attachment.ID)
 		assertStatus(t, download, http.StatusOK)
 		if download.Body.Len() != int(attachment.Size) {
 			t.Fatalf("expected %d bytes for %s, got %d", attachment.Size, attachment.FileName, download.Body.Len())
@@ -517,8 +520,9 @@ func TestAuthedMultiFileTransferGroupsRecordsBySend(t *testing.T) {
 	if seen["report.txt"] != 2 || seen["notes.md"] != 1 {
 		t.Fatalf("expected both duplicate names to survive, got %#v", seen)
 	}
+	claimTransferShare(t, recipient, published.Share.Token, "", "claim-multifile-duplicates")
 	for _, id := range attachmentIDs {
-		download := recipient.json(http.MethodGet, "/api/v1/shares/"+published.Share.Token+"/attachments/"+id+"/download", "")
+		download := downloadSharedAttachment(t, recipient, published.Share.Token, id)
 		assertStatus(t, download, http.StatusOK)
 	}
 }

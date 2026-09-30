@@ -188,10 +188,23 @@ type AtomicShareStore interface {
 // care about the conflict still match it.
 var ErrTransferStoreCanceled = errors.Join(errors.New("transfer was canceled"), ErrStoreConflict)
 
+// ErrTransferClaimQuotaExhausted reports that every anonymous claim slot of a
+// transfer has been spent, so a new claim is refused. It also satisfies
+// ErrStoreConflict, so a caller that only distinguishes conflicts still matches.
+var ErrTransferClaimQuotaExhausted = errors.Join(errors.New("transfer claim quota exhausted"), ErrStoreConflict)
+
+// ErrTransferClaimNotFound reports an unknown claim credential.
+var ErrTransferClaimNotFound = errors.Join(errors.New("transfer claim not found"), ErrStoreNotFound)
+
+// ErrTransferClaimEnded reports that a claim was completed or is past its
+// window, so it can no longer authorize a download.
+var ErrTransferClaimEnded = errors.Join(errors.New("transfer claim ended"), ErrStoreConflict)
+
 type TransferStore interface {
 	CreateTransfer(ctx context.Context, transfer Transfer) error
 	TransferByID(ctx context.Context, id string) (Transfer, error)
 	TransferByIdempotencyKey(ctx context.Context, userID string, key string) (Transfer, error)
+	TransferByShareID(ctx context.Context, shareID string) (Transfer, error)
 	ListTransfersByUser(ctx context.Context, userID string) ([]Transfer, error)
 	UpdateTransfer(ctx context.Context, transfer Transfer) error
 
@@ -199,6 +212,16 @@ type TransferStore interface {
 	TransferItem(ctx context.Context, transferID string, itemID string) (TransferItem, error)
 	ListTransferItems(ctx context.Context, transferID string) ([]TransferItem, error)
 	UpdateTransferItem(ctx context.Context, item TransferItem) error
+
+	// AllocateTransferClaim spends one claim slot and stores the claim in one
+	// atomic step, so concurrent claims and cross-instance requests can never
+	// oversell the quota. A repeated operation id returns the claim that already
+	// spent the slot instead of spending a second one; created reports which
+	// happened. The store reads the quota from the transfer row it locks, and
+	// returns ErrTransferClaimQuotaExhausted when no slot is left.
+	AllocateTransferClaim(ctx context.Context, claim TransferClaim) (TransferClaim, bool, error)
+	TransferClaimByTokenHash(ctx context.Context, tokenHash string) (TransferClaim, error)
+	CompleteTransferClaim(ctx context.Context, id string, now time.Time) (TransferClaim, error)
 }
 
 // AtomicTransferStore publishes a transfer and its share in a single

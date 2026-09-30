@@ -43,6 +43,7 @@ import {
   Undo2,
   UploadCloud,
   UserRound,
+  Users,
 } from "lucide-react";
 
 import {
@@ -77,6 +78,7 @@ import {
   type Share,
   type SupportContacts,
   type Transfer,
+  type TransferAccess,
   type TransferItemInput,
   type User,
   type WebhookEvent,
@@ -132,6 +134,9 @@ type ShareDraft = {
 type SendSettings = {
   password: string;
   loginRequired: boolean;
+  // claimQuota is how many anonymous claims the send grants. It is not a
+  // recipient list: the slots are anonymous and never verified as people.
+  claimQuota: number;
 };
 
 type RedemptionDraft = {
@@ -261,9 +266,11 @@ const defaultShareDraft: ShareDraft = {
 
 // The existing policy default: a send keeps the record's expiry and starts
 // without a password, so nothing is protected until the sender asks for it.
+// One anonymous claim is granted by default, matching the server.
 const defaultSendSettings: SendSettings = {
   password: "",
   loginRequired: false,
+  claimQuota: 1,
 };
 
 const defaultRedemptionDraft: RedemptionDraft = {
@@ -4014,7 +4021,15 @@ function App() {
   const [shareAccess, setShareAccess] = useState<{
     paste: Paste;
     share: Share;
+    // A transfer-backed share reports its claim state; a legacy share has none.
+    transfer?: TransferAccess;
   } | null>(null);
+  // claimOperation keeps the operation id of the claim the recipient is trying
+  // to make, so a retry after a network failure replays that claim instead of
+  // spending another slot. It is keyed by share because a new share is a new
+  // claim.
+  const claimOperation = useRef({ token: "", operationId: "" });
+  const [claimBusy, setClaimBusy] = useState(false);
   const shareStatusRefresh = useRef({ token: "", attempts: 0 });
   const [authLink, setAuthLink] = useState<AuthLink | null>(() =>
     authLinkFromLocation(),
@@ -4292,6 +4307,7 @@ function App() {
           expiresInSeconds: draft.expiresInSeconds,
           password: sendSettings.password,
           loginRequired: sendSettings.loginRequired,
+          claimQuota: sendSettings.claimQuota,
           title: draft.title.trim() || undefined,
           tags: sendTags,
           items: manifest,
@@ -4318,6 +4334,7 @@ function App() {
     [
       draft.expiresInSeconds,
       draft.title,
+      sendSettings.claimQuota,
       sendSettings.loginRequired,
       sendSettings.password,
       sendTags,
@@ -4333,6 +4350,7 @@ function App() {
           expiresInSeconds: draft.expiresInSeconds,
           password: sendSettings.password,
           loginRequired: sendSettings.loginRequired,
+          claimQuota: sendSettings.claimQuota,
           title: draft.title.trim() || undefined,
           text: draft.text,
           tags: sendTags,
@@ -4349,6 +4367,7 @@ function App() {
       draft.expiresInSeconds,
       draft.text,
       draft.title,
+      sendSettings.claimQuota,
       sendSettings.loginRequired,
       sendSettings.password,
       sendTags,
@@ -4876,6 +4895,58 @@ function App() {
       t("shareOpened"),
     );
     if (result) setShareAccess(result);
+  }
+
+  // claimPublicShare spends one anonymous claim slot and then re-opens the page,
+  // so what the recipient sees is the server's answer — the claimed session and,
+  // for text, the body — rather than a client guess. The operation id is kept
+  // per share so a retry after a network failure replays the same claim instead
+  // of spending another slot.
+  // runClaimAction is the shared shape of the two claim actions: both report a
+  // failure the same way and both re-open the page, because the server owns the
+  // claim state and its remaining count.
+  async function runClaimAction(action: () => Promise<unknown>) {
+    setClaimBusy(true);
+    setMessage("");
+    try {
+      await action();
+      await openPublicShare();
+    } catch (error) {
+      const apiError = error as ApiError;
+      setMessage(apiError.message || transferCopyFor(locale).claimFailed);
+    } finally {
+      setClaimBusy(false);
+    }
+  }
+
+  // claimPublicShare spends one anonymous claim slot. The operation id is kept
+  // per share so a retry after a network failure replays the same claim instead
+  // of spending another slot.
+  async function claimPublicShare() {
+    const access = shareAccess;
+    if (!access?.transfer) return;
+    const token = access.share.token;
+    if (claimOperation.current.token !== token) {
+      claimOperation.current = { token, operationId: newClaimOperationId() };
+    }
+    await runClaimAction(() =>
+      client.claimTransfer(
+        token,
+        publicSharePassword,
+        claimOperation.current.operationId,
+      ),
+    );
+  }
+
+  // completePublicClaim ends the session early. The slot it spent is not
+  // refunded, so the page is re-opened to show the server's remaining count.
+  async function completePublicClaim() {
+    const access = shareAccess;
+    const claimId = access?.transfer?.claimId;
+    if (!access || !claimId) return;
+    await runClaimAction(() =>
+      client.completeTransferClaim(access.share.token, claimId),
+    );
   }
 
   async function saveSelectedPaste() {
@@ -5479,9 +5550,12 @@ function App() {
         access={shareAccess}
         message={message}
         busy={busy}
+        claimBusy={claimBusy}
         onToken={setPublicShareToken}
         onPassword={setPublicSharePassword}
         onOpen={() => void openPublicShare()}
+        onClaim={() => void claimPublicShare()}
+        onCompleteClaim={() => void completePublicClaim()}
         locale={locale}
       />
     );
@@ -5787,15 +5861,20 @@ function App() {
                   ) : null}
                 </div>
                 <SendSettingsFields
+                  claimQuota={sendSettings.claimQuota}
                   expiresInSeconds={draft.expiresInSeconds}
                   expiryOptions={sendExpiryOptions}
                   labels={transferLabels}
                   loginRequired={sendSettings.loginRequired}
+                  maxClaimQuota={catalog?.transfers?.maxClaimQuota ?? 0}
                   onExpiry={(seconds) =>
                     setDraft({ ...draft, expiresInSeconds: seconds })
                   }
                   onLoginRequired={(value) =>
                     setSendSettings({ ...sendSettings, loginRequired: value })
+                  }
+                  onClaimQuota={(value) =>
+                    setSendSettings({ ...sendSettings, claimQuota: value })
                   }
                   onPassword={(value) =>
                     setSendSettings({ ...sendSettings, password: value })
@@ -8298,6 +8377,19 @@ type TransferCopy = {
   passwordLabel: string;
   passwordPlaceholder: string;
   loginRequired: string;
+  // Claim quota is the send setting; the claim strings are the recipient side.
+  claimQuotaLabel: string;
+  claimQuotaHint: string;
+  claimQuotaSummary: string;
+  claimTitle: string;
+  claimFiles: string;
+  claimText: string;
+  claiming: string;
+  claimRemaining: string;
+  claimExhausted: string;
+  claimComplete: string;
+  claimSessionUntil: string;
+  claimFailed: string;
 };
 
 const transferCopy: Record<Locale, TransferCopy> = {
@@ -8352,6 +8444,18 @@ const transferCopy: Record<Locale, TransferCopy> = {
     passwordLabel: "Share password",
     passwordPlaceholder: "Password (optional)",
     loginRequired: "Require sign-in",
+    claimQuotaHint: "A claim is an anonymous slot, not a verified person.",
+    claimQuotaLabel: "Claims allowed",
+    claimQuotaSummary: "{count} anonymous claims allowed",
+    claimTitle: "Claim this transfer",
+    claimFiles: "Claim files",
+    claimText: "View content",
+    claiming: "Claiming...",
+    claimRemaining: "{count} claims left",
+    claimExhausted: "All claims have been used.",
+    claimComplete: "Finish claim",
+    claimSessionUntil: "Claim session valid until",
+    claimFailed: "Could not claim this transfer.",
   },
   "zh-CN": {
     sendFile: "发送文件",
@@ -8404,6 +8508,18 @@ const transferCopy: Record<Locale, TransferCopy> = {
     passwordLabel: "分享密码",
     passwordPlaceholder: "密码（可选）",
     loginRequired: "需要登录",
+    claimQuotaHint: "次数是匿名名额，不等于不同人数。",
+    claimQuotaLabel: "可领取次数",
+    claimQuotaSummary: "可领取 {count} 次",
+    claimTitle: "领取这份传输",
+    claimFiles: "领取文件",
+    claimText: "查看内容",
+    claiming: "领取中…",
+    claimRemaining: "剩余可领取 {count} 次",
+    claimExhausted: "名额已领完，无法再领取。",
+    claimComplete: "完成领取",
+    claimSessionUntil: "领取会话有效期至",
+    claimFailed: "领取失败，请重试。",
   },
   "zh-TW": {
     sendFile: "傳送檔案",
@@ -8456,6 +8572,18 @@ const transferCopy: Record<Locale, TransferCopy> = {
     passwordLabel: "分享密碼",
     passwordPlaceholder: "密碼（可選）",
     loginRequired: "需要登入",
+    claimQuotaHint: "次數是匿名名額，不等於不同人數。",
+    claimQuotaLabel: "可領取次數",
+    claimQuotaSummary: "可領取 {count} 次",
+    claimTitle: "領取這份傳輸",
+    claimFiles: "領取檔案",
+    claimText: "查看內容",
+    claiming: "領取中…",
+    claimRemaining: "剩餘可領取 {count} 次",
+    claimExhausted: "名額已領完，無法再領取。",
+    claimComplete: "完成領取",
+    claimSessionUntil: "領取工作階段有效期至",
+    claimFailed: "領取失敗，請重試。",
   },
   es: {
     sendFile: "Enviar archivo",
@@ -8511,6 +8639,18 @@ const transferCopy: Record<Locale, TransferCopy> = {
     passwordLabel: "Contraseña del enlace",
     passwordPlaceholder: "Contraseña (opcional)",
     loginRequired: "Requerir sesión",
+    claimQuotaHint: "Un reclamo es un cupo anónimo, no una persona verificada.",
+    claimQuotaLabel: "Reclamos permitidos",
+    claimQuotaSummary: "{count} reclamos anónimos permitidos",
+    claimTitle: "Reclamar esta transferencia",
+    claimFiles: "Reclamar archivos",
+    claimText: "Ver contenido",
+    claiming: "Reclamando...",
+    claimRemaining: "Quedan {count} reclamos",
+    claimExhausted: "Se usaron todos los reclamos.",
+    claimComplete: "Finalizar reclamo",
+    claimSessionUntil: "Sesión de reclamo válida hasta",
+    claimFailed: "No se pudo reclamar esta transferencia.",
   },
 };
 
@@ -8817,6 +8957,14 @@ function SendShareResult({
       <p className={lineClassName}>
         {labels.validUntil} {new Date(share.expiresAt).toLocaleString()}
       </p>
+      {share.claimQuota ? (
+        <p className={lineClassName}>
+          {labels.claimQuotaSummary.replace(
+            "{count}",
+            String(share.claimQuota),
+          )}
+        </p>
+      ) : null}
       {onReset && resetLabel ? (
         <button type="button" onClick={onReset}>
           {resetLabel}
@@ -8868,6 +9016,15 @@ function pickupCodeFromInput(value: string): string {
   return /^[A-Z0-9]{6}$/.test(code) ? code : "";
 }
 
+// newClaimOperationId names one claim attempt, so retrying the same attempt
+// after a network failure is idempotent instead of spending another slot.
+function newClaimOperationId(): string {
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  );
+}
+
 // The expiry ladder the send area offers. Choices above the sender's retention
 // are never rendered, because the service would shorten them: the send form
 // only promises lifetimes the configured policy actually supports.
@@ -8915,6 +9072,15 @@ function clampExpirySeconds(seconds: number, maxSeconds: number): number {
   return seconds;
 }
 
+// clampClaimQuota keeps the typed count at one slot or more, so an empty field
+// never sends zero. The upper bound comes from the published transfer config;
+// an unknown bound (catalog not loaded yet) is left to the server to reject.
+function clampClaimQuota(value: number, max: number): number {
+  if (!Number.isFinite(value) || value < 1) return 1;
+  const rounded = Math.floor(value);
+  return max > 0 ? Math.min(rounded, max) : rounded;
+}
+
 // PickupCodeRow shows the short code beside the share link on both success
 // pages, so a sender can hand over 6 characters instead of a long URL. Each
 // page supplies its own copy confirmation.
@@ -8950,25 +9116,33 @@ function PickupCodeRow({
 // transfer. The sign-in requirement is account-only, so it renders only when
 // the surface can enforce it.
 function SendSettingsFields({
+  claimQuota,
   expiresInSeconds,
   expiryOptions,
   labels,
   loginRequired = false,
+  maxClaimQuota,
+  onClaimQuota,
   onExpiry,
   onLoginRequired,
   onPassword,
   password,
 }: {
+  claimQuota: number;
   expiresInSeconds: number;
   expiryOptions: Array<{ seconds: number; label: string }>;
   labels: TransferCopy;
   loginRequired?: boolean;
+  // maxClaimQuota is the published server bound; 0 means it is not known yet.
+  maxClaimQuota: number;
+  onClaimQuota: (value: number) => void;
   onExpiry: (seconds: number) => void;
   onLoginRequired?: (value: boolean) => void;
   onPassword: (value: string) => void;
   password: string;
 }) {
   const labelId = useId();
+  const hintId = useId();
   return (
     <div className="send-settings-group">
       {/* The group is named on screen, so a password typed here cannot be
@@ -9003,6 +9177,23 @@ function SendSettingsFields({
             value={password}
           />
         </label>
+        <label>
+          <Users size={16} aria-hidden="true" />
+          <input
+            aria-describedby={hintId}
+            aria-label={labels.claimQuotaLabel}
+            max={maxClaimQuota > 0 ? maxClaimQuota : undefined}
+            min={1}
+            onChange={(event) =>
+              onClaimQuota(
+                clampClaimQuota(Number(event.target.value), maxClaimQuota),
+              )
+            }
+            placeholder={labels.claimQuotaLabel}
+            type="number"
+            value={claimQuota}
+          />
+        </label>
         {onLoginRequired ? (
           <label className="send-settings-toggle">
             <input
@@ -9014,6 +9205,11 @@ function SendSettingsFields({
           </label>
         ) : null}
       </div>
+      {/* The count is anonymous slots, not a recipient list, so the wording
+          says so instead of implying verified people. */}
+      <small className="send-settings-hint" id={hintId}>
+        {labels.claimQuotaHint}
+      </small>
     </div>
   );
 }
@@ -9254,7 +9450,11 @@ function LandingPage({
             className="clay-scene landing-clay-scene"
             src={clayHeroAsset}
           />
-          <GuestWorkbench config={guestUploads} locale={locale} />
+          <GuestWorkbench
+            config={guestUploads}
+            locale={locale}
+            maxClaimQuota={catalog?.transfers?.maxClaimQuota ?? 0}
+          />
         </div>
       </section>
 
@@ -9426,6 +9626,7 @@ function shareFromTransfer(transfer: Transfer): TransferQueueShare {
     expiresAt: transfer.share?.expiresAt ?? transfer.expiresAt,
     pickupCode: transfer.pickupCode,
     pasteId: transfer.pasteId,
+    claimQuota: transfer.claimQuota,
   };
 }
 
@@ -9436,6 +9637,7 @@ type GuestSendOptions = {
   tokenRef: { current: string };
   expiresInSeconds: number;
   password: string;
+  claimQuota: number;
   title?: string;
   text?: string;
 };
@@ -9453,6 +9655,7 @@ async function createGuestSend(
     idempotencyKey,
     expiresInSeconds: options.expiresInSeconds,
     password: options.password,
+    claimQuota: options.claimQuota,
     title: options.title?.trim() || undefined,
     text: options.text,
     items,
@@ -9511,9 +9714,11 @@ function guestTextTransferAdapter(options: GuestSendOptions): TextSendAdapter {
 function GuestWorkbench({
   config,
   locale,
+  maxClaimQuota,
 }: {
   config: GuestUploadConfig;
   locale: Locale;
+  maxClaimQuota: number;
 }) {
   const labels = guestWorkbenchCopy[locale] ?? guestWorkbenchCopy.en;
   const transferLabels = transferCopyFor(locale);
@@ -9524,6 +9729,9 @@ function GuestWorkbench({
     config.retentionSeconds,
   );
   const [sendPassword, setSendPassword] = useState("");
+  // One anonymous claim is granted by default, matching the server, and the
+  // count is a slot count rather than a recipient list.
+  const [sendClaimQuota, setSendClaimQuota] = useState(1);
   useEffect(() => {
     setSendExpirySeconds((current) =>
       clampExpirySeconds(current, config.retentionSeconds),
@@ -9550,8 +9758,9 @@ function GuestWorkbench({
         tokenRef: guestTokenRef,
         expiresInSeconds: sendExpirySeconds,
         password: sendPassword,
+        claimQuota: sendClaimQuota,
       }),
-    [sendExpirySeconds, sendPassword],
+    [sendExpirySeconds, sendPassword, sendClaimQuota],
   );
   const guestImageAdapter = useMemo<TransferQueueAdapter>(
     () =>
@@ -9559,9 +9768,10 @@ function GuestWorkbench({
         tokenRef: guestTokenRef,
         expiresInSeconds: sendExpirySeconds,
         password: sendPassword,
+        claimQuota: sendClaimQuota,
         title,
       }),
-    [sendExpirySeconds, sendPassword, title],
+    [sendExpirySeconds, sendPassword, sendClaimQuota, title],
   );
   const guestTextAdapter = useMemo<TextSendAdapter>(
     () =>
@@ -9569,10 +9779,11 @@ function GuestWorkbench({
         tokenRef: guestTokenRef,
         expiresInSeconds: sendExpirySeconds,
         password: sendPassword,
+        claimQuota: sendClaimQuota,
         title,
         text,
       }),
-    [sendExpirySeconds, sendPassword, title, text],
+    [sendExpirySeconds, sendPassword, sendClaimQuota, title, text],
   );
   const guestFileQueue = useTransferQueue(guestFileAdapter);
   const guestImageQueue = useTransferQueue(guestImageAdapter);
@@ -9847,9 +10058,12 @@ function GuestWorkbench({
           </>
         )}
         <SendSettingsFields
+          claimQuota={sendClaimQuota}
           expiresInSeconds={sendExpirySeconds}
           expiryOptions={expiryOptions}
           labels={transferLabels}
+          maxClaimQuota={maxClaimQuota}
+          onClaimQuota={setSendClaimQuota}
           onExpiry={setSendExpirySeconds}
           onPassword={setSendPassword}
           password={sendPassword}
@@ -10283,22 +10497,33 @@ function PublicShareScreen({
   access,
   message,
   busy,
+  claimBusy,
   onToken,
   onPassword,
   onOpen,
+  onClaim,
+  onCompleteClaim,
   locale,
 }: {
   token: string;
   password: string;
-  access: { paste: Paste; share: Share } | null;
+  access: {
+    paste: Paste;
+    share: Share;
+    transfer?: TransferAccess;
+  } | null;
   message: string;
   busy: boolean;
+  claimBusy: boolean;
   onToken: (value: string) => void;
   onPassword: (value: string) => void;
   onOpen: () => void;
+  onClaim: () => void;
+  onCompleteClaim: () => void;
   locale: Locale;
 }) {
   const t = copyFor(locale);
+  const transferLabels = transferCopyFor(locale);
   // An image is fetched only when the recipient asks for it: a page that loaded
   // every image on sight would spend a download on shares that limit downloads,
   // and the reading page must not consume the sender's allowance by itself.
@@ -10362,9 +10587,31 @@ function PublicShareScreen({
                 {t("copy")}
               </button>
             </div>
+            {access.transfer ? (
+              <TransferClaimPanel
+                busy={claimBusy}
+                labels={transferLabels}
+                onClaim={onClaim}
+                onComplete={onCompleteClaim}
+                transfer={access.transfer}
+              />
+            ) : null}
             {access.paste.text ? <pre>{access.paste.text}</pre> : null}
             <div className="share-preview">
-              {access.paste.attachments.map((attachment) => {
+              {access.transfer && !access.transfer.claimed ? (
+                // Until the recipient claims, the batch is listed but not
+                // downloadable, so the page cannot spend a slot by itself.
+                <ul className="transfer-file-list">
+                  {access.paste.attachments.map((attachment) => (
+                    <li key={attachment.id}>
+                      <FileText size={14} aria-hidden="true" />
+                      <span>{attachment.fileName}</span>
+                      <span>{formatBytes(attachment.size)}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                access.paste.attachments.map((attachment) => {
                 const href = sharedAttachmentDownloadPath(
                   access.share.token,
                   attachment.id,
@@ -10412,7 +10659,8 @@ function PublicShareScreen({
                     ) : null}
                   </div>
                 );
-              })}
+              })
+              )}
             </div>
           </section>
         ) : null}
@@ -10420,6 +10668,61 @@ function PublicShareScreen({
         <PublicFooter locale={locale} />
       </section>
     </main>
+  );
+}
+
+// TransferClaimPanel is the recipient side of the claim gate. Opening the page
+// never spends a slot, so this is where the recipient asks for one and where a
+// live session is shown, always with the count the server reports.
+function TransferClaimPanel({
+  busy,
+  labels,
+  onClaim,
+  onComplete,
+  transfer,
+}: {
+  busy: boolean;
+  labels: TransferCopy;
+  onClaim: () => void;
+  onComplete: () => void;
+  transfer: TransferAccess;
+}) {
+  const isText = transfer.kind === "text";
+  const remaining = labels.claimRemaining.replace(
+    "{count}",
+    String(transfer.claimsRemaining),
+  );
+  return (
+    <div className="transfer-claim-panel">
+      <div className="transfer-claim-head">
+        <Users size={16} aria-hidden="true" />
+        <strong>{labels.claimTitle}</strong>
+        <span>{remaining}</span>
+      </div>
+      {transfer.claimed ? (
+        <>
+          {!isText && transfer.claimExpiresAt ? (
+            <p className="status-line">
+              {labels.claimSessionUntil}{" "}
+              {new Date(transfer.claimExpiresAt).toLocaleString()}
+            </p>
+          ) : null}
+          {!isText ? (
+            <button type="button" onClick={onComplete} disabled={busy}>
+              <CheckCircle2 size={16} aria-hidden="true" />
+              {labels.claimComplete}
+            </button>
+          ) : null}
+        </>
+      ) : transfer.claimsRemaining > 0 ? (
+        <button type="button" onClick={onClaim} disabled={busy}>
+          <Download size={16} aria-hidden="true" />
+          {busy ? labels.claiming : isText ? labels.claimText : labels.claimFiles}
+        </button>
+      ) : (
+        <p className="status-line">{labels.claimExhausted}</p>
+      )}
+    </div>
   );
 }
 

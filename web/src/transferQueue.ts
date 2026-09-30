@@ -36,6 +36,9 @@ export type TransferQueueShare = {
   pickupCode?: string;
   // pasteId lets an account surface the record a finished send created.
   pasteId?: string;
+  // claimQuota is how many anonymous claims the published send grants, so the
+  // success page can state the count the sender chose.
+  claimQuota?: number;
 };
 
 // TransferQueueAdapter hides who is sending: an account session or a guest

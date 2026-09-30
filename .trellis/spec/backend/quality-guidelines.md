@@ -405,12 +405,19 @@ Keep the backend handler, typed `web/src/api.ts` client, and handler contract
 tests in sync in the same change, then run the backend and web checks.
 
 Issue a signed, scoped access grant on share access and require it for the
-download:
+download. A transfer-backed share is authorized by its claim session instead, so
+the grant cookie alone is not enough there:
 
 ```go
 s.setShareAccessCookie(w, r, token, viewerID)
-download, err := s.app.OpenSharedAttachmentWithAccessGrant(token, attachmentID, viewerID)
+download, err := s.app.OpenSharedAttachmentWithClaimOrAccessGrantContext(
+	ctx, token, s.transferClaimToken(r), s.validShareAccessCookie(r, token, viewerID), attachmentID, viewerID,
+)
 ```
+
+The claim credential is a `pastebox_transfer_claim` cookie scoped to
+`/api/v1/shares/{token}`, set when the recipient claims and validated against the
+stored claim, so one share's claim never authorizes another share's download.
 
 Initialize empty response collections before encoding:
 

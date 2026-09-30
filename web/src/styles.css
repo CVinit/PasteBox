@@ -1461,7 +1461,8 @@ textarea:disabled {
    provides the field boundary and the focus treatment. */
 .composer-controls .tag-input-wrap input,
 .send-settings select,
-.send-settings input[type="password"] {
+.send-settings input[type="password"],
+.send-settings input[type="number"] {
   width: 100%;
   min-width: 0;
   min-height: auto;
@@ -4981,9 +4982,19 @@ code {
 
 .send-settings {
   display: grid;
-  grid-template-columns: minmax(0, 170px) minmax(0, 1fr) auto;
+  grid-template-columns:
+    minmax(0, 160px) minmax(0, 1fr) minmax(0, 120px)
+    auto;
   gap: 10px;
   align-items: center;
+}
+
+/* The claim count is a slot count, not a recipient list, so its explanation
+   sits under the group instead of inside a field. */
+.send-settings-hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 /* The sign-in requirement is a toggle rather than a field, so it keeps the
@@ -5011,6 +5022,54 @@ code {
   .send-settings {
     grid-template-columns: 1fr;
   }
+}
+
+/* The recipient-side claim gate: opening the page never spends a slot, so the
+   panel is where a slot is asked for and where a live session is shown. */
+.transfer-claim-panel {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--field-border);
+  border-radius: 16px;
+  background: var(--canvas-warm);
+}
+
+.transfer-claim-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-strong);
+}
+
+.transfer-claim-head span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+/* Before a claim the batch is listed but not downloadable, so the names and
+   sizes are visible without any link that would spend a slot. */
+.transfer-file-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.transfer-file-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted-strong);
+  font-size: 13px;
+}
+
+.transfer-file-list li span:last-child {
+  margin-left: auto;
+  color: var(--muted);
 }
 
 /* First-screen facts: at most four real numbers from the published config. */

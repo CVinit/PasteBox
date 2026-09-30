@@ -124,19 +124,28 @@ func (s *Service) AccessShare(token string, password string, viewerUserID string
 }
 
 func (s *Service) AccessShareWithContext(ctx context.Context, token string, password string, viewerUserID string) (PasteView, ShareView, error) {
+	paste, share, _, err := s.AccessShareWithTransferContext(ctx, token, password, viewerUserID, "")
+	return paste, share, err
+}
+
+// AccessShareWithTransferContext opens a share and, for a transfer-backed
+// share, reports the claim state of the caller. Opening the page never spends a
+// claim: a text body is only revealed to a caller that already holds a live
+// claim, and files are only downloadable through one.
+func (s *Service) AccessShareWithTransferContext(ctx context.Context, token string, password string, viewerUserID string, claimToken string) (PasteView, ShareView, *TransferAccessView, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	passwordVerified, err := s.verifySharePasswordForAccess(ctx, token, password)
 	if err != nil {
-		return PasteView{}, ShareView{}, err
+		return PasteView{}, ShareView{}, nil, err
 	}
 
 	s.mu.Lock()
 	share, paste, err := s.validShareAccessLocked(ctx, token, password, viewerUserID, false, passwordVerified)
 	if err != nil {
 		s.mu.Unlock()
-		return PasteView{}, ShareView{}, err
+		return PasteView{}, ShareView{}, nil, err
 	}
 	if atomicStore, ok := s.content.Shares.(AtomicShareStore); ok {
 		shareID := share.ID
@@ -145,23 +154,23 @@ func (s *Service) AccessShareWithContext(ctx context.Context, token string, pass
 		consumed, consumeErr := atomicStore.ConsumeShareVisit(ctx, shareID, now)
 		if consumeErr != nil {
 			if isStoreNotFound(consumeErr) {
-				return PasteView{}, ShareView{}, E(http.StatusNotFound, "share_not_found", "share not found")
+				return PasteView{}, ShareView{}, nil, E(http.StatusNotFound, "share_not_found", "share not found")
 			}
-			return PasteView{}, ShareView{}, consumeErr
+			return PasteView{}, ShareView{}, nil, consumeErr
 		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		share = s.cacheShareLocked(consumed)
-		return s.viewPasteLocked(paste), s.viewShareLocked(share), nil
+		return s.sharedAccessViewLocked(ctx, share, paste, claimToken)
 	}
 	defer s.mu.Unlock()
 	now := s.now().UTC()
 	share.VisitCount++
 	share.LastVisitedAt = &now
 	if err := s.updateShareLocked(ctx, share); err != nil {
-		return PasteView{}, ShareView{}, err
+		return PasteView{}, ShareView{}, nil, err
 	}
-	return s.viewPasteLocked(paste), s.viewShareLocked(share), nil
+	return s.sharedAccessViewLocked(ctx, share, paste, claimToken)
 }
 
 func (s *Service) DownloadSharedAttachment(token string, password string, attachmentID string, viewerUserID string) (AttachmentView, []byte, error) {

@@ -56,6 +56,10 @@ type Service struct {
 	transfersByID           map[string]*Transfer
 	transferIDByIdemKey     map[string]string
 	transferItems           map[string]*TransferItem
+	transferIDByShareID     map[string]string
+	claimsByID              map[string]*TransferClaim
+	claimIDByTokenHash      map[string]string
+	claimIDByOperation      map[string]string
 	ordersByID              map[string]*Order
 	webhookEventKeys        map[string]string
 	webhookEvents           []*WebhookEvent
@@ -144,6 +148,10 @@ func NewWithStorage(ctx context.Context, cfg config.Config, stores Stores) (*Ser
 		transfersByID:         map[string]*Transfer{},
 		transferIDByIdemKey:   map[string]string{},
 		transferItems:         map[string]*TransferItem{},
+		transferIDByShareID:   map[string]string{},
+		claimsByID:            map[string]*TransferClaim{},
+		claimIDByTokenHash:    map[string]string{},
+		claimIDByOperation:    map[string]string{},
 		ordersByID:            map[string]*Order{},
 		webhookEventKeys:      map[string]string{},
 		runtimeConfig:         initialRuntimeConfig,

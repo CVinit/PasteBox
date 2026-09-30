@@ -206,11 +206,36 @@ type Transfer struct {
 	ShareID        string
 	PasswordHash   string
 	LoginRequired  bool
-	ExpiresAt      time.Time
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	PublishedAt    *time.Time
-	CanceledAt     *time.Time
+	// ClaimQuota is how many anonymous claim slots the sender granted. It is at
+	// least one, so every published transfer is claimed before its content is
+	// read or downloaded.
+	ClaimQuota int
+	// ClaimedCount is how many slots have been spent. It is maintained together
+	// with the claim rows so concurrent claims cannot oversell the quota.
+	ClaimedCount int
+	ExpiresAt    time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	PublishedAt  *time.Time
+	CanceledAt   *time.Time
+}
+
+// TransferClaim is one anonymous claim of a published transfer. Claiming spends
+// one slot from the transfer quota; a file claim also opens a bounded session
+// that covers every file of the batch, while a text claim only stays replayable
+// for a short recovery window.
+type TransferClaim struct {
+	ID          string
+	TransferID  string
+	ShareID     string
+	Kind        string
+	OperationID string
+	Token       string
+	TokenHash   string
+	Status      string
+	ExpiresAt   time.Time
+	CompletedAt *time.Time
+	CreatedAt   time.Time
 }
 
 type TransferItem struct {
@@ -243,12 +268,53 @@ type TransferView struct {
 	Share   *ShareView         `json:"share,omitempty"`
 	// PickupCode is the code for the published share. Transfer views are only
 	// served to the sender, so a recipient never receives the code here.
-	PickupCode  string     `json:"pickupCode,omitempty"`
+	PickupCode string `json:"pickupCode,omitempty"`
+	// ClaimQuota and ClaimedCount let the sender see how many anonymous claims
+	// the transfer allows and how many have been spent.
+	ClaimQuota   int        `json:"claimQuota"`
+	ClaimedCount int        `json:"claimedCount"`
+	ExpiresAt    time.Time  `json:"expiresAt"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	UpdatedAt    time.Time  `json:"updatedAt"`
+	PublishedAt  *time.Time `json:"publishedAt,omitempty"`
+	CanceledAt   *time.Time `json:"canceledAt,omitempty"`
+}
+
+// TransferClaimView is the claim state a recipient sees. It never carries
+// content: a text body is returned by the claim itself, not by status reads.
+type TransferClaimView struct {
+	ID          string     `json:"id"`
+	Kind        string     `json:"kind"`
+	Status      string     `json:"status"`
 	ExpiresAt   time.Time  `json:"expiresAt"`
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
 	CreatedAt   time.Time  `json:"createdAt"`
-	UpdatedAt   time.Time  `json:"updatedAt"`
-	PublishedAt *time.Time `json:"publishedAt,omitempty"`
-	CanceledAt  *time.Time `json:"canceledAt,omitempty"`
+}
+
+// TransferClaimResult is the answer to an active claim. ClaimToken is the
+// credential that authorizes downloads of the claimed session; Text is present
+// for a text transfer and is the only place the body is handed out.
+type TransferClaimResult struct {
+	Claim      TransferClaimView `json:"claim"`
+	ClaimToken string            `json:"claimToken,omitempty"`
+	Text       string            `json:"text,omitempty"`
+}
+
+// TransferAccessView describes the claim state of a transfer-backed share to a
+// recipient. Claimed reports whether this caller already holds a live claim, so
+// a page reload keeps the session it paid for instead of asking for a new one.
+type TransferAccessView struct {
+	ID              string `json:"id"`
+	Kind            string `json:"kind"`
+	ClaimQuota      int    `json:"claimQuota"`
+	ClaimedCount    int    `json:"claimedCount"`
+	ClaimsRemaining int    `json:"claimsRemaining"`
+	Claimed         bool   `json:"claimed"`
+	// ClaimID is the claim this caller holds, so a reloaded page can still end
+	// its own session. The claim credential stays in the cookie.
+	ClaimID        string     `json:"claimId,omitempty"`
+	ClaimExpiresAt *time.Time `json:"claimExpiresAt,omitempty"`
+	ExpiresAt      time.Time  `json:"expiresAt"`
 }
 
 type TransferItemInput struct {
@@ -263,6 +329,9 @@ type TransferInput struct {
 	ExpiresInSeconds int64
 	Password         string
 	LoginRequired    bool
+	// ClaimQuota is how many anonymous claims the send grants. Zero means the
+	// default of one, so a send is never left without a way to be claimed.
+	ClaimQuota int
 	// Title, Text and Tags describe what the send carries. A send with items is
 	// a file send and its title falls back to the declared file names; a send
 	// with text and no items is a text send.
@@ -283,6 +352,7 @@ type GuestCreateTransferInput struct {
 	// has no account to check against, so accepting it would promise a privacy
 	// setting the service cannot enforce.
 	LoginRequired bool
+	ClaimQuota    int
 	Title         string
 	Text          string
 	Items         []TransferItemInput

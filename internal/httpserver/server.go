@@ -131,6 +131,13 @@ type PublicPlanCatalog struct {
 	Prices       []app.BillingPrice     `json:"prices"`
 	GuestUploads app.GuestUploadConfig  `json:"guestUploads"`
 	Registration app.RegistrationConfig `json:"registration"`
+	Transfers    PublicTransferConfig   `json:"transfers"`
+}
+
+// PublicTransferConfig publishes the bounds a send form has to respect, so the
+// client derives them from the server instead of copying the numbers.
+type PublicTransferConfig struct {
+	MaxClaimQuota int `json:"maxClaimQuota"`
 }
 
 func New(cfg config.Config, logger *slog.Logger) http.Handler {
@@ -253,6 +260,10 @@ func (s *Server) routes() http.Handler {
 			r.Get("/", s.listShares)
 			r.Delete("/{shareID}", s.revokeShare)
 			r.Post("/{token}/access", s.accessShare)
+			// A claim is a recipient action, so it is scoped to the share the
+			// recipient already holds rather than to a transfer they cannot see.
+			r.Post("/{token}/claims", s.claimTransferShare)
+			r.Post("/{token}/claims/{claimID}/complete", s.completeTransferClaim)
 			r.Get("/{token}/attachments/{attachmentID}/download", s.downloadSharedAttachment)
 		})
 
@@ -540,6 +551,7 @@ func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 		Prices:       catalog.Prices,
 		GuestUploads: s.app.PublicGuestUploadsConfig(),
 		Registration: s.app.PublicRegistrationConfig(),
+		Transfers:    PublicTransferConfig{MaxClaimQuota: app.MaxTransferClaimQuota},
 	})
 }
 
@@ -1284,13 +1296,14 @@ func (s *Server) revokeShare(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) accessShare(w http.ResponseWriter, r *http.Request) {
 	viewerID := s.optionalUserID(r)
+	token := chi.URLParam(r, "token")
 	var req struct {
 		Password string `json:"password"`
 	}
 	if !s.decodeOptionalLimited(w, r, &req, shareAccessBodyLimitBytes) {
 		return
 	}
-	paste, share, err := s.app.AccessShareWithContext(r.Context(), chi.URLParam(r, "token"), req.Password, viewerID)
+	paste, share, transfer, err := s.app.AccessShareWithTransferContext(r.Context(), token, req.Password, viewerID, s.transferClaimToken(r))
 	if s.handleErr(w, err) {
 		return
 	}
@@ -1298,19 +1311,31 @@ func (s *Server) accessShare(w http.ResponseWriter, r *http.Request) {
 	if share.LoginRequired {
 		grantViewerID = viewerID
 	}
-	s.setShareAccessCookie(w, r, chi.URLParam(r, "token"), grantViewerID)
-	s.logger.Debug("share access granted", "share_id", share.ID, "paste_id", share.PasteID, "viewer_authenticated", viewerID != "", "login_required", share.LoginRequired, "has_password", share.HasPassword)
-	writeJSON(w, http.StatusOK, map[string]any{"paste": paste, "share": share})
+	s.setShareAccessCookie(w, r, token, grantViewerID)
+	s.logger.Debug("share access granted", "share_id", share.ID, "paste_id", share.PasteID, "viewer_authenticated", viewerID != "", "login_required", share.LoginRequired, "has_password", share.HasPassword, "transfer_backed", transfer != nil)
+	body := map[string]any{"paste": paste, "share": share}
+	if transfer != nil {
+		// The claim state travels with the page so the recipient can see how
+		// many claims are left without any read spending one.
+		body["transfer"] = transfer
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) downloadSharedAttachment(w http.ResponseWriter, r *http.Request) {
 	viewerID := s.optionalUserID(r)
 	token := chi.URLParam(r, "token")
-	if !s.validShareAccessCookie(r, token, viewerID) {
-		_ = s.handleErr(w, app.E(http.StatusUnauthorized, "share_access_required", "open this share before downloading attachments"))
-		return
-	}
-	download, err := s.app.OpenSharedAttachmentWithAccessGrantContext(r.Context(), token, chi.URLParam(r, "attachmentID"), viewerID)
+	// A transfer-backed share is served only to a live claim session; a legacy
+	// share keeps the short-lived page-access grant. The app decides which one
+	// applies, so the 15-minute grant is never a way around the claim quota.
+	download, err := s.app.OpenSharedAttachmentWithClaimOrAccessGrantContext(
+		r.Context(),
+		token,
+		s.transferClaimToken(r),
+		s.validShareAccessCookie(r, token, viewerID),
+		chi.URLParam(r, "attachmentID"),
+		viewerID,
+	)
 	if s.handleErr(w, err) {
 		return
 	}
@@ -2087,6 +2112,8 @@ func (s *Server) rateLimitRule(r *http.Request) (rateLimitRule, bool) {
 		return rateLimitRule{Category: "login", Limit: cfg.LoginLimit, Window: window}, cfg.LoginLimit > 0
 	case strings.HasPrefix(path, "/api/v1/auth/"):
 		return rateLimitRule{Category: "auth", Limit: cfg.LoginLimit, Window: window}, cfg.LoginLimit > 0
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/api/v1/shares/") && strings.Contains(path, "/claims"):
+		return rateLimitRule{Category: "share_access", Limit: cfg.ShareAccessLimit, Window: window}, cfg.ShareAccessLimit > 0
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "/api/v1/shares/") && strings.HasSuffix(path, "/access"):
 		return rateLimitRule{Category: "share_access", Limit: cfg.ShareAccessLimit, Window: window}, cfg.ShareAccessLimit > 0
 	case r.Method == http.MethodPost && path == "/api/v1/pickups":

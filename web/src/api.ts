@@ -18,6 +18,13 @@ export type PlanCatalog = {
   prices: Price[];
   guestUploads?: GuestUploadConfig;
   registration?: RegistrationConfig;
+  // transfers carries the send bounds the server enforces, so the send form
+  // derives them instead of copying the numbers.
+  transfers?: TransferConfig;
+};
+
+export type TransferConfig = {
+  maxClaimQuota: number;
 };
 
 export type Price = {
@@ -133,11 +140,47 @@ export type Transfer = {
   // pickupCode is only sent to the sender: the success page shows it so a
   // recipient can type 6 characters instead of pasting a long link.
   pickupCode?: string;
+  // claimQuota is how many anonymous claims the send grants; claimedCount is
+  // how many have been spent. Both are only reported to the sender.
+  claimQuota: number;
+  claimedCount: number;
   expiresAt: string;
   createdAt: string;
   updatedAt: string;
   publishedAt?: string;
   canceledAt?: string;
+};
+
+// TransferAccess is the claim state a recipient sees for a transfer-backed
+// share. It carries no content: a text body only arrives once the recipient
+// holds a live claim.
+export type TransferAccess = {
+  id: string;
+  kind: string;
+  claimQuota: number;
+  claimedCount: number;
+  claimsRemaining: number;
+  claimed: boolean;
+  claimId?: string;
+  claimExpiresAt?: string;
+  expiresAt: string;
+};
+
+// TransferClaim is one anonymous claim: a file claim opens a bounded session
+// that covers the whole batch, a text claim hands out the body once.
+export type TransferClaim = {
+  id: string;
+  kind: string;
+  status: string;
+  expiresAt: string;
+  completedAt?: string;
+  createdAt: string;
+};
+
+export type TransferClaimResult = {
+  claim: TransferClaim;
+  claimToken?: string;
+  text?: string;
 };
 
 export type TransferItemInput = {
@@ -884,6 +927,9 @@ export const client = {
     expiresInSeconds: number;
     password?: string;
     loginRequired?: boolean;
+    // claimQuota is how many anonymous claims the send grants. Zero or absent
+    // means the server default of one.
+    claimQuota?: number;
     // title, text and tags describe the record the send creates: a file send
     // declares items, a text send sends text and no items.
     title?: string;
@@ -935,6 +981,7 @@ export const client = {
     idempotencyKey?: string;
     expiresInSeconds: number;
     password?: string;
+    claimQuota?: number;
     title?: string;
     text?: string;
     items: TransferItemInput[];
@@ -980,10 +1027,25 @@ export const client = {
   revokeShare: (id: string) =>
     api<{ status: string }>(`/shares/${id}`, { method: "DELETE" }),
   accessShare: (token: string, password: string) =>
-    api<{ paste: Paste; share: Share }>(`/shares/${token}/access`, {
+    api<{ paste: Paste; share: Share; transfer?: TransferAccess }>(
+      `/shares/${token}/access`,
+      {
+        method: "POST",
+        body: JSON.stringify({ password }),
+      },
+    ),
+  // claimTransfer spends one anonymous claim slot. The operation id makes a
+  // retried claim return the same session instead of spending a second slot.
+  claimTransfer: (token: string, password: string, operationId: string) =>
+    api<TransferClaimResult>(`/shares/${token}/claims`, {
       method: "POST",
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ password, operationId }),
     }),
+  completeTransferClaim: (token: string, claimId: string) =>
+    api<{ claim: TransferClaim }>(
+      `/shares/${token}/claims/${encodeURIComponent(claimId)}/complete`,
+      { method: "POST" },
+    ),
   prices: () => api<PlanCatalog>("/billing/prices"),
   orders: () => api<{ orders: Order[] }>("/billing/orders"),
   createOrder: (body: { provider: string; planId: string; period: string }) =>
