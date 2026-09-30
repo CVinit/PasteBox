@@ -710,3 +710,67 @@ Resume after e6a2a884 API failures. Verified split compose rendering, path overr
 ### Next Steps
 
 - Issue #9（文本/图片模式统一）可基于本票的设置组件继续；#10 依赖 #8 已完成。
+
+
+## Session 21: 工单 #9：文本／图片模式与原有内容管理兼容
+
+**Date**: 2026-09-30
+**Task**: 工单 #9：文本／图片模式与原有内容管理兼容
+**Branch**: `main`
+
+### Summary
+
+实现 GitHub Issue #9：游客工作台与登录工作区的发送区统一为文件/图片/文本三模式，默认文件，切换模式保留草稿；文本与图片都走传输流程，因此同样获得链接、6 位取件码与有效期。后端为传输增加正文/标题/标签，items 为空且正文非空即可发布，空内容在创建时拒绝，文本计入每日上传配额；“有没有内容”只由服务层判定并通过 allowNoItems 传给原子 store，消除内存与 PostgreSQL 两套正文规则。登录工作区文本模式保留“仅创建记录（不分享）”与“发送文本”两个动作，新发送总是新建记录，历史笔记编辑/标签/分享框不回退。图片模式仍是单张图片，选择/粘贴/拖入共用 stageOneImage，失败草稿先取消再替换；useTransferQueue 阶段改以 ref 为准。新增 HTTP 与 PostgreSQL 集成测试，浏览器闭环 28/28。
+
+### Main Changes
+
+### Main Changes
+
+- `internal/app/transfers.go`、`internal/app/models.go`、`internal/httpserver/transfers.go`：传输支持 `Title`/`Text`/`Tags`，`items` 为空且正文非空即可发布；空内容（含纯空白）在创建时返回 400 `transfer_content_required`；文本计入每日上传配额。
+- `internal/app/content_stores.go`、`internal/postgres/transfers.go`：`ensureTransferCompleteLocked` 返回 `allowNoItems`，`AtomicTransferStore.PublishTransfer` 接收该判定，store 不再自行解释正文（原先 Go 侧 `TrimSpace` 与 SQL 侧 `btrim` 语义不同）。
+- `internal/httpserver/transfers_text_test.go`：文本发送、图片发送、内容与标签上限、既有记录不受影响的 HTTP 测试。
+- `internal/postgres/transfers_test.go`：无声明文件的传输在真实 PostgreSQL 上按调用方判定发布。
+- `web/src/App.tsx`、`web/src/transferQueue.ts`、`web/src/api.ts`、`web/src/styles.css`：`SendModeTabs` 统一游客与登录发送区；`useTransferQueue` 阶段改以 ref 为准；新增 `useTextSend` 文本发送与 `stageOneImage` 共享图片暂存；接收页按内容类型展示正文或图片预览。
+- `.trellis/tasks/09-29-file-transfer-first/verification-issue-09.md`：本轮验证记录（28/28 浏览器检查）。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9f4acc2` | feat(transfer): 文本与图片模式统一 |
+
+### Testing
+
+- [OK] `go test ./cmd/... ./internal/... -count=1` 与 `-race` 通过
+- [OK] `make test-postgres` 通过（临时 PostgreSQL 17 容器）
+- [OK] `npm --prefix web run typecheck` / `build`、`node scripts/check-web-launch-surfaces.mjs` 通过
+- [OK] `gofmt -l cmd internal`、`go vet ./...` 无输出
+- [OK] 浏览器闭环 28/28（桌面 + 375px；游客/登录、文本/图片/文件模式、草稿保留、失败替换、接收页文本与图片预览）
+- 证据记录：`.trellis/tasks/09-29-file-transfer-first/verification-issue-09.md`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Issue #10（匿名领取名额与领取会话）可在本票之后开始：文本与图片已与文件共用同一传输发布路径。
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9f4acc2` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
