@@ -252,6 +252,7 @@ func newPostgresBackedService(t *testing.T, ctx context.Context, pool *pgxpool.P
 			Attachments: attachmentStore,
 			ObjectRefs:  attachmentStore,
 			Shares:      NewShareStore(pool),
+			Transfers:   NewTransferStore(pool),
 		},
 		Operational: app.OperationalStores{
 			Orders:        NewOrderStore(pool),

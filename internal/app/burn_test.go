@@ -340,6 +340,10 @@ func TestBurnStopsAnOpenDownloadWhenItsSessionEnds(t *testing.T) {
 	if _, err := download.Body.Read(probe); !hasAppCode(err, "claim_ended") {
 		t.Fatalf("expected the open stream to stop when the session ended, got %v", err)
 	}
+	// Once stopped it stays stopped, even if the same body is read again.
+	if _, err := download.Body.Read(probe); !hasAppCode(err, "claim_ended") {
+		t.Fatalf("expected the stopped stream to keep refusing reads, got %v", err)
+	}
 
 	// The same guard stops a stream when the link is taken away while the
 	// session that opened it is still live, and the bytes already handed over
