@@ -106,12 +106,23 @@ type PasteStatusView struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-// AccountStatusView is the whole account snapshot behind the account status
+// AccountStatusPageSize caps each live history/marker batch.
+const AccountStatusPageSize = 50
+
+// AccountStatusOptions selects a history page and keeps an old editor watched.
+// Cursors and watched records are always restricted to the authenticated owner.
+type AccountStatusOptions struct {
+	BeforeTransferID string
+	ActivePasteID    string
+}
+
+// AccountStatusView is one bounded account snapshot behind the account status
 // stream. Every call re-reads the store, so two API instances report the same
 // state and no in-memory broadcast is treated as the truth.
 type AccountStatusView struct {
-	Transfers []TransferRecordView `json:"transfers"`
-	Pastes    []PasteStatusView    `json:"pastes"`
+	NextTransferCursor string               `json:"nextTransferCursor,omitempty"`
+	Transfers          []TransferRecordView `json:"transfers"`
+	Pastes             []PasteStatusView    `json:"pastes"`
 }
 
 // shareState rebuilds the part of the published share the status state reads,
@@ -146,6 +157,7 @@ type TransferStatus struct {
 	// boundary the burn policy reports.
 	CleanupStatus string
 	ItemCount     int
+	HasLiveClaims bool
 }
 
 // PasteStatus is one record's change marker.
@@ -159,14 +171,15 @@ type PasteStatus struct {
 // tick. A store returns it in a bounded number of queries regardless of how
 // many sends or records the account has.
 type AccountStatus struct {
-	Transfers []TransferStatus
-	Pastes    []PasteStatus
+	NextTransferCursor string
+	Transfers          []TransferStatus
+	Pastes             []PasteStatus
 }
 
 // AccountStatusWithContext is the authoritative snapshot behind the account
 // status stream. It re-reads the store on every call, so a reconnecting client
 // gets the current state instead of a replay of events it may have missed.
-func (s *Service) AccountStatusWithContext(ctx context.Context, userID string) (AccountStatusView, error) {
+func (s *Service) AccountStatusWithContext(ctx context.Context, userID string, options ...AccountStatusOptions) (AccountStatusView, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -176,14 +189,19 @@ func (s *Service) AccountStatusWithContext(ctx context.Context, userID string) (
 	if _, err := s.activeUserLocked(ctx, userID); err != nil {
 		return AccountStatusView{}, err
 	}
-	status, err := s.accountStatusLocked(ctx, userID)
+	opts := AccountStatusOptions{}
+	if len(options) > 0 {
+		opts = options[0]
+	}
+	status, err := s.accountStatusLocked(ctx, userID, opts)
 	if err != nil {
 		return AccountStatusView{}, err
 	}
 	now := s.now().UTC()
 	view := AccountStatusView{
-		Transfers: make([]TransferRecordView, 0, len(status.Transfers)),
-		Pastes:    make([]PasteStatusView, 0, len(status.Pastes)),
+		NextTransferCursor: status.NextTransferCursor,
+		Transfers:          make([]TransferRecordView, 0, len(status.Transfers)),
+		Pastes:             make([]PasteStatusView, 0, len(status.Pastes)),
 	}
 	for _, record := range status.Transfers {
 		recordView, err := s.transferRecordViewLocked(ctx, record, now)
@@ -294,7 +312,7 @@ func (s *Service) transferRecordViewLocked(ctx context.Context, record TransferS
 	// The snapshot already carries the share fields the state depends on, so a
 	// records row never costs an extra share read per send.
 	share := record.shareState()
-	state, reason, err := s.transferStateLocked(ctx, &transfer, share, nil, now)
+	state, reason, err := transferState(&transfer, share, nil, now, record.HasLiveClaims)
 	if err != nil {
 		return TransferRecordView{}, err
 	}
@@ -334,6 +352,18 @@ func (s *Service) transferRecordViewLocked(ctx context.Context, record TransferS
 // and the reason when the send reached its terminal state. It never changes
 // state: a status read must not destroy, revoke or spend anything.
 func (s *Service) transferStateLocked(ctx context.Context, transfer *Transfer, share *Share, viewerClaim *TransferClaim, now time.Time) (string, string, error) {
+	live := false
+	if transfer.BurnAfterReading && transfer.Status == TransferStatusPublished && share != nil && share.ExpiresAt.After(now) && transfer.ClaimedCount >= transfer.ClaimQuota {
+		count, err := s.countLiveTransferClaimsLocked(ctx, transfer.ID, now)
+		if err != nil {
+			return "", "", err
+		}
+		live = count > 0
+	}
+	return transferState(transfer, share, viewerClaim, now, live)
+}
+
+func transferState(transfer *Transfer, share *Share, viewerClaim *TransferClaim, now time.Time, live bool) (string, string, error) {
 	switch transfer.Status {
 	case TransferStatusDraft:
 		return TransferStatusStateDraft, "", nil
@@ -345,9 +375,7 @@ func (s *Service) transferStateLocked(ctx context.Context, transfer *Transfer, s
 	// A published send is due for destruction before the worker has swept it,
 	// and every access entry point already refuses it at that point, so the
 	// status channel reports the same answer the next request would get.
-	if reason, err := s.transferBurnDueLocked(ctx, transfer, share, now); err != nil {
-		return "", "", err
-	} else if reason != "" {
+	if reason := transferBurnReason(transfer, share, now, live); reason != "" {
 		return TransferStatusStateDestroyed, reason, nil
 	}
 	if share == nil || share.RevokedAt != nil {
@@ -368,11 +396,11 @@ func (s *Service) transferStateLocked(ctx context.Context, transfer *Transfer, s
 // accountStatusLocked reads the compact account state. The store path is one
 // query per table; the in-memory path answers from the service maps, which is
 // the same state the single-process mode serves everywhere else.
-func (s *Service) accountStatusLocked(ctx context.Context, userID string) (AccountStatus, error) {
+func (s *Service) accountStatusLocked(ctx context.Context, userID string, opts AccountStatusOptions) (AccountStatus, error) {
 	if s.content.AccountStatus != nil {
 		store := s.content.AccountStatus
 		s.mu.Unlock()
-		status, err := store.AccountStatus(ctx, userID)
+		status, err := store.AccountStatus(ctx, userID, opts)
 		s.mu.Lock()
 		if err != nil {
 			return AccountStatus{}, err
@@ -384,7 +412,11 @@ func (s *Service) accountStatusLocked(ctx context.Context, userID string) (Accou
 		if transfer.UserID != userID {
 			continue
 		}
-		record := TransferStatus{Transfer: *transfer, ItemCount: s.memoryTransferItemCountLocked(transfer.ID)}
+		live, err := s.countLiveTransferClaimsLocked(ctx, transfer.ID, s.now().UTC())
+		if err != nil {
+			return AccountStatus{}, err
+		}
+		record := TransferStatus{Transfer: *transfer, ItemCount: s.memoryTransferItemCountLocked(transfer.ID), HasLiveClaims: live > 0}
 		if transfer.ShareID != "" {
 			if share := s.sharesByID[transfer.ShareID]; share != nil {
 				record.ShareToken = share.Token
@@ -405,6 +437,20 @@ func (s *Service) accountStatusLocked(ctx context.Context, userID string) (Accou
 		}
 		return status.Transfers[i].Transfer.ID > status.Transfers[j].Transfer.ID
 	})
+	if opts.BeforeTransferID != "" {
+		start := len(status.Transfers)
+		for i, record := range status.Transfers {
+			if record.Transfer.ID == opts.BeforeTransferID {
+				start = i + 1
+				break
+			}
+		}
+		status.Transfers = status.Transfers[start:]
+	}
+	if len(status.Transfers) > AccountStatusPageSize {
+		status.Transfers = status.Transfers[:AccountStatusPageSize]
+		status.NextTransferCursor = status.Transfers[AccountStatusPageSize-1].Transfer.ID
+	}
 	for _, paste := range s.pastesByID {
 		if paste.UserID != userID {
 			continue
@@ -417,6 +463,16 @@ func (s *Service) accountStatusLocked(ctx context.Context, userID string) (Accou
 		}
 		return status.Pastes[i].ID > status.Pastes[j].ID
 	})
+	if len(status.Pastes) > AccountStatusPageSize {
+		remainder := status.Pastes[AccountStatusPageSize:]
+		status.Pastes = status.Pastes[:AccountStatusPageSize]
+		for _, paste := range remainder {
+			if paste.ID == opts.ActivePasteID {
+				status.Pastes = append(status.Pastes, paste)
+				break
+			}
+		}
+	}
 	return status, nil
 }
 

@@ -676,15 +676,14 @@ func (s *Service) preflightTransferItemUploadLocked(ctx context.Context, transfe
 // stored, so a failed request cannot duplicate an attachment or an object
 // reference; retrying with different bytes is a conflict.
 //
-// The item lock below serializes concurrent uploads of the same item inside one
-// process. Two processes uploading the same item at the same instant can still
-// both store bytes; publish only ever binds one attachment per item, so the
-// loser's object is reclaimed by the normal object-reference cleanup.
+// The local lock avoids duplicate work in one process. Durable stores also
+// atomically commit the attachment and binding; cross-instance losers release
+// their reserved object reference and reuse the winning attachment.
 func (s *Service) AddPreparedTransferItemWithContext(ctx context.Context, preflight TransferItemUploadPreflight, upload *PreparedAttachmentUpload) (TransferView, AttachmentView, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if preflight.transferID == "" || preflight.itemID == "" || preflight.pasteID == "" {
+	if preflight.transferID == "" || preflight.itemID == "" || preflight.pasteID == "" || upload == nil {
 		return TransferView{}, AttachmentView{}, E(http.StatusBadRequest, "invalid_upload_preflight", "transfer item upload preflight is invalid")
 	}
 	release := s.lockObjectKey("transfer-item:" + preflight.transferID + "/" + preflight.itemID)
@@ -693,6 +692,10 @@ func (s *Service) AddPreparedTransferItemWithContext(ctx context.Context, prefli
 	view, attachment, done, err := s.finishTransferItemUploadLocked(ctx, preflight, upload)
 	if err != nil || done {
 		return view, attachment, err
+	}
+
+	if store, ok := s.content.Transfers.(TransferItemAttachmentStore); ok {
+		return s.addDurableTransferItem(ctx, store, preflight, upload)
 	}
 
 	var stored AttachmentView
@@ -1031,4 +1034,70 @@ func (s *Service) discardTransferPasteLocked(ctx context.Context, paste *Paste, 
 		}
 	}
 	return nil
+}
+
+// Object I/O finishes before the short metadata transaction. Each contender
+// reserves one reference; only the winner keeps it. No global service mutex is
+// held during either the object write or the database commit.
+func (s *Service) addDurableTransferItem(ctx context.Context, store TransferItemAttachmentStore, preflight TransferItemUploadPreflight, upload *PreparedAttachmentUpload) (TransferView, AttachmentView, error) {
+	validate := func() (string, error) {
+		if preflight.guestToken != "" {
+			return s.preflightPreparedGuestAttachment(ctx, preflight.guestToken, preflight.pasteID, upload, "", "", false)
+		}
+		return s.preflightPreparedAttachment(ctx, preflight.userID, preflight.pasteID, upload)
+	}
+	objectKey, err := validate()
+	if err != nil {
+		return TransferView{}, AttachmentView{}, err
+	}
+	release := s.lockObjectKey(objectKey)
+	defer release()
+	stored, err := s.reserveAndStorePreparedObject(ctx, objectKey, upload)
+	if err != nil {
+		return TransferView{}, AttachmentView{}, err
+	}
+	// Preserve the ordinary upload path's post-I/O validation: account limits
+	// and content state may change while bytes are in flight. A matching winner
+	// is still a retry success even if its upload just exhausted the quota.
+	if _, err := validate(); err != nil {
+		view, attachment, done, retryErr := s.finishTransferItemUploadLocked(ctx, preflight, upload)
+		cleanupErr := s.releaseReservedObjectRef(ctx, stored)
+		if done && retryErr == nil {
+			return view, attachment, cleanupErr
+		}
+		return TransferView{}, AttachmentView{}, errors.Join(err, cleanupErr)
+	}
+	s.mu.Lock()
+	now := s.now().UTC()
+	// Guest preflights deliberately carry the token instead of the owner id.
+	paste, err := s.pasteByIDLocked(ctx, preflight.pasteID)
+	if err != nil {
+		s.mu.Unlock()
+		return TransferView{}, AttachmentView{}, errors.Join(err, s.releaseReservedObjectRef(ctx, stored))
+	}
+	attachment := s.preparedAttachmentLocked(paste.UserID, paste.ID, upload, objectKey, now)
+	job := QueueItem{ID: s.newID("job"), Kind: "scan", TargetID: attachment.ID, Status: "pending", RunAfter: now, CreatedAt: now, UpdatedAt: now}
+	s.mu.Unlock()
+	result, err := store.CommitTransferItemAttachment(ctx, TransferItemAttachmentInput{TransferID: preflight.transferID, ItemID: preflight.itemID, Attachment: attachment, ScanJob: job})
+	if !result.RetainReference {
+		err = errors.Join(err, s.releaseReservedObjectRef(ctx, stored))
+	}
+	if err != nil {
+		if errors.Is(err, ErrStoreConflict) {
+			err = E(http.StatusConflict, "transfer_item_conflict", "file item changed or transfer no longer accepts uploads")
+		}
+		return TransferView{}, AttachmentView{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if stored.inMemory {
+		s.objects[stored.objectKey] = append([]byte(nil), stored.content...)
+	}
+	s.cacheAttachmentLocked(result.Attachment)
+	transfer, err := s.transferByIDLocked(ctx, preflight.transferID)
+	if err != nil {
+		return TransferView{}, AttachmentView{}, err
+	}
+	view, err := s.viewTransferLocked(ctx, transfer)
+	return view, viewAttachment(&result.Attachment), err
 }

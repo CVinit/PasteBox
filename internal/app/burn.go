@@ -46,26 +46,28 @@ func transferDestroyedError() *Error {
 // irreversible, so a revoked send keeps its content until its lifetime would
 // have ended anyway.
 func (s *Service) transferBurnDueLocked(ctx context.Context, transfer *Transfer, share *Share, now time.Time) (string, error) {
-	if transfer == nil || !transfer.BurnAfterReading || transfer.Status != TransferStatusPublished {
-		return "", nil
+	live := false
+	if transfer != nil && transfer.BurnAfterReading && transfer.Status == TransferStatusPublished && share != nil && share.ExpiresAt.After(now) && transfer.ClaimedCount >= transfer.ClaimQuota {
+		count, err := s.countLiveTransferClaimsLocked(ctx, transfer.ID, now)
+		if err != nil {
+			return "", err
+		}
+		live = count > 0
 	}
-	if share == nil {
-		return "", nil
+	return transferBurnReason(transfer, share, now, live), nil
+}
+
+func transferBurnReason(transfer *Transfer, share *Share, now time.Time, hasLiveClaims bool) string {
+	if transfer == nil || !transfer.BurnAfterReading || transfer.Status != TransferStatusPublished || share == nil {
+		return ""
 	}
 	if !share.ExpiresAt.After(now) {
-		return TransferDestroyReasonExpired, nil
+		return TransferDestroyReasonExpired
 	}
-	if transfer.ClaimedCount < transfer.ClaimQuota {
-		return "", nil
+	if transfer.ClaimedCount >= transfer.ClaimQuota && !hasLiveClaims {
+		return TransferDestroyReasonClaimsEnded
 	}
-	live, err := s.countLiveTransferClaimsLocked(ctx, transfer.ID, now)
-	if err != nil {
-		return "", err
-	}
-	if live > 0 {
-		return "", nil
-	}
-	return TransferDestroyReasonClaimsEnded, nil
+	return ""
 }
 
 // countLiveTransferClaimsLocked counts the claim sessions that are still open.

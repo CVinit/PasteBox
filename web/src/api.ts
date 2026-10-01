@@ -245,11 +245,12 @@ export type PasteStatusMarker = {
   updatedAt: string;
 };
 
-// AccountStatusSnapshot is the whole account snapshot behind the account status
+// AccountStatusSnapshot is a bounded page behind the account status
 // channel.
 export type AccountStatusSnapshot = {
   transfers: TransferRecord[];
   pastes: PasteStatusMarker[];
+  nextTransferCursor?: string;
 };
 
 export type TransferItemInput = {
@@ -895,6 +896,7 @@ export const client = {
     }),
   pastes: (params: URLSearchParams) =>
     api<{ pastes: Paste[] }>(`/pastes?${params.toString()}`),
+  paste: (id: string) => api<Paste>(`/pastes/${encodeURIComponent(id)}`),
   createPaste: (body: {
     title: string;
     text: string;
@@ -1271,8 +1273,12 @@ export const client = {
 
 // accountStatusStreamPath is the live channel of the signed-in account: its
 // send records, their claim counts and the change markers of its records.
-export function accountStatusStreamPath(): string {
-  return "/api/v1/me/events";
+export function accountStatusStreamPath(before = "", pasteId = ""): string {
+  const params = new URLSearchParams();
+  if (before) params.set("before", before);
+  if (pasteId) params.set("pasteId", pasteId);
+  const query = params.toString();
+  return `/api/v1/me/events${query ? `?${query}` : ""}`;
 }
 
 // shareStatusStreamPath is the live channel of one share. The sender's success

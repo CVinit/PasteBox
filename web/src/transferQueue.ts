@@ -170,6 +170,8 @@ export function useTransferQueue(adapter: TransferQueueAdapter) {
 
   const runUpload = useCallback(
     async (pendingIds: string[]) => {
+      if (phaseRef.current === "uploading" || phaseRef.current === "publishing")
+        return;
       const runId = runRef.current;
       const abandoned = () => runRef.current !== runId;
       const controller = new AbortController();
@@ -195,6 +197,10 @@ export function useTransferQueue(adapter: TransferQueueAdapter) {
             manifest,
             idempotencyKeyFor(itemsRef.current.map((item) => item.id)),
           );
+          if (abandoned() || controller.signal.aborted) {
+            await discard(adapter, transferId);
+            return;
+          }
           transferRef.current = transferId;
         }
         if (abandoned() || controller.signal.aborted) {
@@ -220,11 +226,19 @@ export function useTransferQueue(adapter: TransferQueueAdapter) {
               transferId,
               id,
               item.file,
-              (loaded, total) => patchItem(id, { loaded, total }),
+              (loaded, total) => {
+                if (!abandoned() && !controller.signal.aborted) {
+                  patchItem(id, { loaded, total });
+                }
+              },
               controller.signal,
             );
           } catch (uploadError) {
-            if (isAbortError(uploadError)) {
+            if (
+              abandoned() ||
+              controller.signal.aborted ||
+              isAbortError(uploadError)
+            ) {
               await discard(adapter, transferId);
               return;
             }
@@ -235,6 +249,10 @@ export function useTransferQueue(adapter: TransferQueueAdapter) {
               message: messageFor(uploadError),
             });
             continue;
+          }
+          if (abandoned() || controller.signal.aborted) {
+            await discard(adapter, transferId);
+            return;
           }
           patchItem(id, {
             status: "uploaded",
@@ -248,9 +266,7 @@ export function useTransferQueue(adapter: TransferQueueAdapter) {
           await discard(adapter, transferId);
           return;
         }
-        if (
-          !itemsRef.current.every((item) => item.status === "uploaded")
-        ) {
+        if (!itemsRef.current.every((item) => item.status === "uploaded")) {
           commitPhase("failed");
           return;
         }
@@ -263,7 +279,8 @@ export function useTransferQueue(adapter: TransferQueueAdapter) {
         setShare(published);
         commitPhase("published");
       } catch (runError) {
-        if (isAbortError(runError)) return;
+        if (abandoned() || controller.signal.aborted || isAbortError(runError))
+          return;
         setError(messageFor(runError));
         commitPhase("failed");
       } finally {

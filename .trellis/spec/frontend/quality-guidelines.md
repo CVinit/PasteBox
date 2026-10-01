@@ -623,3 +623,51 @@ const tagLimit = activePlan?.tagsPerPasteLimit ?? 0;
 - Are button labels and icons readable on mobile widths?
 - Are backend response fields typed instead of inferred as `any`?
 - Does the app behave acceptably when the API is not running locally?
+
+## Scenario: Status Pages And Late Async Responses
+
+### 1. Scope / Trigger
+
+Account status subscriptions, text follow-up reads, or cancel/restart upload queues.
+
+### 2. Signatures
+
+- `accountStatusStreamPath(before, pasteId)` and `AccountStatusSnapshot.nextTransferCursor`.
+- `client.paste(id)` reads an editor record independently of list pagination.
+- `followRemotePaste` and `useTransferQueue`.
+
+### 3. Contracts
+
+- Send history is a bounded page with previous/next controls in all four locales.
+  The selected editor ID remains on the account subscription, including old records.
+- Auto-follow checks draft cleanliness before starting and rechecks the exact
+  draft object, selected ID, and request generation after awaiting the response.
+  Explicit reload is opt-in, but must also preserve edits made while it waits.
+- Fetch the editor by ID, not by searching the first list page.
+- Cancel/reset invalidates an upload run before any late callback can write
+  transfer IDs, progress, errors, published shares, or queue phase.
+
+### 4. Validation & Error Matrix
+
+- Typing during a read -> preserve draft and show remote-update notice.
+- Selection/request generation changes -> ignore the stale response.
+- Late old-run create/upload/publish result -> no mutation of the new run.
+- Last history page -> next disabled; first page -> previous disabled.
+
+### 5. Good/Base/Bad Cases
+
+- Good: Explicit reload uses the current remote record; typing during that read survives.
+- Base: A clean editor follows a remote save.
+- Bad: A dirty check before `await` treated as proof that the draft is still clean.
+
+### 6. Tests Required
+
+Run `scripts/test-web-transfer-races.cjs` through `make test-web`; test delayed
+success, failure, progress and changed selection. Browser-check history pages,
+old-record synchronization, typing during a delayed read, and explicit reload.
+
+### 7. Wrong vs Correct
+
+- Wrong: assign `transferRef.current` immediately after awaiting create.
+- Correct: check run identity first; discard the abandoned transfer without
+  changing the new run's state.

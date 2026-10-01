@@ -236,10 +236,10 @@ func TestServiceWithPostgresStoresPreservesLaunchStateAcrossRestart(t *testing.T
 	}
 }
 
-func newPostgresBackedService(t *testing.T, ctx context.Context, pool *pgxpool.Pool, cfg config.Config) *app.Service {
+func newPostgresBackedService(t *testing.T, ctx context.Context, pool *pgxpool.Pool, cfg config.Config, configure ...func(*app.Stores)) *app.Service {
 	t.Helper()
 	attachmentStore := NewAttachmentStore(pool)
-	svc, err := app.NewWithStorage(ctx, cfg, app.Stores{
+	stores := app.Stores{
 		Auth: app.AuthStores{
 			Users:           NewUserStore(pool),
 			Sessions:        NewSessionStore(pool),
@@ -248,12 +248,13 @@ func newPostgresBackedService(t *testing.T, ctx context.Context, pool *pgxpool.P
 			OAuthIdentities: NewOAuthIdentityStore(pool),
 		},
 		Content: app.ContentStores{
-			Pastes:        NewPasteStore(pool),
-			Attachments:   attachmentStore,
-			ObjectRefs:    attachmentStore,
-			Shares:        NewShareStore(pool),
-			Transfers:     NewTransferStore(pool),
-			AccountStatus: NewAccountStatusStore(pool),
+			Pastes:         NewPasteStore(pool),
+			Attachments:    attachmentStore,
+			ObjectRefs:     attachmentStore,
+			Shares:         NewShareStore(pool),
+			Transfers:      NewTransferStore(pool),
+			AccountStatus:  NewAccountStatusStore(pool),
+			PickupAttempts: NewPickupAttemptStore(pool),
 		},
 		Operational: app.OperationalStores{
 			Orders:        NewOrderStore(pool),
@@ -266,7 +267,11 @@ func newPostgresBackedService(t *testing.T, ctx context.Context, pool *pgxpool.P
 		Catalog:              NewCatalogStore(pool),
 		AuditLogs:            NewAuditLogStore(pool),
 		BusinessTransactions: NewBusinessTransactionStore(pool),
-	})
+	}
+	for _, apply := range configure {
+		apply(&stores)
+	}
+	svc, err := app.NewWithStorage(ctx, cfg, stores)
 	if err != nil {
 		t.Fatalf("new postgres-backed service: %v", err)
 	}

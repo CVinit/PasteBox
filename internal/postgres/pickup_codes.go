@@ -27,6 +27,26 @@ func NewPickupAttemptStore(pool *pgxpool.Pool) *PickupAttemptStore {
 	return &PickupAttemptStore{pool: pool}
 }
 
+func (s *PickupAttemptStore) WithPickupAttemptLock(ctx context.Context, key string, window time.Duration, fn func(context.Context) error) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin pickup attempt: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, key); err != nil {
+		return fmt.Errorf("lock pickup attempt: %w", err)
+	}
+	lockCtx := context.WithValue(ctx, scopedTransactionKey{}, scopedTransaction{pool: s.pool, tx: tx})
+	lookupErr := fn(lockCtx)
+	// A not-found result is precisely what spends a failure. Commit it; a SQL
+	// failure leaves the transaction aborted and Commit will return an error.
+	if err := tx.Commit(ctx); err != nil {
+		return errors.Join(lookupErr, fmt.Errorf("commit pickup attempt: %w", err))
+	}
+	s.pruneExpiredAttempts(ctx, time.Now().UTC().Add(-2*window))
+	return lookupErr
+}
+
 // PickupAttemptCount reads the failures recorded for a key in the current
 // window. An unknown key, or one whose window has passed, reads as zero.
 func (s *PickupAttemptStore) PickupAttemptCount(ctx context.Context, key string, window time.Duration, now time.Time) (app.PickupAttemptWindow, error) {
@@ -35,7 +55,7 @@ func (s *PickupAttemptStore) PickupAttemptCount(ctx context.Context, key string,
 	}
 	var windowStart time.Time
 	var count int
-	err := s.pool.QueryRow(ctx, `
+	err := contentDB(ctx, s.pool).QueryRow(ctx, `
 SELECT window_start, attempt_count
 FROM pickup_code_attempts
 WHERE attempt_key = $1
@@ -58,7 +78,7 @@ func (s *PickupAttemptStore) RecordPickupFailure(ctx context.Context, key string
 	}
 	var windowStart time.Time
 	var count int
-	if err := s.pool.QueryRow(ctx, `
+	if err := contentDB(ctx, s.pool).QueryRow(ctx, `
 INSERT INTO pickup_code_attempts (attempt_key, window_start, attempt_count)
 VALUES ($1, $2, 1)
 ON CONFLICT (attempt_key) DO UPDATE SET
@@ -77,7 +97,9 @@ RETURNING window_start, attempt_count
 		return app.PickupAttemptWindow{}, fmt.Errorf("record pickup failure: %w", err)
 	}
 
-	s.pruneExpiredAttempts(ctx, now.Add(-2*window))
+	if contentDB(ctx, s.pool) == s.pool {
+		s.pruneExpiredAttempts(ctx, now.Add(-2*window))
+	}
 
 	return app.PickupAttemptWindow{Start: windowStart, Count: count}, nil
 }

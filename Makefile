@@ -66,6 +66,7 @@ test-coverage:
 	sh scripts/check-postgres-integration.sh --coverage
 
 test-web:
+	$(NPM) test
 	$(NPM) run typecheck
 	$(NPM) run build
 

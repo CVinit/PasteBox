@@ -4327,8 +4327,10 @@ function App() {
   // sends and which records changed. It is also what keeps a remote edit from
   // silently replacing an unsaved draft — the editor only follows the newer
   // version when the draft holds nothing the user has not saved.
+  const [sendPageCursors, setSendPageCursors] = useState<string[]>([""]);
+  const sendPageCursor = sendPageCursors[sendPageCursors.length - 1];
   const accountStatus = useStatusStream<AccountStatusSnapshot>(
-    user ? accountStatusStreamPath() : null,
+    user ? accountStatusStreamPath(sendPageCursor, selectedPasteId) : null,
   );
   const [sendRecords, setSendRecords] = useState<TransferRecord[]>([]);
   // remoteDraftNotice names the record whose remote version was held back, so
@@ -4336,10 +4338,12 @@ function App() {
   const [remoteDraftNotice, setRemoteDraftNotice] = useState("");
   const appliedSnapshotAt = useRef(0);
   const pasteSnapshot = useRef<Map<string, string>>(new Map());
+  const editorStateRef = useRef({ selectedPasteId, editDraft });
+  editorStateRef.current = { selectedPasteId, editDraft };
+  const remoteRefreshGeneration = useRef(0);
 
   useEffect(() => {
-    if (!accountStatus.snapshot) return;
-    setSendRecords(accountStatus.snapshot.transfers);
+    setSendRecords(accountStatus.snapshot?.transfers ?? []);
   }, [accountStatus.snapshot]);
 
   // draftDirty is the whole protection: a draft that differs from the stored
@@ -4354,30 +4358,44 @@ function App() {
   }, [editDraft, selectedPaste]);
 
   // followRemotePaste replaces the editor with the version the server now holds.
-  // It is only called when the draft has nothing unsaved in it.
+  // Auto-follow requires a clean draft; the explicit reload button opts in.
   const followRemotePaste = useCallback(
     async (pasteId: string) => {
+      const generation = ++remoteRefreshGeneration.current;
+      const originalDraft = editorStateRef.current.editDraft;
       try {
-        const result = await client.pastes(
-          searchParams(query, filter, tagFilter),
-        );
-        setPastes(result.pastes);
-        const fresh = result.pastes.find((item) => item.id === pasteId);
-        if (fresh) {
-          setEditDraft({
-            id: fresh.id,
-            title: fresh.title,
-            text: fresh.text,
-            tags: fresh.tags.join(", "),
-          });
+        const fresh = await client.paste(pasteId);
+        const current = editorStateRef.current;
+        if (
+          generation !== remoteRefreshGeneration.current ||
+          current.selectedPasteId !== pasteId
+        ) {
+          return;
         }
+        // Typing can start after the caller's dirty check but before this
+        // response. Only replace the exact draft this request started with.
+        if (current.editDraft !== originalDraft) {
+          setRemoteDraftNotice(pasteId);
+          return;
+        }
+        setPastes((items) =>
+          items.some((item) => item.id === pasteId)
+            ? items.map((item) => (item.id === pasteId ? fresh : item))
+            : [...items, fresh],
+        );
+        setEditDraft({
+          id: fresh.id,
+          title: fresh.title,
+          text: fresh.text,
+          tags: fresh.tags.join(", "),
+        });
         setRemoteDraftNotice("");
       } catch {
         // A failed follow-up leaves the draft as it was; the next snapshot or
         // the user's own refresh brings the newer version in.
       }
     },
-    [filter, query, tagFilter],
+    [],
   );
 
   // applyPasteChanges reacts to the record markers the channel reports. A
@@ -6307,6 +6325,13 @@ function App() {
             locale={locale}
             onCopy={(value) => void navigator.clipboard?.writeText(value)}
             records={sendRecords}
+            canPrevious={sendPageCursors.length > 1}
+            canNext={Boolean(accountStatus.snapshot?.nextTransferCursor)}
+            onPrevious={() => setSendPageCursors((pages) => pages.slice(0, -1))}
+            onNext={() => {
+              const cursor = accountStatus.snapshot?.nextTransferCursor;
+              if (cursor) setSendPageCursors((pages) => [...pages, cursor]);
+            }}
           />
         ) : null}
 
@@ -8646,6 +8671,8 @@ type TransferCopy = {
   // The sender's own records list and the remote-update notice.
   recordsTitle: string;
   recordsEmpty: string;
+  recordsPrevious: string;
+  recordsNext: string;
   recordsFiles: string;
   recordsText: string;
   remoteUpdated: string;
@@ -8741,6 +8768,8 @@ const transferCopy: Record<Locale, TransferCopy> = {
     stateDestroyed: "Destroyed",
     recordsTitle: "Sends",
     recordsEmpty: "No sends yet.",
+    recordsPrevious: "Previous page",
+    recordsNext: "Next page",
     recordsFiles: "{count} files",
     recordsText: "Text",
     remoteUpdated: "This record changed on another device. Your unsaved edits were kept.",
@@ -8833,6 +8862,8 @@ const transferCopy: Record<Locale, TransferCopy> = {
     stateDestroyed: "已销毁",
     recordsTitle: "发送记录",
     recordsEmpty: "还没有发送记录。",
+    recordsPrevious: "上一页",
+    recordsNext: "下一页",
     recordsFiles: "{count} 个文件",
     recordsText: "文本",
     remoteUpdated: "这条记录已在另一台设备上更新；本地未保存的修改已保留。",
@@ -8926,6 +8957,8 @@ const transferCopy: Record<Locale, TransferCopy> = {
     stateDestroyed: "已銷毀",
     recordsTitle: "傳送記錄",
     recordsEmpty: "還沒有傳送記錄。",
+    recordsPrevious: "上一頁",
+    recordsNext: "下一頁",
     recordsFiles: "{count} 個檔案",
     recordsText: "文字",
     remoteUpdated: "這筆記錄已在另一台裝置更新；本機尚未儲存的修改已保留。",
@@ -9022,6 +9055,8 @@ const transferCopy: Record<Locale, TransferCopy> = {
     stateDestroyed: "Destruida",
     recordsTitle: "Envíos",
     recordsEmpty: "Todavía no hay envíos.",
+    recordsPrevious: "Página anterior",
+    recordsNext: "Página siguiente",
     recordsFiles: "{count} archivos",
     recordsText: "Texto",
     remoteUpdated: "Este registro cambió en otro dispositivo. Tus cambios sin guardar se conservaron.",
@@ -11796,18 +11831,32 @@ function SendRecordsPanel({
   locale,
   onCopy,
   records,
+  canPrevious,
+  canNext,
+  onPrevious,
+  onNext,
 }: {
   connection: SyncConnection;
   labels: TransferCopy;
   locale: Locale;
   onCopy: (value: string) => void;
   records: TransferRecord[];
+  canPrevious: boolean;
+  canNext: boolean;
+  onPrevious: () => void;
+  onNext: () => void;
 }) {
   const t = copyFor(locale);
   return (
     <Panel title={labels.recordsTitle} meta={`${records.length}`}>
       <div className="panel-toolbar">
         <ConnectionBadge connection={connection} labels={labels} />
+        <button type="button" disabled={!canPrevious} onClick={onPrevious}>
+          {labels.recordsPrevious}
+        </button>
+        <button type="button" disabled={!canNext} onClick={onNext}>
+          {labels.recordsNext}
+        </button>
       </div>
       {records.length === 0 ? (
         <p className="status-line">{labels.recordsEmpty}</p>

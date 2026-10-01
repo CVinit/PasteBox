@@ -322,7 +322,7 @@ WHERE id = $1
 }
 
 func (s *PasteStore) queryPaste(ctx context.Context, sql string, args ...any) (app.Paste, error) {
-	paste, err := scanPaste(s.pool.QueryRow(ctx, sql, args...))
+	paste, err := scanPaste(contentDB(ctx, s.pool).QueryRow(ctx, sql, args...))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return app.Paste{}, ErrPasteNotFound
@@ -341,7 +341,7 @@ func NewAttachmentStore(pool *pgxpool.Pool) *AttachmentStore {
 }
 
 func (s *AttachmentStore) CreateAttachment(ctx context.Context, attachment app.Attachment) error {
-	if _, err := s.pool.Exec(ctx, `
+	if _, err := contentDB(ctx, s.pool).Exec(ctx, `
 INSERT INTO attachments (
 	id,
 	user_id,
@@ -376,7 +376,7 @@ WHERE id = $1
 }
 
 func (s *AttachmentStore) ListAttachmentsByPaste(ctx context.Context, pasteID string) ([]app.Attachment, error) {
-	rows, err := s.pool.Query(ctx, `
+	rows, err := contentDB(ctx, s.pool).Query(ctx, `
 SELECT id, user_id, paste_id, file_name, content_type, size_bytes, sha256, object_key, status, scan_status, risk, image_width, image_height, download_count, created_at
 FROM attachments
 WHERE paste_id = $1
@@ -695,7 +695,7 @@ WHERE object_key = $1
 }
 
 func (s *AttachmentStore) queryAttachment(ctx context.Context, sql string, args ...any) (app.Attachment, error) {
-	attachment, err := scanAttachment(s.pool.QueryRow(ctx, sql, args...))
+	attachment, err := scanAttachment(contentDB(ctx, s.pool).QueryRow(ctx, sql, args...))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return app.Attachment{}, ErrAttachmentNotFound
@@ -772,7 +772,7 @@ ORDER BY created_at DESC, id DESC
 }
 
 func (s *ShareStore) ListSharesByPaste(ctx context.Context, pasteID string) ([]app.Share, error) {
-	rows, err := s.pool.Query(ctx, `
+	rows, err := contentDB(ctx, s.pool).Query(ctx, `
 SELECT `+shareColumns+`
 FROM shares
 WHERE paste_id = $1
@@ -1007,7 +1007,7 @@ UPDATE shares SET download_count = $2, last_downloaded_at = $3 WHERE id = $1
 }
 
 func (s *ShareStore) queryShare(ctx context.Context, sql string, args ...any) (app.Share, error) {
-	share, err := scanShare(s.pool.QueryRow(ctx, sql, args...))
+	share, err := scanShare(contentDB(ctx, s.pool).QueryRow(ctx, sql, args...))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return app.Share{}, ErrShareNotFound

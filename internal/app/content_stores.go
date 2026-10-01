@@ -27,7 +27,26 @@ type ContentStores struct {
 
 // AccountStatusStore reads the compact account state behind the status stream.
 type AccountStatusStore interface {
-	AccountStatus(ctx context.Context, userID string) (AccountStatus, error)
+	AccountStatus(ctx context.Context, userID string, options ...AccountStatusOptions) (AccountStatus, error)
+}
+
+// TransferItemAttachmentStore commits the manifest binding, attachment, scan
+// job and upload charge together. RetainReference is true only for a new
+// attachment (or an uncertain commit); losing contenders release their reserve.
+type TransferItemAttachmentStore interface {
+	CommitTransferItemAttachment(context.Context, TransferItemAttachmentInput) (TransferItemAttachmentResult, error)
+}
+
+type TransferItemAttachmentInput struct {
+	TransferID string
+	ItemID     string
+	Attachment Attachment
+	ScanJob    QueueItem
+}
+
+type TransferItemAttachmentResult struct {
+	Attachment      Attachment
+	RetainReference bool
 }
 
 type ObjectStore interface {
@@ -181,6 +200,13 @@ type PickupAttemptWindow struct {
 type PickupAttemptStore interface {
 	PickupAttemptCount(ctx context.Context, key string, window time.Duration, now time.Time) (PickupAttemptWindow, error)
 	RecordPickupFailure(ctx context.Context, key string, window time.Duration, now time.Time) (PickupAttemptWindow, error)
+}
+
+// PickupAttemptCoordinator serializes budget checking, lookup and failure
+// accounting across instances. Lookup failures are normal outcomes: their
+// counter writes must commit even when fn returns pickup_not_found.
+type PickupAttemptCoordinator interface {
+	WithPickupAttemptLock(ctx context.Context, key string, window time.Duration, fn func(context.Context) error) error
 }
 
 type SharesByPasteStore interface {

@@ -383,7 +383,7 @@ func NewJobStore(pool *pgxpool.Pool) *JobStore {
 }
 
 func (s *JobStore) CreateJob(ctx context.Context, job JobRecord) error {
-	if _, err := s.pool.Exec(ctx, `
+	if _, err := contentDB(ctx, s.pool).Exec(ctx, `
 INSERT INTO jobs (id, kind, target_id, status, attempts, last_error, run_after, claimed_by, lease_expires_at, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 `, job.ID, job.Kind, job.TargetID, job.Status, job.Attempts, job.LastError, job.RunAfter, strings.TrimSpace(job.ClaimedBy), job.LeaseExpiresAt, job.CreatedAt, job.UpdatedAt); err != nil {

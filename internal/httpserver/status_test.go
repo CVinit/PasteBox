@@ -278,6 +278,89 @@ func TestAccountStatusStreamRejectsAnUnauthenticatedCaller(t *testing.T) {
 	}
 }
 
+func TestAccountStatusStreamStopsWhenSessionEnds(t *testing.T) {
+	for _, ending := range []string{"logout", "logout-all", "expiry", "password-reset"} {
+		t.Run(ending, func(t *testing.T) {
+			service, handler, clock := newClaimClockTestServer(t)
+			handler.(*Server).statusSyncInterval = statusStreamInterval
+			server := httptest.NewServer(handler)
+			t.Cleanup(server.Close)
+			owner := newHTTPTestClient(t, handler)
+			registerHTTPUser(t, owner, "ended-session@example.com", "Owner")
+			userID := owner.userID()
+			session := *owner.cookies[sessionCookieName]
+			stream := openStatusStream(t, server, "/api/v1/me/events", owner.cookies)
+			stream.nextStatus()
+
+			switch ending {
+			case "logout", "logout-all":
+				assertStatus(t, owner.json(http.MethodPost, "/api/v1/auth/"+ending, ""), http.StatusOK)
+			case "password-reset":
+				reset := owner.json(http.MethodPost, "/api/v1/auth/password-reset/start", `{"email":"ended-session@example.com"}`)
+				assertStatus(t, reset, http.StatusOK)
+				var token struct {
+					DevToken string `json:"devToken"`
+				}
+				decodeResponse(t, reset, &token)
+				if token.DevToken == "" {
+					t.Fatal("missing reset token")
+				}
+				assertStatus(t, owner.json(http.MethodPost, "/api/v1/auth/password-reset/finish", `{"token":"`+token.DevToken+`","password":"updated-password"}`), http.StatusOK)
+			case "expiry":
+				clock.Advance(session.Expires.Sub(clock.Now()) + time.Second)
+			}
+			// A different valid session may create content after this one ends.
+			// The old stream must close, not disclose that newer record.
+			if _, err := service.CreateTransferWithContext(context.Background(), userID, app.TransferInput{
+				Text: "new private record", ExpiresInSeconds: 3600,
+			}); err != nil {
+				t.Fatalf("create newer record: %v", err)
+			}
+			event := stream.nextNamedEvent()
+			if event.Name != "closed" || !strings.Contains(event.Data, "unauthorized") {
+				t.Fatalf("ended session received %q instead of closed/unauthorized", event.Name)
+			}
+		})
+	}
+}
+
+func TestAccountStatusStreamPagesHistoryAndWatchesOldEditor(t *testing.T) {
+	service, handler, clock := newClaimClockTestServer(t)
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	owner := newHTTPTestClient(t, handler)
+	registerHTTPUser(t, owner, "status-pages@example.com", "Owner")
+	admin, err := service.SeedAdmin("status-pages-admin@example.com", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.AdminSetUserPlan(admin.ID, owner.userID(), "pro", nil, "test pages", ""); err != nil {
+		t.Fatal(err)
+	}
+	var old app.TransferView
+	for i := range app.AccountStatusPageSize + 1 {
+		clock.Advance(time.Second)
+		transfer, err := service.CreateTransferWithContext(context.Background(), owner.userID(), app.TransferInput{Text: "saved", ExpiresInSeconds: 3600})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			old = transfer
+		}
+	}
+	stream := openStatusStream(t, server, "/api/v1/me/events?pasteId="+old.PasteID, owner.cookies)
+	first := stream.nextStatus()
+	if len(first.Transfers) != app.AccountStatusPageSize || first.NextTransferCursor == "" || len(first.Pastes) != app.AccountStatusPageSize+1 {
+		t.Fatalf("unexpected bounded snapshot: %#v", first)
+	}
+	stream.close()
+	history := openStatusStream(t, server, "/api/v1/me/events?before="+first.NextTransferCursor+"&pasteId="+old.PasteID, owner.cookies)
+	last := history.nextStatus()
+	if len(last.Transfers) != 1 || last.Transfers[0].TransferID != old.ID || last.NextTransferCursor != "" {
+		t.Fatalf("older record disappeared: %#v", last)
+	}
+}
+
 // TestShareStatusStreamServesRecipientAndSenderWithoutSpendingAClaim covers the
 // credential scope from both sides of the same send: the sender that just
 // published watches it, the recipient that opened it watches it, a browser that

@@ -117,13 +117,28 @@ func (s *Service) ResolvePickupCodeWithContext(ctx context.Context, code string,
 	if !validPickupCode(normalized) {
 		return PickupResolution{}, pickupNotFoundError()
 	}
+	key := "pickup:" + clientKey
+	if coordinator, ok := s.content.PickupAttempts.(PickupAttemptCoordinator); ok {
+		s.mu.Lock()
+		window := s.pickupAttemptWindowLocked()
+		s.mu.Unlock()
+		var result PickupResolution
+		err := coordinator.WithPickupAttemptLock(ctx, key, window, func(lockCtx context.Context) error {
+			var err error
+			result, err = s.resolvePickupAttempt(lockCtx, normalized, key)
+			return err
+		})
+		return result, err
+	}
+	return s.resolvePickupAttempt(ctx, normalized, key)
+}
 
+func (s *Service) resolvePickupAttempt(ctx context.Context, normalized string, key string) (PickupResolution, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	window := s.pickupAttemptWindowLocked()
 	now := s.now().UTC()
-	key := "pickup:" + clientKey
 	if err := s.checkPickupBudgetLocked(ctx, key, window, now); err != nil {
 		return PickupResolution{}, err
 	}

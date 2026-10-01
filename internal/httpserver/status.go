@@ -108,8 +108,18 @@ func (s *Server) streamAccountStatus(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	session, _ := r.Cookie(sessionCookieName) // requireUser already validated it.
 	s.streamStatus(w, r, statusStreamScope{Key: "user:" + user.ID, Kind: "account"}, func(ctx context.Context) (any, error) {
-		return s.app.AccountStatusWithContext(ctx, user.ID)
+		// A stream outlives individual requests. Recheck the original credential,
+		// not just the account, so logout and expiry also end an open stream.
+		current, err := s.app.UserForSessionWithContext(ctx, session.Value)
+		if err != nil {
+			return nil, err
+		}
+		if current.ID != user.ID {
+			return nil, app.E(http.StatusUnauthorized, "unauthenticated", "login required")
+		}
+		return s.app.AccountStatusWithContext(ctx, user.ID, app.AccountStatusOptions{BeforeTransferID: r.URL.Query().Get("before"), ActivePasteID: r.URL.Query().Get("pasteId")})
 	})
 }
 
@@ -121,13 +131,12 @@ func (s *Server) streamAccountStatus(w http.ResponseWriter, r *http.Request) {
 // second protocol.
 func (s *Server) streamShareStatus(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "token")
-	viewerID := s.optionalUserID(r)
 	claimToken := s.transferClaimToken(r)
 	s.streamStatus(w, r, statusStreamScope{Key: "share:" + token, Kind: "share"}, func(ctx context.Context) (any, error) {
 		// The page grant is re-checked on every tick, so a subscription cannot
 		// outlive the grant it was opened with. The claim cookie is resolved by
 		// the service, which is where claim validity lives.
-		return s.app.ShareStatusWithContext(ctx, token, claimToken, s.validShareAccessCookie(r, token, viewerID))
+		return s.app.ShareStatusWithContext(ctx, token, claimToken, s.validShareAccessCookie(r, token, s.optionalUserID(r)))
 	})
 }
 

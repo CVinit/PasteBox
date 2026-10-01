@@ -1936,3 +1936,77 @@ from the bounded startup cache.
 
 Correct: pass `r.Context()` through the service/store boundary and query owner
 records explicitly for full-account operations.
+
+## Scenario: Bounded Account Status And Atomic Transfer Uploads
+
+### 1. Scope / Trigger
+
+Changes to account SSE, transfer-item upload finalization, or pickup-code admission.
+
+### 2. Signatures
+
+- `GET /api/v1/me/events?before=<transferID>&pasteId=<activePasteID>`.
+- `AccountStatusWithContext(ctx, userID, ...AccountStatusOptions)`.
+- `TransferItemAttachmentStore.CommitTransferItemAttachment(ctx, input)`.
+- `PickupAttemptCoordinator.WithPickupAttemptLock(ctx, key, window, fn)`.
+- Migration `000014_status_pages.sql` adds owner/order and live-claim indexes.
+
+### 3. Contracts
+
+- Revalidate the stream's original session on every read; an active account
+  alone is not authorization after logout, logout-all, reset, or session expiry.
+- An account snapshot returns at most 50 transfers and 50 recent paste markers
+  plus the active editor marker if it is older. `nextTransferCursor` is absent
+  on the last page. Empty arrays remain `[]`.
+- Both cursor lookup and editor lookup are owner-scoped. History uses a
+  `(created_at, id)` keyset, not OFFSET. Keep the tuple range predicate outside
+  an optional-parameter OR so generic prepared plans can seek the index.
+- PostgreSQL reads claim existence in the bounded transfer query. Do not call
+  `CountLiveTransferClaims` once for every account row. Share status and account
+  status use the same pure burn/state rules.
+- Upload contenders each reserve an object reference before the short metadata
+  transaction. The transaction locks the transfer/item and commits attachment,
+  manifest binding, paste scan state, scan job, and daily charge together.
+- A matching contender reuses the winner without another charge; a different
+  hash/size conflicts. Release losers' reservations through the object-key
+  coordinator. Keep post-object-I/O quota and content-state validation.
+- `RetainReference=true` also covers uncertain COMMIT delivery. Do not delete
+  potentially committed bytes; this rare storage failure needs reconciliation.
+- Pickup budget check, lookup, and failure write share one locked transaction.
+  Commit an ordinary not-found outcome so the failure counts. Successful
+  lookups leave the budget unchanged. Reuse the scoped transaction connection.
+
+### 4. Validation & Error Matrix
+
+- Original session expires/revokes -> `closed` with `reason=unauthorized`.
+- Foreign/missing page cursor -> empty transfer page, never another user's row.
+- Foreign/missing editor ID -> no extra marker.
+- Competing upload bytes or a changed binding -> `409 transfer_item_conflict`.
+  Expiry detected in preflight keeps the ordinary upload expiry error.
+- Scan-job/metadata failure before commit -> roll back binding, attachment and
+  charge; release the reserved object reference.
+- Nine failed pickup guesses plus concurrent failures -> one more not-found;
+  remaining requests are rate-limited. Valid lookups before exhaustion cost zero.
+
+### 5. Good/Base/Bad Cases
+
+- Good: A 123-record account is navigable in three bounded pages; the active old
+  editor remains watched while newer records arrive.
+- Base: Two instances upload identical bytes to one item and both get one ID.
+- Bad: LIMIT without an order index, or a process mutex treated as a DB lock.
+
+### 6. Tests Required
+
+- HTTP session endings and history cursor/old-editor response contracts.
+- PostgreSQL historical pages, owner isolation, and no per-row claim reads.
+- Two services with a deterministic upload barrier: matching/conflicting bytes,
+  one attachment/reference/charge, scan-job rollback, cancel, and guest uploads.
+- Real PostgreSQL pickup admission at nine failures, including valid lookups.
+- `make test`, PostgreSQL-backed `go test -race`, `go vet`, and `make build`.
+
+### 7. Wrong vs Correct
+
+- Wrong: create an attachment, then overwrite a manifest item outside the same
+  transaction; the losing attachment remains active and still consumes quota.
+- Correct: atomically choose/create the item attachment and commit all metadata
+  side effects, then release only the losing request's object reservation.

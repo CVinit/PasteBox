@@ -823,7 +823,6 @@ func (s *Service) storePreparedObject(ctx context.Context, objectKey string, upl
 
 func (s *Service) createPreparedAttachmentForPasteLocked(ctx context.Context, userID string, paste *Paste, upload *PreparedAttachmentUpload, stored preparedObjectStorage) (AttachmentView, error) {
 	now := s.now().UTC()
-	status, scanStatus, risk := "active", "pending", classifyAttachmentRisk(upload.FileName, upload.ContentType)
 	objectKey := stored.objectKey
 	if objectKey == "" {
 		objectKey = preparedAttachmentObjectKey(userID, upload)
@@ -832,22 +831,8 @@ func (s *Service) createPreparedAttachmentForPasteLocked(ctx context.Context, us
 	if stored.inMemory {
 		s.objects[objectKey] = append([]byte(nil), stored.content...)
 	}
-	attachment := &Attachment{
-		ID:          s.newID("att"),
-		UserID:      userID,
-		PasteID:     paste.ID,
-		FileName:    sanitizeFileName(upload.FileName),
-		ContentType: upload.ContentType,
-		Size:        upload.Size,
-		SHA256:      upload.SHA256,
-		ObjectKey:   objectKey,
-		Status:      status,
-		ScanStatus:  scanStatus,
-		Risk:        risk,
-		ImageWidth:  upload.ImageWidth,
-		ImageHeight: upload.ImageHeight,
-		CreatedAt:   now,
-	}
+	prepared := s.preparedAttachmentLocked(userID, paste.ID, upload, objectKey, now)
+	attachment := &prepared
 	if err := s.createAttachmentLocked(ctx, attachment); err != nil {
 		s.rollbackUnreferencedStoredObjectLocked(ctx, attachment.ObjectKey, existingObjectRefs)
 		return AttachmentView{}, err
@@ -1013,4 +998,23 @@ func (s *Service) AddAttachmentStream(userID string, pasteID string, fileName st
 
 func (s *Service) PreflightAttachmentUpload(userID string, pasteID string) (AttachmentUploadPreflight, error) {
 	return s.PreflightAttachmentUploadWithContext(context.Background(), userID, pasteID)
+}
+
+func (s *Service) preparedAttachmentLocked(userID, pasteID string, upload *PreparedAttachmentUpload, objectKey string, now time.Time) Attachment {
+	return Attachment{
+		ID:          s.newID("att"),
+		UserID:      userID,
+		PasteID:     pasteID,
+		FileName:    sanitizeFileName(upload.FileName),
+		ContentType: upload.ContentType,
+		Size:        upload.Size,
+		SHA256:      upload.SHA256,
+		ObjectKey:   objectKey,
+		Status:      "active",
+		ScanStatus:  "pending",
+		Risk:        classifyAttachmentRisk(upload.FileName, upload.ContentType),
+		ImageWidth:  upload.ImageWidth,
+		ImageHeight: upload.ImageHeight,
+		CreatedAt:   now,
+	}
 }

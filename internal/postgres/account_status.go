@@ -11,9 +11,8 @@ import (
 )
 
 // AccountStatusStore reads the compact account state behind the status stream.
-// It is deliberately one query per table and never returns content, so the
-// stream's per-tick cost is a fixed number of queries and never a read of file
-// bytes or attachment rows.
+// It reads an indexed history page plus recent and active-editor markers.
+// Claim existence is included in the page query, not fetched once per send.
 type AccountStatusStore struct {
 	pool *pgxpool.Pool
 }
@@ -25,11 +24,23 @@ func NewAccountStatusStore(pool *pgxpool.Pool) *AccountStatusStore {
 // AccountStatus returns the sender's sends and the change markers of their
 // records in two queries. The share is joined and the declared file count comes
 // from an indexed subquery, so a status tick is a fixed number of queries
-// whatever the account holds; the rows it returns still grow with the account.
+// whatever the account holds; each page has at most AccountStatusPageSize sends.
 // Two API instances report the same answer because both read the committed
 // rows.
-func (s *AccountStatusStore) AccountStatus(ctx context.Context, userID string) (app.AccountStatus, error) {
+func (s *AccountStatusStore) AccountStatus(ctx context.Context, userID string, options ...app.AccountStatusOptions) (app.AccountStatus, error) {
+	opts := app.AccountStatusOptions{}
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	status := app.AccountStatus{Transfers: []app.TransferStatus{}, Pastes: []app.PasteStatus{}}
+	args := []any{userID, app.AccountStatusPageSize + 1}
+	cursorFilter := ""
+	if opts.BeforeTransferID != "" {
+		// Keep the tuple predicate outside an OR so even a generic prepared
+		// plan can seek the composite index instead of scanning skipped pages.
+		cursorFilter = " AND (created_at, id) < (SELECT created_at, id FROM transfers WHERE id=$3 AND user_id=$1)"
+		args = append(args, opts.BeforeTransferID)
+	}
 
 	rows, err := s.pool.Query(ctx, `
 SELECT `+transferColumnsPrefixed+`,
@@ -39,13 +50,19 @@ SELECT `+transferColumnsPrefixed+`,
        COALESCE(sh.pickup_code, ''),
        sh.expires_at,
        sh.revoked_at,
-       (SELECT count(*) FROM transfer_items i WHERE i.transfer_id = t.id)
-FROM transfers t
+       (SELECT count(*) FROM transfer_items i WHERE i.transfer_id = t.id),
+       EXISTS (SELECT 1 FROM transfer_claims c WHERE c.transfer_id = t.id AND c.status = 'active' AND c.expires_at > CURRENT_TIMESTAMP)
+FROM (
+  SELECT * FROM transfers
+  WHERE user_id = $1`+cursorFilter+`
+  ORDER BY created_at DESC, id DESC
+  LIMIT $2
+) t
 LEFT JOIN pastes p ON p.id = t.paste_id
 LEFT JOIN shares sh ON sh.id = t.share_id
 WHERE t.user_id = $1
 ORDER BY t.created_at DESC, t.id DESC
-`, userID)
+`, args...)
 	if err != nil {
 		return app.AccountStatus{}, fmt.Errorf("query account status transfers: %w", err)
 	}
@@ -61,12 +78,18 @@ ORDER BY t.created_at DESC, t.id DESC
 		return app.AccountStatus{}, fmt.Errorf("read account status transfers: %w", err)
 	}
 
+	if len(status.Transfers) > app.AccountStatusPageSize {
+		status.Transfers = status.Transfers[:app.AccountStatusPageSize]
+		status.NextTransferCursor = status.Transfers[app.AccountStatusPageSize-1].Transfer.ID
+	}
+
 	pasteRows, err := s.pool.Query(ctx, `
-SELECT id, status, updated_at
-FROM pastes
-WHERE user_id = $1
+(SELECT id, status, updated_at FROM pastes WHERE user_id = $1
+ ORDER BY updated_at DESC, id DESC LIMIT $2)
+UNION
+(SELECT id, status, updated_at FROM pastes WHERE user_id = $1 AND id = $3)
 ORDER BY updated_at DESC, id DESC
-`, userID)
+`, userID, app.AccountStatusPageSize, opts.ActivePasteID)
 	if err != nil {
 		return app.AccountStatus{}, fmt.Errorf("query account status pastes: %w", err)
 	}
@@ -114,6 +137,7 @@ func scanTransferStatus(row rowScanner) (app.TransferStatus, error) {
 		&shareExpiresAt,
 		&shareRevokedAt,
 		&record.ItemCount,
+		&record.HasLiveClaims,
 	); err != nil {
 		return app.TransferStatus{}, fmt.Errorf("scan account status transfer: %w", err)
 	}
