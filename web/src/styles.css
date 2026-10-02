@@ -4971,6 +4971,12 @@ code {
 .send-settings-group {
   display: grid;
   gap: 6px;
+  /* The group is its own size container because the same viewport gives it very
+     different widths: the composer is over 1000px wide on a desktop, the guest
+     workbench on the landing page is 520px. Only the group's own width can tell
+     the two apart, so the fold below is driven by it rather than by a viewport
+     breakpoint. */
+  container-type: inline-size;
 }
 
 .send-settings-label {
@@ -4987,6 +4993,28 @@ code {
     auto;
   gap: 10px;
   align-items: center;
+}
+
+/* The password placeholder is the only label that field ever shows, so the row
+   has to keep it readable: the longest one ("Contraseña (opcional)") needs about
+   210px once the field's icon, gap and padding are counted, and the expiry and
+   claim columns take 280px before it. That leaves one row needing roughly 690px
+   in the widest locale; the extra headroom here absorbs font differences. Below
+   that the group folds into two columns, so a narrower surface gets readable
+   fields instead of one glyph in a box. */
+@container (max-width: 719px) {
+  .send-settings {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Two columns stop working at the same limit, so a surface too narrow even for
+   that — the landing hero squeezes the guest workbench to about 385px before it
+   stacks — drops to one field per row rather than clipping the label again. */
+@container (max-width: 431px) {
+  .send-settings {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* The claim count is a slot count, not a recipient list, so its explanation
