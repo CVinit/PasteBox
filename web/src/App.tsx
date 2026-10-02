@@ -9696,6 +9696,9 @@ function SendSettingsFields({
             value={password}
           />
         </label>
+        {/* The count is never empty — clampClaimQuota keeps it at one or more —
+            so a placeholder here would never be painted. The icon, the
+            accessible name and the hint below are what label this field. */}
         <label>
           <Users size={16} aria-hidden="true" />
           <input
@@ -9708,7 +9711,6 @@ function SendSettingsFields({
                 clampClaimQuota(Number(event.target.value), maxClaimQuota),
               )
             }
-            placeholder={labels.claimQuotaLabel}
             type="number"
             value={claimQuota}
           />
