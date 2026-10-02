@@ -8492,21 +8492,6 @@ type GuestWorkbenchCopy = {
   login: string;
 };
 
-const fallbackGuestUploads: GuestUploadConfig = {
-  enabled: true,
-  requireTurnstile: false,
-  retentionSeconds: 6 * 60 * 60,
-  activePasteLimit: 5,
-  activeStorageBytes: 50 * 1024 * 1024,
-  singleTextBytes: 64 * 1024,
-  singleFileBytes: 10 * 1024 * 1024,
-  singlePasteBytes: 15 * 1024 * 1024,
-  attachmentsPerPasteLimit: 3,
-  dailyUploadBytes: 100 * 1024 * 1024,
-  dailyShareDownloadBytes: 100 * 1024 * 1024,
-  shareDownloadsEnabled: true,
-};
-
 const guestWorkbenchCopy: Record<Locale, GuestWorkbenchCopy> = {
   en: {
     hint: "Guest mode creates a temporary share link.",
@@ -9910,7 +9895,10 @@ function LandingPage({
   );
   const showPricing = visiblePaidPlanIds.size > 0 && priceCards.length > 0;
   const showcasePlan = priceCards[0];
-  const guestUploads = catalog?.guestUploads ?? fallbackGuestUploads;
+  // The guest workbench states the guest allowance, so it only appears once the
+  // server has published that allowance. Until then the hero shows the clay
+  // scene alone rather than numbers this build guessed at.
+  const guestUploads = catalog?.guestUploads;
   const facts = landingFacts(catalog, t);
 
   return (
@@ -9999,11 +9987,13 @@ function LandingPage({
             className="clay-scene landing-clay-scene"
             src={clayHeroAsset}
           />
-          <GuestWorkbench
-            config={guestUploads}
-            locale={locale}
-            maxClaimQuota={catalog?.transfers?.maxClaimQuota ?? 0}
-          />
+          {guestUploads ? (
+            <GuestWorkbench
+              config={guestUploads}
+              locale={locale}
+              maxClaimQuota={catalog?.transfers?.maxClaimQuota ?? 0}
+            />
+          ) : null}
         </div>
       </section>
 
