@@ -9750,18 +9750,13 @@ function SendSettingsFields({
   );
 }
 
-// UsageBoundaryNotice states the content rules and points at the same abuse and
-// privacy pages the footer links use, so the wording for content norms,
-// reporting and privacy stays identical wherever it appears.
+// UsageBoundaryNotice states the content rules in one wording, so the notice
+// cannot drift between the surfaces that show it. The abuse and privacy pages it
+// used to link are the two rows directly under it in every footer that renders
+// it, and linking them twice put the same destination on screen twice.
 function UsageBoundaryNotice({ locale }: { locale: Locale }) {
   const t = copyFor(locale);
-  return (
-    <p className="usage-boundary">
-      <span>{t("contentRules")}</span>
-      <a href="/legal/abuse">{t("abuseDmca")}</a>
-      <a href="/legal/privacy">{t("privacy")}</a>
-    </p>
-  );
+  return <p className="usage-boundary">{t("contentRules")}</p>;
 }
 
 function PickupEntry({ locale }: { locale: Locale }) {
@@ -11451,11 +11446,18 @@ function PublicPageScreen({
   );
 }
 
-function footerGroupsFor(locale: Locale) {
+// FooterGroup.heading is null when the group holds a single link that already
+// says the group's own name: the heading would only print that word twice.
+type FooterGroup = {
+  heading: string | null;
+  links: Array<{ href: string; label: string }>;
+};
+
+function footerGroupsFor(locale: Locale): FooterGroup[] {
   const t = copyFor(locale);
-  return [
+  const groups = [
     {
-      title: t("footerLegal"),
+      heading: t("footerLegal"),
       links: [
         { href: "/legal", label: t("legalHub") },
         { href: "/legal/terms", label: t("terms") },
@@ -11464,7 +11466,7 @@ function footerGroupsFor(locale: Locale) {
       ],
     },
     {
-      title: t("footerTrust"),
+      heading: t("footerTrust"),
       links: [
         { href: "/legal/refund", label: t("refund") },
         { href: "/legal/abuse", label: t("abuseDmca") },
@@ -11472,10 +11474,15 @@ function footerGroupsFor(locale: Locale) {
       ],
     },
     {
-      title: t("footerSupport"),
+      heading: t("footerSupport"),
       links: [{ href: "/support", label: t("support") }],
     },
   ];
+  return groups.map((group) =>
+    group.links.length === 1 && group.links[0].label === group.heading
+      ? { ...group, heading: null }
+      : group,
+  );
 }
 
 function WorkspaceFooter({ locale }: { locale: Locale }) {
@@ -11486,8 +11493,11 @@ function WorkspaceFooter({ locale }: { locale: Locale }) {
       <UsageBoundaryNotice locale={locale} />
       <nav aria-label={t("legalNavigation")}>
         {groups.map((group) => (
-          <section className="workspace-footer-group" key={group.title}>
-            <strong>{group.title}</strong>
+          <section
+            className="workspace-footer-group"
+            key={group.heading ?? group.links[0].href}
+          >
+            {group.heading ? <strong>{group.heading}</strong> : null}
             <div>
               {group.links.map((link) => (
                 <a href={link.href} key={link.href}>
@@ -11522,8 +11532,18 @@ function PublicFooter({
       <UsageBoundaryNotice locale={locale} />
       <nav aria-label={t("legalNavigation")}>
         {groups.map((group) => (
-          <section className="public-footer-group" key={group.title}>
-            <strong>{group.title}</strong>
+          <section
+            className="public-footer-group"
+            key={group.heading ?? group.links[0].href}
+          >
+            {/* This footer stacks each group as a column, so a group whose
+                heading would repeat its only link keeps that row as space:
+                without it the link would sit on the headings' line. */}
+            <strong
+              className={group.heading ? undefined : "public-footer-heading-empty"}
+            >
+              {group.heading ?? group.links[0].label}
+            </strong>
             <div>
               {group.links.map((link) => (
                 <a href={link.href} key={link.href}>

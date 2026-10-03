@@ -2639,6 +2639,13 @@ code {
   text-transform: uppercase;
 }
 
+/* A group whose heading would only repeat its single link keeps that row as
+   space, so the link still lines up with the links of the other columns. The
+   hidden text keeps the row's real height instead of a hardcoded one. */
+.public-footer-heading-empty {
+  visibility: hidden;
+}
+
 .public-footer-group div {
   display: grid;
   gap: 3px;
@@ -5128,8 +5135,10 @@ code {
   letter-spacing: 0.04em;
 }
 
-/* One wording for content rules, abuse reporting and privacy, reused by both
-   footers so the notice cannot drift between surfaces. */
+/* One wording for content rules, reused by both footers so the notice cannot
+   drift between surfaces. The public footer centers its notice over centered
+   link columns; the workspace footer's links start at the left edge, so its
+   notice starts there too instead of sitting centered above a left-aligned row. */
 .usage-boundary {
   display: flex;
   flex-wrap: wrap;
@@ -5143,12 +5152,9 @@ code {
   text-align: center;
 }
 
-.public-footer .usage-boundary a,
-.workspace-footer .usage-boundary a {
-  display: inline;
-  padding: 0;
-  color: var(--brand-strong);
-  font-weight: 800;
+.workspace-footer .usage-boundary {
+  justify-content: flex-start;
+  text-align: left;
 }
 
 /* The status channel. A page shows the transport state it really observes —
