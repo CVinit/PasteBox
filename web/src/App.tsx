@@ -12,6 +12,7 @@ import {
   Archive,
   Ban,
   CheckCircle2,
+  ChevronDown,
   ClipboardCopy,
   Clock3,
   CreditCard,
@@ -28,6 +29,9 @@ import {
   LogOut,
   MailCheck,
   Megaphone,
+  Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pin,
   RotateCcw,
   Scale,
@@ -44,6 +48,7 @@ import {
   UploadCloud,
   UserRound,
   Users,
+  X,
 } from "lucide-react";
 
 import {
@@ -1056,6 +1061,11 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     traffic: "Traffic",
     activePastes: "active pastes",
     activePastesLabel: "Active pastes",
+    workspaceMenu: "Workspace menu",
+    workspaceOverview: "Workspace overview",
+    collapseSidebar: "Collapse sidebar",
+    expandSidebar: "Expand sidebar",
+    closeDetails: "Close details",
     planLimit: "plan limit",
     storageOf: "of",
     sharedLinks: "Shared links",
@@ -1486,6 +1496,11 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     traffic: "流量",
     activePastes: "条有效内容",
     activePastesLabel: "有效内容",
+    workspaceMenu: "工作区菜单",
+    workspaceOverview: "工作区概览",
+    collapseSidebar: "收起侧栏",
+    expandSidebar: "展开侧栏",
+    closeDetails: "关闭详情",
     planLimit: "套餐上限",
     storageOf: "共",
     sharedLinks: "分享链接",
@@ -1906,6 +1921,11 @@ const copy: Record<Locale, Record<string, string>> = {
     traffic: "流量",
     activePastes: "則有效內容",
     activePastesLabel: "有效內容",
+    workspaceMenu: "工作區選單",
+    workspaceOverview: "工作區概覽",
+    collapseSidebar: "收起側欄",
+    expandSidebar: "展開側欄",
+    closeDetails: "關閉詳情",
     planLimit: "方案上限",
     storageOf: "共",
     sharedLinks: "分享連結",
@@ -2294,6 +2314,11 @@ const copy: Record<Locale, Record<string, string>> = {
     traffic: "Tráfico",
     activePastes: "pastes activos",
     activePastesLabel: "Pastes activos",
+    workspaceMenu: "Menú del espacio de trabajo",
+    workspaceOverview: "Resumen del espacio de trabajo",
+    collapseSidebar: "Contraer barra lateral",
+    expandSidebar: "Expandir barra lateral",
+    closeDetails: "Cerrar detalles",
     planLimit: "límite del plan",
     storageOf: "de",
     sharedLinks: "Enlaces compartidos",
@@ -4047,11 +4072,46 @@ function App() {
     "PasteBox alert test",
   );
   const [view, setView] = useState<View>("inbox");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return (
+        window.localStorage.getItem("pastebox.sidebarCollapsed") === "true"
+      );
+    } catch {
+      return false;
+    }
+  });
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [overviewOpen, setOverviewOpen] = useState(false);
+  const mobileMenuButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        "pastebox.sidebarCollapsed",
+        String(sidebarCollapsed),
+      );
+    } catch {
+      // Navigation still works when browser storage is unavailable.
+    }
+  }, [sidebarCollapsed]);
+
+  function navigateWorkspace(nextView: View) {
+    setView(nextView);
+    setOverviewOpen(false);
+    setMobileMenuOpen(false);
+    if (mobileMenuOpen) mobileMenuButtonRef.current?.focus();
+  }
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [tagFilter, setTagFilter] = useState("");
   const [draft, setDraft] = useState<Draft>(defaultDraft);
   const [selectedPasteId, setSelectedPasteId] = useState<string>("");
+  useEffect(() => {
+    setSelectedPasteId("");
+    setMobileMenuOpen(false);
+    setOverviewOpen(false);
+  }, [user?.id]);
   const [editDraft, setEditDraft] = useState({
     id: "",
     title: "",
@@ -4199,7 +4259,7 @@ function App() {
       : 0;
 
   const selectedPaste = useMemo(
-    () => pastes.find((paste) => paste.id === selectedPasteId) ?? pastes[0],
+    () => pastes.find((paste) => paste.id === selectedPasteId),
     [pastes, selectedPasteId],
   );
   const tagsPerPasteLimit = activePlan?.tagsPerPasteLimit ?? 0;
@@ -4266,6 +4326,7 @@ function App() {
     ],
   );
   const viewSummary = viewSummaries[locale][view];
+  const currentViewLabel = t(view === "shared" ? "shares" : view);
 
   const pricesByPlan = useMemo(() => {
     const grouped = new Map<string, Price[]>();
@@ -4315,13 +4376,10 @@ function App() {
     if (quotaResult.status === "fulfilled") setQuota(quotaResult.value);
     if (pasteResult.status === "fulfilled") {
       setPastes(pasteResult.value.pastes);
-      if (!selectedPasteId && pasteResult.value.pastes[0]) {
-        setSelectedPasteId(pasteResult.value.pastes[0].id);
-      }
     }
     if (shareResult.status === "fulfilled") setShares(shareResult.value.shares);
     if (orderResult.status === "fulfilled") setOrders(orderResult.value.orders);
-  }, [filter, query, selectedPasteId, tagFilter]);
+  }, [filter, query, tagFilter]);
 
   // The account channel is the workspace's live link: it reports the sender's
   // sends and which records changed. It is also what keeps a remote edit from
@@ -4583,11 +4641,10 @@ function App() {
       : activeSendQueue.phase === "published"
         ? activeSendQueue.share
         : null;
-  // A finished send is a new record, so surface it in the workspace and refresh
-  // the quota and record list the send just changed.
+  // A finished send refreshes the list and quota. Editor selection remains an
+  // explicit record click, not a side effect of publishing content.
   useEffect(() => {
     if (!sendShare?.pasteId) return;
-    setSelectedPasteId(sendShare.pasteId);
     void refreshAuthed();
   }, [refreshAuthed, sendShare]);
 
@@ -4951,7 +5008,6 @@ function App() {
     );
     if (paste) {
       setDraft(defaultDraft);
-      setSelectedPasteId(paste.id);
       await refreshAuthed();
     }
   }
@@ -5042,7 +5098,6 @@ function App() {
       );
       if (!createdPaste) return;
       targetPaste = createdPaste;
-      setSelectedPasteId(targetPaste.id);
     }
 
     const uploaded = await run(
@@ -5821,101 +5876,167 @@ function App() {
   }
 
   return (
-    <main className="app-shell">
-      <aside className="sidebar" aria-label="PasteBox navigation">
-        <div className="brand-mark">
-          <div className="brand-icon">
-            <ClipboardCopy size={22} aria-hidden="true" />
+    <main
+      className={`app-shell${sidebarCollapsed ? " app-shell--sidebar-collapsed" : ""}${mobileMenuOpen ? " app-shell--menu-open" : ""}`}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && mobileMenuOpen) {
+          setMobileMenuOpen(false);
+          mobileMenuButtonRef.current?.focus();
+        }
+      }}
+    >
+      <aside className="sidebar" aria-label={t("workspaceMenu")}>
+        <div className="sidebar-heading">
+          <div className="brand-mark">
+            <div className="brand-icon">
+              <ClipboardCopy size={22} aria-hidden="true" />
+            </div>
+            <div>
+              <strong>PasteBox</strong>
+              <span>{user.email}</span>
+            </div>
           </div>
-          <div>
-            <strong>PasteBox</strong>
-            <span>{user.email}</span>
-          </div>
+          <span className="mobile-view-label" title={currentViewLabel}>
+            {currentViewLabel}
+          </span>
+          <button
+            aria-controls="workspace-navigation"
+            aria-expanded={!sidebarCollapsed}
+            aria-label={t(
+              sidebarCollapsed ? "expandSidebar" : "collapseSidebar",
+            )}
+            className="sidebar-toggle"
+            onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+            title={t(sidebarCollapsed ? "expandSidebar" : "collapseSidebar")}
+            type="button"
+          >
+            {sidebarCollapsed ? (
+              <PanelLeftOpen size={20} aria-hidden="true" />
+            ) : (
+              <PanelLeftClose size={20} aria-hidden="true" />
+            )}
+          </button>
+          <button
+            aria-controls="workspace-menu workspace-tools workspace-overview"
+            aria-expanded={mobileMenuOpen}
+            aria-label={t("workspaceMenu")}
+            className="mobile-menu-toggle"
+            onClick={() => setMobileMenuOpen((open) => !open)}
+            ref={mobileMenuButtonRef}
+            type="button"
+          >
+            {mobileMenuOpen ? (
+              <X size={20} aria-hidden="true" />
+            ) : (
+              <Menu size={20} aria-hidden="true" />
+            )}
+          </button>
         </div>
 
-        <nav className="nav-list">
-          <button
-            className={navClass(view, "inbox")}
-            type="button"
-            onClick={() => setView("inbox")}
-          >
-            <Archive size={18} aria-hidden="true" />
-            {t("inbox")}
-          </button>
-          <button
-            className={navClass(view, "sends")}
-            type="button"
-            onClick={() => setView("sends")}
-          >
-            <Send size={18} aria-hidden="true" />
-            {t("sends")}
-          </button>
-          <button
-            className={navClass(view, "shared")}
-            type="button"
-            onClick={() => setView("shared")}
-          >
-            <Link2 size={18} aria-hidden="true" />
-            {t("shares")}
-          </button>
-          <button
-            className={navClass(view, "billing")}
-            type="button"
-            onClick={() => setView("billing")}
-          >
-            <CreditCard size={18} aria-hidden="true" />
-            {t("billing")}
-          </button>
-          <button
-            className={navClass(view, "settings")}
-            type="button"
-            onClick={() => setView("settings")}
-          >
-            <UserRound size={18} aria-hidden="true" />
-            {t("settings")}
-          </button>
-          {user.role === "admin" ? (
+        <div className="workspace-menu" id="workspace-menu">
+          <p className="mobile-account">{user.email}</p>
+          <nav className="nav-list" id="workspace-navigation">
             <button
-              className={navClass(view, "admin")}
+              aria-label={t("inbox")}
+              title={t("inbox")}
+              className={navClass(view, "inbox")}
               type="button"
-              onClick={() => {
-                setView("admin");
-                void refreshAdmin();
-              }}
+              onClick={() => navigateWorkspace("inbox")}
             >
-              <ShieldCheck size={18} aria-hidden="true" />
-              {t("admin")}
+              <Archive size={18} aria-hidden="true" />
+              <span className="nav-label">{t("inbox")}</span>
             </button>
-          ) : null}
-        </nav>
+            <button
+              aria-label={t("sends")}
+              title={t("sends")}
+              className={navClass(view, "sends")}
+              type="button"
+              onClick={() => navigateWorkspace("sends")}
+            >
+              <Send size={18} aria-hidden="true" />
+              <span className="nav-label">{t("sends")}</span>
+            </button>
+            <button
+              aria-label={t("shares")}
+              title={t("shares")}
+              className={navClass(view, "shared")}
+              type="button"
+              onClick={() => navigateWorkspace("shared")}
+            >
+              <Link2 size={18} aria-hidden="true" />
+              <span className="nav-label">{t("shares")}</span>
+            </button>
+            <button
+              aria-label={t("billing")}
+              title={t("billing")}
+              className={navClass(view, "billing")}
+              type="button"
+              onClick={() => navigateWorkspace("billing")}
+            >
+              <CreditCard size={18} aria-hidden="true" />
+              <span className="nav-label">{t("billing")}</span>
+            </button>
+            <button
+              aria-label={t("settings")}
+              title={t("settings")}
+              className={navClass(view, "settings")}
+              type="button"
+              onClick={() => navigateWorkspace("settings")}
+            >
+              <UserRound size={18} aria-hidden="true" />
+              <span className="nav-label">{t("settings")}</span>
+            </button>
+            {user.role === "admin" ? (
+              <button
+                aria-label={t("admin")}
+                title={t("admin")}
+                className={navClass(view, "admin")}
+                type="button"
+                onClick={() => {
+                  navigateWorkspace("admin");
+                  void refreshAdmin();
+                }}
+              >
+                <ShieldCheck size={18} aria-hidden="true" />
+                <span className="nav-label">{t("admin")}</span>
+              </button>
+            ) : null}
+          </nav>
 
-        <section className="quota-panel" aria-label={t("currentPlan")}>
-          <div>
-            <span className="eyebrow">{t("currentPlan")}</span>
-            <strong>{activePlan?.name ?? user.planId}</strong>
-          </div>
-          <div className="quota-bar">
-            <span
-              style={{
-                width: `${storagePercent}%`,
-              }}
-            />
-          </div>
-          <p>
-            {formatBytes(storageUsed)} / {formatBytes(storageLimit)} ·{" "}
-            {quota?.activePasteCount ?? 0}/{activePlan?.activePasteLimit ?? 0}{" "}
-            {t("pastes")}
-          </p>
-        </section>
+          <section className="quota-panel" aria-label={t("currentPlan")}>
+            <div>
+              <span className="eyebrow">{t("currentPlan")}</span>
+              <strong>{activePlan?.name ?? user.planId}</strong>
+            </div>
+            <div className="quota-bar">
+              <span
+                style={{
+                  width: `${storagePercent}%`,
+                }}
+              />
+            </div>
+            <p>
+              {formatBytes(storageUsed)} / {formatBytes(storageLimit)} ·{" "}
+              {quota?.activePasteCount ?? 0}/{activePlan?.activePasteLimit ?? 0}{" "}
+              {t("pastes")}
+            </p>
+          </section>
 
-        <button className="ghost-button" type="button" onClick={logout}>
-          <LogOut size={16} aria-hidden="true" />
-          {t("logout")}
-        </button>
+          <button
+            aria-label={t("logout")}
+            className="ghost-button sidebar-logout"
+            onClick={logout}
+            title={t("logout")}
+            type="button"
+          >
+            <LogOut size={16} aria-hidden="true" />
+            <span className="nav-label">{t("logout")}</span>
+          </button>
+        </div>
       </aside>
 
       <section className="workspace">
-        <header className="topbar">
+        <header className="topbar" id="workspace-tools">
           <label className="search-box">
             <Search size={18} aria-hidden="true" />
             <input
@@ -5953,28 +6074,51 @@ function App() {
               </span>
             </button>
           ) : null}
-          {message ? <span className="status-pill">{message}</span> : null}
         </header>
 
-        <section className="workspace-hero" aria-label="Workspace overview">
-          <div className="workspace-hero-copy">
-            <span className="eyebrow">{viewSummary.eyebrow}</span>
-            <h1>{viewSummary.title}</h1>
-            <p>{viewSummary.description}</p>
-          </div>
-          <div className="workspace-stat-grid">
-            {workspaceStats.map((stat) => (
-              <article
-                className={`workspace-stat workspace-stat--${stat.tone}`}
-                key={stat.label}
-              >
-                <span>{stat.label}</span>
-                <strong>{stat.value}</strong>
-                <small>{stat.detail}</small>
-              </article>
-            ))}
-          </div>
-        </section>
+        <details
+          className="workspace-overview"
+          id="workspace-overview"
+          onToggle={(event) => setOverviewOpen(event.currentTarget.open)}
+          open={overviewOpen}
+        >
+          <summary>
+            <span>{t("workspaceOverview")}</span>
+            <ChevronDown size={18} aria-hidden="true" />
+          </summary>
+          <section
+            className={
+              view === "inbox"
+                ? "workspace-hero workspace-hero--compose"
+                : "workspace-hero"
+            }
+            aria-label={t("workspaceOverview")}
+          >
+            <div className="workspace-hero-copy">
+              <span className="eyebrow">{viewSummary.eyebrow}</span>
+              <h1>{viewSummary.title}</h1>
+              <p>{viewSummary.description}</p>
+            </div>
+            <div className="workspace-stat-grid">
+              {workspaceStats.map((stat) => (
+                <article
+                  className={`workspace-stat workspace-stat--${stat.tone}`}
+                  key={stat.label}
+                >
+                  <span>{stat.label}</span>
+                  <strong>{stat.value}</strong>
+                  <small>{stat.detail}</small>
+                </article>
+              ))}
+            </div>
+          </section>
+        </details>
+
+        {message ? (
+          <p className="status-line workspace-feedback" role="status">
+            {message}
+          </p>
+        ) : null}
 
         {!user.emailVerified ? (
           <section className="verify-banner">
@@ -6055,6 +6199,59 @@ function App() {
                     placeholder={t("pasteTextPlaceholder")}
                   />
                 ) : null}
+                {sendMode !== "text" ? (
+                  <>
+                    <label
+                      aria-disabled={!activeSendQueue.canStage}
+                      className={`drop-zone ${activeSendQueue.canStage ? "" : "drop-zone--locked"}`}
+                      htmlFor={
+                        sendMode === "image" ? imageInputId : attachmentInputId
+                      }
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        const dropped = Array.from(event.dataTransfer.files);
+                        if (sendMode === "image") {
+                          void stageSendImage(dropped);
+                        } else {
+                          stageSendFiles(dropped);
+                        }
+                      }}
+                    >
+                      <UploadCloud size={20} aria-hidden="true" />
+                      <input
+                        accept={sendMode === "image" ? "image/*" : undefined}
+                        className="visually-hidden-file-input"
+                        disabled={!activeSendQueue.canStage}
+                        id={
+                          sendMode === "image"
+                            ? imageInputId
+                            : attachmentInputId
+                        }
+                        multiple={sendMode === "file"}
+                        type="file"
+                        onChange={(event) => {
+                          const files = Array.from(event.target.files ?? []);
+                          event.target.value = "";
+                          if (sendMode === "image") {
+                            void stageSendImage(files);
+                          } else {
+                            stageSendFiles(files);
+                          }
+                        }}
+                      />
+                      {activeSendQueue.canStage
+                        ? `${sendMode === "image" ? transferLabels.chooseImage : transferLabels.sendFile} · ${sendMode === "image" ? transferLabels.dropImageHint : transferLabels.dropFilesHint}`
+                        : sendZoneLabel(activeSendQueue.phase, transferLabels)}
+                    </label>
+                    <SendQueueList
+                      canRemove={activeSendQueue.canStage}
+                      items={activeSendQueue.items}
+                      labels={transferLabels}
+                      onRemove={activeSendQueue.removeFile}
+                    />
+                  </>
+                ) : null}
                 <div className="composer-controls">
                   <label className="tag-input-wrap">
                     <Tags size={16} aria-hidden="true" />
@@ -6111,61 +6308,9 @@ function App() {
                   }
                   password={sendSettings.password}
                 />
-                {sendMode !== "text" ? (
-                  <>
-                    <label
-                      aria-disabled={!activeSendQueue.canStage}
-                      className={`drop-zone ${activeSendQueue.canStage ? "" : "drop-zone--locked"}`}
-                      htmlFor={
-                        sendMode === "image" ? imageInputId : attachmentInputId
-                      }
-                      onDragOver={(event) => event.preventDefault()}
-                      onDrop={(event) => {
-                        event.preventDefault();
-                        const dropped = Array.from(event.dataTransfer.files);
-                        if (sendMode === "image") {
-                          void stageSendImage(dropped);
-                        } else {
-                          stageSendFiles(dropped);
-                        }
-                      }}
-                    >
-                      <UploadCloud size={20} aria-hidden="true" />
-                      <input
-                        accept={sendMode === "image" ? "image/*" : undefined}
-                        className="visually-hidden-file-input"
-                        disabled={!activeSendQueue.canStage}
-                        id={
-                          sendMode === "image"
-                            ? imageInputId
-                            : attachmentInputId
-                        }
-                        multiple={sendMode === "file"}
-                        type="file"
-                        onChange={(event) => {
-                          const files = Array.from(event.target.files ?? []);
-                          event.target.value = "";
-                          if (sendMode === "image") {
-                            void stageSendImage(files);
-                          } else {
-                            stageSendFiles(files);
-                          }
-                        }}
-                      />
-                      {activeSendQueue.canStage
-                        ? `${sendMode === "image" ? transferLabels.chooseImage : transferLabels.sendFile} · ${sendMode === "image" ? transferLabels.dropImageHint : transferLabels.dropFilesHint}`
-                        : sendZoneLabel(activeSendQueue.phase, transferLabels)}
-                    </label>
-                    <SendQueueList
-                      canRemove={activeSendQueue.canStage}
-                      items={activeSendQueue.items}
-                      labels={transferLabels}
-                      onRemove={activeSendQueue.removeFile}
-                    />
-                  </>
-                ) : null}
+
                 <div className="button-row compact">
-                  {sendMode === "file" ? (
+                  {sendMode === "file" && selectedPaste ? (
                     <>
                       <button
                         type="button"
@@ -6269,14 +6414,23 @@ function App() {
               </div>
             </section>
 
-            <section className="content-grid">
+            <section
+              className={`content-grid${selectedPaste ? "" : " content-grid--list-only"}`}
+            >
               <PasteList
                 pastes={pastes}
                 selectedId={selectedPaste?.id ?? ""}
                 onSelect={setSelectedPasteId}
                 onCopy={(text) => void navigator.clipboard?.writeText(text)}
                 onDelete={async (id) => {
-                  await run(() => client.deletePaste(id), t("pasteDeleted"));
+                  const deleted = await run(
+                    () => client.deletePaste(id),
+                    t("pasteDeleted"),
+                  );
+                  if (deleted === null) return;
+                  setSelectedPasteId((current) =>
+                    current === id ? "" : current,
+                  );
                   await refreshAuthed();
                 }}
                 onExtend={(paste, seconds) => void extendPaste(paste, seconds)}
@@ -6287,33 +6441,44 @@ function App() {
                 activeTag={tagFilter}
                 locale={locale}
               />
-              <aside className="side-panel">
-                <PasteEditor
-                  paste={selectedPaste}
-                  draft={editDraft}
-                  onDraft={setEditDraft}
-                  onSave={saveSelectedPaste}
-                  tagLimit={tagsPerPasteLimit}
-                  canEditTags={canEditSelectedTags}
-                  tagsReadOnly={selectedTagsReadOnly}
-                  remoteNotice={remoteDraftNotice === selectedPaste?.id}
-                  onReloadRemote={() => {
-                    if (selectedPaste) void followRemotePaste(selectedPaste.id);
-                  }}
-                  onKeepRemote={() => setRemoteDraftNotice("")}
-                  locale={locale}
-                />
-                <ShareBox
-                  paste={selectedPaste}
-                  draft={shareDraft}
-                  token={shareToken}
-                  onDraft={setShareDraft}
-                  onCreate={createShare}
-                  onOpen={() => void openShare()}
-                  access={shareAccess}
-                  locale={locale}
-                />
-              </aside>
+              {selectedPaste ? (
+                <aside className="side-panel" aria-label={t("edit")}>
+                  <button
+                    className="ghost-button detail-close"
+                    onClick={() => setSelectedPasteId("")}
+                    type="button"
+                  >
+                    <X size={16} aria-hidden="true" />
+                    {t("closeDetails")}
+                  </button>
+                  <PasteEditor
+                    paste={selectedPaste}
+                    draft={editDraft}
+                    onDraft={setEditDraft}
+                    onSave={saveSelectedPaste}
+                    tagLimit={tagsPerPasteLimit}
+                    canEditTags={canEditSelectedTags}
+                    tagsReadOnly={selectedTagsReadOnly}
+                    remoteNotice={remoteDraftNotice === selectedPaste?.id}
+                    onReloadRemote={() => {
+                      if (selectedPaste)
+                        void followRemotePaste(selectedPaste.id);
+                    }}
+                    onKeepRemote={() => setRemoteDraftNotice("")}
+                    locale={locale}
+                  />
+                  <ShareBox
+                    paste={selectedPaste}
+                    draft={shareDraft}
+                    token={shareToken}
+                    onDraft={setShareDraft}
+                    onCreate={createShare}
+                    onOpen={() => void openShare()}
+                    access={shareAccess}
+                    locale={locale}
+                  />
+                </aside>
+              ) : null}
             </section>
           </>
         ) : null}

@@ -671,3 +671,104 @@ old-record synchronization, typing during a delayed read, and explicit reload.
 - Wrong: assign `transferRef.current` immediately after awaiting create.
 - Correct: check run identity first; discard the abandoned transfer without
   changing the new run's state.
+
+
+## Scenario: Foldable Workspace Chrome And Explicit Content Selection
+
+### 1. Scope / Trigger
+
+Changes to workspace navigation, overview cards, compose ordering, editor/share
+visibility, or shared status surfaces. Applies to all authenticated workspace
+views and all four locales.
+
+### 2. Signatures
+
+- `App.tsx`: `sidebarCollapsed`, `mobileMenuOpen`, `overviewOpen`,
+  `navigateWorkspace(nextView)`, and `selectedPasteId`.
+- Preference: `localStorage["pastebox.sidebarCollapsed"]`, with a storage-error
+  fallback that keeps navigation usable.
+- Native disclosure: `details.workspace-overview` and its `summary`.
+- Mobile regions: `#workspace-menu`, `#workspace-tools`, `#workspace-overview`;
+  menu button exposes `aria-controls` and `aria-expanded`.
+- Layout: `.app-shell--sidebar-collapsed`, `.app-shell--menu-open`,
+  `.content-grid--list-only`, and `.workspace-hero--compose`.
+
+### 3. Contracts
+
+- At widths up to 980px, the menu starts closed. Keep Logo, current-view label
+  and a 44px toggle visible; fold account, navigation, quota, logout, search,
+  filters and overview together without duplicating the controls.
+- Navigation closes the menu and overview without resetting compose text,
+  title, or staged upload queues. Escape returns focus to the menu toggle;
+  hidden regions must not remain tabbable. New sessions clear folded chrome
+  state and selected content rather than reusing the previous user's choice.
+- Above 980px, the sidebar starts expanded unless its saved preference says
+  otherwise. Collapsing changes the 300px sidebar to an 84px icon rail. Keep
+  navigation actions and logout usable with localized accessible names.
+- Overview copy and four metrics use a native disclosure, closed by default on
+  every workspace view. On phone compose views (up to 680px), the expanded
+  metrics retain the compact two-column layout and omit the long introduction;
+  other expanded overviews retain their introduction.
+- Title, text entry and file/image staging appear before optional tags and send
+  settings. Check the absolute page top, not only the overview's starting point.
+- `selectedPaste` is a lookup by explicitly clicked ID, without a first-record
+  fallback. Loading, refreshing, creating and publishing content must not select
+  a record. With no selected record, do not render editor/share panels and use
+  one full-width content column. Attachment-to-selected is also hidden until
+  selection. Closing or deleting the selection must not pick another record;
+  deleting an unrelated record or a failed deletion preserves the choice.
+- Keep the existing remote-draft generation/selection/typing guards. Important
+  feedback remains outside foldable controls, with `role="status"`.
+- Ordinary `.status-line` messages keep padding, rounded borders, readable line
+  height and long-text wrapping. Use flexible/minimum metric heights so
+  translated details can wrap; styling must preserve message semantics.
+
+### 4. Validation & Error Matrix
+
+- Mobile cold entry -> menu closed, title and text/upload entry in first screen.
+- Mobile menu open -> all existing account/navigation/search/quota functions
+  accessible; navigation or Escape -> closed with visible keyboard focus.
+- Desktop collapse then reload -> 84px icon rail retained; mobile breakpoint ->
+  compact header regardless of saved desktop preference.
+- Blocked browser storage -> default expanded sidebar still works.
+- All workspace views -> overview defaults closed and still exposes four metrics.
+- Empty/populated-unselected list -> no editor/share or unused grid column.
+- Click/change choice -> matching editor/share shown; close -> full-width list.
+- Delete selected/last record -> no panel; delete unselected -> choice preserved;
+  failed delete -> selection and list retained.
+- New session -> no previous content selection or expanded mobile menu.
+- Longer locale labels -> no clipping or horizontal page overflow.
+
+### 5. Good/Base/Bad Cases
+
+- Good: One responsive navigation subtree, native overview disclosure, explicit
+  content selection and a separate always-visible feedback surface.
+- Base: The expanded compose overview retains its compact phone statistics.
+- Bad: Hiding the empty editor with CSS while keeping a blank grid column;
+  removing only one of the automatic-selection paths; hiding all feedback with
+  search tools; measuring first-screen usability after scrolling past navigation.
+
+### 6. Tests Required
+
+Run `make test-web`, including `scripts/test-web-workspace-layout.cjs` and the
+existing `scripts/test-web-transfer-races.cjs` draft/upload protections. Source
+checks cover initial states, navigation, storage fallback, media scoping,
+accessible controls, compose ordering, explicit selection, refresh and delete
+behavior. They do not replace browser geometry and interaction checks.
+
+Browser-check all four locales at 320/375/390px from absolute scroll position
+zero, all send modes and draft retention, keyboard access, desktop rail reload,
+all six workspace overview views, and populated/empty/selected/deleted content.
+Separate local API fixtures and intercepted writes from real transfer acceptance;
+admin chrome checks do not prove admin data flows or production deployment.
+
+### 7. Wrong vs Correct
+
+- Wrong: `pastes.find(p => p.id === selectedPasteId) ?? pastes[0]`, or automatically
+  calling `setSelectedPasteId` after refresh/create/publish.
+- Correct: `pastes.find(p => p.id === selectedPasteId)` with panels rendered only
+  when that explicit selection exists, plus `.content-grid--list-only` otherwise.
+- Wrong: a fixed-height phone statistic card or a hidden region whose controls
+  remain focusable.
+- Correct: flexible metric heights and real native/`display: none` disclosure
+  behavior, verified with keyboard focus and long localized text.

@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "test": "node ../scripts/test-web-transfer-races.cjs",
+    "test": "node ../scripts/test-web-transfer-races.cjs && node ../scripts/test-web-workspace-layout.cjs",
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b --pretty false",
