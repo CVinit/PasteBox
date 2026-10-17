@@ -677,38 +677,41 @@ old-record synchronization, typing during a delayed read, and explicit reload.
 
 ### 1. Scope / Trigger
 
-Changes to workspace navigation, overview cards, compose ordering, editor/share
+Changes to workspace navigation, sidebar usage, compose ordering, editor/share
 visibility, or shared status surfaces. Applies to all authenticated workspace
 views and all four locales.
 
 ### 2. Signatures
 
-- `App.tsx`: `sidebarCollapsed`, `mobileMenuOpen`, `overviewOpen`,
+- `App.tsx`: `sidebarCollapsed`, `mobileMenuOpen`,
   `navigateWorkspace(nextView)`, and `selectedPasteId`.
 - Preference: `localStorage["pastebox.sidebarCollapsed"]`, with a storage-error
   fallback that keeps navigation usable.
-- Native disclosure: `details.workspace-overview` and its `summary`.
-- Mobile regions: `#workspace-menu`, `#workspace-tools`, `#workspace-overview`;
+- Shared usage: `dl.workspace-usage` inside the sidebar's `.quota-panel`, with
+  four `workspaceStats` entries and an accessible storage progress bar.
+- Mobile regions: `#workspace-menu` and `#workspace-tools`;
   menu button exposes `aria-controls` and `aria-expanded`.
 - Layout: `.app-shell--sidebar-collapsed`, `.app-shell--menu-open`,
-  `.content-grid--list-only`, and `.workspace-hero--compose`.
+  `.content-grid--list-only`.
 
 ### 3. Contracts
 
 - At widths up to 980px, the menu starts closed. Keep Logo, current-view label
   and a 44px toggle visible; fold account, navigation, quota, logout, search,
-  filters and overview together without duplicating the controls.
-- Navigation closes the menu and overview without resetting compose text,
+  and filters together without duplicating the controls.
+- Navigation closes the menu without resetting compose text,
   title, or staged upload queues. Escape returns focus to the menu toggle;
   hidden regions must not remain tabbable. New sessions clear folded chrome
   state and selected content rather than reusing the previous user's choice.
 - Above 980px, the sidebar starts expanded unless its saved preference says
   otherwise. Collapsing changes the 300px sidebar to an 84px icon rail. Keep
   navigation actions and logout usable with localized accessible names.
-- Overview copy and four metrics use a native disclosure, closed by default on
-  every workspace view. On phone compose views (up to 680px), the expanded
-  metrics retain the compact two-column layout and omit the long introduction;
-  other expanded overviews retain their introduction.
+- Four account metrics exist only once, in the shared sidebar plan panel. Do not
+  repeat storage or content counts in an extra summary line. Quota data remains
+  authoritative; do not substitute filtered-list length for an available quota.
+  All views start with their actual controls, without workspace introductions or
+  overview disclosures. Metric cells stay flexible in a two-column grid.
+  Collapsed desktop rails hide the panel; phones expose it inside the menu.
 - Title, text entry and file/image staging appear before optional tags and send
   settings. Check the absolute page top, not only the overview's starting point.
 - `selectedPaste` is a lookup by explicitly clicked ID, without a first-record
@@ -731,7 +734,7 @@ views and all four locales.
 - Desktop collapse then reload -> 84px icon rail retained; mobile breakpoint ->
   compact header regardless of saved desktop preference.
 - Blocked browser storage -> default expanded sidebar still works.
-- All workspace views -> overview defaults closed and still exposes four metrics.
+- All six workspace views -> one sidebar usage panel and no overview/introduction.
 - Empty/populated-unselected list -> no editor/share or unused grid column.
 - Click/change choice -> matching editor/share shown; close -> full-width list.
 - Delete selected/last record -> no panel; delete unselected -> choice preserved;
@@ -741,9 +744,9 @@ views and all four locales.
 
 ### 5. Good/Base/Bad Cases
 
-- Good: One responsive navigation subtree, native overview disclosure, explicit
+- Good: One responsive navigation subtree with shared account usage, explicit
   content selection and a separate always-visible feedback surface.
-- Base: The expanded compose overview retains its compact phone statistics.
+- Base: Sidebar metrics remain available when opening the phone menu.
 - Bad: Hiding the empty editor with CSS while keeping a blank grid column;
   removing only one of the automatic-selection paths; hiding all feedback with
   search tools; measuring first-screen usability after scrolling past navigation.
@@ -758,7 +761,8 @@ behavior. They do not replace browser geometry and interaction checks.
 
 Browser-check all four locales at 320/375/390px from absolute scroll position
 zero, all send modes and draft retention, keyboard access, desktop rail reload,
-all six workspace overview views, and populated/empty/selected/deleted content.
+all six workspace views, single sidebar usage, and populated/empty/selected/deleted
+content.
 Separate local API fixtures and intercepted writes from real transfer acceptance;
 admin chrome checks do not prove admin data flows or production deployment.
 
@@ -770,5 +774,71 @@ admin chrome checks do not prove admin data flows or production deployment.
   when that explicit selection exists, plus `.content-grid--list-only` otherwise.
 - Wrong: a fixed-height phone statistic card or a hidden region whose controls
   remain focusable.
-- Correct: flexible metric heights and real native/`display: none` disclosure
-  behavior, verified with keyboard focus and long localized text.
+- Correct: flexible metric heights and real `display: none` menu behavior,
+  verified with keyboard focus and long localized text.
+
+
+## Scenario: Lightweight My Content Cards
+
+### 1. Scope / Trigger
+
+Changes to `PasteList` cards, their actions, metadata, scan labels or responsive
+styles. Keep My Content (saved-content library) separate from Send Records
+(transfer activity); a display-name change does not merge their APIs.
+
+### 2. Signatures
+
+- `PasteList`: `.paste-main`, `.paste-type-icon`, `.paste-content`, `.paste-meta`,
+  `.paste-scan`, `.card-actions`, and the existing explicit `onSelect` callback.
+- `attachmentScanDetail(input: Pick<Attachment, "scanStatus" | "risk">,
+  locale, context)`: shared localized scan label, description, tone and permission.
+- `recentPastes` display values: My content / 我的内容 / 我的內容 / Mi contenido.
+
+### 3. Contracts
+
+- The outer card owns the soft boundary. `.paste-main` is borderless, transparent
+  and keyboard focusable with an explicit focus-visible ring and `aria-pressed`.
+  Keep selection separate from pin/favorite/copy/extend/delete and tag actions.
+- Text uses the FileText icon; an attachment-only all-image card uses ImageIcon;
+  other attachment groups use FileUp. Name every grouped file in the existing
+  file summary and keep individual download entries.
+- Title, two-line preview, size, lifetime and localized scan status have distinct
+  visual levels. Wrap long content without widening the page. Never display only
+  an attachment count when filenames are available.
+- Use the existing scan helper, including optional risk descriptions; do not
+  treat unknown statuses as clean or alter owner/public download permissions.
+- Actions retain localized accessible names, toggle states and 44px touch height.
+  Use neutral/light treatments, soft danger colors and a distinct selected card;
+  do not change global button, editable-field or admin styling to fix a card.
+
+### 4. Validation & Error Matrix
+
+- Text/image/files/mixed -> matching type icon and retained preview/filenames.
+- Clean/pending/failed/malicious/unknown -> localized or explicit fallback label,
+  original download gating and optional localized risk retained.
+- Long title, non-Latin text, tags or multiple files -> no page overflow.
+- Action click -> original action only, not an implicit content selection.
+- Selection/close/delete -> existing full-width-list and side-panel contract.
+
+### 5. Good/Base/Bad Cases
+
+- Good: One soft outer boundary, small type icon, readable preview, compact
+  metadata and light actions; keyboard focus remains clearly visible.
+- Base: Native buttons and the existing per-file download surfaces remain intact.
+- Bad: Nested black selection borders, five heavy black action buttons, raw
+  `clean` in Chinese UI, or silently dropping scan risk from a narrowed input.
+
+### 6. Tests Required
+
+Run `make test-web`. Source tests check single usage ownership, disclosure removal,
+responsive card surfaces and existing selection/draft protections. Render the
+actual extracted `PasteList` with React SSR for all four locales and content types;
+transpile extracted JSX with a `.tsx` filename and explicit JSX compiler mode.
+Test all scan states in owner/public contexts, with and without risk metadata.
+Browser checks still cover geometry, focus and actions; SSR is not browser proof.
+
+### 7. Wrong vs Correct
+
+- Wrong: `{paste.scanStatus}` or new scan-permission logic in a presentation card.
+- Correct: `attachmentScanDetail(paste, locale, "owner")` for localized metadata,
+  while real file downloads retain their own attachment-level permission checks.

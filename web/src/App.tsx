@@ -12,7 +12,6 @@ import {
   Archive,
   Ban,
   CheckCircle2,
-  ChevronDown,
   ClipboardCopy,
   Clock3,
   CreditCard,
@@ -119,12 +118,6 @@ type View =
   | "settings"
   | "admin";
 type PaymentProvider = "stripe" | "epusdt";
-
-type ViewSummary = {
-  eyebrow: string;
-  title: string;
-  description: string;
-};
 
 type WorkspaceStat = {
   label: string;
@@ -341,161 +334,6 @@ const logLevelOptions: LogLevel[] = ["debug", "info", "warn", "error"];
 
 const clayHeroAsset = "/assets/clay-hero-ai.png";
 const clayFooterAsset = "/assets/clay-footer-ai.png";
-
-const viewSummaries: Record<Locale, Record<View, ViewSummary>> = {
-  en: {
-    inbox: {
-      eyebrow: "Unified workspace",
-      title: "Save content in one place. Pick it up anytime.",
-      description:
-        "Text, images, and files land in one focused workspace, so you can find them, add attachments, and share faster.",
-    },
-    sends: {
-      eyebrow: "Send records",
-      title: "Every send, with the claims it has left.",
-      description:
-        "A send is one batch of files or one text. This list follows it across devices and updates when somebody claims it, when it expires, and when a burn send ends.",
-    },
-    shared: {
-      eyebrow: "Share management",
-      title: "Every link is trackable and revocable.",
-      description:
-        "See visits, downloads, and expiry at a glance, then pull a link back when access should stop.",
-    },
-    billing: {
-      eyebrow: "Plan benefits",
-      title: "Choose the plan that fits how you share.",
-      description:
-        "Free covers quick transfers; Plus adds more room and longer retention; Pro is built for large files, frequent sharing, and ongoing projects.",
-    },
-    settings: {
-      eyebrow: "Account and security",
-      title: "Keep account, data, and safety requests together.",
-      description:
-        "Manage sign-in options, export data, report abuse, and request deletion without jumping between pages.",
-    },
-    admin: {
-      eyebrow: "Operations console",
-      title: "See key signals together and act faster.",
-      description:
-        "Users, content, orders, queues, and alerts stay in one view so operators can spot risk and finish launch checks.",
-    },
-  },
-  "zh-CN": {
-    inbox: {
-      eyebrow: "统一工作台",
-      title: "集中保存内容，随时继续处理。",
-      description:
-        "文字、图片和文件会进入同一个清爽工作区，方便查找、补充附件并快速生成分享。",
-    },
-    sends: {
-      eyebrow: "发送记录",
-      title: "每次发送与剩余可领取次数。",
-      description:
-        "一次发送是一批文件或一段文本。列表会在多设备间自动更新：有人领取、链接过期或阅后即焚销毁时都会变化。",
-    },
-    shared: {
-      eyebrow: "分享管理",
-      title: "每一条链接都可追踪、可撤销。",
-      description:
-        "访问次数、下载状态和过期时间集中展示，发现风险时可以立即收回分享权限。",
-    },
-    billing: {
-      eyebrow: "套餐权益",
-      title: "按使用场景选择更合适的套餐。",
-      description:
-        "Free 适合临时传输；Plus 提供更高容量和更长有效期；Pro 面向大文件、高频分享和长期项目。",
-    },
-    settings: {
-      eyebrow: "账号与安全",
-      title: "把账号、数据和安全请求放在一起。",
-      description:
-        "绑定登录方式、导出数据、提交举报和删除申请都在这里完成，减少来回切换。",
-    },
-    admin: {
-      eyebrow: "运营控制台",
-      title: "关键状态集中看，问题处理更快。",
-      description:
-        "用户、内容、订单、队列和告警集中在同一处，方便管理员判断风险和推进上线检查。",
-    },
-  },
-  "zh-TW": {
-    inbox: {
-      eyebrow: "統一工作台",
-      title: "集中儲存內容，隨時繼續處理。",
-      description:
-        "文字、圖片和檔案會進入同一個清爽工作區，方便查找、補充附件並快速產生分享。",
-    },
-    sends: {
-      eyebrow: "傳送記錄",
-      title: "每次傳送與剩餘可領取次數。",
-      description:
-        "一次傳送是一批檔案或一段文字。清單會跨裝置自動更新：有人領取、連結過期或閱後即焚銷毀時都會改變。",
-    },
-    shared: {
-      eyebrow: "分享管理",
-      title: "每一條連結都可追蹤、可撤銷。",
-      description:
-        "訪問次數、下載狀態和過期時間集中展示，發現風險時可以立即收回分享權限。",
-    },
-    billing: {
-      eyebrow: "方案權益",
-      title: "依照使用場景選擇更合適的方案。",
-      description:
-        "Free 適合臨時傳輸；Plus 提供更高容量和更長有效期；Pro 面向大檔案、高頻分享和長期專案。",
-    },
-    settings: {
-      eyebrow: "帳號與安全",
-      title: "把帳號、資料和安全請求放在一起。",
-      description:
-        "綁定登入方式、匯出資料、提交檢舉和刪除申請都在這裡完成，減少來回切換。",
-    },
-    admin: {
-      eyebrow: "營運控制台",
-      title: "關鍵狀態集中看，問題處理更快。",
-      description:
-        "使用者、內容、訂單、佇列和警示集中在同一處，方便管理員判斷風險和推進上線檢查。",
-    },
-  },
-  es: {
-    inbox: {
-      eyebrow: "Espacio de trabajo unificado",
-      title: "Guarda contenido en un lugar y retómalo cuando quieras.",
-      description:
-        "Texto, imágenes y archivos quedan en un espacio claro para encontrarlos, añadir adjuntos y compartirlos más rápido.",
-    },
-    sends: {
-      eyebrow: "Registro de envíos",
-      title: "Cada envío y los reclamos que le quedan.",
-      description:
-        "Un envío es un lote de archivos o un texto. La lista lo sigue entre dispositivos y se actualiza cuando alguien lo reclama, cuando vence y cuando un envío con autodestrucción termina.",
-    },
-    shared: {
-      eyebrow: "Gestión de enlaces",
-      title: "Cada enlace se puede revisar y revocar.",
-      description:
-        "Consulta visitas, descargas y caducidad de un vistazo, y retira el acceso cuando deje de ser seguro.",
-    },
-    billing: {
-      eyebrow: "Beneficios del plan",
-      title: "Elige el plan que encaja con tu forma de compartir.",
-      description:
-        "Free cubre envíos puntuales; Plus añade más capacidad y más retención; Pro está pensado para archivos grandes, uso frecuente y proyectos continuos.",
-    },
-    settings: {
-      eyebrow: "Cuenta y seguridad",
-      title: "Cuenta, datos y seguridad en un solo lugar.",
-      description:
-        "Gestiona métodos de acceso, exportaciones, reportes de abuso y solicitudes de eliminación sin cambiar de página.",
-    },
-    admin: {
-      eyebrow: "Consola de operaciones",
-      title: "Señales clave juntas para actuar antes.",
-      description:
-        "Usuarios, contenido, pedidos, colas y alertas se ven en una misma vista para detectar riesgos y cerrar revisiones de lanzamiento.",
-    },
-  },
-};
 
 const shareTokenFromPath =
   typeof window !== "undefined" && window.location.pathname.startsWith("/s/")
@@ -987,7 +825,7 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     clearTagFilter: "Clear tag filter",
     create: "Create",
     upload: "Upload",
-    recentPastes: "Recent pastes",
+    recentPastes: "My content",
     untitledPaste: "Untitled paste",
     createSecureDrop: "Create a secure drop.",
     titleThisPaste: "Title this paste",
@@ -1062,7 +900,6 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     activePastes: "active pastes",
     activePastesLabel: "Active pastes",
     workspaceMenu: "Workspace menu",
-    workspaceOverview: "Workspace overview",
     collapseSidebar: "Collapse sidebar",
     expandSidebar: "Expand sidebar",
     closeDetails: "Close details",
@@ -1424,7 +1261,7 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     clearTagFilter: "清除标签筛选",
     create: "创建",
     upload: "上传",
-    recentPastes: "最近内容",
+    recentPastes: "我的内容",
     untitledPaste: "未命名内容",
     createSecureDrop: "创建安全投放。",
     titleThisPaste: "为这个内容命名",
@@ -1497,7 +1334,6 @@ const baseCopy: Record<"en" | "zh-CN", Record<string, string>> = {
     activePastes: "条有效内容",
     activePastesLabel: "有效内容",
     workspaceMenu: "工作区菜单",
-    workspaceOverview: "工作区概览",
     collapseSidebar: "收起侧栏",
     expandSidebar: "展开侧栏",
     closeDetails: "关闭详情",
@@ -1855,7 +1691,7 @@ const copy: Record<Locale, Record<string, string>> = {
     clearTagFilter: "清除標籤篩選",
     create: "建立",
     upload: "上傳",
-    recentPastes: "最近內容",
+    recentPastes: "我的內容",
     untitledPaste: "未命名內容",
     createSecureDrop: "建立安全投放。",
     titleThisPaste: "為這個內容命名",
@@ -1922,7 +1758,6 @@ const copy: Record<Locale, Record<string, string>> = {
     activePastes: "則有效內容",
     activePastesLabel: "有效內容",
     workspaceMenu: "工作區選單",
-    workspaceOverview: "工作區概覽",
     collapseSidebar: "收起側欄",
     expandSidebar: "展開側欄",
     closeDetails: "關閉詳情",
@@ -2240,7 +2075,7 @@ const copy: Record<Locale, Record<string, string>> = {
     clearTagFilter: "Quitar filtro de etiqueta",
     create: "Crear",
     upload: "Subir",
-    recentPastes: "Pastes recientes",
+    recentPastes: "Mi contenido",
     untitledPaste: "Paste sin título",
     createSecureDrop: "Crea una entrega segura.",
     titleThisPaste: "Titula este paste",
@@ -2315,7 +2150,6 @@ const copy: Record<Locale, Record<string, string>> = {
     activePastes: "pastes activos",
     activePastesLabel: "Pastes activos",
     workspaceMenu: "Menú del espacio de trabajo",
-    workspaceOverview: "Resumen del espacio de trabajo",
     collapseSidebar: "Contraer barra lateral",
     expandSidebar: "Expandir barra lateral",
     closeDetails: "Cerrar detalles",
@@ -3974,7 +3808,7 @@ function orderStatusDetail(status: string, locale: Locale): OrderStatusDetail {
 }
 
 function attachmentScanDetail(
-  attachment: Attachment,
+  attachment: Pick<Attachment, "scanStatus" | "risk">,
   locale: Locale,
   context: "owner" | "public",
 ): AttachmentScanDetail {
@@ -4082,7 +3916,6 @@ function App() {
     }
   });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [overviewOpen, setOverviewOpen] = useState(false);
   const mobileMenuButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -4098,7 +3931,6 @@ function App() {
 
   function navigateWorkspace(nextView: View) {
     setView(nextView);
-    setOverviewOpen(false);
     setMobileMenuOpen(false);
     if (mobileMenuOpen) mobileMenuButtonRef.current?.focus();
   }
@@ -4110,7 +3942,6 @@ function App() {
   useEffect(() => {
     setSelectedPasteId("");
     setMobileMenuOpen(false);
-    setOverviewOpen(false);
   }, [user?.id]);
   const [editDraft, setEditDraft] = useState({
     id: "",
@@ -4325,7 +4156,6 @@ function App() {
       t,
     ],
   );
-  const viewSummary = viewSummaries[locale][view];
   const currentViewLabel = t(view === "shared" ? "shares" : view);
 
   const pricesByPlan = useMemo(() => {
@@ -5917,7 +5747,7 @@ function App() {
             )}
           </button>
           <button
-            aria-controls="workspace-menu workspace-tools workspace-overview"
+            aria-controls="workspace-menu workspace-tools"
             aria-expanded={mobileMenuOpen}
             aria-label={t("workspaceMenu")}
             className="mobile-menu-toggle"
@@ -6004,22 +5834,31 @@ function App() {
           </nav>
 
           <section className="quota-panel" aria-label={t("currentPlan")}>
-            <div>
+            <div className="quota-heading">
               <span className="eyebrow">{t("currentPlan")}</span>
               <strong>{activePlan?.name ?? user.planId}</strong>
             </div>
-            <div className="quota-bar">
-              <span
-                style={{
-                  width: `${storagePercent}%`,
-                }}
-              />
+            <dl className="workspace-usage">
+              {workspaceStats.map((stat) => (
+                <div className="usage-stat" key={stat.tone}>
+                  <dt>{stat.label}</dt>
+                  <dd>
+                    <strong>{stat.value}</strong>
+                    <span>{stat.detail}</span>
+                  </dd>
+                </div>
+              ))}
+            </dl>
+            <div
+              className="quota-bar"
+              role="progressbar"
+              aria-label={t("storage")}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={storagePercent}
+            >
+              <span style={{ width: `${storagePercent}%` }} />
             </div>
-            <p>
-              {formatBytes(storageUsed)} / {formatBytes(storageLimit)} ·{" "}
-              {quota?.activePasteCount ?? 0}/{activePlan?.activePasteLimit ?? 0}{" "}
-              {t("pastes")}
-            </p>
           </section>
 
           <button
@@ -6075,44 +5914,6 @@ function App() {
             </button>
           ) : null}
         </header>
-
-        <details
-          className="workspace-overview"
-          id="workspace-overview"
-          onToggle={(event) => setOverviewOpen(event.currentTarget.open)}
-          open={overviewOpen}
-        >
-          <summary>
-            <span>{t("workspaceOverview")}</span>
-            <ChevronDown size={18} aria-hidden="true" />
-          </summary>
-          <section
-            className={
-              view === "inbox"
-                ? "workspace-hero workspace-hero--compose"
-                : "workspace-hero"
-            }
-            aria-label={t("workspaceOverview")}
-          >
-            <div className="workspace-hero-copy">
-              <span className="eyebrow">{viewSummary.eyebrow}</span>
-              <h1>{viewSummary.title}</h1>
-              <p>{viewSummary.description}</p>
-            </div>
-            <div className="workspace-stat-grid">
-              {workspaceStats.map((stat) => (
-                <article
-                  className={`workspace-stat workspace-stat--${stat.tone}`}
-                  key={stat.label}
-                >
-                  <span>{stat.label}</span>
-                  <strong>{stat.value}</strong>
-                  <small>{stat.detail}</small>
-                </article>
-              ))}
-            </div>
-          </section>
-        </details>
 
         {message ? (
           <p className="status-line workspace-feedback" role="status">
@@ -8519,123 +8320,156 @@ function PasteList({
           {pastes.length} {t("active")}
         </span>
       </div>
-      {pastes.map((paste) => (
-        <article
-          className={`paste-card ${selectedId === paste.id ? "selected" : ""}`}
-          key={paste.id}
-        >
-          <button
-            className="paste-main"
-            type="button"
-            onClick={() => onSelect(paste.id)}
+      {pastes.map((paste) => {
+        const hasText = Boolean(paste.text || paste.textPreview);
+        const imagesOnly =
+          paste.attachments.length > 0 &&
+          paste.attachments.every((attachment) =>
+            attachment.contentType.startsWith("image/"),
+          );
+        const ContentIcon = hasText
+          ? FileText
+          : imagesOnly
+            ? ImageIcon
+            : FileUp;
+        const scan = attachmentScanDetail(paste, locale, "owner");
+        return (
+          <article
+            className={`paste-card ${selectedId === paste.id ? "selected" : ""}`}
+            key={paste.id}
           >
-            <h3>{paste.title || t("untitledPaste")}</h3>
-            <p>
-              {paste.textPreview ||
-                `${paste.attachments.length} ${t("attachmentsCount")}`}
-            </p>
-            {paste.attachments.length > 0 ? (
-              // One send is one record, so the card lists the files that send
-              // grouped together instead of hiding them behind a count.
-              <span className="paste-file-summary">
-                <FileUp size={13} aria-hidden="true" />
-                {pasteFileSummary(paste.attachments)}
+            <button
+              className="paste-main"
+              type="button"
+              onClick={() => onSelect(paste.id)}
+              aria-pressed={selectedId === paste.id}
+            >
+              <span className="paste-type-icon">
+                <ContentIcon size={21} aria-hidden="true" />
               </span>
-            ) : null}
-            <span>
-              {formatBytes(paste.sizeBytes)} ·{" "}
-              {formatDuration(paste.secondsToLive)} · {paste.scanStatus}
-            </span>
-          </button>
-          <div className="card-actions">
-            <button
-              className={`icon-button small ${paste.pinned ? "active" : ""}`}
-              type="button"
-              onClick={() => onToggleFlag(paste, "pinned")}
-              aria-pressed={paste.pinned}
-              title={paste.pinned ? t("unpinPaste") : t("pinPaste")}
-              aria-label={paste.pinned ? t("unpinPaste") : t("pinPaste")}
-            >
-              <Pin size={17} aria-hidden="true" />
-              <span>{paste.pinned ? t("unpinPaste") : t("pinPaste")}</span>
-            </button>
-            <button
-              className={`icon-button small ${paste.favorite ? "active" : ""}`}
-              type="button"
-              onClick={() => onToggleFlag(paste, "favorite")}
-              aria-pressed={paste.favorite}
-              title={paste.favorite ? t("removeFavorite") : t("favoritePaste")}
-              aria-label={
-                paste.favorite ? t("removeFavorite") : t("favoritePaste")
-              }
-            >
-              <Star size={17} aria-hidden="true" />
-              <span>
-                {paste.favorite ? t("removeFavorite") : t("favoritePaste")}
+              <span className="paste-content">
+                <strong className="paste-title">
+                  {paste.title || t("untitledPaste")}
+                </strong>
+                <span className="paste-preview">
+                  {paste.textPreview ||
+                    paste.text ||
+                    `${paste.attachments.length} ${t("attachmentsCount")}`}
+                </span>
+                {paste.attachments.length > 0 ? (
+                  // One send stays one record; name the files grouped together.
+                  <span className="paste-file-summary">
+                    <FileUp size={13} aria-hidden="true" />
+                    {pasteFileSummary(paste.attachments)}
+                  </span>
+                ) : null}
+                <span className="paste-meta">
+                  <span>{formatBytes(paste.sizeBytes)}</span>
+                  <span className="paste-expiry">
+                    <Clock3 size={13} aria-hidden="true" />
+                    {formatDuration(paste.secondsToLive)}
+                  </span>
+                  <span
+                    className={`paste-scan paste-scan--${scan.tone}`}
+                    title={scan.description}
+                  >
+                    {scan.label}
+                  </span>
+                  {paste.shareCount ? (
+                    <span className="share-chip">{t("shared")}</span>
+                  ) : null}
+                </span>
               </span>
             </button>
-            <button
-              className="icon-button small"
-              type="button"
-              onClick={() => onCopy(paste.text)}
-              aria-label={t("copyText")}
-              title={t("copyText")}
-            >
-              <ClipboardCopy size={17} aria-hidden="true" />
-              <span>{t("copyText")}</span>
-            </button>
-            <button
-              className="icon-button small"
-              type="button"
-              onClick={() => onExtend(paste, 7 * 24 * 60 * 60)}
-              aria-label={t("extendPaste")}
-              title={t("extendPaste")}
-            >
-              <TimerReset size={17} aria-hidden="true" />
-              <span>{t("extendPaste")}</span>
-            </button>
-            <button
-              className="icon-button small danger"
-              type="button"
-              onClick={() => onDelete(paste.id)}
-              aria-label={t("deletePaste")}
-              title={t("deletePaste")}
-            >
-              <Trash2 size={17} aria-hidden="true" />
-              <span>{t("deletePaste")}</span>
-            </button>
-          </div>
-          {paste.shareCount ? (
-            <span className="share-chip">{t("shared")}</span>
-          ) : null}
-          {paste.tags.length ? (
-            <div className="paste-tags" aria-label={t("tags")}>
-              {paste.tags.map((tag) => (
-                <button
-                  className={`tag-chip ${activeTag === tag ? "active" : ""}`}
-                  type="button"
-                  key={tag}
-                  aria-pressed={activeTag === tag}
-                  onClick={() => onFilterTag(activeTag === tag ? "" : tag)}
-                >
-                  <Tags size={13} aria-hidden="true" />
-                  <span>{tag}</span>
-                </button>
-              ))}
+            <div className="card-actions">
+              <button
+                className={`icon-button small ${paste.pinned ? "active" : ""}`}
+                type="button"
+                onClick={() => onToggleFlag(paste, "pinned")}
+                aria-pressed={paste.pinned}
+                title={paste.pinned ? t("unpinPaste") : t("pinPaste")}
+                aria-label={paste.pinned ? t("unpinPaste") : t("pinPaste")}
+              >
+                <Pin size={17} aria-hidden="true" />
+                <span>{paste.pinned ? t("unpinPaste") : t("pinPaste")}</span>
+              </button>
+              <button
+                className={`icon-button small ${paste.favorite ? "active" : ""}`}
+                type="button"
+                onClick={() => onToggleFlag(paste, "favorite")}
+                aria-pressed={paste.favorite}
+                title={
+                  paste.favorite ? t("removeFavorite") : t("favoritePaste")
+                }
+                aria-label={
+                  paste.favorite ? t("removeFavorite") : t("favoritePaste")
+                }
+              >
+                <Star size={17} aria-hidden="true" />
+                <span>
+                  {paste.favorite ? t("removeFavorite") : t("favoritePaste")}
+                </span>
+              </button>
+              <button
+                className="icon-button small"
+                type="button"
+                onClick={() => onCopy(paste.text)}
+                aria-label={t("copyText")}
+                title={t("copyText")}
+              >
+                <ClipboardCopy size={17} aria-hidden="true" />
+                <span>{t("copyText")}</span>
+              </button>
+              <button
+                className="icon-button small"
+                type="button"
+                onClick={() => onExtend(paste, 7 * 24 * 60 * 60)}
+                aria-label={t("extendPaste")}
+                title={t("extendPaste")}
+              >
+                <TimerReset size={17} aria-hidden="true" />
+                <span>{t("extendPaste")}</span>
+              </button>
+              <button
+                className="icon-button small danger"
+                type="button"
+                onClick={() => onDelete(paste.id)}
+                aria-label={t("deletePaste")}
+                title={t("deletePaste")}
+              >
+                <Trash2 size={17} aria-hidden="true" />
+                <span>{t("deletePaste")}</span>
+              </button>
             </div>
-          ) : null}
-          {paste.attachments.map((attachment) => (
-            <AttachmentDownloadItem
-              attachment={attachment}
-              context="owner"
-              href={attachmentDownloadPath(attachment.id)}
-              icon="file"
-              key={attachment.id}
-              locale={locale}
-            />
-          ))}
-        </article>
-      ))}
+            {paste.tags.length ? (
+              <div className="paste-tags" aria-label={t("tags")}>
+                {paste.tags.map((tag) => (
+                  <button
+                    className={`tag-chip ${activeTag === tag ? "active" : ""}`}
+                    type="button"
+                    key={tag}
+                    aria-pressed={activeTag === tag}
+                    onClick={() => onFilterTag(activeTag === tag ? "" : tag)}
+                  >
+                    <Tags size={13} aria-hidden="true" />
+                    <span>{tag}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {paste.attachments.map((attachment) => (
+              <AttachmentDownloadItem
+                attachment={attachment}
+                context="owner"
+                href={attachmentDownloadPath(attachment.id)}
+                icon="file"
+                key={attachment.id}
+                locale={locale}
+              />
+            ))}
+          </article>
+        );
+      })}
     </section>
   );
 }

@@ -37,34 +37,6 @@ function declarationsFor(selector, width) {
   return result;
 }
 
-function overviewClass(view) {
-  let expression;
-  function visit(node) {
-    if (
-      ts.isJsxOpeningElement(node) &&
-      node.tagName.getText(app) === "section"
-    ) {
-      const attributes = node.attributes.properties.filter(ts.isJsxAttribute);
-      if (
-        attributes.some(
-          (attribute) =>
-            attribute.name.getText(app) === "aria-label" &&
-            attribute.initializer?.expression?.getText(app) ===
-              't("workspaceOverview")',
-        )
-      ) {
-        expression = attributes
-          .find((attribute) => attribute.name.getText(app) === "className")
-          ?.initializer?.expression?.getText(app);
-      }
-    }
-    ts.forEachChild(node, visit);
-  }
-  visit(app);
-  assert.ok(expression, "Workspace overview needs a view-scoped class");
-  return vm.runInNewContext(expression, { view });
-}
-
 function nodesWhere(predicate) {
   const result = [];
   function visit(node) {
@@ -103,7 +75,8 @@ function element(tag, className) {
 
 function evaluate(code, context = {}) {
   const compiled = ts.transpileModule(`(${code})`, {
-    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    fileName: "extracted.tsx",
+    compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React },
   }).outputText;
   return vm.runInNewContext(compiled, context);
 }
@@ -120,51 +93,94 @@ test("ordinary status messages retain their surface and gain readable spacing", 
   }
 });
 
-test("only the compose view opts into the compact overview", () => {
+test("workspace introductions, overview state and their obsolete styles are removed", () => {
   assert.equal(
-    overviewClass("inbox"),
-    "workspace-hero workspace-hero--compose",
+    nodesWhere(
+      (node) =>
+        ts.isVariableDeclaration(node) &&
+        ["overviewOpen", "viewSummary", "viewSummaries"].some((name) =>
+          node.name.getText(app).includes(name),
+        ),
+    ).length,
+    0,
   );
-  for (const view of ["sends", "shared", "billing", "settings", "admin"]) {
-    assert.equal(overviewClass(view), "workspace-hero");
-  }
+  css.walkRules((rule) => {
+    assert.ok(!/workspace-(?:overview|hero|stat)/.test(rule.selector));
+  });
+  assert.ok(!app.getText().includes('t("workspaceOverview")'));
 });
 
-test("the compact overview uses two columns only at phone widths", () => {
-  const scope = ".workspace-hero--compose";
-  for (const width of [320, 375, 390, 680]) {
-    assert.equal(
-      declarationsFor(`${scope} .workspace-hero-copy`, width).display,
-      "none",
-    );
-    const grid = declarationsFor(`${scope} .workspace-stat-grid`, width);
+test("four account metrics appear once inside the sidebar plan panel", () => {
+  const usage = element("dl", "workspace-usage");
+  assert.equal(
+    nodesWhere(
+      (node) =>
+        ts.isJsxOpeningElement(node) &&
+        jsxAttribute(node, "className")?.text === "workspace-usage",
+    ).length,
+    1,
+  );
+  const quota = element("section", "quota-panel").parent;
+  assert.ok(quota.getText(app).includes(usage.getText(app)));
+  assert.ok(quota.getText(app).includes("workspaceStats.map"));
+  assert.ok(!quota.getText(app).includes("formatBytes(storageUsed)"));
+  let parent = quota.parent;
+  while (parent && !ts.isJsxElement(parent)) parent = parent.parent;
+  assert.equal(
+    jsxAttribute(parent.openingElement, "id").text,
+    "workspace-menu",
+  );
+  const stats = evaluate(
+    initializer("workspaceStats").arguments[0].getText(app),
+    {
+      quota: { activePasteCount: 9 },
+      pastes: [{ id: "one" }],
+      activePlan: { activePasteLimit: 20 },
+      storageUsed: 256,
+      storagePercent: 25,
+      storageLimit: 1024,
+      shares: [{ id: "share" }],
+      sharedPasteCount: 1,
+      attachmentCount: 3,
+      expiringCount: 2,
+      formatBytes: (bytes) => `${bytes} B`,
+      t: (key) => key,
+    },
+  )();
+  assert.equal(stats.length, 4);
+  assert.equal(
+    stats[0].value,
+    "9",
+    "quota stays authoritative, not the filtered list",
+  );
+  assert.equal(stats[1].value, "256 B");
+  assert.equal(stats[2].value, "1");
+  assert.equal(stats[3].value, "3");
+  assert.equal(stats[3].detail, "2 expiringIn24h");
+});
+
+test("sidebar usage stays compact, flexible and hidden with the desktop rail", () => {
+  for (const width of [320, 375, 390, 680, 980, 981, 1440]) {
+    const grid = declarationsFor(".workspace-usage", width);
     assert.equal(grid["grid-template-columns"], "repeat(2, minmax(0, 1fr))");
     assert.ok(parseFloat(grid.gap) <= 8);
-    const card = declarationsFor(`${scope} .workspace-stat`, width);
-    assert.ok(parseFloat(card["min-height"]) <= 88);
-    assert.ok(parseFloat(card.padding) <= 12);
-    assert.equal(card.height, undefined, "Long labels must be able to wrap");
+    const metric = declarationsFor(".usage-stat", width);
+    assert.equal(metric["min-width"], "0");
+    assert.equal(metric["overflow-wrap"], "anywhere");
+    assert.equal(metric.height, undefined, "translated details can wrap");
   }
-  for (const width of [681, 980, 1440]) {
-    assert.deepEqual(
-      declarationsFor(`${scope} .workspace-hero-copy`, width),
-      {},
+  for (const width of [981, 1440]) {
+    assert.equal(
+      declarationsFor(".app-shell--sidebar-collapsed .quota-panel", width)
+        .display,
+      "none",
     );
-    assert.deepEqual(
-      declarationsFor(`${scope} .workspace-stat-grid`, width),
-      {},
-    );
-    assert.deepEqual(declarationsFor(`${scope} .workspace-stat`, width), {});
   }
 });
 
-test("menus and overviews start closed and navigation closes both without discarding drafts", () => {
-  for (const name of ["mobileMenuOpen", "overviewOpen"]) {
-    const state = initializer(
-      `[${name}, set${name[0].toUpperCase()}${name.slice(1)}]`,
-    );
-    assert.equal(state.arguments[0].kind, ts.SyntaxKind.FalseKeyword);
-  }
+test("mobile menu starts closed and navigation closes it without discarding drafts", () => {
+  const state = initializer("[mobileMenuOpen, setMobileMenuOpen]");
+  assert.equal(state.arguments[0].kind, ts.SyntaxKind.FalseKeyword);
   const [navigate] = nodesWhere(
     (node) =>
       ts.isFunctionDeclaration(node) && node.name?.text === "navigateWorkspace",
@@ -172,17 +188,11 @@ test("menus and overviews start closed and navigation closes both without discar
   const calls = [];
   evaluate(navigate.getText(app), {
     setView: (view) => calls.push(["view", view]),
-    setOverviewOpen: (value) => calls.push(["overview", value]),
     setMobileMenuOpen: (value) => calls.push(["menu", value]),
     mobileMenuOpen: true,
     mobileMenuButtonRef: { current: { focus: () => calls.push(["focus"]) } },
   })("sends");
-  assert.deepEqual(calls, [
-    ["view", "sends"],
-    ["overview", false],
-    ["menu", false],
-    ["focus"],
-  ]);
+  assert.deepEqual(calls, [["view", "sends"], ["menu", false], ["focus"]]);
 });
 
 test("desktop sidebar preference is restored, including a blocked storage fallback", () => {
@@ -212,11 +222,7 @@ test("desktop sidebar preference is restored, including a blocked storage fallba
 
 test("mobile hiding is scoped to chrome while collapsed desktop keeps an icon rail", () => {
   for (const width of [320, 375, 390, 680, 980]) {
-    for (const selector of [
-      ".workspace-menu",
-      ".topbar",
-      ".workspace-overview",
-    ]) {
+    for (const selector of [".workspace-menu", ".topbar"]) {
       assert.equal(
         declarationsFor(
           `.app-shell:not(.app-shell--menu-open) ${selector}`,
@@ -253,17 +259,15 @@ test("mobile hiding is scoped to chrome while collapsed desktop keeps an icon ra
   }
 });
 
-test("native overview disclosure and mobile menu expose stable accessible controls", () => {
-  const overview = element("details", "workspace-overview");
-  assert.equal(
-    jsxAttribute(overview, "open").expression.getText(app),
-    "overviewOpen",
-  );
-  assert.ok(jsxAttribute(overview, "onToggle"));
+test("mobile menu exposes only existing regions with stable accessible controls", () => {
   const toggle = element("button", "mobile-menu-toggle");
   assert.equal(
     jsxAttribute(toggle, "aria-expanded").expression.getText(app),
     "mobileMenuOpen",
+  );
+  assert.equal(
+    jsxAttribute(toggle, "aria-controls").text,
+    "workspace-menu workspace-tools",
   );
   for (const id of jsxAttribute(toggle, "aria-controls").text.split(" ")) {
     assert.ok(
@@ -274,10 +278,11 @@ test("native overview disclosure and mobile menu expose stable accessible contro
       `controlled region ${id} must exist`,
     );
   }
+  const progress = element("div", "quota-bar");
+  assert.equal(jsxAttribute(progress, "role").text, "progressbar");
   assert.equal(
-    declarationsFor(".workspace-overview:not([open]) > .workspace-hero", 1440)
-      .display,
-    "none",
+    jsxAttribute(progress, "aria-valuenow").expression.getText(app),
+    "storagePercent",
   );
 });
 
@@ -417,7 +422,7 @@ test("important feedback remains outside foldable workspace controls", () => {
   }
 });
 
-test("session changes clear menu, overview and editor selection", () => {
+test("session changes clear menu and editor selection", () => {
   const effect = nodesWhere(
     (node) =>
       ts.isCallExpression(node) &&
@@ -429,12 +434,10 @@ test("session changes clear menu, overview and editor selection", () => {
   evaluate(effect.arguments[0].getText(app), {
     setSelectedPasteId: (value) => calls.push(["selected", value]),
     setMobileMenuOpen: (value) => calls.push(["menu", value]),
-    setOverviewOpen: (value) => calls.push(["overview", value]),
   })();
   assert.deepEqual(calls, [
     ["selected", ""],
     ["menu", false],
-    ["overview", false],
   ]);
 });
 
@@ -454,4 +457,208 @@ test("attachment-to-selected action is hidden until a record has been clicked", 
     condition.condition.getText(app),
     'sendMode === "file" && selectedPaste',
   );
+});
+
+function functionFromSource(name, context) {
+  const [node] = nodesWhere(
+    (node) => ts.isFunctionDeclaration(node) && node.name?.text === name,
+  );
+  assert.ok(node, `${name} must exist`);
+  return evaluate(node.getText(app), context);
+}
+
+const baseCopy = evaluate(initializer("baseCopy").getText(app));
+const translations = evaluate(initializer("copy").getText(app), { baseCopy });
+const scanDetail = functionFromSource("attachmentScanDetail", {
+  attachmentScanText: evaluate(initializer("attachmentScanText").getText(app)),
+  isChineseLocale: (locale) => locale.startsWith("zh"),
+});
+
+function renderPasteCard(paste, locale, selectedId = "") {
+  const React = require("../web/node_modules/react");
+  const {
+    renderToStaticMarkup,
+  } = require("../web/node_modules/react-dom/server");
+  const icons = Object.fromEntries(
+    [
+      "FileText",
+      "ImageIcon",
+      "FileUp",
+      "Clock3",
+      "Pin",
+      "Star",
+      "ClipboardCopy",
+      "TimerReset",
+      "Trash2",
+      "Tags",
+    ].map((name) => [
+      name,
+      () => React.createElement("svg", { "data-icon": name }),
+    ]),
+  );
+  const List = functionFromSource("PasteList", {
+    React,
+    ...icons,
+    copyFor: (language) => (key) =>
+      translations[language][key] ?? translations.en[key] ?? key,
+    attachmentScanDetail: scanDetail,
+    formatBytes: (value) => `${value} B`,
+    formatDuration: (value) => `${value}s`,
+    pasteFileSummary: (attachments) =>
+      attachments.map((item) => item.fileName).join(", "),
+    attachmentDownloadPath: (id) => `/files/${id}`,
+    AttachmentDownloadItem: ({ attachment }) =>
+      React.createElement("a", {}, attachment.fileName),
+  });
+  const noop = () => {};
+  return renderToStaticMarkup(
+    React.createElement(List, {
+      pastes: [paste],
+      locale,
+      selectedId,
+      activeTag: "",
+      onSelect: noop,
+      onCopy: noop,
+      onDelete: noop,
+      onExtend: noop,
+      onToggleFlag: noop,
+      onFilterTag: noop,
+    }),
+  );
+}
+
+const cardFixture = {
+  id: "one",
+  title: "A long content title",
+  text: "Saved content",
+  textPreview: "Saved preview",
+  tags: ["sample"],
+  pinned: false,
+  favorite: false,
+  shareCount: 1,
+  sizeBytes: 128,
+  secondsToLive: 3600,
+  scanStatus: "clean",
+  attachments: [],
+};
+
+test("content cards render localized titles and scan labels in all four locales", () => {
+  for (const [locale, title, label] of [
+    ["en", "My content", "Clean"],
+    ["zh-CN", "我的内容", "扫描通过"],
+    ["zh-TW", "我的內容", "掃描通過"],
+    ["es", "Mi contenido", "Limpio"],
+  ]) {
+    const markup = renderPasteCard(cardFixture, locale, "one");
+    assert.ok(markup.includes(`<h2>${title}</h2>`));
+    assert.ok(markup.includes(`>${label}</span>`));
+    assert.match(markup, /class="paste-main"[^>]*aria-pressed="true"/);
+    assert.match(markup, /data-icon="FileText"/);
+    assert.ok(markup.includes("Saved preview"));
+    assert.ok(markup.includes("128 B"));
+    assert.ok(markup.includes("3600s"));
+    assert.equal((markup.match(/class="card-actions"/g) ?? []).length, 1);
+    assert.ok(markup.includes(translations[locale].deletePaste));
+  }
+});
+
+test("image and grouped-file cards retain type icons, named files and explicit selection", () => {
+  for (const [contentType, icon] of [
+    ["image/png", "ImageIcon"],
+    ["application/pdf", "FileUp"],
+  ]) {
+    const markup = renderPasteCard(
+      {
+        ...cardFixture,
+        text: "",
+        textPreview: "",
+        attachments: [
+          { id: "a", fileName: "one.ext", contentType },
+          { id: "b", fileName: "two.ext", contentType },
+        ],
+      },
+      "zh-CN",
+    );
+    assert.match(markup, new RegExp(`data-icon="${icon}"`));
+    assert.ok(markup.includes("one.ext, two.ext"));
+    assert.match(markup, /class="paste-main"[^>]*aria-pressed="false"/);
+  }
+});
+
+test("localized scan presentation preserves owner and public download restrictions", () => {
+  for (const locale of ["en", "zh-CN", "zh-TW", "es"]) {
+    for (const [status, tone, owner, shared] of [
+      ["clean", "success", true, true],
+      ["pending", "warning", true, false],
+      ["scan_failed", "warning", true, false],
+      ["malicious", "danger", false, false],
+      ["unknown_status", "neutral", true, false],
+    ]) {
+      const own = scanDetail({ scanStatus: status }, locale, "owner");
+      const pub = scanDetail(
+        { scanStatus: status.toUpperCase() },
+        locale,
+        "public",
+      );
+      assert.equal(own.tone, tone);
+      assert.equal(pub.tone, tone);
+      assert.equal(own.canDownload, owner);
+      assert.equal(pub.canDownload, shared);
+      if (status !== "unknown_status")
+        assert.ok(own.label.length > 0 && pub.label.length > 0);
+    }
+  }
+});
+
+test("card selection surfaces are borderless with keyboard focus and lightweight touch actions", () => {
+  for (const width of [320, 375, 390, 680, 981, 1440]) {
+    const main = declarationsFor(".paste-card .paste-main", width);
+    assert.equal(main.border, "0");
+    assert.equal(main.background, "transparent");
+    assert.equal(main["box-shadow"], "none");
+    assert.equal(main["min-width"], "0");
+    assert.match(
+      declarationsFor(".paste-card .paste-main:focus-visible", width).outline,
+      /^2px/,
+    );
+    const action = declarationsFor(
+      ".paste-card .card-actions .icon-button",
+      width,
+    );
+    assert.equal(action.background, "transparent");
+    assert.equal(action["border-color"], "transparent");
+    assert.ok(parseFloat(action["min-height"]) >= 44);
+    assert.equal(
+      declarationsFor(".paste-card .paste-preview", width)[
+        "-webkit-line-clamp"
+      ],
+      "2",
+    );
+    assert.equal(
+      declarationsFor(".paste-content", width)["overflow-wrap"],
+      "anywhere",
+    );
+    assert.equal(
+      declarationsFor(".paste-card.selected", width)["border-color"],
+      "var(--brand-teal)",
+    );
+  }
+});
+
+test("scan descriptions keep localized risk details when present", () => {
+  for (const [locale, prefix] of [
+    ["en", "Risk"],
+    ["zh-CN", "风险"],
+    ["zh-TW", "風險"],
+    ["es", "Riesgo"],
+  ]) {
+    const detail = scanDetail(
+      { scanStatus: "scan_failed", risk: "  reason-code  " },
+      locale,
+      "owner",
+    );
+    assert.ok(detail.description.includes(`${prefix}: reason-code`));
+    assert.equal(detail.tone, "warning");
+    assert.equal(detail.canDownload, true);
+  }
 });
