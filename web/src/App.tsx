@@ -1,3 +1,4 @@
+import { AdminSelect } from "./AdminSelect";
 import {
   AdminAuditLog,
   AdminFileManager,
@@ -2719,17 +2720,15 @@ function AdminSizeField({
             onChangeBytes(Math.round(Number(event.target.value) * factor))
           }
         />
-        <select
-          aria-label={`${label} ${t("unit")}`}
+        <AdminSelect
+          label={`${label} ${t("unit")}`}
           value={unit}
-          onChange={(event) => onUnitChange(event.target.value as SizeUnit)}
-        >
-          {sizeUnits.map((item) => (
-            <option key={item} value={item}>
-              {t(`unit${item}`)}
-            </option>
-          ))}
-        </select>
+          onChange={onUnitChange}
+          options={sizeUnits.map((item) => ({
+            value: item,
+            label: t(`unit${item}`),
+          }))}
+        />
       </div>
     </label>
   );
@@ -2767,17 +2766,15 @@ function AdminTimeField({
             onChangeSeconds(Math.round(Number(event.target.value) * factor))
           }
         />
-        <select
-          aria-label={`${label} ${t("unit")}`}
+        <AdminSelect
+          label={`${label} ${t("unit")}`}
           value={unit}
-          onChange={(event) => onUnitChange(event.target.value as TimeUnit)}
-        >
-          {timeUnits.map((item) => (
-            <option key={item} value={item}>
-              {t(`unit${item}`)}
-            </option>
-          ))}
-        </select>
+          onChange={onUnitChange}
+          options={timeUnits.map((item) => ({
+            value: item,
+            label: t(`unit${item}`),
+          }))}
+        />
       </div>
     </label>
   );
@@ -2981,16 +2978,15 @@ function ManagedConfigEditor({
       <h3>{t("applicationConfig")}</h3>
       <label className="field-row config-section-select">
         <span>{t("configSection")}</span>
-        <select
+        <AdminSelect
+          label={t("configSection")}
           value={section}
-          onChange={(event) => setSection(event.target.value)}
-        >
-          {managedGroups.map((entry) => (
-            <option key={entry.id} value={entry.id}>
-              {t(entry.label)}
-            </option>
-          ))}
-        </select>
+          onChange={setSection}
+          options={managedGroups.map((entry) => ({
+            value: entry.id,
+            label: t(entry.label),
+          }))}
+        />
       </label>
       <div className="managed-config-grid">
         <article className="list-card" hidden={section !== "site"}>
@@ -3095,15 +3091,15 @@ function ManagedConfigEditor({
           <div className="form-grid">
             <label className="field-row">
               <span>{t("provider")}</span>
-              <select
+              <AdminSelect
+                label={t("provider")}
                 value={cfg.mailerProvider}
-                onChange={(event) =>
-                  patch({ mailerProvider: event.target.value })
-                }
-              >
-                <option value="log">{t("logMailer")}</option>
-                <option value="smtp">SMTP</option>
-              </select>
+                onChange={(mailerProvider) => patch({ mailerProvider })}
+                options={[
+                  { value: "log", label: t("logMailer") },
+                  { value: "smtp", label: "SMTP" },
+                ]}
+              />
             </label>
             <ManagedTextField
               label={t("smtpHost")}
@@ -3142,18 +3138,18 @@ function ManagedConfigEditor({
             />
             <label className="field-row">
               <span>{t("tlsMode")}</span>
-              <select
+              <AdminSelect
+                label={t("tlsMode")}
                 value={cfg.smtp.tlsMode}
-                onChange={(event) =>
-                  patch({
-                    smtp: { ...cfg.smtp, tlsMode: event.target.value },
-                  })
+                onChange={(tlsMode) =>
+                  patch({ smtp: { ...cfg.smtp, tlsMode } })
                 }
-              >
-                <option value="none">{t("disabled")}</option>
-                <option value="starttls">STARTTLS</option>
-                <option value="tls">TLS</option>
-              </select>
+                options={[
+                  { value: "none", label: t("disabled") },
+                  { value: "starttls", label: "STARTTLS" },
+                  { value: "tls", label: "TLS" },
+                ]}
+              />
             </label>
           </div>
         </article>
@@ -3223,17 +3219,17 @@ function ManagedConfigEditor({
           <div className="form-grid">
             <label className="field-row">
               <span>{t("scannerProvider")}</span>
-              <select
+              <AdminSelect
+                label={t("scannerProvider")}
                 value={cfg.scanner.provider}
-                onChange={(event) =>
-                  patch({
-                    scanner: { ...cfg.scanner, provider: event.target.value },
-                  })
+                onChange={(provider) =>
+                  patch({ scanner: { ...cfg.scanner, provider } })
                 }
-              >
-                <option value="heuristic">{t("scannerHeuristic")}</option>
-                <option value="clamav">ClamAV</option>
-              </select>
+                options={[
+                  { value: "heuristic", label: t("scannerHeuristic") },
+                  { value: "clamav", label: "ClamAV" },
+                ]}
+              />
             </label>
             <ManagedTextField
               label={t("clamavAddress")}
@@ -7065,27 +7061,19 @@ function App() {
                         <div className="form-grid">
                           <label className="field-row">
                             <span>{t("logLevel")}</span>
-                            <select
+                            <AdminSelect
+                              label={t("logLevel")}
                               value={
                                 adminData.runtimeConfig?.logLevel ?? "info"
                               }
-                              onChange={(event) =>
-                                updateRuntimeLogLevel(
-                                  event.target.value as LogLevel,
-                                )
-                              }
-                            >
-                              {logLevelOptions.map((level) => (
-                                <option key={level} value={level}>
-                                  {t(
-                                    `logLevel${
-                                      level.charAt(0).toUpperCase() +
-                                      level.slice(1)
-                                    }`,
-                                  )}
-                                </option>
-                              ))}
-                            </select>
+                              onChange={updateRuntimeLogLevel}
+                              options={logLevelOptions.map((level) => ({
+                                value: level,
+                                label: t(
+                                  `logLevel${level.charAt(0).toUpperCase() + level.slice(1)}`,
+                                ),
+                              }))}
+                            />
                           </label>
                         </div>
                       </article>
@@ -7678,18 +7666,15 @@ function App() {
                     {catalogSection === "plans" ? (
                       <label className="field-row config-section-select">
                         <span>{t("choosePlan")}</span>
-                        <select
+                        <AdminSelect
+                          label={t("choosePlan")}
                           value={catalogPlanId}
-                          onChange={(event) =>
-                            setCatalogPlanId(event.target.value)
-                          }
-                        >
-                          {(catalog?.plans ?? []).map((plan) => (
-                            <option key={plan.id} value={plan.id}>
-                              {plan.name}
-                            </option>
-                          ))}
-                        </select>
+                          onChange={setCatalogPlanId}
+                          options={(catalog?.plans ?? []).map((plan) => ({
+                            value: plan.id,
+                            label: plan.name,
+                          }))}
+                        />
                       </label>
                     ) : null}
                     {catalogSection === "plans"
@@ -7910,25 +7895,15 @@ function App() {
                     {catalogSection === "prices" ? (
                       <label className="field-row config-section-select">
                         <span>{t("choosePrice")}</span>
-                        <select
+                        <AdminSelect
+                          label={t("choosePrice")}
                           value={catalogPriceId || catalog?.prices[0]?.id || ""}
-                          onChange={(event) =>
-                            setCatalogPriceId(event.target.value)
-                          }
-                        >
-                          {(catalog?.prices ?? []).map((price) => (
-                            <option key={price.id} value={price.id}>
-                              {price.planId} ·{" "}
-                              {t(
-                                price.period === "monthly"
-                                  ? "periodMonthly"
-                                  : price.period === "yearly"
-                                    ? "periodYearly"
-                                    : price.period,
-                              )}
-                            </option>
-                          ))}
-                        </select>
+                          onChange={setCatalogPriceId}
+                          options={(catalog?.prices ?? []).map((price) => ({
+                            value: price.id,
+                            label: `${price.planId} · ${t(price.period === "monthly" ? "periodMonthly" : price.period === "yearly" ? "periodYearly" : price.period)}`,
+                          }))}
+                        />
                       </label>
                     ) : null}
                     {catalogSection === "prices"
@@ -8032,22 +8007,20 @@ function App() {
                   <section className="admin-section admin-section--wide">
                     <h3>{t("redemptionCodes")}</h3>
                     <div className="form-grid">
-                      <select
-                        aria-label={t("currentPlan")}
+                      <AdminSelect
+                        label={t("currentPlan")}
                         value={redemptionDraft.planId}
-                        onChange={(event) =>
+                        onChange={(planId) =>
                           setRedemptionDraft((previous) => ({
                             ...previous,
-                            planId: event.target.value,
+                            planId,
                           }))
                         }
-                      >
-                        {(catalog?.plans ?? []).map((plan) => (
-                          <option key={plan.id} value={plan.id}>
-                            {plan.name}
-                          </option>
-                        ))}
-                      </select>
+                        options={(catalog?.plans ?? []).map((plan) => ({
+                          value: plan.id,
+                          label: plan.name,
+                        }))}
+                      />
                       <input
                         aria-label={t("durationDays")}
                         min={1}

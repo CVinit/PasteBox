@@ -1906,6 +1906,7 @@ code {
 }
 
 .unit-input {
+  container: admin-unit / inline-size;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(86px, 0.48fr);
   gap: 8px;
@@ -3907,6 +3908,9 @@ button:disabled,
 }
 
 /* Management pages own their navigation, records and tables. */
+.admin-panel {
+  container: admin / inline-size;
+}
 html:has(.admin-panel),
 body:has(.admin-panel) {
   min-width: 0;
@@ -4334,13 +4338,8 @@ body:has(.admin-panel) {
   outline-offset: 3px;
 }
 
-@media (max-width: 1100px) {
-  .admin-console {
-    grid-template-columns: 156px minmax(0, 1fr);
-    gap: 16px;
-  }
-}
-@media (max-width: 760px) {
+/* Account for both workspace sidebar states, not just viewport width. */
+@container admin (max-width: 900px) {
   .admin-console {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: none;
@@ -4400,10 +4399,111 @@ body:has(.admin-panel) {
   }
 }
 
-@media (max-width: 380px) {
-  .admin-panel .unit-input {
-    grid-template-columns: minmax(0, 1fr);
+@container admin-unit (max-width: 210px) {
+  .admin-panel .unit-input:not(.unit-input--suffix) > input,
+  .admin-panel .unit-input > .admin-select {
+    grid-column: 1 / -1;
   }
+}
+
+.admin-select {
+  min-width: 0;
+}
+.admin-panel .admin-select > .admin-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--field-border);
+  border-radius: 10px;
+  color: var(--ink);
+  background: var(--field-bg);
+  box-shadow: var(--field-shadow);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  text-align: left;
+  white-space: normal;
+  transform: none;
+}
+.admin-select-trigger > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.admin-select-trigger > svg {
+  flex: 0 0 auto;
+  color: var(--muted-strong);
+  transition: transform 160ms ease;
+}
+.admin-select-trigger[aria-expanded="true"] > svg {
+  transform: rotate(180deg);
+}
+.admin-panel .admin-select-trigger:hover:not(:disabled),
+.admin-panel .admin-select-trigger[aria-expanded="true"] {
+  border-color: var(--ink);
+}
+.admin-panel .admin-select-trigger:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+.admin-panel .admin-select-trigger:disabled {
+  color: var(--muted-strong);
+  background: var(--surface-card);
+  box-shadow: none;
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+/* Portalled to the page so cards and multi-column config cannot clip options. */
+.admin-select-menu {
+  position: fixed;
+  z-index: 100;
+  display: grid;
+  gap: 2px;
+  padding: 5px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  color: var(--ink);
+  background: var(--canvas);
+  box-shadow: 0 10px 30px rgba(23, 33, 29, 0.14);
+}
+.admin-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 9px 10px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.admin-select-option > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.admin-select-option > svg {
+  flex: 0 0 auto;
+}
+.admin-select-option[aria-selected="true"] {
+  background: var(--brand-lavender);
+}
+.admin-select-option--active {
+  outline: 1px solid var(--line-strong);
+  outline-offset: -1px;
+  background: var(--surface-card);
+}
+.admin-select-option[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 code {

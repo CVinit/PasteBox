@@ -127,8 +127,10 @@ TypeScript strict, and build with Vite.
 
 ### 2. Signatures
 
-- Primary components: admin navigation in `web/src/App.tsx` and management
-  lists/audit table in `web/src/AdminManagement.tsx`.
+- Primary components: admin navigation in `web/src/App.tsx`, management
+  lists/audit table in `web/src/AdminManagement.tsx`, and the shared
+  `AdminSelect<T extends string>` in `web/src/AdminSelect.tsx` (label, value,
+  options, onChange, optional disabled).
 - Primary stylesheet: admin-scoped selectors in `web/src/styles.css`.
 - Required layout classes: `.admin-panel`, `.admin-console`, `.admin-grid`,
   `.admin-section`, `.admin-section--wide`, `.admin-section--compact`, and
@@ -139,10 +141,23 @@ TypeScript strict, and build with Vite.
 - Desktop navigation occupies column 1 across the page heading/content rows;
   the heading and content occupy column 2. Use `auto 1fr` row sizing to avoid
   empty space when navigation is taller than content.
-- Hide `.admin-panel .admin-nav-toggle` on desktop and show it below 760px.
-  Keep selector specificity at least as strong as `.panel button`; a weaker
-  `display: none` is overridden by the global button rule. Mobile navigation
-  starts closed and closes after selecting an item.
+- Set `.admin-panel` as the named `admin` inline-size container. Hide
+  `.admin-panel .admin-nav-toggle` in wide content areas and show it through
+  `@container admin (max-width: 900px)`. Both workspace sidebar states must
+  affect this decision: a 1024px viewport with its 300px sidebar open leaves
+  too little space for a second sidebar. Keep selector specificity at least
+  as strong as `.panel button`; a weaker `display: none` is overridden by the
+  global button rule. Collapsed navigation starts closed and closes after
+  selecting an item.
+- All admin select fields use `AdminSelect`, including unit, log level, plan,
+  price, redemption and managed-config controls. Keep existing typed values and
+  change callbacks; label the combobox explicitly. The page-level listbox must
+  escape card/column clipping, stay within the viewport, scroll long options,
+  reposition on resize/scroll, and close when its trigger leaves the viewport.
+  Arrow keys, Home/End and typeahead move the active option; Enter/Space commit;
+  Escape/Tab and outside clicks close it. Keep focus on the trigger for option
+  selection, and block disabled controls/options. Do not replace unrelated
+  workspace selects as a side effect.
 - Users/files/shares request 21 records, render 20, and use the extra record to
   enable Next. User/file search resets offset and reaches the server before
   pagination. Abort older requests on new searches, reloads and unmount; failed
@@ -175,15 +190,26 @@ TypeScript strict, and build with Vite.
   height and visible focus/disabled states.
 - The admin panel and `.admin-grid` must not make the page horizontally
   scrollable at 320px, 375px or desktop widths. Admin form grids use
-  `minmax(min(180px, 100%), 1fr)` so nested fields can shrink, and unit controls
-  stack below 380px. Admin pages must also relax the global 320px body minimum
+  `minmax(min(180px, 100%), 1fr)` so nested fields can shrink. Unit controls use
+  their own `admin-unit` inline-size container; selectable unit fields span both
+  columns when it is at most 210px wide. Fixed suffixes (such as `%`) stay beside
+  their numbers. Viewport width alone does not describe nested form space.
+  Admin pages must also relax the global 320px body minimum
   to account for non-overlay scrollbar width.
 
 ### 4. Validation & Error Matrix
 
 - 320px/375px admin view: `.admin-panel.scrollWidth <= .admin-panel.clientWidth` and
   `.admin-grid.scrollWidth <= .admin-grid.clientWidth`.
-- Desktop admin view: same width assertions, with all admin sections visible.
+- Non-fullscreen (981/1024/1100/1200px) and wide desktop admin views: same
+  width assertions in both workspace sidebar states, with all admin sections
+  accessible. A narrow content container uses the collapsed admin menu even on
+  a desktop viewport.
+- Admin dropdown at the bottom/right viewport edges -> listbox stays on screen,
+  flips upward if needed, and does not move the document sideways. Escape
+  preserves the value, Tab reaches the next control, and clicks select/close.
+- Unit selection -> displayed number changes units without changing the stored
+  duration/byte value; log level and user plan still save through existing APIs.
 - Mixed order card (`content + status + input + button`) -> wraps into stable
   rows rather than forcing a wide flex row.
 - Long webhook, queue, email, or redemption-code text -> wraps or scrolls inside
@@ -208,12 +234,16 @@ TypeScript strict, and build with Vite.
 - Run `scripts/test-web-admin.cjs` through the web test command: assert stale
   search responses are ignored, failed loads remove old rows, all locales
   render audit actions/full IDs, removed content disables actions and share
-  states have translations.
+  states have translations. Select event-handler tests also cover keyboard
+  commit/cancel, typeahead, disabled options and empty/disabled controls.
 - Run `make test-web` after changing admin UI or admin CSS.
 - Run full `make test` when synced embedded static assets or backend-adjacent
   admin behavior changes are part of the same slice.
-- Browser-check all admin navigation items at 320px, 375px and desktop width;
-  assert no console errors and no admin panel/grid horizontal overflow.
+- Browser-check all admin navigation items at 320px, 375px, non-fullscreen
+  widths (especially 981–1200px), and desktop width with both workspace sidebar
+  states; assert no console errors and no admin panel/grid horizontal overflow.
+  Also exercise select pointer/keyboard/focus behavior and viewport bounds in a
+  real browser; event-handler tests cannot verify layout or native focus.
 - Switch through every supported locale and assert known backend identifiers
   such as `activeStorageBytes`, `smtp.password`, and `unitSeconds` are absent
   from visible admin text.

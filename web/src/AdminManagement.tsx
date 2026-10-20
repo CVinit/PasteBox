@@ -1,3 +1,4 @@
+import { AdminSelect } from "./AdminSelect";
 import { useEffect, useState, type ReactNode } from "react";
 import {
   Ban,
@@ -782,18 +783,16 @@ export function AdminUserManager({
               >
                 <label className="field-row">
                   <span>{t("adminPlan")}</span>
-                  <select
+                  <AdminSelect
+                    label={t("adminPlan")}
                     value={editing.planId}
-                    onChange={(event) =>
-                      setEditing({ ...editing, planId: event.target.value })
-                    }
-                  >
-                    {plans.map((plan) => (
-                      <option key={plan.id} value={plan.id}>
-                        {plan.name}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(planId) => setEditing({ ...editing, planId })}
+                    options={plans.map((plan) => ({
+                      value: plan.id,
+                      label: plan.name,
+                    }))}
+                    disabled={action.busy}
+                  />
                 </label>
                 <label className="field-row">
                   <span>{t("adminExpiresAt")}</span>

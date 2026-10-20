@@ -21,6 +21,34 @@ const compiled = ts.transpileModule(source, {
     jsx: ts.JsxEmit.ReactJSX,
   },
 }).outputText;
+function loadSelect(react = React) {
+  const exports = {};
+  const source = fs.readFileSync(
+    require("node:path").join(__dirname, "../web/src/AdminSelect.tsx"),
+    "utf8",
+  );
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+      jsx: ts.JsxEmit.ReactJSX,
+    },
+  }).outputText;
+  vm.runInNewContext(compiled, {
+    exports,
+    document: { body: {} },
+    require: (name) => {
+      if (name === "react") return react;
+      if (name === "react-dom") return { createPortal: (node) => node };
+      if (name === "react/jsx-runtime")
+        return require("../web/node_modules/react/jsx-runtime");
+      if (name === "lucide-react")
+        return require("../web/node_modules/lucide-react");
+      throw new Error(`Unexpected select import: ${name}`);
+    },
+  });
+  return exports.AdminSelect;
+}
 function load(react = React) {
   const exports = {};
   vm.runInNewContext(compiled + "\nexports.useAdminPage = useAdminPage;", {
@@ -33,6 +61,7 @@ function load(react = React) {
         return require("../web/node_modules/react/jsx-runtime");
       if (name === "lucide-react")
         return require("../web/node_modules/lucide-react");
+      if (name === "./AdminSelect") return { AdminSelect: loadSelect(react) };
       if (name === "./api") return { formatBytes: (size) => `${size} B` };
       throw new Error(`Unexpected import: ${name}`);
     },
@@ -239,5 +268,123 @@ test("removed content disables file actions and revoked or expired shares have t
     assert.ok(!revoked.html.includes("stateRevoked"));
     const expired = render("AdminShareManager", sample, locale);
     assert.ok(expired.html.includes(expired.t("adminShareExpired")));
+  }
+});
+
+// Exercise the real select's event handlers; positioning and browser focus are
+// checked against the live admin preview, not a simulated layout engine.
+function selectControl(overrides = {}) {
+  const state = [];
+  let cursor = 0;
+  const changes = [];
+  const props = {
+    label: "Log level",
+    value: "info",
+    options: [
+      { value: "debug", label: "Debug" },
+      { value: "info", label: "Information" },
+      { value: "trace", label: "Trace", disabled: true },
+      { value: "warn", label: "Warning" },
+      { value: "error", label: "Error" },
+    ],
+    onChange(value) {
+      changes.push(value);
+      props.value = value;
+    },
+    ...overrides,
+  };
+  const component = loadSelect({
+    useId: () => "select-test",
+    useEffect() {},
+    useLayoutEffect() {},
+    useRef(initial) {
+      const index = cursor++;
+      if (!(index in state)) state[index] = { current: initial };
+      return state[index];
+    },
+    useState(initial) {
+      const index = cursor++;
+      if (!(index in state)) state[index] = initial;
+      return [
+        state[index],
+        (next) => {
+          state[index] = next;
+        },
+      ];
+    },
+  });
+  function render() {
+    cursor = 0;
+    const [trigger, menu] = component(props).props.children;
+    return { trigger: trigger.props, menu: menu?.props };
+  }
+  return {
+    changes,
+    render,
+    key(key) {
+      render().trigger.onKeyDown({
+        key,
+        preventDefault() {},
+        stopPropagation() {},
+      });
+      return render();
+    },
+  };
+}
+
+test("admin select uses keyboard navigation, skips disabled options and commits only on confirmation", () => {
+  const select = selectControl();
+  let view = select.key("ArrowDown");
+  assert.equal(view.trigger["aria-expanded"], true);
+  assert.equal(view.trigger["aria-activedescendant"], "select-test-1");
+  view = select.key("ArrowDown");
+  assert.equal(view.trigger["aria-activedescendant"], "select-test-3");
+  assert.equal(select.changes.length, 0);
+  select.key("Home");
+  assert.equal(
+    select.render().trigger["aria-activedescendant"],
+    "select-test-0",
+  );
+  select.key("End");
+  view = select.key("Enter");
+  assert.deepEqual(select.changes, ["error"]);
+  assert.equal(view.trigger["aria-expanded"], false);
+  select.key(" ");
+  select.key("Home");
+  select.key("Escape");
+  assert.deepEqual(select.changes, ["error"]);
+  assert.equal(select.render().trigger["aria-expanded"], false);
+  select.key("ArrowUp");
+  assert.equal(select.key("Tab").trigger["aria-expanded"], false);
+});
+
+test("admin select typeahead and pointer selection preserve value and selected state", () => {
+  const select = selectControl();
+  let view = select.key("w");
+  assert.equal(view.trigger["aria-activedescendant"], "select-test-3");
+  assert.equal(view.menu.children[1].props["aria-selected"], true);
+  select.key("Enter");
+  assert.deepEqual(select.changes, ["warn"]);
+  select.render().trigger.onClick();
+  view = select.render();
+  view.menu.children[2].props.onClick();
+  assert.deepEqual(select.changes, ["warn"]);
+  view.menu.children[0].props.onClick();
+  assert.deepEqual(select.changes, ["warn", "debug"]);
+  assert.equal(select.render().trigger["aria-expanded"], false);
+});
+
+test("empty and disabled admin selects cannot open or change values", () => {
+  for (const overrides of [
+    { disabled: true },
+    { options: [] },
+    { options: [{ value: "info", label: "Info", disabled: true }] },
+  ]) {
+    const select = selectControl(overrides);
+    assert.equal(select.render().trigger.disabled, true);
+    select.render().trigger.onClick();
+    select.key("ArrowDown");
+    assert.equal(select.render().trigger["aria-expanded"], false);
+    assert.deepEqual(select.changes, []);
   }
 });
