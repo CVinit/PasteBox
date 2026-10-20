@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"后台导航、列表、审计与移动端布局约定"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"用户分页搜索及套餐展示配置持久化契约"}
