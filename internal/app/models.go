@@ -460,8 +460,9 @@ type BillingPrice struct {
 
 type AdminAttachmentView struct {
 	AttachmentView
-	UserID     string `json:"userId"`
-	PasteTitle string `json:"pasteTitle"`
+	UserID      string `json:"userId"`
+	PasteTitle  string `json:"pasteTitle"`
+	PasteStatus string `json:"pasteStatus"`
 }
 
 type AdminShareView struct {

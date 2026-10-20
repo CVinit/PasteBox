@@ -162,9 +162,13 @@ func (s *Service) AdminUsersWithContext(ctx context.Context, actorID string, opt
 		return nil, E(http.StatusForbidden, "admin_required", "admin role required")
 	}
 
+	query := strings.ToLower(strings.TrimSpace(opts.Query))
 	var users []User
 	pageApplied := false
-	if store, ok := s.auth.Users.(PagedUserStore); ok {
+	if store, ok := s.auth.Users.(SearchableUserStore); ok {
+		users, err = store.SearchUsersPage(ctx, query, limit, offset)
+		pageApplied = true
+	} else if store, ok := s.auth.Users.(PagedUserStore); ok && query == "" {
 		users, err = store.ListUsersPage(ctx, limit, offset)
 		pageApplied = true
 	} else if s.auth.Users != nil {
@@ -181,6 +185,14 @@ func (s *Service) AdminUsersWithContext(ctx context.Context, actorID string, opt
 		return nil, fmt.Errorf("load admin users: %w", err)
 	}
 	if !pageApplied {
+		filtered := users[:0]
+		for _, user := range users {
+			haystack := strings.ToLower(user.ID + "\n" + user.Email + "\n" + user.DisplayName)
+			if query == "" || strings.Contains(haystack, query) {
+				filtered = append(filtered, user)
+			}
+		}
+		users = filtered
 		sort.Slice(users, func(i, j int) bool {
 			if users[i].CreatedAt.Equal(users[j].CreatedAt) {
 				return users[i].ID > users[j].ID
@@ -440,7 +452,6 @@ func (s *Service) AdminAttachmentsWithContext(ctx context.Context, actorID strin
 
 	type attachmentRecord struct {
 		attachment Attachment
-		pasteTitle string
 		paste      *Paste
 	}
 	records := make([]attachmentRecord, 0, len(attachments))
@@ -453,7 +464,6 @@ func (s *Service) AdminAttachmentsWithContext(ctx context.Context, actorID strin
 			}
 			if pasteErr == nil {
 				record.paste = &paste
-				record.pasteTitle = paste.Title
 			}
 		}
 		records = append(records, record)
@@ -467,10 +477,19 @@ func (s *Service) AdminAttachmentsWithContext(ctx context.Context, actorID strin
 			s.cachePasteLocked(*record.paste)
 		}
 		s.cacheAttachmentLocked(record.attachment)
+		pasteTitle, pasteStatus := "", ""
+		paste := record.paste
+		if s.content.Pastes == nil {
+			paste = s.pastesByID[record.attachment.PasteID]
+		}
+		if paste != nil {
+			pasteTitle, pasteStatus = paste.Title, paste.Status
+		}
 		out = append(out, AdminAttachmentView{
 			AttachmentView: viewAttachment(&record.attachment),
 			UserID:         record.attachment.UserID,
-			PasteTitle:     record.pasteTitle,
+			PasteTitle:     pasteTitle,
+			PasteStatus:    pasteStatus,
 		})
 	}
 	return out, nil

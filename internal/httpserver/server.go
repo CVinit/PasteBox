@@ -164,11 +164,12 @@ type PublicSupportContacts struct {
 }
 
 type PublicPlanCatalog struct {
-	Plans        []plans.Plan           `json:"plans"`
-	Prices       []app.BillingPrice     `json:"prices"`
-	GuestUploads app.GuestUploadConfig  `json:"guestUploads"`
-	Registration app.RegistrationConfig `json:"registration"`
-	Transfers    PublicTransferConfig   `json:"transfers"`
+	PricingVisible bool                   `json:"pricingVisible"`
+	Plans          []plans.Plan           `json:"plans"`
+	Prices         []app.BillingPrice     `json:"prices"`
+	GuestUploads   app.GuestUploadConfig  `json:"guestUploads"`
+	Registration   app.RegistrationConfig `json:"registration"`
+	Transfers      PublicTransferConfig   `json:"transfers"`
 }
 
 // PublicTransferConfig publishes the bounds a send form has to respect, so the
@@ -600,11 +601,12 @@ func writeMetric(b *strings.Builder, name string, labels map[string]string, valu
 func (s *Server) planCatalog(w http.ResponseWriter, _ *http.Request) {
 	catalog := s.app.Prices()
 	writeJSON(w, http.StatusOK, PublicPlanCatalog{
-		Plans:        catalog.Plans,
-		Prices:       catalog.Prices,
-		GuestUploads: s.app.PublicGuestUploadsConfig(),
-		Registration: s.app.PublicRegistrationConfig(),
-		Transfers:    PublicTransferConfig{MaxClaimQuota: app.MaxTransferClaimQuota},
+		Plans:          catalog.Plans,
+		Prices:         catalog.Prices,
+		PricingVisible: catalog.PricingVisible,
+		GuestUploads:   s.app.PublicGuestUploadsConfig(),
+		Registration:   s.app.PublicRegistrationConfig(),
+		Transfers:      PublicTransferConfig{MaxClaimQuota: app.MaxTransferClaimQuota},
 	})
 }
 
@@ -1717,6 +1719,7 @@ func (s *Server) adminUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	users, err := s.app.AdminUsersWithContext(r.Context(), user.ID, app.ListOptions{
+		Query:  r.URL.Query().Get("query"),
 		Limit:  parseListQueryInt(r.URL.Query().Get("limit")),
 		Offset: parseListQueryInt(r.URL.Query().Get("offset")),
 	})

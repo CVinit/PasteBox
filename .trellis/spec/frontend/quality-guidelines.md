@@ -127,7 +127,8 @@ TypeScript strict, and build with Vite.
 
 ### 2. Signatures
 
-- Primary component: admin view in `web/src/App.tsx`.
+- Primary components: admin navigation in `web/src/App.tsx` and management
+  lists/audit table in `web/src/AdminManagement.tsx`.
 - Primary stylesheet: admin-scoped selectors in `web/src/styles.css`.
 - Required layout classes: `.admin-panel`, `.admin-console`, `.admin-grid`,
   `.admin-section`, `.admin-section--wide`, `.admin-section--compact`, and
@@ -135,6 +136,29 @@ TypeScript strict, and build with Vite.
 
 ### 3. Contracts
 
+- Desktop navigation occupies column 1 across the page heading/content rows;
+  the heading and content occupy column 2. Use `auto 1fr` row sizing to avoid
+  empty space when navigation is taller than content.
+- Hide `.admin-panel .admin-nav-toggle` on desktop and show it below 760px.
+  Keep selector specificity at least as strong as `.panel button`; a weaker
+  `display: none` is overridden by the global button rule. Mobile navigation
+  starts closed and closes after selecting an item.
+- Users/files/shares request 21 records, render 20, and use the extra record to
+  enable Next. User/file search resets offset and reaches the server before
+  pagination. Abort older requests on new searches, reloads and unmount; failed
+  loads clear old rows and display the error.
+- Successful management actions refresh the current list, admin metrics and
+  workspace quota/content. The current account's freeze control is disabled.
+- Keep attachment status separate from optional parent `pasteStatus`. A parent
+  marked `taken_down` is displayed as taken down and disables file actions;
+  never render it as available based only on `attachment.status === "active"`.
+- Share badges localize revoked/expired/active states. Audit rows use a table
+  with local 20-row pagination over the latest 100 returned records; known
+  action names are localized and full IDs remain expandable.
+- `pricingVisible === false` hides public pricing and the workspace membership
+  entry/plan grid. Missing visibility in older API responses defaults to
+  visible. Keep current entitlements and existing order handling available.
+  Saving the switch merges only `pricingHidden` into any runtime form draft.
 - Admin sections must use explicit semantic classes for grid span decisions;
   do not rely on `section:nth-child(...)` because adding or reordering admin
   sections silently breaks layout.
@@ -150,17 +174,22 @@ TypeScript strict, and build with Vite.
 - Admin form controls and action buttons must keep at least 44px touch/click
   height and visible focus/disabled states.
 - The admin panel and `.admin-grid` must not make the page horizontally
-  scrollable at 375px or desktop widths.
+  scrollable at 320px, 375px or desktop widths. Admin form grids use
+  `minmax(min(180px, 100%), 1fr)` so nested fields can shrink, and unit controls
+  stack below 380px. Admin pages must also relax the global 320px body minimum
+  to account for non-overlay scrollbar width.
 
 ### 4. Validation & Error Matrix
 
-- 375px admin view: `.admin-panel.scrollWidth <= .admin-panel.clientWidth` and
+- 320px/375px admin view: `.admin-panel.scrollWidth <= .admin-panel.clientWidth` and
   `.admin-grid.scrollWidth <= .admin-grid.clientWidth`.
 - Desktop admin view: same width assertions, with all admin sections visible.
 - Mixed order card (`content + status + input + button`) -> wraps into stable
   rows rather than forcing a wide flex row.
 - Long webhook, queue, email, or redemption-code text -> wraps or scrolls inside
   its own code block, not the whole page.
+- Audit on mobile -> horizontal scrolling belongs only to its table wrapper;
+  the page, panel and grid remain within the viewport.
 - Switching locale -> dynamic metric, provider, config-field, status, and alert
   labels change with the rest of the page; technical brand names may remain.
 
@@ -176,11 +205,15 @@ TypeScript strict, and build with Vite.
 
 ### 6. Tests Required
 
+- Run `scripts/test-web-admin.cjs` through the web test command: assert stale
+  search responses are ignored, failed loads remove old rows, all locales
+  render audit actions/full IDs, removed content disables actions and share
+  states have translations.
 - Run `make test-web` after changing admin UI or admin CSS.
 - Run full `make test` when synced embedded static assets or backend-adjacent
   admin behavior changes are part of the same slice.
-- Browser-check the admin view at 375px and desktop width; assert no console
-  errors and no admin panel/grid horizontal overflow.
+- Browser-check all admin navigation items at 320px, 375px and desktop width;
+  assert no console errors and no admin panel/grid horizontal overflow.
 - Switch through every supported locale and assert known backend identifiers
   such as `activeStorageBytes`, `smtp.password`, and `unitSeconds` are absent
   from visible admin text.
@@ -206,7 +239,7 @@ TypeScript strict, and build with Vite.
 
 ```css
 .admin-panel .admin-section--wide {
-  grid-column: span 8;
+  grid-column: 1 / -1;
 }
 ```
 
@@ -216,6 +249,21 @@ TypeScript strict, and build with Vite.
 ```
 
 ---
+
+#### Wrong
+
+```css
+.admin-nav-toggle { display: none; } /* loses to .panel button */
+```
+
+#### Correct
+
+```css
+.admin-panel .admin-nav-toggle { display: none; }
+@media (max-width: 760px) {
+  .admin-panel .admin-nav-toggle { display: flex; }
+}
+```
 
 ## Scenario: Billing Order Status Presentation
 

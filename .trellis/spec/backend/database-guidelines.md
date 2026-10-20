@@ -1468,6 +1468,96 @@ next.GuestUploads = *patch.GuestUploads
 next.GuestUploads = applyGuestUploadConfigPatch(next.GuestUploads, *patch.GuestUploads)
 ```
 
+## Scenario: Admin Management Search And Pricing Visibility
+
+### 1. Scope / Trigger
+
+- Trigger: Changes to admin user/file lists, public pricing visibility or the
+  runtime JSON used to persist the site-wide pricing switch.
+
+### 2. Signatures
+
+- Optional store extension: `SearchableUserStore.SearchUsersPage(ctx
+  context.Context, query string, limit int, offset int) ([]User, error)`.
+- Service: `AdminUsersWithContext(ctx, actorID, ListOptions{Query, Limit, Offset})`.
+- HTTP: `GET /api/v1/admin/users?query=...&limit=21&offset=0` returns `{users: []}`.
+- File list: `GET /api/v1/admin/attachments` adds `pasteStatus` alongside
+  `pasteTitle`, `userId` and the attachment fields.
+- Visibility patch: `PATCH /api/v1/admin/runtime-config` with
+  `{"pricingHidden": true | false}`; Go patch field is `*bool`.
+- Public catalog: `/api/v1/plans` and `/api/v1/billing/prices` return
+  `pricingVisible: !RuntimeConfig.PricingHidden`.
+
+### 3. Contracts
+
+- Search trims whitespace and matches ID/email/display name by a
+  case-insensitive literal substring before sorting/pagination. PostgreSQL uses
+  `position(lower($1) in lower(concat_ws(E'\n', id, email, display_name)))`;
+  `%` and `_` are literal input, not LIKE wildcards.
+- Ordering is `created_at DESC, id DESC`. Prefer `SearchableUserStore`; use the
+  older `PagedUserStore` only for an empty query. Other stores and in-memory
+  operation filter first, then sort and slice.
+- `pasteStatus` is the parent's content status, independent of file/scan
+  status. Fetch the parent from its configured store; use the in-memory map
+  only when no paste store exists. Unknown/missing parents yield empty fields.
+- `pricingHidden` is non-sensitive runtime JSONB in `system_configs.default`;
+  its zero value is false so old JSON keeps pricing visible without migration.
+  Omitted patches preserve it and explicit false restores public display.
+- Save through the existing atomic runtime/audit persistence boundary. Failure
+  preserves both durable data and live service state; unrelated partial updates
+  do not reset visibility. Visibility changes never mutate plans, prices,
+  purchases, current membership or quotas.
+
+### 4. Validation & Error Matrix
+
+- Anonymous admin access -> 401; authenticated non-admin -> 403 admin_required.
+- Empty search -> all users under existing pagination limits; no matches or an
+  offset past the last match -> empty users array.
+- Store query failure -> wrapped service/repository error; never report an
+  empty successful page instead of a failed load.
+- Missing `pricingHidden` in stored JSON -> false; omitted patch -> keep value;
+  explicit false -> visible; persistence/audit failure -> retain old state.
+- Attachment active + parent taken_down -> return both states accurately.
+
+### 5. Good/Base/Bad Cases
+
+- Good: page 2 of a search contains the next matching users, even when the
+  matches were on separate unfiltered pages.
+- Base: older stores remain compatible through their original interfaces;
+  older public API responses remain visible by default in the web client.
+- Bad: filter a single fetched user page in the browser, or hide pricing by
+  disabling all prices/changing purchased entitlements.
+
+### 6. Tests Required
+
+- App: visibility defaults, explicit false, omitted fields, restart retention,
+  failed atomic save, unchanged membership/catalog, search normalization and
+  pagination, and parent content status before/after takedown.
+- HTTP: admin authorization, both public catalog visibility fields, user query
+  forwarding and attachment `pasteStatus`/title after content takedown.
+- PostgreSQL: literal case-insensitive email/name/ID search and pagination across
+  matching users. Run `make test-postgres` and `make test`.
+
+### 7. Wrong vs Correct
+
+```go
+// Wrong: a query can only find users already on this unfiltered page.
+rows, _ := store.ListUsersPage(ctx, limit, offset)
+return filterUsers(rows, query)
+
+// Correct: filter and order the full matching set before applying offset.
+return store.SearchUsersPage(ctx, query, limit, offset)
+```
+
+```go
+// Wrong: a new visible bool's zero value hides old persisted installations.
+PricingVisible bool
+
+// Correct: false keeps the previous public display by default.
+PricingHidden bool
+// RuntimeConfigPatch.PricingHidden is *bool to preserve omission semantics.
+```
+
 ## Scenario: Pickup Code Resolution And Guess Limiting
 
 ### 1. Scope / Trigger

@@ -30,8 +30,9 @@ func (s *Service) PlanCatalog() plans.Catalog {
 }
 
 func (s *Service) Prices() struct {
-	Plans  []plans.Plan   `json:"plans"`
-	Prices []BillingPrice `json:"prices"`
+	Plans          []plans.Plan   `json:"plans"`
+	Prices         []BillingPrice `json:"prices"`
+	PricingVisible bool           `json:"pricingVisible"`
 } {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -51,11 +52,13 @@ func (s *Service) Prices() struct {
 		})
 	}
 	return struct {
-		Plans  []plans.Plan   `json:"plans"`
-		Prices []BillingPrice `json:"prices"`
+		Plans          []plans.Plan   `json:"plans"`
+		Prices         []BillingPrice `json:"prices"`
+		PricingVisible bool           `json:"pricingVisible"`
 	}{
-		Plans:  cloneCatalog(s.catalog).Plans,
-		Prices: prices,
+		Plans:          cloneCatalog(s.catalog).Plans,
+		Prices:         prices,
+		PricingVisible: !s.runtimeConfig.PricingHidden,
 	}
 }
 

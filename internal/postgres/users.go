@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -148,6 +149,10 @@ ORDER BY created_at DESC, id DESC
 }
 
 func (s *UserStore) ListUsersPage(ctx context.Context, limit int, offset int) ([]app.User, error) {
+	return s.SearchUsersPage(ctx, "", limit, offset)
+}
+
+func (s *UserStore) SearchUsersPage(ctx context.Context, query string, limit int, offset int) ([]app.User, error) {
 	rows, err := s.pool.Query(ctx, `
 SELECT
 	id,
@@ -166,9 +171,10 @@ SELECT
 	delete_scheduled_at,
 	deleted_at
 FROM users
+WHERE $1 = '' OR position(lower($1) in lower(concat_ws(E'\n', id, email, display_name))) > 0
 ORDER BY created_at DESC, id DESC
-LIMIT $1 OFFSET $2
-`, limit, offset)
+LIMIT $2 OFFSET $3
+`, strings.TrimSpace(query), limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("query paged users: %w", err)
 	}

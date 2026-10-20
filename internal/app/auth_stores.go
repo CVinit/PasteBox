@@ -32,6 +32,10 @@ type UserStore interface {
 	UpdateUser(ctx context.Context, user User) error
 }
 
+type SearchableUserStore interface {
+	SearchUsersPage(ctx context.Context, query string, limit int, offset int) ([]User, error)
+}
+
 type PagedUserStore interface {
 	ListUsersPage(ctx context.Context, limit int, offset int) ([]User, error)
 }

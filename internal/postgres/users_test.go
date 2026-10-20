@@ -90,6 +90,29 @@ func TestUserStoreCreatesReadsAndUpdatesUsers(t *testing.T) {
 		t.Fatalf("expected duplicate email error, got %v", err)
 	}
 
+	pageUser := user
+	pageUser.ID, pageUser.Email = duplicateID, "second-user-store-test@example.com"
+	pageUser.CreatedAt = createdAt.Add(time.Second)
+	if err := store.CreateUser(ctx, pageUser); err != nil {
+		t.Fatal(err)
+	}
+	for offset, want := range []string{duplicateID, userID} {
+		page, err := store.SearchUsersPage(ctx, " USER-STORE-TEST ", 1, offset)
+		if err != nil || len(page) != 1 || page[0].ID != want {
+			t.Fatalf("search page %d: %#v, err=%v", offset, page, err)
+		}
+	}
+	for _, query := range []string{userID, "User Store Test"} {
+		page, err := store.SearchUsersPage(ctx, query, 20, 0)
+		if err != nil || !hasPostgresUser(page, userID) {
+			t.Fatalf("search %q: %#v, err=%v", query, page, err)
+		}
+	}
+	page, err := store.SearchUsersPage(ctx, "user-store-test", 1, 2)
+	if err != nil || len(page) != 0 {
+		t.Fatalf("search past last page: %#v, err=%v", page, err)
+	}
+
 	planExpiresAt := createdAt.Add(30 * 24 * time.Hour)
 	deleteRequestedAt := createdAt.Add(time.Hour)
 	deleteScheduledAt := deleteRequestedAt.Add(7 * 24 * time.Hour)

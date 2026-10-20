@@ -37,6 +37,7 @@ const (
 type RuntimeConfig struct {
 	ID             string                 `json:"id"`
 	LogLevel       string                 `json:"logLevel"`
+	PricingHidden  bool                   `json:"pricingHidden"`
 	GuestUploads   GuestUploadConfig      `json:"guestUploads"`
 	Registration   RegistrationConfig     `json:"registration"`
 	RateLimits     RuntimeRateLimitConfig `json:"rateLimits"`
@@ -141,11 +142,12 @@ type CatalogWriter interface {
 }
 
 type RuntimeConfigPatch struct {
-	LogLevel     *string                      `json:"logLevel,omitempty"`
-	GuestUploads *GuestUploadConfigPatch      `json:"guestUploads,omitempty"`
-	Registration *RegistrationConfigPatch     `json:"registration,omitempty"`
-	RateLimits   *RuntimeRateLimitConfigPatch `json:"rateLimits,omitempty"`
-	Alerts       *AlertConfigPatch            `json:"alerts,omitempty"`
+	PricingHidden *bool                        `json:"pricingHidden,omitempty"`
+	LogLevel      *string                      `json:"logLevel,omitempty"`
+	GuestUploads  *GuestUploadConfigPatch      `json:"guestUploads,omitempty"`
+	Registration  *RegistrationConfigPatch     `json:"registration,omitempty"`
+	RateLimits    *RuntimeRateLimitConfigPatch `json:"rateLimits,omitempty"`
+	Alerts        *AlertConfigPatch            `json:"alerts,omitempty"`
 }
 
 type ManagedConfigView struct {
@@ -1346,6 +1348,9 @@ func (s *Service) adminUpdateRuntimeConfigLocked(ctx context.Context, actorID st
 		return RuntimeConfig{}, err
 	}
 	next := cloneRuntimeConfig(s.runtimeConfig)
+	if patch.PricingHidden != nil {
+		next.PricingHidden = *patch.PricingHidden
+	}
 	if patch.LogLevel != nil {
 		level, ok := NormalizeRuntimeLogLevel(*patch.LogLevel)
 		if !ok {
@@ -1514,6 +1519,7 @@ func applyAlertConfigPatch(cfg AlertConfig, patch AlertConfigPatch) AlertConfig 
 func runtimeConfigAuditMetadata(cfg RuntimeConfig) map[string]any {
 	return map[string]any{
 		"logLevel":                     cfg.LogLevel,
+		"pricingHidden":                cfg.PricingHidden,
 		"guestUploadsEnabled":          cfg.GuestUploads.Enabled,
 		"guestRequireTurnstile":        cfg.GuestUploads.RequireTurnstile,
 		"registrationDomains":          cfg.Registration.AllowedDomains,

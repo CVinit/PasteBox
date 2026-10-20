@@ -14,6 +14,7 @@ export type Plan = {
 };
 
 export type PlanCatalog = {
+  pricingVisible?: boolean;
   plans: Plan[];
   prices: Price[];
   guestUploads?: GuestUploadConfig;
@@ -308,6 +309,7 @@ export type AuditLog = {
 export type AdminAttachment = Attachment & {
   userId: string;
   pasteTitle: string;
+  pasteStatus?: string;
 };
 
 export type AdminShare = Share & {
@@ -501,6 +503,7 @@ export type ManagedConfigView = {
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 export type RuntimeConfig = {
+  pricingHidden: boolean;
   id: string;
   logLevel: LogLevel;
   guestUploads: GuestUploadConfig;
@@ -1151,6 +1154,7 @@ export const client = {
       body: JSON.stringify(body),
     }),
   adminUpdateRuntimeConfig: (body: {
+    pricingHidden?: boolean;
     logLevel?: LogLevel;
     guestUploads?: Partial<GuestUploadConfig>;
     registration?: Partial<RegistrationConfig>;
@@ -1215,7 +1219,16 @@ export const client = {
       method: "POST",
       body: JSON.stringify({ message }),
     }),
-  adminUsers: () => api<{ users: User[] }>("/admin/users"),
+  adminUsers: (query = "", limit = 20, offset = 0, signal?: AbortSignal) =>
+    api<{ users: User[] }>(
+      `/admin/users?${new URLSearchParams({ query, limit: String(limit), offset: String(offset) })}`,
+      { signal },
+    ),
+  adminFreezeUser: (id: string, frozen: boolean) =>
+    api<User>(`/admin/users/${encodeURIComponent(id)}/freeze`, {
+      method: "PATCH",
+      body: JSON.stringify({ frozen }),
+    }),
   adminSetUserPlan: (
     userId: string,
     body: {
@@ -1230,9 +1243,20 @@ export const client = {
       body: JSON.stringify(body),
     }),
   adminPastes: () => api<{ pastes: Paste[] }>("/admin/pastes"),
-  adminAttachments: (query: string) =>
+  adminTakedownPaste: (id: string) =>
+    api<{ status: string }>(
+      `/admin/pastes/${encodeURIComponent(id)}/takedown`,
+      { method: "POST" },
+    ),
+  adminAttachments: (
+    query: string,
+    limit = 20,
+    offset = 0,
+    signal?: AbortSignal,
+  ) =>
     api<{ attachments: AdminAttachment[] }>(
-      `/admin/attachments?${new URLSearchParams({ query }).toString()}`,
+      `/admin/attachments?${new URLSearchParams({ query, limit: String(limit), offset: String(offset) })}`,
+      { signal },
     ),
   adminFreezeAttachment: (id: string, frozen: boolean) =>
     api<Attachment>(`/admin/attachments/${id}/freeze`, {
@@ -1241,7 +1265,11 @@ export const client = {
     }),
   adminRetryScan: (id: string) =>
     api<Attachment>(`/admin/attachments/${id}/retry-scan`, { method: "POST" }),
-  adminShares: () => api<{ shares: AdminShare[] }>("/admin/shares"),
+  adminShares: (limit = 20, offset = 0, signal?: AbortSignal) =>
+    api<{ shares: AdminShare[] }>(
+      `/admin/shares?${new URLSearchParams({ limit: String(limit), offset: String(offset) })}`,
+      { signal },
+    ),
   adminRevokeShare: (id: string) =>
     api<Share>(`/admin/shares/${id}/revoke`, { method: "POST" }),
   adminOrders: () => api<{ orders: Order[] }>("/admin/orders"),

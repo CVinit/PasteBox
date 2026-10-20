@@ -1,4 +1,11 @@
 import {
+  AdminAuditLog,
+  AdminFileManager,
+  AdminShareManager,
+  AdminUserManager,
+  adminCopy,
+} from "./AdminManagement";
+import {
   useCallback,
   useEffect,
   useId,
@@ -59,9 +66,7 @@ import {
   shareStatusStreamPath,
   sharedAttachmentDownloadPath,
   type Attachment,
-  type AdminAttachment,
   type AdminQueues,
-  type AdminShare,
   type AlertEvent,
   type ApiError,
   type AuditLog,
@@ -110,13 +115,7 @@ import {
 } from "./transferQueue";
 import "./styles.css";
 
-type View =
-  | "inbox"
-  | "sends"
-  | "shared"
-  | "billing"
-  | "settings"
-  | "admin";
+type View = "inbox" | "sends" | "shared" | "billing" | "settings" | "admin";
 type PaymentProvider = "stripe" | "epusdt";
 
 type WorkspaceStat = {
@@ -164,10 +163,6 @@ type RedemptionDraft = {
 };
 
 type AdminData = {
-  users: User[];
-  pastes: Paste[];
-  attachments: AdminAttachment[];
-  shares: AdminShare[];
   orders: Order[];
   queues: AdminQueues | null;
   webhookEvents: WebhookEvent[];
@@ -222,6 +217,11 @@ type AuthLink = {
 type AuthMode = "login" | "register";
 type AdminTab =
   | "overview"
+  | "users"
+  | "files"
+  | "shares"
+  | "orders"
+  | "audit"
   | "plans"
   | "guest"
   | "security"
@@ -299,10 +299,6 @@ const defaultRedemptionDraft: RedemptionDraft = {
 };
 
 const emptyAdminData: AdminData = {
-  users: [],
-  pastes: [],
-  attachments: [],
-  shares: [],
   orders: [],
   queues: null,
   webhookEvents: [],
@@ -321,14 +317,71 @@ const supportedLocales: Array<{ value: Locale; label: string }> = [
   { value: "es", label: "Español" },
 ];
 
-const adminTabOptions: Array<{ value: AdminTab; labelKey: string }> = [
-  { value: "overview", labelKey: "adminTabOverview" },
-  { value: "plans", labelKey: "adminTabPlans" },
-  { value: "guest", labelKey: "adminTabGuest" },
-  { value: "security", labelKey: "adminTabSecurity" },
-  { value: "configuration", labelKey: "adminTabConfiguration" },
-  { value: "services", labelKey: "adminTabServices" },
-  { value: "queues", labelKey: "adminTabQueues" },
+const adminTabOptions: Array<{
+  value: AdminTab;
+  labelKey: string;
+  descriptionKey: string;
+}> = [
+  {
+    value: "overview",
+    labelKey: "adminTabOverview",
+    descriptionKey: "adminOverviewDescription",
+  },
+  {
+    value: "users",
+    labelKey: "adminTabUsers",
+    descriptionKey: "adminUsersDescription",
+  },
+  {
+    value: "files",
+    labelKey: "adminTabFiles",
+    descriptionKey: "adminFilesDescription",
+  },
+  {
+    value: "shares",
+    labelKey: "adminTabShares",
+    descriptionKey: "adminSharesDescription",
+  },
+  {
+    value: "orders",
+    labelKey: "adminTabOrders",
+    descriptionKey: "adminOrdersDescription",
+  },
+  {
+    value: "plans",
+    labelKey: "adminTabPlans",
+    descriptionKey: "adminPlansDescription",
+  },
+  {
+    value: "guest",
+    labelKey: "adminTabGuest",
+    descriptionKey: "adminGuestDescription",
+  },
+  {
+    value: "security",
+    labelKey: "adminTabSecurity",
+    descriptionKey: "adminSecurityDescription",
+  },
+  {
+    value: "configuration",
+    labelKey: "adminTabConfiguration",
+    descriptionKey: "adminConfigurationDescription",
+  },
+  {
+    value: "services",
+    labelKey: "adminTabServices",
+    descriptionKey: "adminServicesDescription",
+  },
+  {
+    value: "queues",
+    labelKey: "adminTabQueues",
+    descriptionKey: "adminQueuesDescription",
+  },
+  {
+    value: "audit",
+    labelKey: "adminTabAudit",
+    descriptionKey: "adminAuditDescription",
+  },
 ];
 const logLevelOptions: LogLevel[] = ["debug", "info", "warn", "error"];
 
@@ -2421,7 +2474,8 @@ const copy: Record<Locale, Record<string, string>> = {
 
 function copyFor(language?: string) {
   const locale = localeFor(language);
-  return (key: string) => copy[locale][key] ?? copy.en[key] ?? key;
+  return (key: string) =>
+    adminCopy[locale][key] ?? copy[locale][key] ?? copy.en[key] ?? key;
 }
 
 type Translate = (key: string) => string;
@@ -3889,6 +3943,7 @@ function App() {
     defaultRedemptionDraft,
   );
   const [adminTab, setAdminTab] = useState<AdminTab>("overview");
+  const [adminMenuOpen, setAdminMenuOpen] = useState(false);
   const [catalogSection, setCatalogSection] = useState<
     "plans" | "prices" | "redemptions"
   >("plans");
@@ -4056,9 +4111,9 @@ function App() {
   const workspaceRoute = isWorkspacePath(currentPath);
   const shouldProbeSession = Boolean(
     authLink?.kind === "email-verification" ||
-      workspaceRoute ||
-      authRoute ||
-      currentPath === "/",
+    workspaceRoute ||
+    authRoute ||
+    currentPath === "/",
   );
 
   useEffect(() => {
@@ -4157,10 +4212,13 @@ function App() {
     ],
   );
   const currentViewLabel = t(view === "shared" ? "shares" : view);
+  const currentAdminTab =
+    adminTabOptions.find((tab) => tab.value === adminTab) ?? adminTabOptions[0];
 
   const pricesByPlan = useMemo(() => {
     const grouped = new Map<string, Price[]>();
     for (const price of catalog?.prices ?? []) {
+      if (!price.visible) continue;
       const current = grouped.get(price.planId) ?? [];
       current.push(price);
       grouped.set(price.planId, current);
@@ -4247,44 +4305,41 @@ function App() {
 
   // followRemotePaste replaces the editor with the version the server now holds.
   // Auto-follow requires a clean draft; the explicit reload button opts in.
-  const followRemotePaste = useCallback(
-    async (pasteId: string) => {
-      const generation = ++remoteRefreshGeneration.current;
-      const originalDraft = editorStateRef.current.editDraft;
-      try {
-        const fresh = await client.paste(pasteId);
-        const current = editorStateRef.current;
-        if (
-          generation !== remoteRefreshGeneration.current ||
-          current.selectedPasteId !== pasteId
-        ) {
-          return;
-        }
-        // Typing can start after the caller's dirty check but before this
-        // response. Only replace the exact draft this request started with.
-        if (current.editDraft !== originalDraft) {
-          setRemoteDraftNotice(pasteId);
-          return;
-        }
-        setPastes((items) =>
-          items.some((item) => item.id === pasteId)
-            ? items.map((item) => (item.id === pasteId ? fresh : item))
-            : [...items, fresh],
-        );
-        setEditDraft({
-          id: fresh.id,
-          title: fresh.title,
-          text: fresh.text,
-          tags: fresh.tags.join(", "),
-        });
-        setRemoteDraftNotice("");
-      } catch {
-        // A failed follow-up leaves the draft as it was; the next snapshot or
-        // the user's own refresh brings the newer version in.
+  const followRemotePaste = useCallback(async (pasteId: string) => {
+    const generation = ++remoteRefreshGeneration.current;
+    const originalDraft = editorStateRef.current.editDraft;
+    try {
+      const fresh = await client.paste(pasteId);
+      const current = editorStateRef.current;
+      if (
+        generation !== remoteRefreshGeneration.current ||
+        current.selectedPasteId !== pasteId
+      ) {
+        return;
       }
-    },
-    [],
-  );
+      // Typing can start after the caller's dirty check but before this
+      // response. Only replace the exact draft this request started with.
+      if (current.editDraft !== originalDraft) {
+        setRemoteDraftNotice(pasteId);
+        return;
+      }
+      setPastes((items) =>
+        items.some((item) => item.id === pasteId)
+          ? items.map((item) => (item.id === pasteId ? fresh : item))
+          : [...items, fresh],
+      );
+      setEditDraft({
+        id: fresh.id,
+        title: fresh.title,
+        text: fresh.text,
+        tags: fresh.tags.join(", "),
+      });
+      setRemoteDraftNotice("");
+    } catch {
+      // A failed follow-up leaves the draft as it was; the next snapshot or
+      // the user's own refresh brings the newer version in.
+    }
+  }, []);
 
   // applyPasteChanges reacts to the record markers the channel reports. A
   // marker that moved on the server while the local list still shows the old
@@ -4318,11 +4373,7 @@ function App() {
     const removed = [...previous.keys()].some((id) => !next.has(id));
     if (stale.length === 0 && !added && !removed) return;
 
-    if (
-      selectedPasteId &&
-      stale.includes(selectedPasteId) &&
-      draftDirty
-    ) {
+    if (selectedPasteId && stale.includes(selectedPasteId) && draftDirty) {
       setRemoteDraftNotice(selectedPasteId);
       return;
     }
@@ -4482,10 +4533,6 @@ function App() {
     if (user?.role !== "admin") return;
     const [
       stats,
-      users,
-      pastesResult,
-      attachments,
-      sharesResult,
       ordersResult,
       queues,
       runtimeConfig,
@@ -4498,10 +4545,6 @@ function App() {
       logs,
     ] = await Promise.allSettled([
       client.adminDashboard(),
-      client.adminUsers(),
-      client.adminPastes(),
-      client.adminAttachments(""),
-      client.adminShares(),
       client.adminOrders(),
       client.adminQueues(),
       client.adminRuntimeConfig(),
@@ -4515,13 +4558,6 @@ function App() {
     ]);
     if (stats.status === "fulfilled") setAdminStats(stats.value);
     setAdminData({
-      users: users.status === "fulfilled" ? users.value.users : [],
-      pastes:
-        pastesResult.status === "fulfilled" ? pastesResult.value.pastes : [],
-      attachments:
-        attachments.status === "fulfilled" ? attachments.value.attachments : [],
-      shares:
-        sharesResult.status === "fulfilled" ? sharesResult.value.shares : [],
       orders:
         ordersResult.status === "fulfilled" ? ordersResult.value.orders : [],
       queues: queues.status === "fulfilled" ? queues.value : null,
@@ -5184,25 +5220,6 @@ function App() {
     await refreshAdmin();
   }
 
-  async function adminRetryScan(attachmentId: string) {
-    await run(() => client.adminRetryScan(attachmentId), t("scanRetried"));
-    await refreshAdmin();
-  }
-
-  async function adminFreezeAttachment(attachmentId: string, frozen: boolean) {
-    await run(
-      () => client.adminFreezeAttachment(attachmentId, frozen),
-      frozen ? t("attachmentFrozen") : t("attachmentReleased"),
-    );
-    await refreshAdmin();
-  }
-
-  async function adminRevokeShare(shareId: string) {
-    await run(() => client.adminRevokeShare(shareId), t("shareRevoked"));
-    await refreshAdmin();
-    await refreshAuthed();
-  }
-
   async function adminMarkOrderPaid(orderId: string) {
     const reason = (adminPaymentReasons[orderId] ?? "").trim();
     if (!reason) {
@@ -5403,6 +5420,26 @@ function App() {
 
   function setAdminTimeUnit(key: string, unit: TimeUnit) {
     setAdminTimeUnits((previous) => ({ ...previous, [key]: unit }));
+  }
+
+  async function savePricingVisibility(visible: boolean) {
+    const updated = await run(
+      () => client.adminUpdateRuntimeConfig({ pricingHidden: !visible }),
+      t("pricingVisibilitySaved"),
+      "pricing-visibility",
+    );
+    if (!updated) return;
+    setAdminData((previous) => ({
+      ...previous,
+      runtimeConfig: previous.runtimeConfig
+        ? { ...previous.runtimeConfig, pricingHidden: updated.pricingHidden }
+        : updated,
+    }));
+    setCatalog((previous) =>
+      previous
+        ? { ...previous, pricingVisible: !updated.pricingHidden }
+        : previous,
+    );
   }
 
   async function saveAdminCatalog(kind: "plans" | "prices", id: string) {
@@ -5796,16 +5833,18 @@ function App() {
               <Link2 size={18} aria-hidden="true" />
               <span className="nav-label">{t("shares")}</span>
             </button>
-            <button
-              aria-label={t("billing")}
-              title={t("billing")}
-              className={navClass(view, "billing")}
-              type="button"
-              onClick={() => navigateWorkspace("billing")}
-            >
-              <CreditCard size={18} aria-hidden="true" />
-              <span className="nav-label">{t("billing")}</span>
-            </button>
+            {catalog?.pricingVisible !== false ? (
+              <button
+                aria-label={t("billing")}
+                title={t("billing")}
+                className={navClass(view, "billing")}
+                type="button"
+                onClick={() => navigateWorkspace("billing")}
+              >
+                <CreditCard size={18} aria-hidden="true" />
+                <span className="nav-label">{t("billing")}</span>
+              </button>
+            ) : null}
             <button
               aria-label={t("settings")}
               title={t("settings")}
@@ -6362,65 +6401,74 @@ function App() {
                 </span>
               </div>
             </section>
-            <div className="plan-grid">
-              {(catalog?.plans ?? []).map((plan) => (
-                <article className="plan-card" key={plan.id}>
-                  <strong>{plan.name}</strong>
-                  <span>
-                    {plan.activePasteLimit.toLocaleString()} {t("activePastes")}
-                  </span>
-                  <dl>
-                    <div>
-                      <dt>{t("storage")}</dt>
-                      <dd>{formatBytes(plan.activeStorageBytes)}</dd>
-                    </div>
-                    <div>
-                      <dt>{t("file")}</dt>
-                      <dd>{formatBytes(plan.singleFileBytes)}</dd>
-                    </div>
-                    <div>
-                      <dt>{t("retention")}</dt>
-                      <dd>{formatDuration(plan.maxRetentionSeconds)}</dd>
-                    </div>
-                    <div>
-                      <dt>{t("traffic")}</dt>
-                      <dd>{formatBytes(plan.dailyShareDownloadBytes)}</dd>
-                    </div>
-                  </dl>
-                  <div className="price-list">
-                    {(pricesByPlan.get(plan.id) ?? []).flatMap((price) => {
-                      const providers = paymentProviderOptions(price);
-                      if (providers.length === 0) {
-                        return [
-                          <button type="button" key={price.id} disabled>
-                            {t("unavailable")} · {price.period} ·{" "}
-                            {(price.amountCents / 100).toFixed(2)}{" "}
-                            {price.currency}
-                          </button>,
-                        ];
-                      }
-                      return providers.map((option) => (
-                        <button
-                          type="button"
-                          key={`${price.id}-${option.provider}`}
-                          onClick={() =>
-                            void makeOrder(
-                              plan.id,
-                              price.period,
-                              option.provider,
-                            )
+            {catalog?.pricingVisible !== false ? (
+              <div className="plan-grid">
+                {(catalog?.plans ?? [])
+                  .filter(
+                    (plan) =>
+                      plan.id === "free" ||
+                      (pricesByPlan.get(plan.id)?.length ?? 0) > 0,
+                  )
+                  .map((plan) => (
+                    <article className="plan-card" key={plan.id}>
+                      <strong>{plan.name}</strong>
+                      <span>
+                        {plan.activePasteLimit.toLocaleString()}{" "}
+                        {t("activePastes")}
+                      </span>
+                      <dl>
+                        <div>
+                          <dt>{t("storage")}</dt>
+                          <dd>{formatBytes(plan.activeStorageBytes)}</dd>
+                        </div>
+                        <div>
+                          <dt>{t("file")}</dt>
+                          <dd>{formatBytes(plan.singleFileBytes)}</dd>
+                        </div>
+                        <div>
+                          <dt>{t("retention")}</dt>
+                          <dd>{formatDuration(plan.maxRetentionSeconds)}</dd>
+                        </div>
+                        <div>
+                          <dt>{t("traffic")}</dt>
+                          <dd>{formatBytes(plan.dailyShareDownloadBytes)}</dd>
+                        </div>
+                      </dl>
+                      <div className="price-list">
+                        {(pricesByPlan.get(plan.id) ?? []).flatMap((price) => {
+                          const providers = paymentProviderOptions(price);
+                          if (providers.length === 0) {
+                            return [
+                              <button type="button" key={price.id} disabled>
+                                {t("unavailable")} · {price.period} ·{" "}
+                                {(price.amountCents / 100).toFixed(2)}{" "}
+                                {price.currency}
+                              </button>,
+                            ];
                           }
-                        >
-                          {option.label} · {price.period} ·{" "}
-                          {(price.amountCents / 100).toFixed(2)}{" "}
-                          {price.currency}
-                        </button>
-                      ));
-                    })}
-                  </div>
-                </article>
-              ))}
-            </div>
+                          return providers.map((option) => (
+                            <button
+                              type="button"
+                              key={`${price.id}-${option.provider}`}
+                              onClick={() =>
+                                void makeOrder(
+                                  plan.id,
+                                  price.period,
+                                  option.provider,
+                                )
+                              }
+                            >
+                              {option.label} · {price.period} ·{" "}
+                              {(price.amountCents / 100).toFixed(2)}{" "}
+                              {price.currency}
+                            </button>
+                          ));
+                        })}
+                      </div>
+                    </article>
+                  ))}
+              </div>
+            ) : null}
             {orders.map((order) => {
               const status = orderStatusDetail(order.status, locale);
               return (
@@ -6615,44 +6663,165 @@ function App() {
             title={t("admin")}
             meta={t("auditQueuesCleanup")}
           >
-            <div className="admin-console">
-              <div className="metric-grid admin-metric-grid">
-                {Object.entries(adminStats ?? {}).map(([key, value]) => (
-                  <div className="metric" key={key}>
-                    <span>{adminMetricLabel(key, t)}</span>
-                    <strong>{adminMetricValue(key, value)}</strong>
-                  </div>
-                ))}
-              </div>
-              <div className="button-row admin-command-row">
-                <button type="button" onClick={runCleanup}>
-                  <RotateCcw size={16} aria-hidden="true" />
-                  {t("runCleanup")}
-                </button>
-                <button type="button" onClick={runBillingReconciliation}>
-                  <CreditCard size={16} aria-hidden="true" />
-                  {t("runBillingReconcile")}
-                </button>
-              </div>
-              <div
+            <div
+              className={`admin-console${adminMenuOpen ? " admin-console--menu-open" : ""}`}
+            >
+              <button
+                className="admin-nav-toggle"
+                type="button"
+                aria-expanded={adminMenuOpen}
+                aria-controls="admin-navigation"
+                onClick={() => setAdminMenuOpen((open) => !open)}
+              >
+                <Menu size={18} aria-hidden="true" />
+                {t("adminMenu")} · {t(currentAdminTab.labelKey)}
+              </button>
+              <nav
                 className="admin-tabs"
-                role="tablist"
-                aria-label={t("admin")}
+                id="admin-navigation"
+                aria-label={t("adminMenu")}
               >
                 {adminTabOptions.map((tab) => (
                   <button
                     key={tab.value}
                     type="button"
-                    role="tab"
-                    aria-selected={adminTab === tab.value}
+                    aria-current={adminTab === tab.value ? "page" : undefined}
                     className={adminTab === tab.value ? "active" : ""}
-                    onClick={() => setAdminTab(tab.value)}
+                    onClick={() => {
+                      setAdminTab(tab.value);
+                      setAdminMenuOpen(false);
+                    }}
                   >
                     {t(tab.labelKey)}
                   </button>
                 ))}
-              </div>
+              </nav>
+              <header className="admin-page-heading">
+                <h3>{t(currentAdminTab.labelKey)}</h3>
+                <p>{t(currentAdminTab.descriptionKey)}</p>
+              </header>
               <div className={`admin-grid admin-grid--${adminTab}`}>
+                {adminTab === "overview" ? (
+                  <div className="metric-grid admin-metric-grid">
+                    {Object.entries(adminStats ?? {}).map(([key, value]) => (
+                      <div className="metric" key={key}>
+                        <span>{adminMetricLabel(key, t)}</span>
+                        <strong>{adminMetricValue(key, value)}</strong>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {adminTab === "queues" ? (
+                  <div className="button-row admin-command-row">
+                    <button type="button" disabled={busy} onClick={runCleanup}>
+                      <RotateCcw size={16} aria-hidden="true" />
+                      {t("runCleanup")}
+                    </button>
+                  </div>
+                ) : null}
+                {adminTab === "orders" ? (
+                  <div className="button-row admin-command-row">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={runBillingReconciliation}
+                    >
+                      <CreditCard size={16} aria-hidden="true" />
+                      {t("runBillingReconcile")}
+                    </button>
+                  </div>
+                ) : null}
+                {adminTab === "users" ? (
+                  <AdminUserManager
+                    plans={catalog?.plans ?? []}
+                    currentUserId={user.id}
+                    locale={locale}
+                    t={t}
+                    onChanged={() => {
+                      void refreshAdmin();
+                      void refreshAuthed();
+                    }}
+                  />
+                ) : null}
+                {adminTab === "files" ? (
+                  <AdminFileManager
+                    locale={locale}
+                    t={t}
+                    scanDetail={(file) =>
+                      attachmentScanDetail(file, locale, "owner")
+                    }
+                    statusLabel={(status) => adminStatusLabel(status, t)}
+                    onChanged={() => {
+                      void refreshAdmin();
+                      void refreshAuthed();
+                    }}
+                  />
+                ) : null}
+                {adminTab === "shares" ? (
+                  <AdminShareManager
+                    locale={locale}
+                    t={t}
+                    onChanged={() => {
+                      void refreshAdmin();
+                      void refreshAuthed();
+                    }}
+                  />
+                ) : null}
+                {adminTab === "audit" ? (
+                  <>
+                    <div className="button-row admin-command-row">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => {
+                          void refreshAdmin();
+                        }}
+                      >
+                        <RotateCcw size={16} aria-hidden="true" />
+                        {t("adminRefresh")}
+                      </button>
+                    </div>
+                    <AdminAuditLog
+                      logs={auditLogs}
+                      locale={locale}
+                      t={t}
+                      fallbackLabel={humanizeIdentifier}
+                    />
+                  </>
+                ) : null}
+                {adminTab === "plans" ? (
+                  <section className="admin-section admin-pricing-visibility">
+                    <div>
+                      <h3>{t("pricingVisibility")}</h3>
+                      <p>{t("pricingVisibilityDescription")}</p>
+                    </div>
+                    <label className="admin-switch">
+                      <input
+                        type="checkbox"
+                        role="switch"
+                        aria-label={t("pricingVisibility")}
+                        checked={
+                          !(
+                            adminData.runtimeConfig?.pricingHidden ??
+                            catalog?.pricingVisible === false
+                          )
+                        }
+                        disabled={busy || !adminData.runtimeConfig}
+                        onChange={(event) => {
+                          void savePricingVisibility(event.target.checked);
+                        }}
+                      />
+                      <span>
+                        {t(
+                          adminData.runtimeConfig?.pricingHidden
+                            ? "disabled"
+                            : "enabled",
+                        )}
+                      </span>
+                    </label>
+                    <SaveFeedback result={saveResults["pricing-visibility"]} />
+                  </section>
+                ) : null}
                 {adminTab === "configuration" && adminData.managedConfig ? (
                   <ManagedConfigEditor
                     busy={busy}
@@ -7434,7 +7603,7 @@ function App() {
                     </article>
                   </section>
                 ) : null}
-                {adminTab === "overview" || adminTab === "services" ? (
+                {adminTab === "services" ? (
                   <section className="admin-section admin-section--tiles">
                     <h3>{t("providerStatus")}</h3>
                     {Object.entries(
@@ -7826,7 +7995,7 @@ function App() {
                                       })
                                     }
                                   />
-                                  {t("visible")}
+                                  {t("adminPriceVisible")}
                                 </label>
                                 <label className="check-row">
                                   <input
@@ -8016,96 +8185,7 @@ function App() {
                     ))}
                   </section>
                 ) : null}
-                {adminTab === "overview" ? (
-                  <section className="admin-section admin-section--tiles">
-                    <h3>{t("users")}</h3>
-                    {adminData.users.slice(0, 5).map((item) => (
-                      <article className="list-card" key={item.id}>
-                        <strong>{item.email}</strong>
-                        <span>
-                          {item.planId} ·{" "}
-                          {item.frozen ? t("frozen") : t("active")}
-                        </span>
-                      </article>
-                    ))}
-                  </section>
-                ) : null}
-                {adminTab === "overview" ? (
-                  <section className="admin-section">
-                    <h3>{t("attachments")}</h3>
-                    {adminData.attachments.slice(0, 5).map((attachment) => {
-                      const scan = attachmentScanDetail(
-                        attachment,
-                        locale,
-                        "owner",
-                      );
-                      return (
-                        <article className="list-card" key={attachment.id}>
-                          <div>
-                            <strong>{attachment.fileName}</strong>
-                            <span>
-                              {scan.label} ·{" "}
-                              {adminStatusLabel(attachment.status, t)} ·{" "}
-                              {attachment.sha256.slice(0, 12)}
-                            </span>
-                          </div>
-                          <div className="button-row compact">
-                            <button
-                              type="button"
-                              onClick={() => void adminRetryScan(attachment.id)}
-                            >
-                              <RotateCcw size={16} aria-hidden="true" />
-                              {t("retry")}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                void adminFreezeAttachment(
-                                  attachment.id,
-                                  attachment.status !== "frozen",
-                                )
-                              }
-                            >
-                              {attachment.status === "frozen" ? (
-                                <Undo2 size={16} aria-hidden="true" />
-                              ) : (
-                                <Snowflake size={16} aria-hidden="true" />
-                              )}
-                              {attachment.status === "frozen"
-                                ? t("release")
-                                : t("freeze")}
-                            </button>
-                          </div>
-                        </article>
-                      );
-                    })}
-                  </section>
-                ) : null}
-                {adminTab === "overview" ? (
-                  <section className="admin-section">
-                    <h3>{t("shares")}</h3>
-                    {adminData.shares.slice(0, 5).map((share) => (
-                      <article className="list-card" key={share.id}>
-                        <div>
-                          <strong>{share.id}</strong>
-                          <span>
-                            {share.visitCount} {t("visits")} ·{" "}
-                            {share.downloadCount} {t("downloads")}
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => void adminRevokeShare(share.id)}
-                          disabled={Boolean(share.revokedAt)}
-                        >
-                          <Trash2 size={16} aria-hidden="true" />
-                          {t("revoke")}
-                        </button>
-                      </article>
-                    ))}
-                  </section>
-                ) : null}
-                {adminTab === "plans" ? (
+                {adminTab === "orders" ? (
                   <section className="admin-section">
                     <h3>{t("orders")}</h3>
                     {adminData.orders.slice(0, 5).map((order) => {
@@ -8263,22 +8343,6 @@ function App() {
                   </section>
                 ) : null}
               </div>
-              {adminTab === "queues" ? (
-                <section className="admin-audit-section">
-                  <h3>{t("auditQueuesCleanup")}</h3>
-                  <div className="admin-audit-list">
-                    {auditLogs.slice(0, 8).map((log) => (
-                      <article className="list-card" key={log.id}>
-                        <strong>{humanizeIdentifier(log.action)}</strong>
-                        <span>
-                          {log.target} ·{" "}
-                          {new Date(log.createdAt).toLocaleString()}
-                        </span>
-                      </article>
-                    ))}
-                  </div>
-                </section>
-              ) : null}
             </div>
           </Panel>
         ) : null}
@@ -8709,7 +8773,8 @@ const transferCopy: Record<Locale, TransferCopy> = {
     manifestFrozen: "This send has already started.",
     sendLocked: "This send is finished.",
     overFileLimit: "A file is over the per-file size limit.",
-    overTotalLimit: "The chosen files are over the total size limit for one send.",
+    overTotalLimit:
+      "The chosen files are over the total size limit for one send.",
     overCountLimit: "Too many files for one send.",
     settingsLabel: "Send settings",
     expiryLabel: "Expiry",
@@ -8756,7 +8821,8 @@ const transferCopy: Record<Locale, TransferCopy> = {
     recordsNext: "Next page",
     recordsFiles: "{count} files",
     recordsText: "Text",
-    remoteUpdated: "This record changed on another device. Your unsaved edits were kept.",
+    remoteUpdated:
+      "This record changed on another device. Your unsaved edits were kept.",
     remoteReload: "Load the newer version",
     remoteKeep: "Keep my edits",
   },
@@ -8826,7 +8892,8 @@ const transferCopy: Record<Locale, TransferCopy> = {
     burnLabel: "阅后即焚",
     burnHint:
       "阅后即焚会在全部名额领取并结束会话后，或分享到期后销毁正文与附件；接收方已保存的副本无法收回。",
-    burnSummary: "阅后即焚已开启：全部名额领取并结束会话后，或到期后销毁内容与附件。",
+    burnSummary:
+      "阅后即焚已开启：全部名额领取并结束会话后，或到期后销毁内容与附件。",
     burnDestroyed:
       "这份传输已销毁：正文与附件已失效，附件正在后台清理。接收方已保存到本地的副本不受影响。",
     liveConnected: "已连接",
@@ -9043,7 +9110,8 @@ const transferCopy: Record<Locale, TransferCopy> = {
     recordsNext: "Página siguiente",
     recordsFiles: "{count} archivos",
     recordsText: "Texto",
-    remoteUpdated: "Este registro cambió en otro dispositivo. Tus cambios sin guardar se conservaron.",
+    remoteUpdated:
+      "Este registro cambió en otro dispositivo. Tus cambios sin guardar se conservaron.",
     remoteReload: "Cargar la versión más reciente",
     remoteKeep: "Mantener mis cambios",
   },
@@ -9889,7 +9957,10 @@ function LandingPage({
   const priceCards = plans.filter(
     (plan) => plan.id === "free" || visiblePaidPlanIds.has(plan.id),
   );
-  const showPricing = visiblePaidPlanIds.size > 0 && priceCards.length > 0;
+  const showPricing =
+    catalog?.pricingVisible !== false &&
+    visiblePaidPlanIds.size > 0 &&
+    priceCards.length > 0;
   const showcasePlan = priceCards[0];
   // The guest workbench states the guest allowance, so it only appears once the
   // server has published that allowance. Until then the hero shows the clay
@@ -10101,9 +10172,7 @@ function SendQueueList({
   return (
     <div className="send-queue">
       <div className="send-queue-head">
-        <strong>
-          {fillCopy(labels.filesStaged, { count: items.length })}
-        </strong>
+        <strong>{fillCopy(labels.filesStaged, { count: items.length })}</strong>
         <span>
           {labels.totalSize}{" "}
           {formatBytes(items.reduce((sum, item) => sum + item.file.size, 0))}
@@ -10302,12 +10371,7 @@ function GuestWorkbench({
         claimQuota: sendClaimQuota,
         burnAfterReading: sendBurnAfterReading,
       }),
-    [
-      sendExpirySeconds,
-      sendPassword,
-      sendClaimQuota,
-      sendBurnAfterReading,
-    ],
+    [sendExpirySeconds, sendPassword, sendClaimQuota, sendBurnAfterReading],
   );
   const guestImageAdapter = useMemo<TransferQueueAdapter>(
     () =>
@@ -11195,9 +11259,12 @@ function PublicShareScreen({
                 {transferStateLabel(endedState, transferLabels)}
               </p>
             ) : null}
-            {!endedState && access.paste.text ? <pre>{access.paste.text}</pre> : null}
+            {!endedState && access.paste.text ? (
+              <pre>{access.paste.text}</pre>
+            ) : null}
             <div className="share-preview">
-              {endedState ? null : access.transfer && !access.transfer.claimed ? (
+              {endedState ? null : access.transfer &&
+                !access.transfer.claimed ? (
                 // Until the recipient claims, the batch is listed but not
                 // downloadable, so the page cannot spend a slot by itself.
                 <ul className="transfer-file-list">
@@ -11211,54 +11278,58 @@ function PublicShareScreen({
                 </ul>
               ) : (
                 access.paste.attachments.map((attachment) => {
-                const href = sharedAttachmentDownloadPath(
-                  access.share.token,
-                  attachment.id,
-                );
-                const scan = attachmentScanDetail(attachment, locale, "public");
-                const isImage = attachment.contentType.startsWith("image/");
-                // Anything that is not a servable image keeps the plain
-                // download row, so the reading page never promises a preview it
-                // cannot show.
-                if (!isImage || !scan.canDownload) {
-                  return (
-                    <AttachmentDownloadItem
-                      attachment={attachment}
-                      context="public"
-                      href={href}
-                      icon="download"
-                      key={attachment.id}
-                      locale={locale}
-                    />
+                  const href = sharedAttachmentDownloadPath(
+                    access.share.token,
+                    attachment.id,
                   );
-                }
-                const open = previewID === attachment.id;
-                return (
-                  <div className="shared-image-item" key={attachment.id}>
-                    <AttachmentDownloadItem
-                      attachment={attachment}
-                      context="public"
-                      href={href}
-                      icon="download"
-                      locale={locale}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setPreviewID(open ? "" : attachment.id)}
-                    >
-                      <ImageIcon size={16} aria-hidden="true" />
-                      {open ? t("hideImage") : t("showImage")}
-                    </button>
-                    {open ? (
-                      <img
-                        alt={attachment.fileName}
-                        className="shared-image"
-                        src={href}
+                  const scan = attachmentScanDetail(
+                    attachment,
+                    locale,
+                    "public",
+                  );
+                  const isImage = attachment.contentType.startsWith("image/");
+                  // Anything that is not a servable image keeps the plain
+                  // download row, so the reading page never promises a preview it
+                  // cannot show.
+                  if (!isImage || !scan.canDownload) {
+                    return (
+                      <AttachmentDownloadItem
+                        attachment={attachment}
+                        context="public"
+                        href={href}
+                        icon="download"
+                        key={attachment.id}
+                        locale={locale}
                       />
-                    ) : null}
-                  </div>
-                );
-              })
+                    );
+                  }
+                  const open = previewID === attachment.id;
+                  return (
+                    <div className="shared-image-item" key={attachment.id}>
+                      <AttachmentDownloadItem
+                        attachment={attachment}
+                        context="public"
+                        href={href}
+                        icon="download"
+                        locale={locale}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setPreviewID(open ? "" : attachment.id)}
+                      >
+                        <ImageIcon size={16} aria-hidden="true" />
+                        {open ? t("hideImage") : t("showImage")}
+                      </button>
+                      {open ? (
+                        <img
+                          alt={attachment.fileName}
+                          className="shared-image"
+                          src={href}
+                        />
+                      ) : null}
+                    </div>
+                  );
+                })
               )}
             </div>
           </section>
@@ -11316,7 +11387,11 @@ function TransferClaimPanel({
       ) : transfer.claimsRemaining > 0 ? (
         <button type="button" onClick={onClaim} disabled={busy}>
           <Download size={16} aria-hidden="true" />
-          {busy ? labels.claiming : isText ? labels.claimText : labels.claimFiles}
+          {busy
+            ? labels.claiming
+            : isText
+              ? labels.claimText
+              : labels.claimFiles}
         </button>
       ) : (
         <p className="status-line">{labels.claimExhausted}</p>
@@ -11539,7 +11614,9 @@ function PublicFooter({
                 heading would repeat its only link keeps that row as space:
                 without it the link would sit on the headings' line. */}
             <strong
-              className={group.heading ? undefined : "public-footer-heading-empty"}
+              className={
+                group.heading ? undefined : "public-footer-heading-empty"
+              }
             >
               {group.heading ?? group.links[0].label}
             </strong>
